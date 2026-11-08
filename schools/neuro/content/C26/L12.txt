@@ -1,0 +1,258 @@
+@lesson
+title: Parameter recovery, model recovery and good practice
+summary: Run a parameter-recovery study with supplied random numbers, summarize its bias and precision, and use model recovery and good-practice checks to decide what a model fit can support.
+objective: Simulate data from known parameters, refit them by a grid search, and compute bias, root-mean-square error and correlation between true and recovered values.
+objective: Explain what poor parameter recovery implies about a design, and what trade-offs between parameters look like.
+objective: Build and read a model-recovery confusion matrix.
+objective: List good practices for fitting and reporting cognitive models, and state what recovery studies cannot show.
+reading: Probabilistic Models of Cognition: the material on inference and on simulation from generative models (look up how a generative model produces data that can be compared with observations).
+
+@article
+You fit a model to a participant and get $\hat\beta = 4.5$. How much should you trust that number? One way to find out is to ask a question the data cannot answer but a simulation can: **if the true parameter were exactly $4.5$, and we had this experiment, what would our fitting procedure typically return?** If the answer is "anything from 2 to 9," the estimate says little. A **parameter-recovery study** answers the question directly.
+
+### The recipe
+
+1. Choose true parameter values, spanning the range you expect.
+2. For each, simulate data from the model with the same design as the experiment (same trials, same stimuli), using random numbers.
+3. Fit the model to each simulated data set with the same method (here, the grid search of week 3).
+4. Compare recovered estimates with the true values: **bias** (mean of estimate minus truth), **root-mean-square error** (RMSE, $\sqrt{\text{mean}(\text{estimate}-\text{truth})^2}$), and the correlation between truth and estimate.
+
+For several parameters, also check the correlation between the estimates of different parameters across simulated data sets: a strong correlation means the parameters **trade off** and are hard to separate with this design.
+
+Simulating needs random numbers. A reproducible way to simulate a softmax chooser is to supply uniform numbers $u_t \in [0, 1)$ and choose option 1 on trial $t$ when $u_t < p_t(1)$, which is the same as drawing from the model. Here is a study with 40 trials of value differences $\pm 0.2, \pm 0.4, \pm 0.8$ and ten simulated data sets for each true $\beta$:
+
+```python
+import math
+import random
+
+def simulate_choices(deltas, beta, us):
+    return [1 if u < 1 / (1 + math.exp(-beta * d)) else 0
+            for d, u in zip(deltas, us)]
+
+def log_lik(choices, deltas, beta):
+    total = 0.0
+    for c, d in zip(choices, deltas):
+        p1 = 1 / (1 + math.exp(-beta * d))
+        total += math.log(p1 if c == 1 else 1 - p1)
+    return total
+
+deltas = ([-0.8, -0.4, -0.2, 0.2, 0.4, 0.8] * 7)[:40]
+grid = [0.5 * i for i in range(1, 25)]
+rng = random.Random(1)
+for true_beta in (0.5, 1, 2, 4, 8):
+    est = []
+    for _ in range(10):
+        us = [rng.random() for _ in deltas]
+        ch = simulate_choices(deltas, true_beta, us)
+        est.append(max(grid, key=lambda b: log_lik(ch, deltas, b)))
+    m = sum(est) / len(est)
+    sd = (sum((e - m) ** 2 for e in est) / (len(est) - 1)) ** 0.5
+    print(true_beta, round(m, 2), round(sd, 2))
+```
+
+It prints the mean estimate and the standard deviation across the ten data sets:
+
+| true $\beta$ | mean estimate | SD |
+|---|---|---|
+| 0.5 | 0.75 | 0.49 |
+| 1 | 1.00 | 0.67 |
+| 2 | 2.65 | 1.45 |
+| 4 | 3.95 | 1.42 |
+| 8 | 8.65 | 2.06 |
+
+Two lessons appear. First, **precision**: with 40 trials the standard deviation is comparable to the parameter itself for $\beta \ge 2$, so a single estimate of $4.5$ really could mean a true value of 2 or 8. Second, **bias from the edge of the grid**: for $\beta = 0.5$ many estimates sit at the lowest grid value, $0.5$, so they cannot fall below the truth and the mean is biased upward. Both would improve with more trials or a better design (more extreme value differences make choices more informative about $\beta$).
+
+### Model recovery
+
+**Model recovery** asks whether the comparison procedure can tell the candidate models apart. Simulate data from each model (with parameters in the plausible range), fit all models to each simulated data set, and record which one wins by AIC or BIC. Collect the counts in a **confusion matrix** with generating models in rows and winning models in columns. A matrix with large diagonal entries says that, with this design, the comparison usually recovers the truth. If a data set from model A is often won by model B, then a win for B in real data is weak evidence. Note a limit: model recovery works only among models you thought of, so it cannot rule out a model outside the set.
+
+### Good practice
+
+- State the models and the comparison criterion **before** looking at the data where possible, and report all models tried.
+- Report the number of trials, the grid or optimizer settings, and that the best value is not at the edge of the grid.
+- Fit by maximum likelihood, compare with AIC or BIC, and also check absolute fit, such as whether the winner reproduces the learning curve or the RT distributions.
+- Run parameter and model recovery with the real design; if recovery is poor, simplify the model or collect more informative data.
+- Use held-out data or cross-validation when possible, and share code and data.
+
+None of this settles what the model means. A well-recovered parameter is a reliable description within the model; it does not make the model true, and the debate in the first lesson about what models show (Marr's levels, mimicry, the limits of comparison) remains.
+
+@example
+title: Summarizing a recovery study
+problem: Three simulated participants had true $\beta$ values of $1, 2, 4$, and the fit recovered $1.2, 1.8, 5.0$. Compute the bias and the RMSE.
+step: Errors (estimate minus truth): $0.2$, $-0.2$, $1.0$.
+step: Bias: $(0.2 - 0.2 + 1.0)/3 = 0.333$.
+step: RMSE: the squares are $0.04, 0.04, 1.00$, which sum to $1.08$; $\sqrt{1.08/3} = \sqrt{0.36} = 0.6$.
+step: The correlation between truth and estimate is $0.983$, high, even though the bias is positive: correlation measures ordering, not accuracy of scale.
+answer: Bias $0.333$ and RMSE $0.6$.
+
+@mistakes
+- Judging recovery by correlation alone: estimates can correlate perfectly with the truth and still be biased or on the wrong scale.
+- Simulating with a different design than the experiment: recovery depends on the number and the kind of trials.
+- Ignoring the grid edges: many estimates at the lowest or highest grid value signal that the grid, the design or the model is a problem.
+- Taking a model-recovery success as proof that the best-fitting model describes real behavior: it only shows the models were distinguishable in the simulation.
+
+@practice num
+prompt: A recovery study has true $\beta$ values $1, 2, 4$ and recovered values $1.5, 1.5, 4.5$. What is the root-mean-square error, to three decimal places?
+answer: 0.500
+tol: 0.001
+check: sqrt(((1.5 - 1) ** 2 + (1.5 - 2) ** 2 + (4.5 - 4) ** 2) / 3)
+hint: Each error has magnitude $0.5$.
+solution: The errors are $0.5, -0.5, 0.5$, with squares $0.25$ each, so the mean square is $0.25$ and the RMSE is $0.5$.
+
+@practice mc
+prompt: Simulated data sets with true $\beta = 4$ are fitted, and the estimates range from 1.5 to 9.5 across data sets, with mean near 4. What does this tell the researcher?
+choice*: The estimate is unbiased on average, but it is imprecise with this design, so a single estimate should be reported with an interval and not over-interpreted.
+choice: The fitting procedure is broken, because an unbiased procedure always returns the true value.
+choice: The model is wrong, because correct models give estimates close to the truth.
+choice: Nothing, because only the average of the estimates matters.
+hint: Distinguish bias (the average error) from variance (the scatter of single estimates).
+solution: Even a correct model fitted by a correct method gives scattered estimates when the data are limited. The mean near 4 means little bias, while the wide range means a single participant's estimate is imprecise; more trials, more informative stimuli or a hierarchical analysis would help.
+
+@practice code
+prompt: Write `recovery_summary(true_vals, est_vals)` that returns the tuple `(bias, rmse, corr)`: the mean of `est - true`, the root-mean-square of `est - true`, and the Pearson correlation between the two lists (`sum((a - mean_a) * (b - mean_b)) / sqrt(sum((a - mean_a)**2) * sum((b - mean_b)**2))`). If either list has zero variance, return `None` for the correlation. For example, `recovery_summary([1, 2, 4], [1.2, 1.8, 5.0])` is about `(0.3333, 0.6, 0.9827)`.
+starter:
+```python
+import math
+
+
+def recovery_summary(true_vals, est_vals):
+    pass
+```
+tests:
+```python
+_b, _r, _c = recovery_summary([1, 2, 4], [1.2, 1.8, 5.0])
+assert abs(_b - 0.333333) < 1e-5 and abs(_r - 0.6) < 1e-9 and abs(_c - 0.982735) < 1e-5
+_b, _r, _c = recovery_summary([1, 2, 3], [2, 4, 6])
+assert abs(_b - 2.0) < 1e-9 and abs(_r - 2.160247) < 1e-5 and abs(_c - 1.0) < 1e-9
+_b, _r, _c = recovery_summary([1, 2, 3], [5, 5, 5])
+assert abs(_b - 3.0) < 1e-9 and _c is None
+_b, _r, _c = recovery_summary([1, 2], [2, 1])
+assert abs(_b) < 1e-9 and abs(_r - 1.0) < 1e-9 and abs(_c - (-1.0)) < 1e-9
+```
+model:
+```python
+import math
+
+
+def recovery_summary(true_vals, est_vals):
+    """Bias, RMSE and Pearson correlation of recovered parameters."""
+    n = len(true_vals)
+    errors = [e - t for t, e in zip(true_vals, est_vals)]
+    bias = sum(errors) / n
+    rmse = math.sqrt(sum(x * x for x in errors) / n)
+    mt = sum(true_vals) / n
+    me = sum(est_vals) / n
+    st = sum((t - mt) ** 2 for t in true_vals)
+    se = sum((e - me) ** 2 for e in est_vals)
+    if st == 0 or se == 0:
+        return bias, rmse, None
+    cov = sum((t - mt) * (e - me) for t, e in zip(true_vals, est_vals))
+    return bias, rmse, cov / math.sqrt(st * se)
+```
+hint: Compute the errors first for the bias and RMSE; compute the two sums of squared deviations before dividing for the correlation, checking for zero.
+solution: Doubling every value gives a correlation of exactly 1 but a bias of 2.0: correlation ignores scale, which is why bias and RMSE are reported as well. A constant estimate has no variance, so the correlation is undefined and the function returns `None`.
+
+@practice text
+prompt: What does this program print?
+```python
+import math
+us = [0.9, 0.2, 0.6]
+deltas = [0.5, 0.5, -0.5]
+beta = 2.0
+print([1 if u < 1 / (1 + math.exp(-beta * d)) else 0 for u, d in zip(us, deltas)])
+```
+answer: [0, 1, 0]
+check: run("import math\nus = [0.9, 0.2, 0.6]\ndeltas = [0.5, 0.5, -0.5]\nbeta = 2.0\nprint([1 if u < 1 / (1 + math.exp(-beta * d)) else 0 for u, d in zip(us, deltas)])")
+hint: The probabilities of choosing option 1 are $\sigma(1) = 0.731$ for $\Delta = 0.5$ and $\sigma(-1) = 0.269$ for $\Delta = -0.5$.
+solution: Trial 1: $0.9 < 0.731$ is false, so 0. Trial 2: $0.2 < 0.731$ is true, so 1. Trial 3: $0.6 < 0.269$ is false, so 0. The output is `[0, 1, 0]`.
+
+@practice code
+prompt: Write `recover_beta(deltas, us_list, true_betas, grid)` for a softmax parameter-recovery run. For the `i`-th true value `true_betas[i]`, simulate choices from `deltas` using the uniform numbers `us_list[i]`: choice 1 on trial `t` when `us_list[i][t] < 1 / (1 + exp(-beta * deltas[t]))`, otherwise 0. Then fit by grid search: return the value in `grid` with the largest log-likelihood $\sum_t \log p_t(c_t)$ (first on ties). Return the list of recovered estimates, one per true value. For example, with `deltas = [-0.8, -0.4, -0.2, 0.2, 0.4, 0.8] * 2`, a grid of `0.5, 1.0, ..., 10.0`, and the data in the tests, the recovered values for true betas `[1.0, 3.0, 6.0]` are `[1.5, 3.0, 2.5]`.
+starter:
+```python
+import math
+
+
+def recover_beta(deltas, us_list, true_betas, grid):
+    pass
+```
+tests:
+```python
+_d = [-0.8, -0.4, -0.2, 0.2, 0.4, 0.8] * 2
+_us = [[0.5, 0.1, 0.9, 0.3, 0.7, 0.2, 0.8, 0.4, 0.6, 0.15, 0.95, 0.35],
+       [0.05, 0.75, 0.85, 0.9, 0.05, 0.65, 0.55, 0.35, 0.95, 0.15, 0.5, 0.6],
+       [0.9, 0.03, 0.3, 0.4, 0.2, 0.1, 0.7, 0.6, 0.5, 0.35, 0.45, 0.995]]
+_g = [round(0.5 * i, 1) for i in range(1, 21)]
+assert recover_beta(_d, _us, [1.0, 3.0, 6.0], _g) == [1.5, 3.0, 2.5]
+assert recover_beta(_d, _us, [], _g) == []
+assert recover_beta(_d, _us[:1], [1.0], [2.0]) == [2.0]
+assert len(recover_beta(_d, _us, [1.0, 3.0, 6.0], _g)) == 3
+```
+model:
+```python
+import math
+
+
+def recover_beta(deltas, us_list, true_betas, grid):
+    """Simulate from each true beta with supplied uniforms, then refit by grid."""
+    def log_lik(choices, beta):
+        total = 0.0
+        for c, d in zip(choices, deltas):
+            p1 = 1 / (1 + math.exp(-beta * d))
+            total += math.log(p1 if c == 1 else 1 - p1)
+        return total
+
+    estimates = []
+    for beta, us in zip(true_betas, us_list):
+        choices = [1 if u < 1 / (1 + math.exp(-beta * d)) else 0
+                   for d, u in zip(deltas, us)]
+        estimates.append(max(grid, key=lambda b: log_lik(choices, b)))
+    return estimates
+```
+hint: Loop over the true values with their own uniform lists; simulate the choices, then pick the grid value with the highest log-likelihood.
+solution: The true value 3.0 is recovered exactly, the true value 1.0 is recovered as 1.5, and the true value 6.0 is recovered as 2.5, a large error: with only 12 trials one unlucky set of uniform numbers (two choices against the value difference) pulls the estimate far down. Single-run recovery on short data is noisy, which is why recovery studies repeat many simulated data sets.
+
+@quiz code
+prompt: Write `confusion_matrix(pairs, models)` for a model-recovery study. `pairs` is a list of `(generating_model, winning_model)` names, one per simulated data set, and `models` is the list of model names in the order of rows and columns. Return a list of lists of counts, where row `i` is the generating model `models[i]` and column `j` counts how often `models[j]` won. For example, `confusion_matrix([('a', 'a'), ('a', 'b'), ('b', 'b'), ('b', 'b'), ('a', 'a')], ['a', 'b'])` returns `[[2, 1], [0, 2]]`.
+starter:
+```python
+def confusion_matrix(pairs, models):
+    pass
+```
+tests:
+```python
+_p = [("a", "a"), ("a", "b"), ("b", "b"), ("b", "b"), ("a", "a")]
+assert confusion_matrix(_p, ["a", "b"]) == [[2, 1], [0, 2]]
+assert confusion_matrix(_p, ["b", "a"]) == [[2, 0], [1, 2]]
+assert confusion_matrix([], ["x", "y", "z"]) == [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+assert confusion_matrix([("m", "m")] * 4, ["m"]) == [[4]]
+_q = [("a", "c"), ("c", "c"), ("b", "a")]
+assert confusion_matrix(_q, ["a", "b", "c"]) == [[0, 0, 1], [1, 0, 0], [0, 0, 1]]
+```
+model:
+```python
+def confusion_matrix(pairs, models):
+    """Counts of winning model (columns) by generating model (rows)."""
+    index = {name: i for i, name in enumerate(models)}
+    matrix = [[0] * len(models) for _ in models]
+    for generating, winning in pairs:
+        matrix[index[generating]][index[winning]] += 1
+    return matrix
+```
+hint: Map each model name to its position, create a square matrix of zeros, and add 1 at row (generating) and column (winning) for each pair.
+solution: Rows are what generated the data and columns are what the comparison chose, so a good design has large diagonal counts. Building the matrix with a list comprehension (not by repeating one list) keeps the rows independent, which matters when counts are incremented in place.
+
+@quiz num
+prompt: A model-recovery study simulated 20 data sets from each of two models and recorded which model won by AIC. The confusion matrix (rows generating, columns winning) was $[[18, 2], [5, 15]]$. What proportion of all 40 data sets were won by the model that generated them?
+answer: 0.825
+check: (18 + 15) / 40
+hint: Add the diagonal entries and divide by the total.
+solution: The diagonal holds $18 + 15 = 33$ correct recoveries out of $40$, so the proportion is $0.825$. Model 2's data were recovered less often ($75\%$ against $90\%$), which means a win for model 1 on real data is weaker evidence than it first looks.
+
+@quiz self
+prompt: You have fitted a delta-rule learner and a Bayesian learner to 60 trials from each of 25 participants. Write a plan, in a few sentences, for the checks you would run before claiming that one model describes how people learn, and say what the checks could and could not show.
+hint: Cover parameter recovery, model recovery, absolute fit and the limits of what each can establish.
+solution: First, a parameter-recovery study with the same 60-trial design: simulate data from each model over the range of fitted parameters, refit, and report bias, RMSE and the correlation between parameters, because with 60 trials the learning rate and the inverse temperature may trade off, and poor recovery would make individual estimates unreliable. Second, a model-recovery study: simulate from each model, fit both, and compare the winners by AIC and BIC in a confusion matrix to show that the models are distinguishable with this design; if not, add trials or conditions that make their predictions differ. Third, check absolute fit, for example whether each model reproduces the average learning curve and the participants' switching behavior, and use held-out trials. Only then compare the models on the real data, reporting log-likelihoods, AIC and BIC. These checks show that the procedure can recover parameters and rank models within the set; they cannot show that either model is the mechanism people use, since a third model or a mimicking mechanism could fit equally well, and the models make claims at an algorithmic level that need further evidence.
+rubric: Describes a parameter-recovery study with the real design and the statistics reported.
+rubric: Describes a model-recovery study and an absolute-fit or held-out check.
+rubric: States limits: only candidate models are ranked, mimicry remains, and mechanism needs further evidence.

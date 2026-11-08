@@ -1,0 +1,239 @@
+@lesson
+title: Multivariate pattern analysis
+summary: Decode a condition from distributed voxel patterns with a nearest-centroid classifier and leave-one-run-out cross-validation, test the accuracy against chance, and describe pattern similarity with a dissimilarity matrix.
+objective: Explain how a multivariate analysis can detect information that average activation misses, and what above-chance decoding does and does not show.
+objective: Implement a nearest-centroid classifier and leave-one-run-out cross-validation in plain Python.
+objective: Compute a binomial p value for a decoding accuracy and a representational dissimilarity matrix from patterns.
+reading: Andy's Brain Book, the material on multivariate pattern analysis and decoding: look up classifiers, cross-validation across runs, and representational similarity analysis.
+@article
+Two regions can respond equally strongly, on average, to faces and to houses and still tell the stimuli apart: some voxels prefer faces and others houses, and the average hides it. A GLM at each voxel, or an ROI mean, would find no difference. **Multivariate pattern analysis** (MVPA) looks at the pattern of responses across many voxels at once. Haxby and colleagues (2001) showed that categories of objects could be told apart from distributed patterns of responses in ventral temporal cortex, even excluding the voxels that preferred a category most.
+
+### Decoding
+
+A **pattern** is a vector with one entry per voxel, for example the fitted effect of one condition in one run, or the response on one trial. **Decoding** trains a classifier to predict the condition from the pattern and measures how often it is right on patterns it has not seen. The simplest classifier is the **nearest centroid** (or nearest mean): average the training patterns of each class to get a centroid, and assign a new pattern to the class whose centroid is closest in squared Euclidean distance. Correlation-based variants compare patterns by their correlation instead, which ignores the overall level.
+
+### Cross-validation
+
+A classifier will fit its training data too well, so accuracy must be measured on held-out data. In fMRI the held-out unit should be a whole **run**, because trials within a run are correlated through drift and slow noise. In **leave-one-run-out cross-validation**, each run takes a turn as the test set while the others train the classifier; the accuracy is the fraction of all test patterns classified correctly. Anything chosen from the data, such as which voxels to use, must be chosen inside the training set only (the same logic as in the last lesson).
+
+Consider four voxels and three runs, with one pattern per condition per run, in percent-signal-change-like units:
+
+| run | condition A pattern | condition B pattern |
+|---|---|---|
+| 1 | (2.0, 1.0, 0.0, 1.0) | (0.0, 1.0, 2.0, 1.0) |
+| 2 | (1.5, 1.5, 0.5, 0.5) | (1.5, 1.0, 0.5, 1.0) |
+| 3 | (2.5, 0.5, 0.0, 1.5) | (0.5, 1.5, 2.5, 0.0) |
+
+Hold out run 2. The training centroids come from runs 1 and 3: $A = (2.25, 0.75, 0, 1.25)$ and $B = (0.25, 1.25, 2.25, 0.5)$. The test pattern B$_2 = (1.5, 1.0, 0.5, 1.0)$ has squared distance $0.9375$ to $A$ and $4.9375$ to $B$, so it is wrongly labeled A. Over all three folds, five of the six test patterns are correct, an accuracy of $5/6 = 83.3\%$. Chance for two balanced classes is 50%.
+
+### Is the accuracy above chance?
+
+If the classifier has no information, each test pattern is correct with probability $1/2$ (two classes), so the number correct out of $N$ follows a binomial distribution. The one-sided p value for $k$ correct is $P(X \ge k) = \sum_{j \ge k}\binom{N}{j}/2^N$. For example, 14 correct out of 16 has $p = (120 + 16 + 1)/65536 = 0.0021$. Cross-validated patterns are not completely independent, so the binomial p value is only approximate; a more robust approach is to compute accuracy within each participant and test the accuracies against chance across participants, or to use permutation of the labels.
+
+### Representational similarity
+
+Decoding says only whether classes can be separated. **Representational similarity analysis** (Kriegeskorte, Mur and Bandettini, 2008) describes the whole geometry. For each pair of conditions it computes a **dissimilarity**, commonly $1 - r$ where $r$ is the correlation between their patterns, and arranges them in a square, symmetric **representational dissimilarity matrix** (RDM) with zeros on the diagonal. The RDM from a brain region can be compared with the RDM predicted by a model, such as the similarity of the stimuli's visual features or of a deep network's responses.
+
+### What a decoding result means
+
+Above-chance decoding shows that the region's activity pattern *contains information* that distinguishes the conditions. It does not show that the brain uses that information, that the information is the one you intended, or that the region is the only one that carries it. A decoder can also exploit confounds: if the two conditions differ in difficulty, eye movements or arousal, the pattern may reflect those. Also, a mean difference between conditions is itself decodable, so decoding is not automatically evidence of a fine-grained code. And at chance, the information may be present at a scale or in a form the method does not capture.
+
+### In code
+
+```python
+def sq_dist(a, b):
+    """Squared Euclidean distance between two patterns."""
+    return sum((x - y) ** 2 for x, y in zip(a, b))
+
+print(sq_dist([1.5, 1.0, 0.5, 1.0], [2.25, 0.75, 0.0, 1.25]))
+```
+
+This prints `0.9375`. In scikit-learn the whole procedure is a classifier plus a cross-validation splitter that keeps runs together.
+
+@example
+title: One fold of a nearest-centroid classifier
+problem: Training patterns over two voxels are class P: $(3, 1)$ and $(5, 1)$, and class Q: $(1, 4)$ and $(1, 6)$. Classify the test pattern $(2, 2)$.
+step: Compute the centroids: P is $((3+5)/2, (1+1)/2) = (4, 1)$ and Q is $(1, 5)$.
+step: Distance to P: $(2-4)^2 + (2-1)^2 = 4 + 1 = 5$.
+step: Distance to Q: $(2-1)^2 + (2-5)^2 = 1 + 9 = 10$.
+step: The pattern is closer to the centroid of P.
+answer: The test pattern is classified as P (squared distances 5 and 10).
+
+@mistakes
+- Training and testing on the same data, or splitting trials of the same run between training and test sets. The accuracy then measures how well the classifier memorized, not what it can generalize.
+- Selecting voxels using all the data before cross-validation. The selection has already seen the test labels.
+- Reading above-chance decoding as proof that the region represents the information in the way the experimenter intended, or that the brain reads it out.
+- Using the wrong chance level: it is 1 over the number of classes only when classes are balanced; with unequal numbers the majority-class rate is higher.
+
+@practice num
+prompt: A pattern $(1, 3, 2)$ is compared with a class centroid $(2, 1, 2)$. What is the squared Euclidean distance between them?
+answer: 5
+tol: 0.001
+check: (1 - 2) ** 2 + (3 - 1) ** 2 + (2 - 2) ** 2
+hint: Square the difference in each voxel and add.
+solution: $(1-2)^2 + (3-1)^2 + (2-2)^2 = 1 + 4 + 0 = 5$.
+
+@practice mc
+prompt: A classifier decodes whether participants viewed animals or tools from a region's voxel pattern, with 70% cross-validated accuracy on balanced classes (chance 50%), significantly above chance. What does this support?
+choice*: That the pattern in this region carries information that distinguishes the two categories, at least in these data and for this classifier.
+choice: That the region is the brain's only representation of the animal-tool distinction.
+choice: That participants consciously used the voxel pattern to decide what they saw.
+choice: That the average activation of the region must differ between the categories.
+hint: Decodability is a statement about information in the pattern, not about its use.
+solution: Above-chance decoding shows that the pattern distinguishes the classes. It does not show that this region is unique, that the brain reads the information out, or that the means differ (the pattern can differ with equal means). Confounds between categories could also contribute.
+
+@practice code
+prompt: Write `nearest_centroid(train_X, train_y, x)` that classifies the pattern `x` (a list of floats, one per voxel). `train_X` is a list of training patterns and `train_y` the list of their labels (strings). Compute the centroid (voxel-wise mean) of the training patterns of each label, find the squared Euclidean distance from `x` to each centroid, and return the label with the smallest distance. If two labels tie exactly, return the one that comes first in sorted order. For example, `nearest_centroid([[1, 0], [3, 0], [0, 4], [0, 6]], ['x', 'x', 'y', 'y'], [2, 1])` returns `'x'`.
+starter:
+```python
+def nearest_centroid(train_X, train_y, x):
+    pass
+```
+tests:
+```python
+tx = [[1, 0], [3, 0], [0, 4], [0, 6]]
+ty = ['x', 'x', 'y', 'y']
+assert nearest_centroid(tx, ty, [2, 1]) == 'x'
+assert nearest_centroid(tx, ty, [1, 3]) == 'y'
+assert nearest_centroid(tx, ty, [1, 2]) == 'x'
+assert nearest_centroid([[0], [2]], ['b', 'a'], [1]) == 'a'
+assert nearest_centroid([[0.0, 0.0], [1.0, 1.0], [10.0, 10.0]], ['n', 'n', 'm'], [6.0, 6.0]) == 'm'
+```
+model:
+```python
+def nearest_centroid(train_X, train_y, x):
+    """Label of the class centroid closest to the pattern x."""
+    best_label, best_dist = None, None
+    for label in sorted(set(train_y)):
+        rows = [p for p, y in zip(train_X, train_y) if y == label]
+        centroid = [sum(p[i] for p in rows) / len(rows) for i in range(len(x))]
+        dist = sum((a - b) ** 2 for a, b in zip(x, centroid))
+        if best_dist is None or dist < best_dist:
+            best_label, best_dist = label, dist
+    return best_label
+```
+hint: Loop over the sorted set of labels, build each centroid from the matching rows, and keep the label with the strictly smallest distance.
+solution: Looping over sorted labels and updating only on a strictly smaller distance gives the required tie-breaking. The last test has an uneven number of patterns per class: the centroid of `n` is $(0.5, 0.5)$, at squared distance $60.5$ from $(6, 6)$, while `m` is at $32$, so `m` wins; a classifier that compared with the nearest single training pattern would also pick `m` here, but one that ignored class size in the mean would not.
+
+@practice code
+prompt: Write `cv_accuracy(patterns, labels, runs)` that returns the leave-one-run-out accuracy of a nearest-centroid classifier. `patterns` is a list of patterns (lists of floats), `labels` the matching labels (strings) and `runs` the matching run numbers (integers). For each distinct run, train on the patterns from the other runs (centroid of each label, squared Euclidean distance, ties broken by the label that is first in sorted order) and classify the held-out patterns. Return the fraction of all patterns classified correctly. For example, with `patterns = [[0], [10], [0], [10]]`, `labels = ['a', 'b', 'a', 'b']` and `runs = [1, 1, 2, 2]`, it returns `1.0`.
+starter:
+```python
+def cv_accuracy(patterns, labels, runs):
+    pass
+```
+tests:
+```python
+assert cv_accuracy([[0], [10], [0], [10]], ['a', 'b', 'a', 'b'], [1, 1, 2, 2]) == 1.0
+P = [[1, 0], [0, 1], [2, 0], [1.2, 1], [1, 1], [1, 1.2], [0.9, 0], [0, 1.1]]
+L = ['a', 'b', 'a', 'b', 'a', 'b', 'a', 'b']
+R = [1, 1, 2, 2, 3, 3, 4, 4]
+assert abs(cv_accuracy(P, L, R) - 0.75) < 1e-9
+assert abs(cv_accuracy([[0], [10], [10], [0]], ['a', 'b', 'a', 'b'], [1, 1, 2, 2]) - 0.0) < 1e-9
+```
+model:
+```python
+def cv_accuracy(patterns, labels, runs):
+    """Leave-one-run-out accuracy of a nearest-centroid classifier."""
+    correct = 0
+    for held in sorted(set(runs)):
+        train = [(p, y) for p, y, r in zip(patterns, labels, runs) if r != held]
+        names = sorted(set(y for _, y in train))
+        cents = {}
+        for name in names:
+            rows = [p for p, y in train if y == name]
+            cents[name] = [sum(p[i] for p in rows) / len(rows)
+                           for i in range(len(rows[0]))]
+        for p, y, r in zip(patterns, labels, runs):
+            if r != held:
+                continue
+            best, best_d = None, None
+            for name in names:
+                d = sum((a - b) ** 2 for a, b in zip(p, cents[name]))
+                if best_d is None or d < best_d:
+                    best, best_d = name, d
+            correct += best == y
+    return correct / len(patterns)
+```
+hint: Inside a loop over runs, build the training centroids from the other runs, then classify each pattern of the held-out run and count the hits.
+solution: Each run is held out once, the centroids never include the test patterns, and the accuracy is the total number of hits over the total number of patterns. In the third test the labels in run 2 are swapped relative to run 1, so every held-out pattern is classified as the opposite label and the accuracy is 0, below chance, which is possible when the training and test data disagree.
+
+@practice num
+prompt: A decoder classifies 15 of 20 test patterns correctly in a two-class problem with balanced classes. Under the null hypothesis of no information, each pattern is correct with probability $1/2$. What is the one-sided binomial p value $P(X \ge 15)$, to four decimal places?
+answer: 0.0207
+tol: 0.0001
+check: sum(comb(20, k) for k in range(15, 21)) / 2 ** 20
+hint: Add the binomial probabilities $\binom{20}{k}/2^{20}$ for $k = 15, \dots, 20$.
+solution: The counts are $\binom{20}{15} = 15504$, $\binom{20}{16} = 4845$, $\binom{20}{17} = 1140$, $\binom{20}{18} = 190$, $\binom{20}{19} = 20$, $\binom{20}{20} = 1$, which sum to 21700; divided by $2^{20} = 1048576$ this is $0.0207$.
+
+@quiz text
+prompt: What does this program print?
+```python
+x = [1, 2, 3]
+y = [3, 2, 1]
+mx, my = sum(x) / 3, sum(y) / 3
+num = sum((a - mx) * (b - my) for a, b in zip(x, y))
+den = (sum((a - mx) ** 2 for a in x) * sum((b - my) ** 2 for b in y)) ** 0.5
+print(round(1 - num / den, 2))
+```
+answer: 2.0
+check: run("x = [1, 2, 3]\ny = [3, 2, 1]\nmx, my = sum(x) / 3, sum(y) / 3\nnum = sum((a - mx) * (b - my) for a, b in zip(x, y))\nden = (sum((a - mx) ** 2 for a in x) * sum((b - my) ** 2 for b in y)) ** 0.5\nprint(round(1 - num / den, 2))")
+hint: The two patterns are perfectly anticorrelated.
+solution: The deviations are $(-1, 0, 1)$ and $(1, 0, -1)$, so the correlation is $-2/2 = -1$ and the dissimilarity $1 - r$ is $2.0$.
+
+@quiz code
+prompt: Write `rdm(patterns)` that returns the representational dissimilarity matrix of a list of patterns (each a list of floats, all the same length): a list of rows where entry `[i][j]` is `1 - r`, with `r` the Pearson correlation between pattern `i` and pattern `j`, and diagonal entries `0.0`. If either pattern has zero variance, use `1.0` for that off-diagonal entry. For example, `rdm([[1, 2, 3], [2, 4, 6], [3, 2, 1]])` is approximately `[[0, 0, 2], [0, 0, 2], [2, 2, 0]]`.
+starter:
+```python
+def rdm(patterns):
+    pass
+```
+tests:
+```python
+def close(a, b):
+    return all(abs(u - v) < 1e-9 for ra, rb in zip(a, b) for u, v in zip(ra, rb))
+
+assert close(rdm([[1, 2, 3], [2, 4, 6], [3, 2, 1]]), [[0, 0, 2], [0, 0, 2], [2, 2, 0]])
+assert close(rdm([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+             [[0, 1.5, 1.5], [1.5, 0, 1.5], [1.5, 1.5, 0]])
+m = rdm([[1, 2, 3, 5], [5, 3, 2, 1], [2, 2, 2, 2]])
+assert m[0][2] == 1.0 and m[2][0] == 1.0 and m[2][2] == 0.0
+assert abs(m[0][1] - m[1][0]) < 1e-12
+```
+model:
+```python
+import math
+
+
+def rdm(patterns):
+    """Matrix of 1 - correlation between all pairs of patterns."""
+    n = len(patterns)
+    k = len(patterns[0])
+    cent = []
+    for p in patterns:
+        mean = sum(p) / k
+        cent.append([v - mean for v in p])
+    out = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            si = sum(v * v for v in cent[i])
+            sj = sum(v * v for v in cent[j])
+            if si == 0 or sj == 0:
+                out[i][j] = 1.0
+                continue
+            r = sum(a * b for a, b in zip(cent[i], cent[j])) / math.sqrt(si * sj)
+            out[i][j] = 1.0 - r
+    return out
+```
+hint: Center each pattern, then compute the correlation of each pair from the centered vectors, guarding against zero variance.
+solution: The dissimilarity is computed for every ordered pair, so the matrix is symmetric by construction, with zeros on the diagonal. Three mutually orthogonal one-hot patterns each have correlation $-1/2$ with the others, so their dissimilarities are $1.5$, not $1$, because correlation removes each pattern's mean.
+
+@quiz self
+prompt: A lab trains a classifier to distinguish two visual categories from voxel patterns in a region and reports 62% accuracy (chance 50%, p = 0.01 by a binomial test). A reviewer asks whether this shows that the region represents the categories. Write the reasons for caution and two additional analyses that would address them.
+hint: Think of what else differs between the categories, and of how the p value was computed.
+solution: The result shows that the pattern contains some information that separates the categories in these data; it does not show that the region represents the categories in a way the brain uses. The categories may differ in low-level features (contrast, spatial frequency), in difficulty, in the eye movements they provoke or in attention, and a decoder will use whichever difference is present, so the information may concern a confound rather than the category. A binomial test also assumes independent test patterns, which cross-validated trials from the same runs are not, so p may be too small; and 62% is modest, with the effect size dependent on the number of voxels and trials. Useful additions: test generalization across a change that removes the confound (train on one set of exemplars or image sizes and test on another, or compare with a model of the low-level features), include a control region and a label-permutation test with the cross-validation structure preserved, and compare decoding with a model-based RDM from low-level features to see whether the category structure adds explanatory power beyond them.
+rubric: Separates information in the pattern from the brain's use of it, and names plausible confounds.
+rubric: Notes the problem with the independence assumption in the binomial test or the modest accuracy.
+rubric: Proposes concrete controls such as cross-exemplar generalization, label permutation or a low-level feature model.
