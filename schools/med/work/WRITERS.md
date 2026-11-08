@@ -1,0 +1,132 @@
+# Writer runs
+
+Template (sonnet, background):
+Write course CODE (TITLE) of the Med School Learning Foundation. Read /home/claude/med/toolkit/BRIEF.md first and follow it exactly; your course data is /home/claude/med/toolkit/courses/CODE.json. Write only /home/claude/med/content/CODE/L01.txt to L12.txt and project.txt. LEVEL_NOTE When all 13 files exist, run python3 /home/claude/med/toolkit/validate.py CODE until it reports 0 errors, then finish with the short report the brief asks for.
+
+Level notes:
+- elementary: This is a course for a young child working with an adult helper: keep every article, example and item short and concrete, with small numbers, everyday words and things a child can see or count.
+- middle/high/college: (none)
+- medical/clinical: Medical accuracy matters most: state only facts, values and doses you are confident are standard in 2025 teaching, prefer mechanisms and calculations you can verify, and write USMLE-style vignettes with plausible distractors.
+
+Started:
+- batch 1 (Nov 3, 19:20 ET): K1 K4 J1 H7 C9 M9 S1 R1
+
+Queue after batch 1 (start in this order): K2 M1 J4 S2 H8 M3 C1 S3 K5 M8 J2 R7 H2 C3 M6 S4 K7 M2 J5 R3 H6 C2 M7 S5 K3 M10 J3 R4 H9 C4 M4 S6 K6 M12 J6 R6 H10 C5 M5 S7 K8 M11 J7 R2 H11 C6 S8 K9 S9 J8 R5 H12 C7 S10 H13 C8 R8 C10 C11 C12 C13 R9
+- K1 done (0 errors)
+- K4 done (0 errors); started K2, M1
+- J1 done (0 errors); started J4
+- H7 done (0 errors); started S2; reviews started: K1 K4
+- K2 done (0 errors); started H8
+- M9 done (0 errors; check MME factors, antidote doses, renal Q formula in review); started M3
+- K1 reviewed (11 fixes); reviews started: K2 H7
+- C9 done (0 errors; review: ATP conventions, glucokinase Km, ADH zero order); K4 reviewed (5 fixes); started C1; review started J1
+- R1 done (0 errors; review: CURB-65, CAP/sepsis regimens, HTN/statin thresholds, DKA, LACE, insulin rules, Na correction, doses); started S3
+- K2 reviewed (5 fixes); review started M9
+- J1 reviewed (10 fixes); review started C9
+- J4 done (0 errors; generic hints on some self items); started K5
+- H7 reviewed (5 fixes + 2 project wording by me)
+- review started R1
+- S1 done (0 errors; review: BP thresholds vs 2025 AHA/ACC HBP guideline, CHA2DS2-VASc vs 2023 AF guideline, statin thresholds, STEMI windows vs 2025 ACS guideline, AAA thresholds, ST-elevation voltage cut-offs); started M8
+- M9 reviewed (6 fixes incl. levothyroxine 0.5 mg marked safe; +2 by me)
+- review started S1
+- M1 done (0 errors; review: coronary dominance %, lung segments, needle decompression site per ATLS 10, obstetric conjugate, NASCET/ABI); started J2
+- C9 reviewed (17 fixes; +glucagon/lipolysis by me)
+- review started M1
+- R1 reviewed (12 fixes; +DKA 2024 criteria by me)
+- review started J4
+- K5 done (0 errors); started R7
+- H8 done (0 errors); started H2
+- S1 reviewed (15 fixes; +antianginal options, AAA women, project QT by me)
+- review started H8
+- M3 done (0 errors; review: Nernst 61.5 mV, heat constants, LA block order, Uhthoff, McArdle, dantrolene); started C3
+- J4 reviewed (17 fixes); reviews started M3 K5
+- C1 done (0 errors); M1 reviewed (4 fixes; +facial UMN wording by me); started M6
+- S2 done (0 errors; review: GINA 2024/NAEPP steps, GOLD ABE, CAP regimens, PH definition, decompression site, compensation formulas); started S4
+- J2 done (0 errors); started K7
+- H8 reviewed (5 fixes); review started S2
+- K5 reviewed (10 fixes); reviews started C1 J2
+- M8 done (0 errors; review: epinephrine dose, Na correction, wound strength %, CDC lead 3.5); started M2
+- S3 done (0 errors; review: CKD BP target, bicarbonate thresholds, hypertonic saline boluses, K infusion limit, loop equivalence, Na correction, albumin AG correction); started J5
+- M3 reviewed (11 fixes); J2 reviewed (4 fixes); reviews started M8 S3
+- K7 done (0 errors; check sleep 9-12 h, wall-push item); H2 done (0 errors; one hard-coded check L12 p2); started R3 H6
+- S2 reviewed (8 fixes; +cancer VTE DOACs, NMB per ROSE by me)
+- review started K7
+- C1 reviewed (6 fixes; +oocyte/four-gamete item fixed by me)
+- review started H2
+- K7 reviewed (7 fixes)
+- R7 done (0 errors; review: post-arrest temperature, epinephrine timing, cold-water immersion, needle decompression, tenecteplase, billing codes); C3 done (0 errors; review: Clausius-Clapeyron/Henry constants, OpenStax titles, D5W osmolarity); started C2 M7
+- M8 reviewed (7 fixes); S3 reviewed (7 fixes); H2 reviewed (3 fixes); reviews started R7 C3
+- J5 done (0 errors); M6 done (0 errors; review: vaccine schedule wording, epinephrine 0.01 mg/kg, IVIG dose); started S5 K3; reviews started J5 M6
+- manual fixes from review notes: M8 Zahn + triad mistake lines, Na correction 2.4 note; S3 hypertonic saline timing; H2 L02 angle sentence, L08 summary (no secants), L12 rhombus statement
+- H6 done (0 errors; review: median-of-halves quartiles, uncorrected chi-square, project dataset); started M10; H6 review queued
+- S4 done (0 errors; review: H. pylori bismuth quadruple, C. difficile fidaxomicin, SBP albumin doses, pancreatitis fluid rate, HIDA EF cutoff); started J3; S4 review queued
+- J5 reviewed (3 fixes; +dog binomial, sample data moved into project step 1 by me); C3 reviewed (4 fixes)
+- M2 done (0 errors; review: neuropore/heartbeat/surfactant timing, ectopic methotrexate criteria, hCG discriminatory zone, intestinal surface factors, lithium-Ebstein); started R4; reviews started S4 H6; M2 review queued
+- R7 reviewed (6 fixes; +2025 AHA 36 h temperature control, CPT vs Medicare 99292, arterial line wording by me); M6 reviewed (4 fixes; +IgE receptor wording, mRNA RSV vaccine by me); review started M2
+- R3 done (0 errors; review: febrile infant AAP 2021, COVID/RSV/HIV-breastfeeding wording, pediatric doses, 4-2-1 vs 100/50/20, bolus convention); started H9; review started R3
+- H6 reviewed (7 fixes; +L05 reading note by me); K3 done (0 errors; no protractor item, reviewer asked to add one); started C4; review started K3
+- S4 reviewed (2 fixes; +colon cancer staging, H. pylori ACG 2024 alternatives by me); M2 reviewed (6 fixes)
+- C2 done (0 errors; Nernst 61.5 mV, ovulation = cycle - 14); J3 done (0 errors); interim build 39 courses (5.4 MB) committed to Mac
+- K3 reviewed (9 fixes incl. protractor item); started M4 S6; reviews started C2 J3
+- M10 done (0 errors; review: USPSTF screening ages); started K6; review started M10
+- R3 reviewed (16 fixes; AAP 2021 febrile infant bands); J3 reviewed (4 fixes); C2 reviewed (7 fixes)
+- R1 DKA potassium thresholds updated by me to note 2024 consensus (hold insulin below 3.5; K replacement below 5.0)
+- S5 done (0 errors; review: DKA K thresholds, GH suppression, cortisol cutoffs, cosyntropin 18, 500/1800 rules, 0.5 U/kg/day, steroid equivalents, CCCR); started M12; review started S5
+- C2 +calcium binding fraction by me
+- H9 done (0 errors; review: half-life items, Bohr radius constants); started J6; review started H9
+- M10 reviewed (6 fixes; +HIV testing algorithm by me)
+- M7 done (0 errors; review: syphilis serology, TST/LTBI, HIV OI prophylaxis, anthrax/Lyme/Q fever, rabies and measles PEP); started R6; review started M7
+- K6 done (0 errors); started H10; review started K6
+- C4 done (0 errors; review: OpenStax section names ch 11-17, 19, 21)
+- S5 reviewed (10 fixes; +HHS 2024 criteria, pheo hereditary fraction by me; R1 HHS too); K6 reviewed (3 fixes; +their/there mistake line by me); started C5; review started C4
+- R4 done (0 errors; review: US MEC 2024, cervical screening, GDM, PPROM, Pearl Index, RMI); started M5; review started R4
+- M7 reviewed (15 fixes; +rheumatic fever vignette timing by me)
+- C4 reviewed (9 fixes; +half-life activity wording by me)
+- started S7 K8 (10 writers while reviews are few)
+- J6 done (0 errors; cabbage pH table approximate); started M11; review started J6
+- H10 done (0 errors; review: Shakespeare quotations paraphrased?); started J7; review started H10
+- M4 done (0 errors; review: hemin, lead thresholds, Marfan root, ADA and metabolic syndrome cutoffs); started R2; review started M4
+- R4 reviewed (6 fixes; +amenorrhea timing, MEC VTE/CV risk categories by me); J6 reviewed (7 fixes; +MgO masses by me)
+- S6 done (0 errors; review: HPV schedule, screening ages, preeclampsia timing, WHO 2021 semen limits, failure rates); started H11; review started S6
+- H10 reviewed (10 fixes incl. exact Macbeth wording; +rebuttal evidence claim softened by me)
+- M12 done (0 errors; review: liver span, bowel sounds, BP categories, shock index, qSOFA, rule of nines, node size); started C6; review started M12
+- K8 done (0 errors; baby ~300 bones); started S8; review started K8
+- M4 reviewed (14 fixes; +lead/iron mistake line, GIP vs GLP-1 by me); C5 done (0 errors; review: menthyl E2, MS fragments, pKa approximations); started K9; review started C5
+- S6 reviewed (13 fixes; +metronidazole-alcohol CDC 2021, late-preterm steroids wording by me); K8 reviewed (9 fixes; +Sun apparent motion, lukewarm water by me); M12 reviewed (5 fixes)
+- R6 done (0 errors; review: adult vaccines, PREVENT vs PCE, Beers 2023, ESR rule, USPSTF falls 2024); started S9; review started R6
+- started J8 R5 (12 writers while reviews are few)
+- interim build 58 courses (7.4 MB) committed to Mac; J7 done (0 errors; review: crust/Moho, CO2 ppm, warming figure, S-P formula); started H12; review started J7
+- M11 done (0 errors; project cases moved into steps 1-3 by me; review: Medicaid sterilization, Dobbs/EMTALA neutrality, state-varying rules); M5 done (0 errors; review: BRCA risks, Robertsonian, amnio loss, HTT/FMR1 cutoffs, CYP2D6 AS, ACMG SF list); reviews started M11 M5
+- R6 reviewed (15 fixes); C5 reviewed (4 fixes; +primary alcohol/HBr by me); J7 reviewed (4 fixes)
+- K9 done (0 errors; review: Emancipation Proclamation wording, Trail of Tears, Haudenosaunee/Lakota); H11 done (0 errors; generic hints on self items)
+- found 2026 ACC/AHA multisociety dyslipidemia guideline (Mar 2026: PREVENT-ASCVD, LDL goals <100/<70/<55, Lp(a) once) -> cross-course lipid update agent
+- S7 done (0 errors; review: screening ages, transfusion thresholds, myeloma criteria, AML 20% blasts, dosing calcs); C6 done (0 errors; review: pKa values, NSAID/CYP2C9); M11 reviewed (14 fixes)
+- Nov 3 ~23:00 ET: 5-hour usage limit hit; 14 agents stopped (writers C7 H12 S9 J8 R5 S10 R2 C8 H13 S8; reviews M5 H11 K9; lipid update)
+- Nov 4 17:47 ET: all 14 resumed with SendMessage; reviews S7 C6 queued
+- R2 done (0 errors; review: Rutherford, Parkland clock, periop testing, ASGE, SGLT2/GLP-1 holds); M5 reviewed (14 fixes; +Lynch BRAF endometrial note by me); M11 +apnea test 2023 criteria by me
+- J8 done (0 errors; review: dates and figures, exact quotations); K9 reviewed (9 fixes); started R8; reviews started S7 C6 R2 J8
+- S8 done (0 errors; review: hydroxychloroquine 5 mg/kg/day, Parkland, melanoma margins/SLNB, T-scores, steroid potency); started C10; S8 review queued
+- lipid 2026 update done (19 edits in M4 R1 R6 S1 S5; items name the guideline they use); H11 reviewed (18 fixes); review started S8; started C11
+- added material: field (parser, validator error for text after tutor lines, app Materials section, tutor context, brief); converted H7 J8 R3 R6 S9 H12 projects
+- R5 done; H12 done; S7 reviewed (8); R2 reviewed (9; +SGLT2 rubric, minor stroke wording by me); C6 reviewed (6); S8 reviewed (9)
+- reviews started S9 H12 R5; started C12 C13 R9 (all 74 courses now started)
+- S10 C7 H13 done; build 70 courses (9.0 MB) with Materials section tested
+- H12 reviewed (5 fixes; +courts of appeals detail by me); reviews started S10 C7 H13
+- C8 done (0 errors; eye model, doses, membrane kappa); review started C8
+- S9 reviewed (13 fixes; +nimodipine 21 days, SAH 6-hour CT rule in project answer by me)
+- R5 reviewed (6); H13 reviewed (8); C7 reviewed (6)
+- andexanet alfa withdrawn from U.S. market Dec 22, 2025 (AABB/FDA): updated factor Xa reversal to 4F-PCC in R5 R7 M9 S9 S7 S1 by me
+- S10 reviewed (9; +akathisia treatment by me)
+- C10 done (0 errors); C8 reviewed (3); review started C10
+- C11 done (0 errors); review started C11
+- C11 reviewed (2)
+- C10 reviewed (8; +meiosis item uses spermatocyte by me); C12 done (0 errors; AMCAS 5,300 chars); review started C12
+- R8 done (0 errors; blocks in steps -> reviewer to move into materials); review started R8
+- C13 done (0 errors; 12 practice questions in materials); review started C13
+- C12 reviewed (4)
+- R9 done (0 errors; all 74 courses written); review started R9
+- QA scan: fixed positional hint in C11/L12 and J5/L10 wording
+- C13 reviewed (15)
+- R8 reviewed (13; +DKA glucose 2024 by me)
+- R9 reviewed (9; +milestones CDC 2022 note by me). ALL 74 COURSES WRITTEN AND REVIEWED
+- FINAL build 74 courses (9.8 MB); offline + route tests pass
