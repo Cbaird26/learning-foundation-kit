@@ -1,0 +1,192 @@
+@lesson
+title: Floating point (IEEE 754)
+summary: Decode and encode IEEE 754 single- and double-precision numbers by hand, and explain why floating-point arithmetic is approximate.
+objective: Extract the sign, exponent and fraction fields of a binary32 or binary64 number and compute the value it represents.
+objective: Identify the special values (zeros, subnormals, infinities and NaN) from the exponent field.
+objective: Explain rounding, spacing of representable numbers and why results such as 0.1 + 0.2 differ from the exact sum.
+reading: Dive into Systems, Chapter 4 "Binary and Data Representation" (the section on real numbers and floating point).
+
+@article
+Integers cannot express 0.15625 or $6.02\times10^{23}$. **Floating point** is scientific notation in binary: a number is stored as a sign, a scaled significand and an exponent. The IEEE 754 standard fixes the formats and the arithmetic so that every conforming machine, including every RISC-V processor with the F and D extensions, gives the same answers.
+
+### The binary32 and binary64 formats
+
+A **binary32** ("single precision", `float` in C) number is 32 bits:
+
+| field | bits | role |
+|---|---|---|
+| sign $s$ | 1 | 0 positive, 1 negative |
+| exponent $e$ | 8 | stored with a **bias** of 127 |
+| fraction $f$ | 23 | digits after the binary point |
+
+**binary64** ("double precision", Python's `float`) uses 1, 11 and 52 bits with bias 1023. In both, the encoded exponent $e$ (an unsigned integer) selects the case:
+
+- **Normal numbers** ($0 < e < 2^{k}-1$, so $1\le e\le 254$ in binary32): $(-1)^s \times 1.f \times 2^{\,e-127}$. The leading 1 is **implicit** and not stored, which gives 24 bits of precision for 23 stored bits.
+- **Subnormal numbers** ($e=0$, $f\ne0$): $(-1)^s \times 0.f \times 2^{-126}$. They fill the gap between zero and the smallest normal number $2^{-126}$.
+- **Zero** ($e=0$, $f=0$): there is $+0$ and $-0$; they compare equal.
+- **Infinity** ($e=255$, $f=0$) and **NaN**, "not a number" ($e=255$, $f\ne0$), produced by overflow, $1/0$ or $0/0$. A NaN is not equal to anything, itself included.
+
+The largest finite binary32 value is $(2-2^{-23})\times2^{127}\approx3.4\times10^{38}$.
+
+### Converting a number
+
+To encode $-6.25$: write $6.25$ as $110.01_2 = 1.1001_2\times 2^{2}$. The sign is 1, the exponent is $2+127=129=10000001_2$, and the fraction is `1001` padded with zeros to 23 bits. The pattern is `1 10000001 10010000000000000000000`, which is `0xC0C80000`.
+
+### Rounding and spacing
+
+Only finitely many reals are representable, so each result is **rounded**. The default is **round to nearest, ties to even**. Representable numbers are *not* evenly spaced: between $2^k$ and $2^{k+1}$ there are $2^{23}$ binary32 values, so the gap is $2^{k-23}$ and doubles each time the exponent grows by one. The relative gap is nearly constant, which is the point of floating point. The **machine epsilon** is the gap just above 1.0: $2^{-23}$ for binary32 and $2^{-52}$ for binary64.
+
+A decimal fraction such as $0.1$ is a repeating binary fraction ($0.0001100110011\ldots_2$), so it cannot be stored exactly. In Python, `0.1 + 0.2` is `0.30000000000000004`, not `0.3`. A fraction is exactly representable only if its denominator, in lowest terms, is a power of two ($0.375 = 3/8$ is; $0.1 = 1/10$ is not).
+
+### Consequences for programmers
+
+- Never test floats for equality after arithmetic; compare with a tolerance such as `math.isclose`.
+- Floating-point addition is **not associative**: $(a+b)+c$ and $a+(b+c)$ can differ, because each addition rounds. Adding a tiny number to a huge one can lose it completely.
+- Integers are exact up to $2^{53}$ in binary64; beyond that, consecutive integers are not all representable.
+
+Python's `struct` module exposes the bit patterns: `struct.pack(">f", x)` gives the four bytes of the binary32 encoding of `x`.
+
+@example
+title: Decoding a binary32 pattern
+problem: What value does the binary32 pattern `0x3E200000` represent?
+step: Write it in binary: `0011 1110 0010 0000 0000 0000 0000 0000`.
+step: Split into fields: sign `0`, exponent `01111100`, fraction `01000000000000000000000`.
+step: The exponent is $124$, so the unbiased exponent is $124-127=-3$. The fraction `01` means $0.25$, so the significand is $1.25$.
+step: Value $= 1.25\times 2^{-3} = 0.15625$.
+answer: $0.15625$
+
+@example
+title: Why the spacing grows
+problem: How far apart are consecutive binary32 numbers near $1024 = 2^{10}$?
+step: Numbers in $[2^{10}, 2^{11})$ share the exponent $10$, so they differ only in the 23 fraction bits.
+step: The last fraction bit has weight $2^{-23}$ in the significand, so the gap is $2^{-23}\times 2^{10} = 2^{-13}$.
+step: Numerically $2^{-13} = 0.0001220703125$. Near $2^{24}$ the gap is $2^{1} = 2$, so binary32 cannot represent every integer above $2^{24}$.
+answer: $2^{-13}$
+
+@mistakes
+- Forgetting the implicit leading 1 of normal numbers, which makes every significand wrong by a factor.
+- Forgetting the bias: the stored exponent of $1.0$ is $127$, not $0$.
+- Treating 0.1 as exact and comparing the results of arithmetic with `==`.
+- Treating subnormals like normals: when $e=0$ the leading digit is 0 and the exponent is $-126$ (not $-127$).
+
+@practice num
+prompt: What is the stored (biased) exponent field of the binary32 encoding of $8.0$, as an unsigned integer?
+answer: 130
+check: 3 + 127
+hint: Write $8.0$ as $1.0\times 2^{k}$ and find $k$.
+solution: $8.0 = 1.0\times2^{3}$, so the stored exponent is $3+127=130$ (`10000010`). The fraction is all zeros.
+
+@practice code
+prompt: Write `fields32(x)` that returns the tuple `(sign, exponent, fraction)` of the binary32 encoding of the Python float `x` (rounded to binary32), as integers: `sign` is 0 or 1, `exponent` is the 8-bit stored field and `fraction` is the 23-bit field. Hint: `struct.pack(">f", x)` gives 4 bytes, and `struct.unpack(">I", data)[0]` reads them as an unsigned integer. Example: `fields32(1.0)` is `(0, 127, 0)`.
+starter:
+```python
+import struct
+
+
+def fields32(x):
+    pass
+```
+tests:
+```python
+assert fields32(1.0) == (0, 127, 0)
+assert fields32(-2.0) == (1, 128, 0)
+assert fields32(0.5) == (0, 126, 0)
+assert fields32(0.15625) == (0, 124, 2097152)
+assert fields32(-6.25) == (1, 129, 4718592)
+assert fields32(-0.0) == (1, 0, 0)
+```
+model:
+```python
+import struct
+
+
+def fields32(x):
+    bits = struct.unpack(">I", struct.pack(">f", x))[0]
+    return (bits >> 31, (bits >> 23) & 0xFF, bits & 0x7FFFFF)
+```
+hint: Convert the float to a 32-bit unsigned integer first, then use shifts and masks.
+hint: The sign is bit 31, the exponent is bits 30 to 23 (shift right 23, mask with `0xFF`), and the fraction is the low 23 bits (mask `0x7FFFFF`).
+solution: Pack to four bytes, unpack as one 32-bit integer, then slice it: `bits >> 31` for the sign, `(bits >> 23) & 0xFF` for the exponent and `bits & 0x7FFFFF` for the fraction.
+
+@practice code
+prompt: Write `decode32(sign, exponent, fraction)` that returns the value (a Python float) of the binary32 number with those fields. Handle normal numbers (`1 <= exponent <= 254`) and zero and subnormal numbers (`exponent == 0`); you do not need to handle `exponent == 255`. Compute the value yourself from the formula; do not use `struct`. Example: `decode32(0, 127, 0)` is `1.0`.
+starter:
+```python
+def decode32(sign, exponent, fraction):
+    pass
+```
+tests:
+```python
+assert decode32(0, 127, 0) == 1.0
+assert decode32(1, 128, 0x400000) == -3.0
+assert decode32(0, 124, 2097152) == 0.15625
+assert decode32(0, 1, 0) == 2.0 ** -126
+assert decode32(0, 0, 1) == 2.0 ** -149
+assert decode32(0, 0, 0) == 0.0
+```
+model:
+```python
+def decode32(sign, exponent, fraction):
+    if exponent == 0:
+        significand = fraction / 2 ** 23
+        power = -126
+    else:
+        significand = 1 + fraction / 2 ** 23
+        power = exponent - 127
+    return (-1) ** sign * significand * 2.0 ** power
+```
+hint: The fraction field represents `fraction / 2**23`. Normal numbers add an implicit 1 to it.
+hint: For `exponent == 0` the leading digit is 0 and the power of two is $-126$; otherwise the power is `exponent - 127`.
+solution: Compute the significand as `fraction / 2**23`, adding 1 for normal numbers. Use exponent $-126$ for subnormals and zero, and `exponent - 127` otherwise. Multiply by $(-1)^{\text{sign}}$. For `decode32(0, 0, 1)` this gives $2^{-23}\times2^{-126}=2^{-149}$, the smallest positive binary32 number.
+
+@practice text
+prompt: What does this Python program print? Type the output exactly.
+
+```python
+print(0.1 + 0.2)
+```
+answer: 0.30000000000000004
+check: run("print(0.1 + 0.2)\n")
+hint: Neither 0.1 nor 0.2 is exactly representable in binary64, and the sum is rounded again.
+solution: The binary64 values nearest 0.1 and 0.2 add to a number that rounds to a double slightly above the double nearest 0.3, which Python prints with its shortest round-trip representation: `0.30000000000000004`.
+
+@practice mc
+prompt: Which of these decimal numbers is represented exactly in binary floating point (both binary32 and binary64)?
+choice: $0.1$
+choice: $0.7$
+choice*: $0.375$
+choice: $0.01$
+hint: Write the number as a fraction in lowest terms. What must the denominator be?
+solution: $0.375 = 3/8$ has a power-of-two denominator, so it is a finite binary fraction ($0.011_2$). The others have denominators $10$, $10$ and $100$ in lowest terms, which contain a factor of 5, so their binary expansions repeat forever.
+
+@quiz code
+prompt: Write `epsilon()` that takes no arguments and returns the machine epsilon of Python floats: the smallest power of two `e` (found by repeated halving, starting at `1.0`) such that `1.0 + e != 1.0`. Use a loop; do not hard-code `2.0 ** -52`.
+starter:
+```python
+def epsilon():
+    pass
+```
+tests:
+```python
+assert epsilon() == 2.0 ** -52
+assert 1.0 + epsilon() != 1.0
+assert 1.0 + epsilon() / 2 == 1.0
+```
+model:
+```python
+def epsilon():
+    e = 1.0
+    while 1.0 + e / 2 != 1.0:
+        e /= 2
+    return e
+```
+hint: Keep halving `e` while adding half of it to 1.0 still changes the sum.
+hint: Loop `while 1.0 + e / 2 != 1.0: e /= 2` and return `e`.
+solution: Each halving keeps `e` a power of two. The loop stops when `e / 2` is too small to change 1.0 after rounding (a tie rounds to even, back to 1.0), so the last `e` is $2^{-52}$.
+
+@quiz num
+prompt: How many different 32-bit patterns encode a NaN in binary32 (any sign, quiet or signaling)?
+answer: 16777214
+check: 2 * (2**23 - 1)
+hint: A NaN has all exponent bits 1 and a non-zero fraction. The sign bit is free.
+solution: The exponent field is fixed at 255. The fraction has $2^{23}-1$ non-zero values and the sign has 2 values, giving $2(2^{23}-1)=16{,}777{,}214$ patterns.

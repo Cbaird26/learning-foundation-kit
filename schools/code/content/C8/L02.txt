@@ -1,0 +1,244 @@
+@lesson
+title: The process API: fork, exec and wait
+summary: Use fork, exec and wait to create and control processes, explain how a shell runs commands and redirects output, and trace the process tree of a fork program.
+objective: Explain what fork returns in the parent and in the child and why the two processes diverge.
+objective: Describe how exec replaces a process image and how wait collects an exit status.
+objective: Draw and count the processes created by a program that calls fork repeatedly.
+reading: Operating Systems: Three Easy Pieces, the chapter "Interlude: Process API" (fork, wait, exec, and why).
+
+@article
+On Unix-like systems every process except the first is created by another process. The **process API** is built from three system calls that look odd at first and turn out to compose beautifully.
+
+### fork
+
+`fork()` creates a new process that is an almost exact copy of the caller: the same code, the same memory contents, the same open files and the same program counter. The original is the **parent**; the copy is the **child**. The child gets its own process ID and its own copy of the address space (implemented lazily with copy-on-write, so the cost is small).
+
+The trick is the return value. `fork` returns **twice**: in the parent it returns the child's PID, in the child it returns `0`, and on failure it returns `-1` (in the parent; no child exists).
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {
+    pid_t rc = fork();
+    if (rc < 0) {
+        perror("fork");
+        exit(1);
+    } else if (rc == 0) {
+        printf("child\n");
+    } else {
+        waitpid(rc, NULL, 0);   /* wait for that child */
+        printf("parent of %d\n", (int) rc);
+    }
+    return 0;
+}
+```
+
+This always prints `child` first, because the parent waits. Without `wait`, the order depends on the **scheduler** and either order is possible.
+
+### wait and exit status
+
+`wait` (or `waitpid`) blocks the parent until a child terminates, then returns that child's PID and fills in a **status** word. A child that has exited but not yet been waited for is a **zombie**: its resources are freed but its process-table entry and exit status remain until the parent collects them. A child whose parent exits first is an **orphan** and is adopted by the init process, which waits for it. On Linux the status word has the exit code in bits 8 to 15 and, if the child was killed by a signal, the signal number in the low 7 bits.
+
+### exec
+
+`fork` alone only gives more copies of the same program. The `exec` family (such as `execvp`) **replaces** the calling process's code, data, heap and stack with a new program and starts it from `main`. It does not create a process and does not return on success, because the old program no longer exists. The PID and open files stay the same.
+
+```c
+char *args[] = {"wc", "notes.txt", NULL};
+execvp(args[0], args);
+perror("execvp");   /* reached only if exec failed */
+```
+
+### Why separate fork and exec?
+
+Between the two calls, the child can change its own environment before the new program starts. This is how a shell implements **redirection**. For `wc notes.txt > out.txt`, the shell forks; the child closes file descriptor 1 (standard output), opens `out.txt`, which receives the lowest free descriptor, 1, and then execs `wc`. The program writes to descriptor 1 as always, unaware that it points to a file. Pipes (`a | b`) work the same way: the shell creates a pipe, forks twice, and connects one child's output descriptor and the other's input descriptor to its two ends.
+
+### Process trees
+
+Each `fork` doubles the number of processes that continue running the remaining code. A program that executes `fork();` three times in a row runs the later statements in $2^3 = 8$ processes. If instead the child exits immediately (as in `if (fork() == 0) exit(0);`), the child only adds one process and does not double what follows. Counting these cases by hand, and drawing the tree with parent to child edges, is the core skill of this week.
+
+One practical hazard: standard output is **buffered** by the C library. If a program prints text without a newline (or its output is redirected to a file) and then forks, the unflushed buffer is copied into the child and the text is printed twice. Flush with `fflush(stdout)` before forking.
+
+@example
+title: Counting processes
+problem: How many processes (including the original) exist in total after this program runs, and how many lines does it print?
+
+```c
+int main(void) {
+    fork();
+    fork();
+    printf("hi\n");
+    return 0;
+}
+```
+step: Start with one process. The first `fork` creates a second, so two processes continue.
+step: Each of those two executes the second `fork`, so each creates one more: four processes in total.
+step: Each of the four runs `printf("hi\n")` once. The text ends in a newline, and when output goes to a terminal that flushes the buffer; for piped output each process flushes at exit. Either way each process prints once.
+step: Tree: process A forks B, then A forks C; B forks D. Four processes, four lines.
+answer: 4 processes, 4 lines
+
+@example
+title: A shell redirection
+problem: Describe the system calls the shell makes to run `sort data.txt > sorted.txt`.
+step: The shell calls `fork`. Now there are two shells, and in the child `fork` returned 0.
+step: In the child only, the shell closes descriptor 1, then opens `sorted.txt` for writing. Open returns the lowest unused descriptor, which is 1.
+step: The child calls `execvp("sort", ...)`. The `sort` program replaces the shell code in this process but keeps the open descriptors.
+step: `sort` writes its result to descriptor 1, which is the file. Meanwhile the parent shell calls `waitpid` on the child and prints the next prompt when it returns.
+
+@mistakes
+- Thinking `fork` returns once: it returns twice, 0 in the child and the child's PID in the parent.
+- Expecting a fixed print order between parent and child when the parent does not call `wait`; the scheduler decides.
+- Expecting code after a successful `exec` to run: `exec` replaces the program and only returns on failure.
+- Forgetting buffered output is duplicated by `fork` when it has not been flushed.
+
+@practice mc
+prompt: In a C program, `pid_t rc = fork();` succeeds. Which statement is true?
+choice*: `rc` is 0 in the child and the child's process ID in the parent
+choice: `rc` is the parent's process ID in the child and 0 in the parent
+choice: `rc` is 0 in both processes, so they must call `getpid` to tell apart
+choice: Only the parent continues; the child starts at the beginning of `main`
+hint: The child needs a cheap way to know it is the child; the parent needs a way to name it.
+solution: The parent receives the new child's PID, which it needs for `waitpid`, and the child receives 0. Both continue from the point after the `fork` call, not from the start of `main`.
+
+@practice num
+prompt: How many processes exist in total (including the original) after this sequence of statements has run, where every process executes every statement? Give a number.
+
+```c
+fork();
+fork();
+fork();
+fork();
+```
+answer: 16
+check: 2 ** 4
+hint: Each `fork` doubles the number of processes.
+solution: Starting from 1 process, each of four forks doubles the count: 2, 4, 8, 16.
+
+@practice code
+prompt: Write `count_procs(ops)` that returns how many processes ever exist when a single process executes the list `ops`. Each element is a string. `"F"` means `fork();` (parent and child both continue with the remaining ops). `"F!"` means `if (fork() == 0) exit(0);` (the child terminates at once; the parent continues). Count every process that is ever created, including ones that have already exited and the original.
+starter:
+```python
+def count_procs(ops):
+    pass
+```
+tests:
+```python
+assert count_procs([]) == 1
+assert count_procs(["F"]) == 2
+assert count_procs(["F", "F", "F"]) == 8
+assert count_procs(["F!", "F!", "F!"]) == 4
+assert count_procs(["F", "F!"]) == 4
+assert count_procs(["F!", "F"]) == 3
+```
+model:
+```python
+def count_procs(ops):
+    if not ops:
+        return 1
+    rest = count_procs(ops[1:])
+    if ops[0] == "F":
+        return 2 * rest
+    return 1 + rest
+```
+hint: Let `count_procs(rest)` be the number of processes one process creates from the remaining ops, counting itself.
+hint: After `"F"` both parent and child each produce `count_procs(rest)` processes. After `"F!"` the child adds exactly 1 and the parent produces `count_procs(rest)`.
+solution: Recurse on the remaining operations. A real fork doubles the result for the rest of the program: `2 * rest`. A fork whose child exits immediately adds only the child: `1 + rest`. The empty program is one process.
+
+@practice text
+prompt: This Python program runs on Linux. Type exactly what it prints.
+
+```python
+import os
+import sys
+
+pid = os.fork()
+if pid == 0:
+    print("child")
+    sys.stdout.flush()
+    os._exit(0)
+os.waitpid(pid, 0)
+print("parent")
+```
+answer:
+```
+child
+parent
+```
+nocheck: the checker cannot capture output written by a forked child
+hint: What does the parent do before it prints?
+solution: `waitpid` blocks the parent until the child has exited, so the child's line always appears first. The child flushes its buffer before `os._exit`, which would otherwise discard it.
+
+@practice code
+prompt: A process with PID 1 runs `fork();` exactly `n` times in a row. Write `fork_edges(n)` that returns the list of `(parent_pid, child_pid)` edges of the resulting process tree. Number new processes 2, 3, 4, ... in the order they are created, using this deterministic rule: process 1 runs all its `n` forks first, then the processes it created are run in creation order (first in, first out), each running the forks it still has left, and so on. A process created by its parent's k-th fork (counting from 1) has `n - k` forks left to run.
+starter:
+```python
+def fork_edges(n):
+    pass
+```
+tests:
+```python
+assert fork_edges(0) == []
+assert fork_edges(1) == [(1, 2)]
+assert fork_edges(2) == [(1, 2), (1, 3), (2, 4)]
+assert fork_edges(3) == [(1, 2), (1, 3), (1, 4), (2, 5), (2, 6), (3, 7), (5, 8)]
+assert len(fork_edges(5)) == 31
+```
+model:
+```python
+from collections import deque
+
+
+def fork_edges(n):
+    edges = []
+    next_pid = 2
+    queue = deque([(1, n)])
+    while queue:
+        pid, left = queue.popleft()
+        for k in range(left):
+            child = next_pid
+            next_pid += 1
+            edges.append((pid, child))
+            queue.append((child, left - k - 1))
+    return edges
+```
+hint: Keep a queue of `(pid, forks_left)` pairs, starting with `(1, n)`.
+hint: For the k-th fork (k from 0) of a process, the child has `left - k - 1` forks left and gets the next unused PID.
+solution: Process queue entries in FIFO order. Each entry creates `left` children; the child created by the k-th fork (0-based) still has `left - k - 1` forks to run, and is appended to the queue. The tree has $2^n$ processes, hence $2^n - 1$ edges (31 for n = 5).
+
+@quiz code
+prompt: On Linux, the status word returned by `wait` encodes how a child ended. If the low 7 bits are 0, the child exited normally and its exit code is in bits 8 to 15. Otherwise the child was killed by the signal whose number is in the low 7 bits. Write `decode_status(status)` returning the tuple `("exited", code)` or `("signaled", signum)`.
+starter:
+```python
+def decode_status(status):
+    pass
+```
+tests:
+```python
+assert decode_status(0) == ("exited", 0)
+assert decode_status(3 * 256) == ("exited", 3)
+assert decode_status(255 * 256) == ("exited", 255)
+assert decode_status(9) == ("signaled", 9)
+assert decode_status(139) == ("signaled", 11)
+```
+model:
+```python
+def decode_status(status):
+    signum = status & 0x7F
+    if signum == 0:
+        return ("exited", (status >> 8) & 0xFF)
+    return ("signaled", signum)
+```
+hint: Mask the low 7 bits with `0x7F`; shift right by 8 for the exit code.
+solution: `status & 0x7F` is the signal number (0 for a normal exit). A normal exit's code is `(status >> 8) & 0xFF`. The value 139 is signal 11 with the core-dump flag (bit 7, value 128) also set, which the 7-bit mask ignores.
+
+@quiz mc
+prompt: A child process calls `exit` but its parent never calls `wait`, and the parent keeps running. What is the child called, and what remains of it?
+choice*: A zombie: its resources are freed but its process-table entry and exit status remain until the parent waits
+choice: An orphan: it keeps running until the parent exits
+choice: A daemon: it is adopted by the init process and continues to run
+choice: Nothing remains: the kernel discards the exit status immediately
+hint: The exit status must be kept for the parent to read later.
+solution: The kernel keeps the exit status and a table entry so that the parent can still collect it with `wait`. That terminated-but-uncollected state is a zombie. An orphan is a running child whose parent has exited.

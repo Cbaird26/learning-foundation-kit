@@ -1,0 +1,242 @@
+@lesson
+title: Authentication and password storage
+summary: Explain authentication factors and current password guidance, and design password storage with salts and a slow key-derivation function.
+objective: Distinguish authentication factors and explain why multi-factor authentication helps and which forms resist phishing.
+objective: Apply NIST SP 800-63B Revision 4 password rules when validating a new password.
+objective: Explain why passwords are stored salted and slowly hashed, and implement a salted iterated hash and a one-time-code truncation step.
+reading: UC Berkeley CS 161 textbook, the chapters on authentication and passwords (look up "password hashing", "salt" and "multi-factor authentication").
+@article
+**Authentication** establishes who is making a request; **authorization** (next lesson) decides what they may do. Authentication uses **factors**: something you **know** (password), something you **have** (a phone, a hardware key) and something you **are** (a fingerprint). **Multi-factor authentication (MFA)** combines factors from different categories, so stealing a password alone is not enough. Failures here are OWASP A07, **Authentication Failures**.
+
+### Current password guidance
+
+NIST SP 800-63B Revision 4 (final, August 2025) reflects what research found about real users:
+
+- Require at least **15 characters** when a password is the only factor, and at least **8** when it is one part of multi-factor authentication. Allow at least **64** characters, and accept any characters, including spaces and Unicode.
+- Impose **no composition rules** (such as "one symbol and one digit") and **no forced periodic changes**. Require a change when there is evidence of compromise.
+- **Check new passwords against a blocklist** of common and previously compromised passwords.
+- Do not use password hints or knowledge-based security questions.
+- Allow pasting, so password managers work.
+- Limit the rate of failed attempts.
+
+Length contributes most to the number of possibilities. A passphrase of 4 words picked uniformly from a 7776-word list has $4 \log_2 7776 \approx 51.7$ bits of entropy, if the words are picked at random by a machine or dice.
+
+### Storing passwords
+
+Assume the password database will one day be stolen. The goal is that a stolen database does not hand over the passwords.
+
+1. **Never store plaintext or reversible encryption.**
+2. **Hash, and hash slowly.** A fast hash such as plain SHA-256 can be computed billions of times per second on commodity hardware, so low-entropy passwords fall quickly. Use a **purpose-built password hashing function** with a tunable cost: **Argon2id** (the usual first choice), **scrypt**, **bcrypt**, or **PBKDF2** when compliance requires it. Tune the work factor so one verification takes tens to hundreds of milliseconds on your servers, and raise it over time.
+3. **Salt every password** with a unique, random value (at least 16 bytes) stored beside the hash. The salt is not secret. It guarantees that two users with the same password have different hashes and defeats precomputed tables, so an attacker must attack each account separately.
+4. Optionally add a **pepper**: a secret key kept outside the database (for example in a hardware module) and mixed into the hash.
+5. Store the algorithm, parameters and salt with the hash (for example `$argon2id$...`) so you can upgrade parameters later: verify with the stored parameters, and rehash on successful login.
+
+Here is a **teaching stand-in** for a slow hash, which iterates SHA-256 with a salt. Real systems should use a vetted Argon2id, scrypt or bcrypt library, not this:
+
+```python
+import hashlib
+
+def toy_hash(password: str, salt: bytes, iterations: int) -> str:
+    pw = password.encode()
+    h = hashlib.sha256(salt + pw).digest()
+    for _ in range(iterations - 1):
+        h = hashlib.sha256(h + salt + pw).digest()
+    return h.hex()
+```
+
+On login, recompute with the stored salt and cost and compare in constant time. Return the same generic error for "no such user" and "wrong password", and avoid timing differences that reveal which accounts exist.
+
+### One-time codes and phishing-resistant factors
+
+**TOTP** (RFC 6238) computes a code from a shared secret and the current time step, using HOTP (RFC 4226): take an HMAC of the counter, then apply **dynamic truncation**: the low 4 bits of the last byte give an offset, four bytes there form an integer (top bit cleared), and the code is that integer modulo $10^{\text{digits}}$. Codes can be typed into a fake site, so they are not phishing-resistant. **WebAuthn** and **passkeys** use public-key signatures bound to the real site's origin, so a look-alike site gets nothing usable. Add rate limiting and alerting against **credential stuffing**, in which passwords leaked elsewhere are tried against your site.
+
+@example
+title: Validating a password under NIST rules
+problem: A site uses passwords as the only factor. Which of these are acceptable new passwords: `Tr0ub4dor&3` (11 characters), `correct horse battery staple` (28 characters), `aaaaaaaaaaaaaaaaaaaa` (20 characters, not in the blocklist)?
+step: Length rule: with a password alone the minimum is 15 characters. `Tr0ub4dor&3` has 11, so it is rejected despite mixing symbols; composition does not replace length.
+step: `correct horse battery staple` is 28 characters, uses spaces (allowed) and is not on a blocklist, so it is accepted.
+step: The third has 20 characters and is not blocklisted, so these rules alone accept it. A practical verifier would also reject repeated characters through the blocklist or a strength estimator.
+answer: The 28-character passphrase is accepted; the 11-character one is rejected; the third passes the stated rules.
+@example
+title: What a salt buys
+problem: Two users choose the same password. Compare what an attacker sees in the stolen database without and with per-user salts.
+step: Without salts, both rows contain the same hash. The attacker sees the duplicate and one guess cracks both; a precomputed table of common passwords' hashes works for the whole database.
+step: With a 16-byte random salt per user, the same password produces different hashes. A guess must be recomputed with each user's salt.
+step: The salt does not slow a single guess; the slow function does that. Salts remove sharing and precomputation, the slow hash raises the price of each guess, and a long password makes the search space huge.
+answer: Salts make identical passwords hash differently and block precomputed tables.
+@mistakes
+- Storing passwords with a fast hash such as plain SHA-256 or MD5, even if salted.
+- Using one global salt for all users instead of a unique random salt per password.
+- Enforcing composition rules and frequent expiry, which push users toward predictable patterns.
+- Telling the user whether the username or the password was wrong, and so leaking which accounts exist.
+@practice mc
+prompt: A database stores unsalted SHA-256 hashes of passwords. The database is stolen. What is the most important problem salted slow hashing would reduce?
+choice*: Identical passwords share a hash and common passwords can be matched at very high speed, including with precomputed tables.
+choice: The hashes are reversible by anyone who reads the table.
+choice: SHA-256 is vulnerable to a collision attack that reveals passwords.
+choice: The hashes can be forged without the key.
+hint: Think about how cheaply an attacker can test a guess against a fast unsalted hash.
+solution: A fast, unsalted hash lets an attacker test guesses at enormous speed and reuse work across all users. A unique salt prevents sharing and precomputation, and a slow function raises the cost of each guess. Hashes are not reversible; the issue is guessing.
+@practice code
+prompt: Write `password_ok(password, blocklist, mfa=False)` following NIST SP 800-63B Revision 4. Return `True` only if all hold: the length (in characters) is at least 15, or at least 8 when `mfa` is true; the length is at most 128; and `password.lower()` is not in the set `blocklist`. There are no composition rules.
+starter:
+```python
+def password_ok(password, blocklist, mfa=False):
+    pass
+```
+tests:
+```python
+assert password_ok("correct horse battery staple", set()) is True
+assert password_ok("Tr0ub4dor&3", set()) is False
+assert password_ok("Tr0ub4dor&3", set(), mfa=True) is True
+assert password_ok("abcdefg", set(), mfa=True) is False
+assert password_ok("longlowercasepassphrase", set()) is True
+assert password_ok("PasswordPassword1", {"passwordpassword1"}) is False
+assert password_ok("a" * 128, set()) is True
+assert password_ok("a" * 129, set()) is False
+```
+model:
+```python
+def password_ok(password, blocklist, mfa=False):
+    minimum = 8 if mfa else 15
+    if not minimum <= len(password) <= 128:
+        return False
+    return password.lower() not in blocklist
+```
+hint: Choose the minimum length from `mfa`, then check the length range and the blocklist.
+hint: Do not add checks for digits or symbols; the guidance forbids composition rules.
+solution: Compute the minimum (8 with MFA, otherwise 15), require the length to lie between it and 128, and reject lowercase matches in the blocklist. Nothing else is checked.
+@practice code
+prompt: Write `hash_password(password, salt, iterations)`. `password` is a string, `salt` is `bytes` and `iterations` is an integer of at least 1. Set `h` to the SHA-256 digest of `salt + password.encode()`. Then repeat `iterations - 1` times: `h = SHA-256 digest of h + salt + password.encode()`. Return `h.hex()`. (This is a teaching stand-in; real systems use Argon2id, scrypt or bcrypt.)
+starter:
+```python
+import hashlib
+
+
+def hash_password(password, salt, iterations):
+    pass
+```
+tests:
+```python
+assert hash_password("hunter2", b"salt", 1) == (
+    "6efb3088c88aa6ff4ec91880bd1a4953fb0713dbc0229960fde3a8f053b76843"
+)
+assert hash_password("hunter2", b"salt", 3) == (
+    "bec8273a1436177fe3fcc8d11fcc19d1d5f73ceeb52c8dd21865d423bd26a9d0"
+)
+assert hash_password("hunter2", b"SALT", 3) == (
+    "fca3ceef4c42c1bc2f5f0209fbb6e00cecfef85d76550de7f1db3cbb4d7b4f56"
+)
+assert len(hash_password("x", b"s", 5)) == 64
+```
+model:
+```python
+import hashlib
+
+
+def hash_password(password, salt, iterations):
+    pw = password.encode()
+    h = hashlib.sha256(salt + pw).digest()
+    for _ in range(iterations - 1):
+        h = hashlib.sha256(h + salt + pw).digest()
+    return h.hex()
+```
+hint: The first hash is of `salt + pw`; then the loop runs `iterations - 1` times.
+hint: Keep `h` as bytes (`.digest()`) inside the loop and convert to hex only when returning.
+solution: One initial hash plus `iterations - 1` further rounds gives exactly `iterations` hashes. Keeping the value as bytes between rounds avoids hashing hex text by mistake.
+@practice code
+prompt: A password record is the string `"<iterations>$<salt_hex>$<digest_hex>"`. Write `check_password(record, attempt)` that splits the record, rebuilds the salt with `bytes.fromhex`, recomputes the hash of `attempt` with the given `hash_password` function (provided in the starter) and returns `True` only if it equals the stored digest. Compare without stopping at the first different character.
+starter:
+```python
+import hashlib
+
+
+def hash_password(password, salt, iterations):
+    pw = password.encode()
+    h = hashlib.sha256(salt + pw).digest()
+    for _ in range(iterations - 1):
+        h = hashlib.sha256(h + salt + pw).digest()
+    return h.hex()
+
+
+def check_password(record, attempt):
+    pass
+```
+tests:
+```python
+digest = hash_password("hunter2", b"salt", 3)
+record = "3$" + b"salt".hex() + "$" + digest
+assert check_password(record, "hunter2") is True
+assert check_password(record, "hunter3") is False
+assert check_password(record, "") is False
+other = "5$" + b"pepper".hex() + "$" + hash_password("pw", b"pepper", 5)
+assert check_password(other, "pw") is True
+assert check_password(other, "PW") is False
+```
+model:
+```python
+import hashlib
+
+
+def hash_password(password, salt, iterations):
+    pw = password.encode()
+    h = hashlib.sha256(salt + pw).digest()
+    for _ in range(iterations - 1):
+        h = hashlib.sha256(h + salt + pw).digest()
+    return h.hex()
+
+
+def check_password(record, attempt):
+    iterations, salt_hex, digest = record.split("$")
+    got = hash_password(attempt, bytes.fromhex(salt_hex), int(iterations))
+    if len(got) != len(digest):
+        return False
+    diff = 0
+    for x, y in zip(got, digest):
+        diff |= ord(x) ^ ord(y)
+    return diff == 0
+```
+hint: `record.split("$")` gives three strings; convert the first to `int` and the second with `bytes.fromhex`.
+hint: Recompute with the stored salt and iteration count, then compare the two hex strings character by character, accumulating differences.
+solution: Parse the stored cost and salt, recompute the digest for the attempt, and compare to the stored digest with a loop that does not exit early.
+@practice num
+prompt: A passphrase is made of 4 words chosen uniformly and independently at random from a list of 7776 words. How many bits of entropy does it have? Give $4\log_2 7776$ to one decimal place.
+answer: 51.7
+check: 4 * log2(7776)
+tol: 0.05
+hint: Each word contributes $\log_2 7776$ bits, and independent choices add.
+solution: $\log_2 7776 \approx 12.925$, and four words give about $51.7$ bits.
+@quiz code
+prompt: Write `hotp_truncate(digest, digits=6)` implementing HOTP dynamic truncation on a 20-byte `bytes` digest. Let `offset` be the low 4 bits of the last byte. Take the 4 bytes starting at `offset` as a big-endian integer, clear its top bit (AND with `0x7fffffff`), and return that integer modulo `10 ** digits`, as an `int`.
+starter:
+```python
+def hotp_truncate(digest, digits=6):
+    pass
+```
+tests:
+```python
+d0 = bytes.fromhex("cc93cf18508d94934c64b65d8ba7667fb7cde4b0")
+d1 = bytes.fromhex("75a48a19d4cbe100644e8ac1397eea747a2d33ab")
+assert hotp_truncate(d0) == 755224
+assert hotp_truncate(d1) == 287082
+assert hotp_truncate(d0, 8) == 84755224
+assert hotp_truncate(d1, 8) == 94287082
+```
+model:
+```python
+def hotp_truncate(digest, digits=6):
+    offset = digest[-1] & 0x0F
+    chunk = int.from_bytes(digest[offset:offset + 4], "big")
+    return (chunk & 0x7FFFFFFF) % 10 ** digits
+```
+hint: `digest[-1] & 0x0F` gives the offset; slice four bytes from there.
+hint: `int.from_bytes(chunk, "big")` converts the four bytes to an integer before masking and taking the remainder.
+solution: Dynamic truncation picks a 4-byte window at a data-dependent offset, clears the sign bit and reduces modulo a power of ten. The tests use the published counter 0 and 1 values for the standard test secret.
+@quiz mc
+prompt: A site uses passwords plus a six-digit code from an authenticator app. A convincing look-alike login page asks for both and relays them to the real site in real time. Which factor type would resist this attack?
+choice*: A passkey or WebAuthn security key, because its signature is bound to the site's real origin.
+choice: A longer six-digit code, because more digits cannot be relayed.
+choice: A password with symbols and digits, which a fake page cannot read.
+choice: A security question, because only the user knows the answer.
+hint: What does the browser include in a WebAuthn authentication that a person typing a code does not?
+solution: Passkeys and security keys sign a challenge together with the origin, so a response created for a fake site is useless on the real one. Typed codes and passwords can be relayed by the person who types them.

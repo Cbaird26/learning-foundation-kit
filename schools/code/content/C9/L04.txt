@@ -1,0 +1,227 @@
+@lesson
+title: DNS and other application protocols
+summary: Trace a DNS lookup through the resolver hierarchy, work with DNS records, names and caches, and read an SMTP exchange.
+objective: Describe the DNS hierarchy and trace iterative resolution from the root to an authoritative server.
+objective: Choose the right resource record type (A, AAAA, CNAME, NS, MX, TXT) and explain TTL-based caching.
+objective: Encode and decode domain names in the DNS wire format.
+objective: Read an SMTP session and explain the roles of SMTP, IMAP and DHCP.
+reading: Computer Networks: A Systems Approach, Chapter 9 "Applications", the section on the Domain Name System (name service); look up RFC 1034 and RFC 1035 for the protocol.
+
+@article
+People use names such as `www.example.org`; routers use IP addresses. The **Domain Name System (DNS)** maps one to the other. It is a distributed database of **resource records** (RRs), queried by an application-layer protocol that normally runs over UDP port 53 (and over TCP port 53 when a response is too large or for zone transfers). DNS also provides host aliasing, mail-server lookup and a way to spread load across several servers.
+
+### The hierarchy
+
+Names are read right to left: `www.example.org.` has the **root** (the final dot, usually omitted), the **top-level domain** (TLD) `org`, the **domain** `example.org`, and the host label `www`. Responsibility is delegated down the tree. There are three kinds of servers:
+
+- **Root servers** know the servers for each TLD.
+- **TLD servers** (`com`, `org`, `uk`, ...) know the **authoritative** servers for each domain below them.
+- **Authoritative servers** hold the actual records for a domain.
+
+A host's operating system asks a **recursive resolver** (supplied by the network or a public service) to do the work. The resolver then performs **iterative** queries: it asks a root server, which does not answer but returns a **referral** (the NS records of the `org` servers); it asks a TLD server, which returns a referral to the authoritative servers for `example.org`; it asks one of those, which returns the answer. Finally the resolver returns the answer to the client, which sent a single **recursive** query.
+
+### Resource records
+
+A record is `(name, type, class, TTL, data)`. Important types:
+
+| Type | Data |
+|---|---|
+| A | an IPv4 address |
+| AAAA | an IPv6 address |
+| CNAME | the canonical name of an alias |
+| NS | the name of an authoritative server for a zone |
+| MX | a mail server (with a preference number; lower is preferred) |
+| TXT | text, used for verification and email policy |
+
+### Caching
+
+Every record carries a **TTL** in seconds. A resolver keeps a record until the TTL expires, so repeated lookups are answered without contacting the hierarchy. Caching is what makes DNS scale, and also why a changed record takes up to a TTL to be seen everywhere. Servers also cache referrals, so root servers are rarely contacted for popular TLDs.
+
+### The message format
+
+A DNS message starts with a 12-byte header (a 16-bit ID, flags, and four 16-bit counts for questions, answers, authority and additional records), followed by those four sections. A name is written as a sequence of **labels**, each a length byte followed by that many characters, ending with a zero byte: `www.example.org` is `\x03www\x07example\x03org\x00`. Each label is at most 63 bytes and a whole name at most 255 bytes. DNS can be signed with **DNSSEC**, which lets a resolver verify that a record is authentic, and queries can be encrypted with DNS over TLS (port 853) or DNS over HTTPS.
+
+### SMTP, IMAP and DHCP
+
+**SMTP** (Simple Mail Transfer Protocol) pushes mail over TCP: between mail servers on port 25, and from a user's mail client to its server on the submission port 587. It is a text protocol with numeric reply codes:
+
+```text
+S: 220 mail.example.org ESMTP ready
+C: EHLO client.example.com
+S: 250 mail.example.org greets client.example.com
+C: MAIL FROM:<alice@example.com>
+S: 250 OK
+C: RCPT TO:<bob@example.org>
+S: 250 OK
+C: DATA
+S: 354 End data with <CR><LF>.<CR><LF>
+C: Subject: Hello
+C:
+C: Hi Bob.
+C: .
+S: 250 OK queued
+C: QUIT
+S: 221 Bye
+```
+
+SMTP only delivers mail to the recipient's server. The user reads it with a **pull** protocol such as **IMAP** (port 143, or 993 with TLS), which keeps messages and folders on the server. **DHCP** is an application-layer protocol on UDP (server port 67, client port 68) that gives a new host an IP address, subnet mask, default gateway and DNS resolver address.
+
+@example
+title: Tracing a DNS lookup with a cold cache
+problem: A client asks its recursive resolver for the A record of `www.example.org`; the resolver's cache is empty. List the messages.
+step: The client sends one recursive query `www.example.org A` to the resolver (message 1).
+step: The resolver queries a root server; the root replies with a referral listing the NS records of the `org` TLD servers, with their addresses.
+step: The resolver queries a `org` TLD server; it replies with a referral to the authoritative servers of `example.org`.
+step: The resolver queries an authoritative server for `example.org`; it replies with the A record and a TTL (for example 300 s). The resolver caches it.
+step: The resolver sends the answer to the client. In total there are 3 query-response pairs between the resolver and servers plus 1 pair with the client: 8 messages.
+answer: 8 messages: 1 pair client-resolver, then root, TLD and authoritative pairs.
+
+@example
+title: Encoding a name
+problem: Write the wire format of `mail.example.org`.
+step: Split into labels: `mail`, `example`, `org`.
+step: Prefix each label with its length: `\x04mail`, `\x07example`, `\x03org`.
+step: End with the zero-length root label `\x00`.
+step: Together: `\x04mail\x07example\x03org\x00`, which is $1 + 4 + 1 + 7 + 1 + 3 + 1 = 18$ bytes.
+answer: `\x04mail\x07example\x03org\x00` (18 bytes)
+
+@mistakes
+- Thinking that the client queries the root servers itself. A host sends one recursive query to its resolver, which does the iterative work.
+- Believing that a root server returns the final IP address. It returns a referral to the next level.
+- Treating CNAME as an address. A CNAME points to another name that must be resolved further.
+- Forgetting the TTL: when a record is changed, caches continue to give the old value until the TTL has expired.
+
+@practice mc
+prompt: Which record type tells a sender where to deliver mail for the domain `example.org`?
+choice: A
+choice: CNAME
+choice*: MX
+choice: NS
+hint: One record type carries a preference number to rank mail servers.
+solution: MX records name the mail servers for a domain, with preferences. A gives an IPv4 address, CNAME an alias, and NS the domain's authoritative name servers.
+
+@practice code
+prompt: Write `encode_name(name)` that returns the DNS wire format (type `bytes`) of a domain name: each label as one length byte followed by its ASCII characters, ending with a zero byte. A trailing dot is allowed and means the same as no trailing dot. The root (an empty string or `"."`) encodes as `b"\x00"`.
+starter:
+```python
+def encode_name(name):
+    pass
+```
+tests:
+```python
+assert encode_name("www.example.com") == b"\x03www\x07example\x03com\x00"
+assert encode_name("a.b") == b"\x01a\x01b\x00"
+assert encode_name("example.com.") == encode_name("example.com")
+assert encode_name("") == b"\x00"
+assert encode_name(".") == b"\x00"
+```
+model:
+```python
+def encode_name(name):
+    out = b""
+    for label in name.split("."):
+        if label:
+            out += bytes([len(label)]) + label.encode("ascii")
+    return out + b"\x00"
+```
+hint: Split on dots and ignore empty labels (they come from a trailing dot or the root).
+hint: `bytes([n])` makes a single byte with value `n`.
+solution: For every non-empty label output its length as one byte and then its characters, and finish with `b"\x00"`. Skipping empty labels handles the trailing dot and the root.
+
+@practice code
+prompt: Write a class `DnsCache` that models a TTL cache. `put(name, address, ttl, now)` stores a record that expires at time `now + ttl`; `get(name, now)` returns the address if `now` is strictly before the expiry time and `None` otherwise (also for names never stored). Names are case-insensitive. A later `put` for the same name replaces the earlier record. Time is passed in as an argument, in seconds.
+starter:
+```python
+class DnsCache:
+    pass
+```
+tests:
+```python
+c = DnsCache()
+c.put("Example.com", "93.184.216.34", 300, 1000)
+assert c.get("example.com", 1000) == "93.184.216.34"
+assert c.get("EXAMPLE.COM", 1299) == "93.184.216.34"
+assert c.get("example.com", 1300) is None
+assert c.get("other.org", 1000) is None
+c.put("example.com", "198.51.100.7", 60, 2000)
+assert c.get("example.com", 2059) == "198.51.100.7"
+assert c.get("example.com", 2060) is None
+```
+model:
+```python
+class DnsCache:
+    def __init__(self):
+        self._records = {}
+
+    def put(self, name, address, ttl, now):
+        self._records[name.lower()] = (address, now + ttl)
+
+    def get(self, name, now):
+        entry = self._records.get(name.lower())
+        if entry is None:
+            return None
+        address, expires = entry
+        if now < expires:
+            return address
+        del self._records[name.lower()]
+        return None
+```
+hint: Store each record under the lower-cased name together with its expiry time.
+hint: In `get`, compare `now` with the stored expiry time using `<`, so a record is valid for exactly `ttl` seconds.
+solution: Keep a dictionary from lower-case name to `(address, now + ttl)`. `get` returns the address only while `now < expires`; an expired entry is removed and `None` is returned.
+
+@practice num
+prompt: A recursive resolver with an empty cache resolves `www.example.org` for a client using iterative queries to a root server, an `org` TLD server and an authoritative server of `example.org`, one query to each. Count every DNS message (queries and responses), including the client's query to the resolver and the resolver's answer. How many messages are exchanged?
+answer: 8
+check: 2 + 2 * 3
+hint: Each query has exactly one response.
+solution: The client and resolver exchange 2 messages. The resolver talks to three servers, 2 messages each: $2 + 3 \times 2 = 8$.
+
+@practice self
+prompt: A user with cold DNS and HTTP caches types `http://www.example.org/index.html` into a browser; the page contains no other objects. Trace, in order, every exchange from the keystroke to the page being displayed: the DNS lookup (with the three levels of servers), the TCP connection set-up, and the HTTP request and response. Name the main header lines or flags involved.
+hint: The three phases come in a fixed order: find the address, connect, then request.
+hint: The DNS lookup itself has four stages: client to resolver, then root, TLD and authoritative servers.
+solution: (1) The browser checks its cache and the operating system's cache and finds no address, so it sends a recursive DNS query `www.example.org A` over UDP port 53 to its resolver. (2) The resolver asks a root server and gets a referral to the `org` TLD servers; asks a TLD server and gets a referral to the authoritative servers for `example.org`; asks an authoritative server and receives the A record, say 203.0.113.10, with a TTL. It caches the record and answers the client. (3) The browser opens a TCP connection to 203.0.113.10 port 80: SYN, then SYN-ACK, then ACK (1 RTT). (4) It sends `GET /index.html HTTP/1.1` with `Host: www.example.org` and other headers. (5) The server replies `HTTP/1.1 200 OK` with `Content-Type`, `Content-Length` and the HTML body. (6) The browser parses and displays the page; the connection is kept open or closed according to the `Connection` header. Total network time: 1 RTT to the resolver plus the resolver's lookup time, 1 RTT for TCP, and 1 RTT for the request and response.
+rubric: Describes the resolver doing iterative queries to root, TLD and authoritative servers and returning the address, with caching of the record.
+rubric: Shows the TCP three-way handshake (SYN, SYN-ACK, ACK) before any HTTP data and uses port 80 for HTTP.
+rubric: Gives a correct HTTP request (method, path, Host header) and response (status line, headers, body) in order.
+rubric: Keeps the order DNS, then TCP, then HTTP.
+
+@quiz code
+prompt: Write `decode_name(data, offset=0)` that reads a DNS name in wire format from the bytes `data`, starting at index `offset`, and returns a tuple `(name, next_offset)`. `name` is the labels joined with dots and no trailing dot (the root gives an empty string); `next_offset` is the index just after the terminating zero byte. You may assume there is no name compression.
+starter:
+```python
+def decode_name(data, offset=0):
+    pass
+```
+tests:
+```python
+wire = b"\x03www\x07example\x03com\x00"
+assert decode_name(wire) == ("www.example.com", 17)
+assert decode_name(b"XX" + wire, 2) == ("www.example.com", 19)
+assert decode_name(b"\x00") == ("", 1)
+assert decode_name(b"\x01a\x00rest") == ("a", 3)
+```
+model:
+```python
+def decode_name(data, offset=0):
+    labels = []
+    pos = offset
+    while data[pos] != 0:
+        length = data[pos]
+        labels.append(data[pos + 1:pos + 1 + length].decode("ascii"))
+        pos += 1 + length
+    return ".".join(labels), pos + 1
+```
+hint: Read a length byte, then that many characters, and repeat until the length is 0.
+hint: When you see the zero byte, the next offset is one past it.
+solution: Loop reading a length byte and then that many bytes as a label until a zero length appears; join the labels with dots and return the position after the zero byte.
+
+@quiz mc
+prompt: A resolver has the record `shop.example.com A 198.51.100.7` cached with TTL 600, stored at time 0. At time 650 a client asks for it. What must the resolver do?
+choice: Return the cached address, because a record is valid until it is replaced
+choice*: Treat the record as expired and query the authoritative server (or the hierarchy) again
+choice: Ask the root server first, because expired records mean the domain has moved
+choice: Return an error, because the TTL has passed
+hint: Compare the elapsed time with the TTL.
+solution: 650 s is more than the TTL of 600 s, so the entry has expired and the resolver must fetch the record again, usually by asking the authoritative server it already knows from cached NS records.

@@ -1,0 +1,340 @@
+@lesson
+title: Authentication, sessions and web security
+summary: Add sign-in to a web application with safely stored passwords and server-side sessions, and recognize and prevent the main classes of web vulnerabilities.
+objective: Distinguish authentication from authorization, and store and check passwords with a salted, slow hash following current NIST guidance.
+objective: Implement sessions and cookies with the `HttpOnly`, `Secure` and `SameSite` attributes.
+objective: Explain and prevent broken access control, XSS, CSRF and injection in your own code.
+reading: MDN Web Docs: Learn web development, "Website security" in the server-side material (and the Security and "Cookies"/HTTP authentication pages in the HTTP guide), together with the OWASP Top 10:2025 project page.
+@article
+**Authentication** answers "who are you?" (sign-in); **authorization** answers "what may you do?" (permissions). Most serious web vulnerabilities come from getting one of them wrong, or from trusting input that comes from the client. This lesson shows the defenses a developer applies; every example attacks only your own toy code.
+
+### Storing passwords
+
+Never store a password, and never store a fast hash such as plain SHA-256. Store the output of a **salted, slow, purpose-built key-derivation function** (Argon2id, scrypt, bcrypt or PBKDF2): the salt is a random value per password, so equal passwords get different hashes, and the cost makes guessing attacks expensive. In Flask, Werkzeug does this for you:
+
+```python
+from werkzeug.security import check_password_hash, generate_password_hash
+
+pw_hash = generate_password_hash("correct horse battery staple")
+check_password_hash(pw_hash, "correct horse battery staple")   # True
+```
+
+NIST SP 800-63B Revision 4 (final, August 2025) sets the current policy: at least **15 characters** when the password is the only factor (at least 8 when it is one part of multi-factor authentication); allow long passwords (at least 64 characters); impose **no composition rules** (such as requiring symbols); require **no periodic changes**, except when there is evidence of compromise; **check new passwords against a blocklist** of common and compromised passwords; and offer **no hints or security questions**. Allow pasting so that password managers work. Offer multi-factor or passkeys (WebAuthn) where you can. Show the same message for a wrong user name and a wrong password ("Invalid username or password"), and limit repeated attempts.
+
+### Sessions and cookies
+
+HTTP is stateless, so after a successful login the server creates a **session**: a record `session id → user`, where the id is a long random value (at least 128 bits) that the browser stores in a **cookie** and returns with each request. Flask's `session` object instead keeps the data in a cookie *signed* with `SECRET_KEY`: users cannot change it, but they can read it, so it must hold no secrets. Rules: create a new session at login (`session.clear()` first, to prevent **session fixation**), destroy it at logout, give it an expiry, and set cookie attributes: `HttpOnly` (scripts cannot read it), `Secure` (sent only over HTTPS) and `SameSite=Lax` or `Strict` (not sent on most cross-site requests). Flask's session cookie is `HttpOnly` by default, but `Secure` is off and no `SameSite` attribute is sent, and browsers do not all treat a cookie without `SameSite` as `Lax`, so set `Secure` and `SameSite` explicitly. `SameSite=None` (cookie sent on cross-site requests) is rejected by browsers unless `Secure` is also set.
+
+```python
+app.config.update(
+    SECRET_KEY=os.environ["SECRET_KEY"],   # never hard-code
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+
+@app.post("/login")
+def login():
+    user = find_user(request.form.get("username", ""))
+    password = request.form.get("password", "")
+    if user is None or not check_password_hash(user["pw_hash"], password):
+        return render_template("login.html", error="Invalid username or password."), 401
+    session.clear()
+    session["user_id"] = user["id"]
+    return redirect(url_for("home"), code=303)
+```
+
+### Vulnerabilities and defenses
+
+| OWASP Top 10:2025 | What goes wrong | Defense |
+|---|---|---|
+| A01 Broken Access Control | a signed-in user reads or changes another user's data | check ownership on **every** request, on the server; deny by default |
+| A02 Security Misconfiguration | debug mode, default passwords, missing headers | secure defaults, review configuration |
+| A03 Software Supply Chain Failures | a vulnerable or malicious dependency | pin and audit dependencies, update |
+| A04 Cryptographic Failures | data sent or stored unprotected | HTTPS everywhere (TLS 1.3), HSTS, proper hashing |
+| A05 Injection | data is interpreted as code (SQL, HTML, shell) | parameters, output escaping, validation |
+| A07 Authentication Failures | weak passwords, no throttling, fixation | the policy and session rules above |
+
+Also in the list: A06 Insecure Design, A08 Software or Data Integrity Failures, A09 Security Logging and Alerting Failures and A10 Mishandling of Exceptional Conditions (fail closed and never show stack traces to users).
+
+**Broken access control** is the most common. *Vulnerable:*
+
+```python
+# VULNERABLE: any signed-in user can read any note by changing the id
+@app.get("/notes/<int:note_id>")
+def read_note(note_id):
+    return db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+```
+
+*Fixed*: include the owner in the query, so another user's note simply is not found:
+
+```python
+row = db.execute(
+    "SELECT * FROM notes WHERE id = ? AND owner_id = ?",
+    (note_id, session["user_id"]),
+).fetchone()
+if row is None:
+    abort(404)
+```
+
+**Cross-site scripting (XSS)** happens when untrusted text is put into a page as markup. Prevent it by escaping output for its context (Jinja2 autoescaping, `textContent`), and add a `Content-Security-Policy` header as a second layer. **Cross-site request forgery (CSRF)** exploits the fact that browsers attach cookies automatically: a malicious page can make your browser send a `POST` to a site where you are signed in. Defenses: `SameSite` cookies, an unpredictable **CSRF token** stored in the session and required in every state-changing form, and never changing state with `GET`.
+
+@example
+title: Following a sign-in
+problem: Describe what happens, step by step, when a user signs in and then requests a protected page.
+step: The browser sends `POST /login` with the form fields over HTTPS. The server looks up the user and checks the password against the stored salted hash.
+step: On success the server calls `session.clear()`, stores the user id, and replies `303` with a `Set-Cookie: session=...; HttpOnly; Secure; SameSite=Lax` header.
+step: On `GET /account` the browser automatically sends `Cookie: session=...`. The server verifies the signature (or looks the id up), finds the user id and only then runs the view.
+step: On `POST /logout` the server clears the session. A request that arrives without a valid session gets `401` or a redirect to the sign-in page.
+
+@example
+title: Spotting a missing authorization check
+problem: Why is `DELETE /posts/<id>` that runs `DELETE FROM posts WHERE id = ?` insecure even though users must sign in, and how do you fix it?
+step: Authentication only tells the server who is calling. The query deletes the row for *any* id, so user A can delete user B's post by guessing an id.
+step: The check must be about this user and this object: only the owner (or an administrator) may delete.
+step: Put the owner in the statement: `DELETE FROM posts WHERE id = ? AND owner_id = ?` with the session's user id, and look at the number of rows affected.
+step: If no row was deleted, return `404` (or `403`). The rule is enforced on the server for every request, never by hiding a button in the page.
+
+@mistakes
+- Storing passwords in plain text or with a fast, unsalted hash, or enforcing outdated rules such as symbol requirements and forced 90-day changes.
+- Checking only that a user is signed in (authentication) and not that the user may access this particular object (authorization).
+- Putting the session secret or `SECRET_KEY` in source code, or leaving cookies without `HttpOnly`, `Secure` or `SameSite`.
+- Telling the user which part of the login failed (unknown user versus wrong password), or leaving debug mode on.
+
+@practice mc
+prompt: Which set of cookie attributes is the best default for a session cookie on an HTTPS site?
+choice: `Secure` only
+choice*: `HttpOnly; Secure; SameSite=Lax`
+choice: `SameSite=None` without `Secure`
+choice: No attributes, so that JavaScript can refresh the session id
+hint: You want scripts unable to read it, HTTPS-only transport, and no sending on cross-site requests.
+solution: `HttpOnly` keeps the cookie away from scripts, `Secure` restricts it to HTTPS and `SameSite=Lax` stops browsers sending it with most cross-site requests, which helps against CSRF. Browsers reject `SameSite=None` without `Secure`.
+
+@practice code
+prompt: Write `check_password(password, blocklist, mfa=False)` implementing a password policy based on NIST SP 800-63B Revision 4. It returns a list of problems, in this order: `"too short"` if the password has fewer than 15 characters (fewer than 8 when `mfa` is `True`), and `"blocklisted"` if `password.casefold()` is in `blocklist` (a set of lower-case strings). There are no composition rules and no maximum length, so a long password of one repeated letter is acceptable if it is not blocklisted. An acceptable password gives `[]`.
+starter:
+```python
+def check_password(password, blocklist, mfa=False):
+    pass
+```
+tests:
+```python
+bl = {"password1234567", "qwertyuiopasdfg", "password", "pass"}
+assert check_password("correct horse battery staple", bl) == []
+assert check_password("Sh0rt!", bl) == ["too short"]
+assert check_password("PASSWORD1234567", bl) == ["blocklisted"]
+assert check_password("aaaaaaaaaaaaaaa", bl) == []
+assert check_password("a" * 14, bl) == ["too short"]
+assert check_password("abcdefgh", bl, mfa=True) == []
+assert check_password("abcdefg", bl, mfa=True) == ["too short"]
+assert check_password("x" * 200, bl) == []
+assert check_password("", bl) == ["too short"]
+assert check_password("Password", bl, mfa=True) == ["blocklisted"]
+assert check_password("pass", bl) == ["too short", "blocklisted"]
+```
+model:
+```python
+def check_password(password, blocklist, mfa=False):
+    problems = []
+    minimum = 8 if mfa else 15
+    if len(password) < minimum:
+        problems.append("too short")
+    if password.casefold() in blocklist:
+        problems.append("blocklisted")
+    return problems
+```
+hint: Choose the minimum length first (8 or 15), then run the two independent checks in the required order.
+hint: Compare `password.casefold()` with the set, so that `Password` matches the entry `password`.
+solution: Two independent checks, each appending a message: length against 8 (with multi-factor authentication) or 15 (password alone), and membership of the case-folded password in the blocklist. Nothing else is checked, because current NIST guidance rejects composition rules.
+
+@practice code
+prompt: Implement a server-side session store as a class `SessionStore`. `SessionStore(ttl, make_id)` takes a lifetime in seconds and a function `make_id()` that returns a fresh session id string (a real application would use a long random value). Methods: `create(user, now)` stores the user, expiring at `now + ttl`, and returns the new id; `get(session_id, now)` returns the user, or `None` if the id is unknown or expired (a session is expired when `now >= expiry`, and an expired session is also deleted); `destroy(session_id)` removes the session and does nothing if it does not exist. Times are numbers passed in by the caller.
+starter:
+```python
+class SessionStore:
+    pass
+```
+tests:
+```python
+counter = iter(range(1, 100))
+store = SessionStore(60, lambda: f"sid{next(counter)}")
+a = store.create("ana", 1000)
+b = store.create("bo", 1010)
+assert a != b
+assert store.get(a, 1000) == "ana"
+assert store.get(a, 1059) == "ana"
+assert store.get(a, 1060) is None
+assert store.get(a, 1000) is None
+assert store.get(b, 1069) == "bo"
+assert store.get("unknown", 1000) is None
+store.destroy(b)
+assert store.get(b, 1011) is None
+store.destroy(b)
+c = store.create("ana", 2000)
+assert c not in (a, b)
+assert store.get(c, 2001) == "ana"
+```
+model:
+```python
+class SessionStore:
+    def __init__(self, ttl, make_id):
+        self.ttl = ttl
+        self.make_id = make_id
+        self.sessions = {}
+
+    def create(self, user, now):
+        session_id = self.make_id()
+        self.sessions[session_id] = (user, now + self.ttl)
+        return session_id
+
+    def get(self, session_id, now):
+        entry = self.sessions.get(session_id)
+        if entry is None:
+            return None
+        user, expires = entry
+        if now >= expires:
+            del self.sessions[session_id]
+            return None
+        return user
+
+    def destroy(self, session_id):
+        self.sessions.pop(session_id, None)
+```
+hint: Keep a dictionary from session id to a pair `(user, expiry_time)`.
+hint: In `get`, delete the entry when it has expired, so that an expired id can never become valid again.
+solution: `create` makes an id with `make_id()` and records `(user, now + ttl)`; `get` returns `None` for unknown ids, deletes and rejects expired ones (`now >= expiry`), and otherwise returns the user; `destroy` uses `pop` with a default so that logging out twice is harmless. Expiry on the server side is what makes a stolen id stop working.
+
+@practice ms
+prompt: Which statements about web security are true?
+choice*: Passwords should be stored as salted hashes made with a slow, purpose-built function such as Argon2id, scrypt, bcrypt or PBKDF2.
+choice*: Escaping output according to its context (for example with Jinja2 autoescaping) is the main defense against cross-site scripting.
+choice*: A `SameSite` cookie attribute and an anti-CSRF token both help against cross-site request forgery.
+choice: Hiding the "Delete" button from other users is enough to protect their data from deletion.
+choice: Requiring passwords to change every 90 days is current NIST guidance.
+hint: Authorization must be enforced by the server, and current guidance moved away from forced periodic changes.
+solution: Slow salted hashing, context-aware escaping and `SameSite` plus CSRF tokens are standard defenses. A hidden button is not access control, because a client can send the request directly; NIST SP 800-63B Revision 4 advises against forced periodic password changes (a change is required only on evidence of compromise).
+
+@practice self
+prompt: Design the sign-in feature for a Flask reading-tracker application. Write the registration and login views (you may assume `create_user(username, pw_hash)` and `find_user(username)` helpers), and list the security properties your design has. Cover password storage, the password policy, sessions and cookies, the error messages, and one protected route that only shows the current user's own books.
+hint: Use `generate_password_hash`/`check_password_hash`, call `session.clear()` before setting `session["user_id"]`, and put the user id in the `WHERE` clause of the books query.
+solution: A model answer:
+
+```python
+@app.post("/register")
+def register():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    problems = check_password(password, COMMON_PASSWORDS)
+    if not username or problems:
+        return render_template("register.html", errors=problems), 400
+    create_user(username, generate_password_hash(password))
+    return redirect(url_for("login_page"), code=303)
+
+
+@app.post("/login")
+def login():
+    user = find_user(request.form.get("username", ""))
+    password = request.form.get("password", "")
+    if user is None or not check_password_hash(user["pw_hash"], password):
+        return render_template("login.html", error="Invalid username or password."), 401
+    session.clear()
+    session["user_id"] = user["id"]
+    return redirect(url_for("books"), code=303)
+
+
+@app.get("/books")
+def books():
+    user_id = session.get("user_id")
+    if user_id is None:
+        return redirect(url_for("login_page"), code=303)
+    rows = get_db().execute(
+        "SELECT id, title FROM books WHERE owner_id = ?", (user_id,)
+    ).fetchall()
+    return render_template("books.html", books=rows)
+```
+Properties: passwords are stored only as salted slow hashes; the policy requires at least 15 characters, has no composition rules and rejects blocklisted passwords; the session is renewed at login and the cookie is `HttpOnly`, `Secure` and `SameSite=Lax`; the login error does not reveal whether the user exists; the protected query filters on the owner, so one user cannot read another's books; forms also include a CSRF token and debug mode is off in production.
+rubric: Hashes passwords with a salted slow function (Werkzeug helpers) and never stores plain text.
+rubric: Applies a current policy: length of at least 15, no composition rules, a blocklist check.
+rubric: Calls `session.clear()` at login, sets secure cookie attributes and uses one generic login error.
+rubric: The protected route requires a session and filters data by the current user's id.
+
+@quiz code
+prompt: Write `build_set_cookie(name, value, max_age, secure=True, http_only=True, same_site="Lax")` that returns the value of a `Set-Cookie` header: `name=value; Max-Age=<max_age>; Path=/`, followed by `; HttpOnly` if `http_only`, then `; Secure` if `secure`, then `; SameSite=<same_site>` if `same_site` is not `None`. `same_site` must be `"Strict"`, `"Lax"`, `"None"` or `None`, otherwise raise `ValueError`; `"None"` also requires `secure=True` (browsers reject it otherwise), so raise `ValueError` for `same_site="None"` with `secure=False`.
+starter:
+```python
+def build_set_cookie(name, value, max_age, secure=True, http_only=True,
+                     same_site="Lax"):
+    pass
+```
+tests:
+```python
+assert build_set_cookie("sid", "abc", 3600) == (
+    "sid=abc; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=Lax")
+assert build_set_cookie("sid", "abc", 60, secure=False, http_only=False,
+                        same_site=None) == "sid=abc; Max-Age=60; Path=/"
+assert build_set_cookie("t", "1", 0, same_site="Strict") == (
+    "t=1; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict")
+assert build_set_cookie("t", "1", 5, http_only=False, same_site="None") == (
+    "t=1; Max-Age=5; Path=/; Secure; SameSite=None")
+assert raises(ValueError, build_set_cookie, "t", "1", 5, secure=False,
+              same_site="None")
+assert raises(ValueError, build_set_cookie, "t", "1", 5, same_site="lax")
+```
+model:
+```python
+def build_set_cookie(name, value, max_age, secure=True, http_only=True,
+                     same_site="Lax"):
+    if same_site not in ("Strict", "Lax", "None", None):
+        raise ValueError(f"invalid SameSite value: {same_site!r}")
+    if same_site == "None" and not secure:
+        raise ValueError("SameSite=None requires Secure")
+    parts = [f"{name}={value}", f"Max-Age={max_age}", "Path=/"]
+    if http_only:
+        parts.append("HttpOnly")
+    if secure:
+        parts.append("Secure")
+    if same_site is not None:
+        parts.append(f"SameSite={same_site}")
+    return "; ".join(parts)
+```
+hint: Validate `same_site` first, then build a list of attribute strings and join it with `"; "`.
+hint: The attributes appear in a fixed order: `HttpOnly`, then `Secure`, then `SameSite`.
+solution: Check the two error conditions up front, start the list with the name/value pair, `Max-Age` and `Path`, append each optional attribute in the required order and join with `"; "`.
+
+@quiz code
+prompt: Write `get_document(docs, user, doc_id)` enforcing access control. `docs` maps ids to dictionaries with the keys `"owner"` (a user name), `"text"` and optionally `"shared_with"` (a set of user names; treat a missing key as empty). If `doc_id` is not in `docs`, raise `KeyError`. Return the document's text only if `user` is its owner or is in `shared_with`; otherwise (including `user=None`, an anonymous visitor) raise `PermissionError`. Deny by default.
+starter:
+```python
+def get_document(docs, user, doc_id):
+    pass
+```
+tests:
+```python
+docs = {
+    1: {"owner": "ana", "shared_with": {"bo"}, "text": "plan"},
+    2: {"owner": "bo", "shared_with": set(), "text": "diary"},
+    3: {"owner": "ana", "text": "memo"},
+}
+assert get_document(docs, "ana", 1) == "plan"
+assert get_document(docs, "bo", 1) == "plan"
+assert get_document(docs, "bo", 2) == "diary"
+assert get_document(docs, "ana", 3) == "memo"
+assert raises(PermissionError, get_document, docs, "cy", 1)
+assert raises(PermissionError, get_document, docs, "ana", 2)
+assert raises(PermissionError, get_document, docs, "bo", 3)
+assert raises(PermissionError, get_document, docs, None, 1)
+assert raises(KeyError, get_document, docs, "ana", 99)
+```
+model:
+```python
+def get_document(docs, user, doc_id):
+    doc = docs[doc_id]
+    if user is None:
+        raise PermissionError("not signed in")
+    if user == doc["owner"] or user in doc.get("shared_with", set()):
+        return doc["text"]
+    raise PermissionError("not allowed")
+```
+hint: Look up the document first so that a missing id raises `KeyError`, then decide who is allowed.
+hint: Only two kinds of user may read: the owner, and members of `shared_with`; everyone else, including `None`, is refused.
+solution: Fetch the document (which raises `KeyError` if it is absent), refuse anonymous users, and allow only the owner or a shared user, using `.get("shared_with", set())` for documents with no sharing list. Raising in every other case implements deny by default.

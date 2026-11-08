@@ -1,0 +1,328 @@
+@lesson
+title: Functions, closures and first-class functions
+summary: Explain first-class functions and closures, implement function values and calls in the interpreter, and predict how closures capture variables in Python.
+objective: Define first-class and higher-order functions and use them in Python.
+objective: Explain a closure as a function together with the environment where it was created, and implement closures in an interpreter.
+objective: Predict the behavior of closures that share or capture mutable variables, including the late-binding pitfall.
+reading: Crafting Interpreters, Chapter 10 "Functions" and Chapter 11 "Resolving and Binding" (the closure discussion).
+
+@article
+In a language with **first-class functions**, functions are values like numbers: you can store them in variables, pass them to other functions and return them from functions. A function that takes or returns a function is called **higher-order**. Python, JavaScript and Rust work this way. Java comes close: since Java 8, a lambda is an object that implements a functional interface, so it can be stored, passed and returned like other values.
+
+### Function values and calls
+
+We add two AST nodes: `("fun", params, body)` creates a function value from a list of parameter names and a body expression, and `("call", fn, args)` evaluates the expression `fn` to a function, evaluates the argument expressions and runs the body. A call creates a **new environment** in which the parameters are bound to the argument values, then evaluates the body in it.
+
+The crucial question is the *parent* of that new environment. It must be the environment where the function was **created**, not where it is called (lexical scope, as in week 5). So a function value must carry that environment with it. The pair (parameters, body, creation environment) is a **closure**:
+
+```python
+class Closure:
+    def __init__(self, params, body, env):
+        self.params = params
+        self.body = body
+        self.env = env
+```
+
+Evaluating a `fun` node builds a closure that remembers the current `env`. Evaluating a `call` node does this:
+
+```python
+    if kind == "call":
+        f = evaluate(node[1], env)
+        args = [evaluate(a, env) for a in node[2]]
+        inner = dict(f.env)
+        inner.update(zip(f.params, args))
+        return evaluate(f.body, inner)
+```
+
+(A full version also checks that `f` is a closure and that the argument count is right.) Because `inner` starts from the closure's environment, the body sees the variables that existed where the function was written, even after the code that created it has finished.
+
+### Closures in Python
+
+A **closure** is a function that keeps access to variables from its enclosing scope:
+
+```python
+def make_adder(n):
+    def add(x):
+        return x + n
+    return add
+
+add5 = make_adder(5)
+print(add5(10))   # 15
+```
+
+After `make_adder` returns, its local `n` would normally vanish, but `add` still refers to it, so it stays alive. Each call to `make_adder` makes a fresh `n`, so `make_adder(1)` and `make_adder(2)` are independent.
+
+A closure captures the **variable**, not a copy of its value at the moment of creation. That has two consequences. First, a closure can *change* the variable with `nonlocal`, which gives functions private mutable state without a class:
+
+```python
+def make_counter():
+    count = 0
+    def step():
+        nonlocal count
+        count += 1
+        return count
+    return step
+```
+
+Second, several closures created in a loop can share a single variable. This is the classic **late-binding** surprise:
+
+```python
+fs = [lambda: i for i in range(3)]
+print([f() for f in fs])   # [2, 2, 2]
+```
+
+Every lambda reads the same `i`, which is `2` when the loop finishes. Giving each lambda its own binding fixes it: `lambda i=i: i` copies the current value into a default parameter at creation time.
+
+### Recursion needs a name
+
+A function body can call itself only if its own name is visible in the environment it closes over. With `let f = fun ... in ...`, the closure is created *before* `f` is bound, so `f` is not in its captured environment. Languages solve this with a recursive binding form (often `let rec` or `letrec`): create the closure, then add the name to the environment it captured. In Python this is automatic because a `def` binds the name in an enclosing scope that the function can see.
+
+### Why it matters
+
+Closures are the basis of callbacks, decorators, iterators, partial application and **currying** (turning a function of two arguments into a function that returns a function). They also link back to memory: a closure keeps its environment alive as long as the closure itself is reachable, which we will study in week 12.
+
+@example
+title: Tracing a closure
+problem: What does this program print?
+
+```python
+def make_adder(n):
+    def add(x):
+        return x + n
+    return add
+
+a = make_adder(1)
+b = make_adder(10)
+print(a(5), b(5))
+```
+step: `make_adder(1)` creates a fresh environment with `n = 1` and returns `add`, which remembers that environment. That function is stored in `a`.
+step: `make_adder(10)` creates another, separate environment with `n = 10`; `b` holds the second closure.
+step: `a(5)` evaluates `x + n` with `x = 5` and the `n` from the first environment: `5 + 1 = 6`.
+step: `b(5)` uses the second environment: `5 + 10 = 15`.
+answer: `6 15`
+
+@example
+title: The late-binding pitfall
+problem: Why does `[f() for f in [lambda: i for i in range(3)]]` give `[2, 2, 2]`, and how do you get `[0, 1, 2]`?
+step: All three lambdas close over the same variable `i`, the loop variable, not over its value at the time each lambda was created.
+step: The lambdas are called only after the loop has finished, when `i` is `2`.
+step: To capture the value, give each lambda its own parameter with a default: `lambda i=i: i`. The default value is computed when the lambda is created.
+step: Now the three functions have defaults `0`, `1` and `2`, so calling them with no arguments gives `[0, 1, 2]`.
+answer: Closures capture variables, not values. Use `lambda i=i: i` to capture the current value.
+
+@mistakes
+- Making the call environment a child of the caller's environment instead of the closure's (that is dynamic scope).
+- Believing a closure stores the value a variable had when the closure was created, rather than the variable itself.
+- Forgetting `nonlocal` when a nested function assigns to an enclosing variable; the assignment then creates a new local variable.
+- Defining a function with `let f = ...` and expecting it to call itself without a recursive binding.
+
+@practice mc
+prompt: What is a closure?
+choice: A function that has no parameters
+choice: A function that is written inside a loop
+choice*: A function value together with the environment in which it was created
+choice: A function that can only be called once
+hint: Think of what a function must carry with it to find non-local names later.
+solution: A closure packages the code (parameters and body) with the creation environment, so free variables in the body can still be resolved when the function is called elsewhere.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+fs = [lambda: i for i in range(3)]
+print([f() for f in fs])
+```
+answer: [2, 2, 2]
+check: run("fs = [lambda: i for i in range(3)]\nprint([f() for f in fs])\n")
+hint: When are the lambdas called, and what is `i` by then?
+solution: All three lambdas share one variable `i`, which is `2` after the comprehension finishes, so each returns `2`.
+
+@practice code
+prompt: Write `make_counter()` that returns a function. Each call to the returned function returns the next integer starting from `1` (so `1`, then `2`, then `3`, ...). Counters made by separate calls to `make_counter()` are independent. Use a closure, not a class or a global variable.
+starter:
+```python
+def make_counter():
+    pass
+```
+tests:
+```python
+c = make_counter()
+assert c() == 1
+assert c() == 2
+d = make_counter()
+assert d() == 1
+assert c() == 3
+assert d() == 2
+```
+model:
+```python
+def make_counter():
+    count = 0
+
+    def step():
+        nonlocal count
+        count += 1
+        return count
+
+    return step
+```
+hint: The count must live in the enclosing function, so it survives between calls of the inner function.
+hint: Declare `nonlocal count` in the inner function before changing `count`.
+solution: Keep `count` in `make_counter`'s scope and return an inner function that increments it with `nonlocal`. Every call to `make_counter` creates a new `count`, so counters are independent.
+
+@practice code
+prompt: Write `evaluate(node, env)` for the nodes `("num", n)`, `("var", name)`, `("bin", op, left, right)` with `op` in `+ - *`, `("let", name, value, body)`, `("fun", params, body)` and `("call", fn, args)`. Here `env` is a dictionary, and `let` evaluates its body in a copy of `env` with the new binding. A `fun` node evaluates to a closure that remembers `env`. A `call` evaluates `fn` and the arguments in the current `env`, then evaluates the function body in a copy of the **closure's** environment extended with the parameters. Raise `TypeError` if `fn` is not a function or the number of arguments is wrong.
+starter:
+```python
+def evaluate(node, env):
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "var":
+        return env[node[1]]
+    if kind == "bin":
+        left = evaluate(node[2], env)
+        right = evaluate(node[3], env)
+        if node[1] == "+":
+            return left + right
+        if node[1] == "-":
+            return left - right
+        return left * right
+    pass
+```
+tests:
+```python
+def num(n):
+    return ("num", n)
+
+def var(x):
+    return ("var", x)
+
+def add(a, b):
+    return ("bin", "+", a, b)
+
+pair_sum = ("fun", ["a", "b"], add(var("a"), var("b")))
+assert evaluate(("call", pair_sum, [num(2), num(3)]), {}) == 5
+
+make = ("fun", ["n"], ("fun", ["x"], add(var("x"), var("n"))))
+prog = ("let", "make", make,
+        ("let", "n", num(100),
+         ("call", ("call", var("make"), [num(1)]), [num(1)])))
+assert evaluate(prog, {}) == 2
+
+inc = ("fun", ["x"], add(var("x"), num(1)))
+twice = ("fun", ["f", "x"],
+         ("call", var("f"), [("call", var("f"), [var("x")])]))
+assert evaluate(("call", twice, [inc, num(5)]), {}) == 7
+
+assert evaluate(("let", "k", num(3), ("call", inc, [var("k")])), {}) == 4
+assert raises(TypeError, evaluate, ("call", num(3), []), {})
+assert raises(TypeError, evaluate, ("call", inc, []), {})
+```
+model:
+```python
+class Closure:
+    def __init__(self, params, body, env):
+        self.params = params
+        self.body = body
+        self.env = env
+
+
+def evaluate(node, env):
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "var":
+        return env[node[1]]
+    if kind == "bin":
+        left = evaluate(node[2], env)
+        right = evaluate(node[3], env)
+        if node[1] == "+":
+            return left + right
+        if node[1] == "-":
+            return left - right
+        return left * right
+    if kind == "let":
+        value = evaluate(node[2], env)
+        inner = dict(env)
+        inner[node[1]] = value
+        return evaluate(node[3], inner)
+    if kind == "fun":
+        return Closure(node[1], node[2], env)
+    if kind == "call":
+        f = evaluate(node[1], env)
+        if not isinstance(f, Closure):
+            raise TypeError("not a function")
+        args = [evaluate(a, env) for a in node[2]]
+        if len(args) != len(f.params):
+            raise TypeError("wrong number of arguments")
+        inner = dict(f.env)
+        inner.update(zip(f.params, args))
+        return evaluate(f.body, inner)
+    raise ValueError(f"unknown node {kind!r}")
+```
+hint: A `fun` node produces a closure object holding `params`, `body` and the current `env`.
+hint: In a call, build the body's environment from `f.env`, not from the caller's `env`; that is what makes scope lexical.
+solution: Return `Closure(params, body, env)` for `fun`. For `call`, evaluate the function and arguments, check them, copy the closure's environment, bind the parameters and evaluate the body. The test with `make` and an outer `n = 100` yields `2` only if the call uses the closure's environment.
+
+@practice ms
+prompt: Select every true statement about closures in Python.
+choice*: A closure can keep a local variable of an enclosing function alive after that function returns.
+choice*: An inner function needs `nonlocal` to rebind (assign to) a variable of the enclosing function.
+choice: A closure captures a copy of the variable's value at the moment it is created.
+choice*: Lambdas created in a loop that all read the loop variable see its final value if they are called after the loop.
+choice: Each call to the closure creates a fresh copy of the enclosing function's variables.
+hint: Closures capture variables, not values, and the enclosing variables are created once per call of the *outer* function.
+solution: Closures keep enclosing variables alive and need `nonlocal` to rebind them, and late binding gives the final loop value. They capture variables rather than copies, and the enclosing variables are created when the outer function is called, not each time the inner function is.
+
+@quiz code
+prompt: Write `curry2(f)` that takes a function `f` of two arguments and returns a function `g` such that `g(a)(b)` equals `f(a, b)`. Example: `curry2(lambda a, b: a - b)(10)(3)` is `7`.
+starter:
+```python
+def curry2(f):
+    pass
+```
+tests:
+```python
+sub = curry2(lambda a, b: a - b)
+assert sub(10)(3) == 7
+assert sub(3)(10) == -7
+add5 = curry2(lambda a, b: a + b)(5)
+assert add5(1) == 6
+assert add5(100) == 105
+assert curry2(max)(2)(9) == 9
+assert curry2(lambda a, b: a + b)("ab")("cd") == "abcd"
+```
+model:
+```python
+def curry2(f):
+    def first(a):
+        def second(b):
+            return f(a, b)
+        return second
+    return first
+```
+hint: The answer is a function that returns a function.
+hint: The innermost function needs both `a` (from the middle function) and `f` (from the outer one).
+solution: The inner function `second` closes over both `a` and `f`, so it can call `f(a, b)` once `b` arrives. Calling `curry2(f)(a)` returns a function waiting for `b`, which is partial application.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def make():
+    n = 0
+    def step():
+        nonlocal n
+        n += 2
+        return n
+    return step
+
+a = make()
+b = make()
+print(a(), a(), b())
+```
+answer: 2 4 2
+check: run("def make():\n    n = 0\n    def step():\n        nonlocal n\n        n += 2\n        return n\n    return step\n\na = make()\nb = make()\nprint(a(), a(), b())\n")
+hint: Each call to `make` creates its own `n`.
+solution: `a` has its own `n`, which grows to 2 and then 4. `b` has a separate `n`, so its first call returns 2. The output is `2 4 2`.

@@ -1,0 +1,203 @@
+@project
+title: Legacy rescue: test, refactor and extend an untested module
+overview: You inherit a small, messy, untested Python module that prices customer orders. You will pin down its behavior with characterization tests, refactor it into clean, typed, well-named code without changing that behavior, add two new features test-first, and write a code-review style summary of everything you changed.
+goal: Write characterization tests that lock in the behavior of legacy code, including its edge cases and quirks.
+goal: Refactor in small, verified steps into readable, typed code, with a formatter, linter and type checker passing.
+goal: Add new behavior test-first, using an injected clock so the tests are deterministic.
+goal: Explain your changes in a pull request description a reviewer could act on.
+step: Set up on your computer. Create a folder `legacy_rescue` with a virtual environment, install `pytest`, `pytest-cov`, `hypothesis`, `ruff` and `mypy` (`python -m venv .venv`, activate it, `pip install pytest pytest-cov hypothesis ruff mypy`), and run `git init`. Save the supplied module as `legacy_orders.py` and commit it untouched as the first commit, so the starting point is in history.
+step: Read the module and write down, in a `NOTES.md` file, what each function appears to do, what the arguments are (`o` is a list of `(name, price, quantity)` tuples, `c` a customer tier, `d` a discount code), and anything surprising. Do not change the code.
+step: Write characterization tests in `test_legacy_orders.py` using pytest, with `@pytest.mark.parametrize` tables. Cover an empty order, one and several items, each tier (`"g"`, `"s"` and an unknown tier) on both sides of its threshold, each code (`"SAVE5"`, `"HALF"`, `None`, an unknown code), a total that goes negative, the shipping boundary at a total of 50, and rounding. Compute the expected values by running the code once, then paste them in; mark known oddities with a comment. Run `pytest --cov=legacy_orders --cov-branch --cov-report=term-missing` and add tests until every line and branch is covered. Commit.
+step: Check the strength of your tests: temporarily change one operator or constant at a time (for example `>` to `>=`, or `0.9` to `0.8`) and confirm a test fails each time; fix any gap. If you want to automate it, try `mutmut` on the module. Restore the code after every experiment.
+step: Refactor in small steps, running the tests after each and committing on green with messages starting `refactor:`. Suggested order: rename functions and variables; unpack tuples (a `NamedTuple` or dataclass `LineItem`); replace the magic numbers and strings with named constants and a table of tier rules; extract `subtotal`, `apply_tier_discount`, `apply_code` and `shipping_fee`; use guard clauses; add type hints and docstrings. Keep behavior identical, including any quirk you recorded.
+step: Run `ruff format`, `ruff check` and `mypy --strict` (or the strictest setting you can reach) and fix everything they report. Fix the real problems the type checker finds without changing the characterized behavior; if a fix would change behavior, record it for the feature step instead.
+step: Add the two new features test-first, one red-green-refactor cycle at a time: first write the failing test, run it, see it fail, then write the simplest code that passes. The feature descriptions are in the supplied material. Use an injected `today` date, never the real clock, and add a property-based test (Hypothesis) that for every valid order (one that the legacy `ok` accepts) the total is never negative and never exceeds the sum of the line totals plus the shipping fee, allowing half a cent for rounding.
+step: Write `PR_SUMMARY.md` in the style of a pull request description: what changed and why, how you verified that behavior did not change, the known quirks you preserved, a list of the commits grouped as refactor, feature and test, and three things a reviewer should look at closely. Review your own diff once before you finish, and list what you would flag if someone else had written it.
+material: **The legacy module.** Save exactly this as `legacy_orders.py`.
+
+```python
+# legacy_orders.py
+def calc(o, c, d):
+    t = 0
+    for i in o:
+        t = t + i[1] * i[2]
+    if c == 'g':
+        if t > 100:
+            t = t * 0.9
+    elif c == 's':
+        if t > 50:
+            t = t * 0.95
+    if d != None:
+        if d == 'SAVE5':
+            t = t - 5
+        elif d == 'HALF':
+            t = t / 2
+    if t < 0:
+        t = 0
+    s = 0
+    if t < 50:
+        s = 7
+    return round(t + s, 2)
+
+
+def fmt(o, c, d):
+    r = ''
+    for i in o:
+        r = r + i[0] + ' x' + str(i[2]) + ' @ ' + str(i[1]) + '\n'
+    r = r + 'TOTAL: ' + str(calc(o, c, d))
+    return r
+
+
+def ok(o):
+    if len(o) == 0:
+        return False
+    for i in o:
+        if i[2] <= 0 or i[1] < 0:
+            return False
+    return True
+```
+material: **What the module is believed to do** (to confirm with tests, not to trust): `calc` returns the order total. It sums price times quantity for each `(name, price, quantity)` item, applies a tier discount (`"g"` gold: 10 percent off when the sum is over 100; `"s"` silver: 5 percent off when over 50; other tiers none), then a code (`"SAVE5"` subtracts 5, `"HALF"` halves the amount, anything else is ignored), floors the amount at 0, adds a shipping fee of 7 when the amount is under 50, and rounds to 2 decimals. `fmt` builds a receipt text with one line per item and a final `TOTAL:` line. `ok` says whether an order is acceptable (not empty, every quantity positive, no negative price). Note that shipping is charged on the discounted amount, and that the order of the discount steps matters; your tests must pin that down.
+material: **Feature 1: expiring codes.** Discount codes become data: `CODES = {"SAVE5": ("amount", 5, date(2027, 12, 31)), "HALF": ("percent", 50, date(2027, 6, 30))}`, where each entry is `(kind, value, last_valid_day)`. A function `apply_code(amount, code, today)` returns the reduced amount. A code is valid on its last valid day and invalid the day after (then it is ignored, like an unknown code). `None` or an unknown code means no change. The legacy results for `today` on or before the expiry dates must stay identical to the characterized behavior.
+material: **Feature 2: validation messages.** A function `problems(items)` returns a list of strings, one per problem found, instead of the single `True` or `False` of `ok`: `"order is empty"`, and for each bad line `"line N: quantity must be positive"` or `"line N: price must not be negative"` (N counts from 1; a line with both problems reports both, quantity first). `problems(items) == []` must be equivalent to the legacy `ok(items)` being `True` for every input.
+deliverable: A Git repository with the history in clean, small commits: the untouched original, characterization tests, refactoring commits, then the feature commits.
+deliverable: `legacy_orders.py` refactored and typed, a test file with parametrized characterization tests and the new tests, and a coverage report showing every line and branch covered.
+deliverable: `PR_SUMMARY.md` with the description and your self-review, and `NOTES.md` with your original observations.
+rubric: Characterization tests cover each branch and boundary of the legacy code (tiers, codes, negative floor, the shipping threshold, rounding), pass against the original module, and fail when a single operator or constant is changed.
+rubric: The refactored module has descriptive names, small single-purpose functions, constants instead of magic values, docstrings, and passes `ruff format`, `ruff check` and `mypy --strict`, while every original characterization test still passes unchanged.
+rubric: The history shows red-green-refactor discipline for the new features: tests added before the code, an injected `today`, the expiry boundary tested on and after the last valid day, and a property-based test that holds.
+rubric: Refactoring commits and behavior-changing commits are kept separate, and each commit is small enough to review.
+rubric: `PR_SUMMARY.md` states what changed and why, how behavior preservation was verified, the quirks that were kept on purpose, and specific points for a reviewer, written specifically and without blame.
+tutor: I have written characterization tests for my legacy function and coverage is 100 percent. How can I check whether the tests would actually notice a bug, and what kinds of mutations should I try by hand?
+tutor: I want to replace a chain of nested ifs with a table of rules without changing behavior. What small steps would you take, and which tests do I need before the first step?
+tutor: My new feature needs today's date. Show me how to inject the date so the tests are deterministic, and how to test the day on which a code expires.
+
+@review
+This review guide revisits the course week by week, then gives a self-check list and the most common errors.
+
+### Key ideas by week
+
+1. **Why test.** Tests make change safe and document behavior. The pyramid: many fast unit tests, fewer integration tests, very few end-to-end tests, because speed, stability and precise failures fall as you go up.
+2. **Unit tests in the pytest style.** Plain functions named `test_...` with `assert`; `pytest.raises`, `parametrize`, fixtures with `yield`, `tmp_path`, `monkeypatch`, `conftest.py`. One behavior per test.
+3. **Test-driven development.** Red (watch it fail for the right reason), green (simplest code), refactor. Triangulate with the next test. Reproduce a bug with a failing test first.
+4. **Test design.** Equivalence classes, boundary values (below, on, above), and the edge-case checklist: empty, one, duplicates, negatives, invalid input, mutation. Decide and test the contract.
+5. **Test doubles.** Dummy, stub, fake, spy, mock. Inject dependencies. Prefer state-based checks and fakes; mock outgoing side effects; avoid over-mocking.
+6. **Files, time and networks.** Pass `now` or a clock in, separate pure logic from I/O, use temporary directories and fake clients, test error and timeout paths, keep a few real-service smoke tests, and patch where the name is looked up.
+7. **Property-based testing.** Round trip, invariant, idempotence, oracle and metamorphic properties; strategies; shrinking to a minimal failing example; build valid inputs instead of filtering.
+8. **Coverage and mutation testing.** Line versus branch versus diff coverage; coverage shows what ran, not what was checked; a surviving mutant is a missing test. Use coverage as a flashlight, not a target.
+9. **Readable code.** Intent-revealing names, small single-purpose functions, guard clauses, named constants, comments for why, a formatter and a linter.
+10. **Type hints.** `list[int]`, `X | None`, `Callable`, dataclasses, `TypedDict`, `Protocol`; hints are not enforced at runtime; narrowing fixes optional-value errors; adopt gradually.
+11. **Refactoring.** Behavior stays the same; characterization tests first; one small step, run tests, commit; keep refactoring and behavior changes apart.
+12. **Code review.** Small pull requests with descriptions, a checklist, comments that are specific and labeled (blocking, suggestion, nit, question), and replies to every comment.
+
+### Self-check
+
+- I can say what each level of the pyramid costs and what it proves.
+- I can write a parametrized pytest test and a `pytest.raises` test from memory.
+- I can take a feature through three red-green-refactor cycles.
+- Given a range or a rule, I can list the boundary inputs.
+- I can explain the difference between a stub, a fake and a mock and choose one.
+- I can make a function that uses the clock deterministic.
+- I can name three property patterns and write one Hypothesis test.
+- I can explain why 100 percent coverage does not prove good tests.
+- I can read a `mypy` error about `None` and fix it by narrowing.
+- I can characterize a legacy function and refactor it under tests.
+
+### Most common errors
+
+- Tests that cannot fail: no assertion, a function pytest never collects, or a test never seen red.
+- Calling the real clock, network or disk inside a "unit" test.
+- Mocking the code you own and then asserting the implementation instead of the behavior.
+- Skipping the boundaries: testing 20 and 30 and never 18.
+- Treating coverage as the goal, or comparing floats with `==`.
+- Mutable default arguments (`def f(x, items=[])`) and bare `except:` blocks.
+- Changing behavior during a refactoring, or refactoring without tests.
+- Giant pull requests, vague review comments and unlabeled feedback.
+
+@exam code
+prompt: Write `coupon_discount(coupon, total, today)` for a shop. `coupon` is a dict with the keys `"percent"` (a number from 0 to 100), `"expires"` (a `datetime.date`, the last valid day) and `"min_total"` (a number). `total` is the order total and `today` is a `datetime.date` passed in (never read the clock). Return the discount amount, `total * percent / 100` rounded to 2 decimals, but return `0.0` if the coupon has expired (`today` after `expires`) or the total is below `min_total`. A coupon is valid on its expiry day and when the total equals `min_total`. A `percent` outside 0 to 100 raises `ValueError`, even if the coupon would otherwise not apply. Use named helper logic as you see fit, and keep the function readable.
+starter:
+```python
+from datetime import date
+
+
+def coupon_discount(coupon, total, today):
+    pass
+```
+tests:
+```python
+from datetime import date
+
+coupon = {"percent": 10, "expires": date(2026, 12, 31), "min_total": 50}
+assert coupon_discount(coupon, 80, date(2026, 6, 1)) == 8.0
+assert coupon_discount(coupon, 80, date(2026, 12, 31)) == 8.0
+assert coupon_discount(coupon, 80, date(2027, 1, 1)) == 0.0
+assert coupon_discount(coupon, 50, date(2026, 6, 1)) == 5.0
+assert coupon_discount(coupon, 49.99, date(2026, 6, 1)) == 0.0
+assert coupon_discount(coupon, 33.33, date(2026, 6, 1)) == 0.0
+big = {"percent": 15, "expires": date(2026, 12, 31), "min_total": 0}
+assert coupon_discount(big, 19.99, date(2026, 1, 1)) == 3.0
+bad_high = {"percent": 101, "expires": date(2026, 12, 31), "min_total": 0}
+bad_low = {"percent": -1, "expires": date(2026, 12, 31), "min_total": 0}
+assert raises(ValueError, coupon_discount, bad_high, 10, date(2026, 1, 1))
+assert raises(ValueError, coupon_discount, bad_low, 10, date(2026, 1, 1))
+assert raises(ValueError, coupon_discount, bad_high, 10, date(2030, 1, 1))
+```
+model:
+```python
+from datetime import date
+
+
+def coupon_discount(coupon, total, today):
+    percent = coupon["percent"]
+    if not 0 <= percent <= 100:
+        raise ValueError("percent must be between 0 and 100")
+    if today > coupon["expires"]:
+        return 0.0
+    if total < coupon["min_total"]:
+        return 0.0
+    return round(total * percent / 100, 2)
+```
+hint: Validate the percent first, because an invalid coupon must raise even when it has expired.
+hint: Then return `0.0` for an expired coupon (`today > expires`) and for a total below the minimum (`total < min_total`), so both boundaries stay valid.
+solution: Check the percent range first, then the two conditions that make the coupon inapplicable, using strict comparisons so the expiry day and the exact minimum total still qualify, and finally compute and round the discount. Passing `today` in keeps the function deterministic, and the tests sit on every boundary (expiry day, day after, minimum total, just below it, and the invalid percents).
+
+@exam text
+prompt: A team tests a notification function with a mock. What does this program print? Type the output exactly, one line per print.
+
+```python
+from unittest.mock import Mock
+
+
+def notify(users, sender):
+    for user in users:
+        if user["active"]:
+            sender.send(user["email"])
+
+
+sender = Mock()
+users = [
+    {"active": True, "email": "a"},
+    {"active": False, "email": "b"},
+    {"active": True, "email": "c"},
+]
+notify(users, sender)
+print(sender.send.call_count)
+print([c.args[0] for c in sender.send.call_args_list])
+```
+answer:
+```
+2
+['a', 'c']
+```
+check: run("from unittest.mock import Mock\n\n\ndef notify(users, sender):\n    for user in users:\n        if user['active']:\n            sender.send(user['email'])\n\n\nsender = Mock()\nusers = [\n    {'active': True, 'email': 'a'},\n    {'active': False, 'email': 'b'},\n    {'active': True, 'email': 'c'},\n]\nnotify(users, sender)\nprint(sender.send.call_count)\nprint([c.args[0] for c in sender.send.call_args_list])\n")
+hint: Only the active users trigger a call; `call_args_list` keeps the calls in order.
+solution: The user `b` is inactive, so `send` is called twice, with `"a"` and then `"c"`. The call count is `2`, and the list of first arguments, in order, prints as `['a', 'c']`.
+
+@exam self
+prompt: You are given an untested 150-line function `build_invoice(order, customer, today)` that mixes pricing rules, tax, a database lookup for the customer's tier, and formatting of a text invoice. It is used in production and has a known bug that rounds some amounts wrongly. Describe, in order, how you would (1) make it safe to change, (2) restructure it, (3) fix the rounding bug, (4) add a new "early payment discount" feature, and (5) present the work for review. Name the specific techniques from the course at each stage and say how you would test the database and the clock.
+hint: Think of the order: tests that pin behavior come before structure, structure before the bug fix, and the bug fix and the feature each get a failing test first.
+solution: (1) Make it safe: add a seam so the clock and the database lookup can be supplied (pass `today` as a parameter, pass the tier lookup as a function or object), a tiny change checked by hand or with a quick smoke run, then write characterization tests: parametrized tables over ordinary and edge-case orders (empty order, one item, each tier on both sides of each threshold, rounding cases), using a fake customer repository that returns tiers from a dictionary and a fixed `today`; record the actual output, golden-master style for the invoice text. Check coverage with branch coverage and add tests until branches are covered, then try a few by-hand mutants (or a mutation tool) to confirm the tests would notice changes; keep the rounding bug's current output in a test marked as known. (2) Restructure in small steps, running the tests after each and committing on green: rename, extract `price_lines`, `compute_tax`, `lookup_tier` and `format_invoice` so pure logic is separate from the database and from formatting; use guard clauses, named constants, a dataclass for the order lines; add type hints and run `mypy`, `ruff` and the formatter. No behavior changes in this stage. (3) Fix the rounding bug as its own change: write a failing test with the right expected value (and a Hypothesis property such as "the total equals the sum of the rounded line amounts" or that cents never get lost) and see it fail, make the simplest fix, update the known-bug test, commit separately. (4) Add the early payment discount test-first with red-green-refactor cycles: the simplest case, then the boundary day (the discount applies on the last eligible day, not the day after), invalid input, with `today` injected so no test uses the real clock. (5) Present as a small series of commits (refactor, bug fix, feature) with a pull request description that says what and why, how behavior preservation was verified, the bug that was fixed on purpose, and what to look at closely; run through my own diff first and label open questions for reviewers. The database is covered by a few integration tests using a test database, with most logic tested against the fake.
+rubric: Starts with a seam for the clock and database and characterization tests (with fakes and a fixed date) before any restructuring.
+rubric: Separates refactoring (no behavior change, small verified steps, tooling) from the bug fix and the feature, each introduced with a failing test first.
+rubric: Covers the boundary of the new feature, an injected clock, and a property-based or other check for the rounding fix.
+rubric: Describes a reviewable presentation: small commits, a pull request description, a self-review, and an integration test for the real database.

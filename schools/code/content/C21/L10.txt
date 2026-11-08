@@ -1,0 +1,241 @@
+@lesson
+title: Batch and stream processing: MapReduce and beyond
+summary: Write and trace a MapReduce job, explain how such frameworks tolerate failures, and compare batch processing with windowed stream processing.
+objective: Describe the map, shuffle and reduce phases and write a word count as a map function and a reduce function.
+objective: Explain fault tolerance by re-execution, combiners, data skew and the move from MapReduce to dataflow engines.
+objective: Distinguish event time from processing time and compute tumbling window aggregates.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), look up the MapReduce programming model and stream processing in the index of your edition.
+
+@article
+**Batch processing** reads a large bounded input, computes, and writes a result; **stream processing** handles an unbounded, continuously arriving input. Both are programmed as dataflows that a framework runs on many machines and recovers when some fail.
+
+### The MapReduce model
+
+A job is defined by two user functions:
+
+- `map(record)` emits zero or more intermediate **(key, value)** pairs.
+- `reduce(key, values)` receives one key with *all* its values and emits a result.
+
+The framework does the rest in three phases:
+
+1. **Map:** the input is split into chunks and each chunk is processed by a map task, preferably on a machine that stores that chunk (**data locality**).
+2. **Shuffle:** intermediate pairs are partitioned by key (commonly `hash(key) mod R` for $R$ reduce tasks), transferred across the network and sorted or grouped by key, so each key's values arrive together at one reducer.
+3. **Reduce:** each reduce task applies `reduce` to every key it owns and writes output.
+
+```python
+def mapreduce(docs, map_fn, reduce_fn):
+    groups = {}
+    for doc in docs:
+        for key, value in map_fn(doc):
+            groups.setdefault(key, []).append(value)   # the shuffle
+    return {k: reduce_fn(k, vs) for k, vs in groups.items()}
+
+def wc_map(doc):
+    return [(w.lower(), 1) for w in doc.split()]
+
+def wc_reduce(key, values):
+    return sum(values)
+```
+
+This single-process driver captures the semantics; a real framework runs the loop on thousands of machines.
+
+### Making it practical
+
+- **Fault tolerance by re-execution.** Map and reduce functions are deterministic and tasks have no side effects other than writing their own output, so if a worker dies the master simply runs the task again elsewhere. Map output is stored on the mapper's local disk, reduce output in the distributed file system. Slow workers (**stragglers**) are handled by **speculative execution**: launch a duplicate and take whichever finishes first.
+- **Combiner.** A combiner is a local, map-side reduce that pre-aggregates pairs before the shuffle (for word count, summing counts per word on each mapper), cutting network traffic. It is valid when the reduce operation is associative and commutative.
+- **Skew.** If one key has far more values than others (a very common word), one reducer becomes the bottleneck; remedies include splitting the key or combiners.
+- **Limitations.** Each MapReduce stage writes to disk and the model fits multi-stage and iterative algorithms poorly. Later dataflow engines express a job as a **directed acyclic graph** of operators, keep intermediate data in memory where possible, and record **lineage** (how a dataset was computed from others) so lost partitions can be recomputed.
+
+### Stream processing
+
+A stream processor consumes events continuously (often from a log or message queue) and keeps state. Key ideas:
+
+- **Event time** is when the event happened; **processing time** is when the system sees it. Events arrive late and out of order, so correct results use event time.
+- A **window** groups events: **tumbling** windows are fixed-size and disjoint (every minute on the minute), **sliding** windows overlap, **session** windows close after a gap of inactivity.
+- A **watermark** is the system's estimate that no events older than some event time are still coming. When the watermark passes a window's end, the window can be emitted; later arrivals are *late data*, which are dropped, handled separately, or trigger an update.
+- **Fault tolerance** comes from periodically **checkpointing** operator state together with the input offsets; after a failure the job rewinds to the checkpoint and replays. Combined with idempotent or transactional output, the *effect* on results is exactly-once (Lesson 2).
+
+```python
+def tumbling_start(t, size):
+    return (t // size) * size
+```
+
+@example
+title: Tracing word count
+problem: Run the word count job on the two documents `"to be or"` and `"not to be"`. Show the map output, the shuffle groups and the final result.
+step: Map on `"to be or"` emits `("to",1)`, `("be",1)`, `("or",1)`. Map on `"not to be"` emits `("not",1)`, `("to",1)`, `("be",1)`.
+step: Shuffle groups by key: `to -> [1, 1]`, `be -> [1, 1]`, `or -> [1]`, `not -> [1]`.
+step: Reduce sums each list: `to` is 2, `be` is 2, `or` is 1, `not` is 1.
+step: With a combiner on each mapper nothing changes here (each word occurs once per document), but a document like `"a a a"` would send `("a", 3)` instead of three pairs.
+answer: to 2, be 2, or 1, not 1
+
+@example
+title: Tumbling windows
+problem: Events (timestamp, key) are `(1,"a")`, `(4,"b")`, `(6,"a")`, `(9,"a")`, `(12,"b")`. Compute counts per key in tumbling windows of size 5.
+step: The window start is `(t // 5) * 5`. Timestamps 1 and 4 fall in `[0, 5)`; 6 and 9 in `[5, 10)`; 12 in `[10, 15)`.
+step: Window 0: `a` 1, `b` 1. Window 5: `a` 2. Window 10: `b` 1.
+step: Windows are disjoint, so each event is counted exactly once. A sliding window would count it in several.
+answer: 0: {a:1, b:1}; 5: {a:2}; 10: {b:1}
+
+@mistakes
+- Forgetting that `reduce` receives all values of one key together; the framework, not the user, groups them.
+- Using a combiner for an operation that is not associative and commutative, such as computing an average from partial averages.
+- Mixing up event time and processing time, so late events end up in the wrong window.
+- Writing map or reduce functions with side effects or randomness, which breaks safe re-execution.
+
+@practice mc
+prompt: In MapReduce, what is the purpose of the shuffle phase?
+choice: To sort the input before the map tasks run
+choice*: To bring all intermediate values with the same key to the same reduce task
+choice: To copy the final output to several machines
+choice: To choose which map functions to run
+hint: The reduce function must see every value for a key.
+solution: Map tasks emit pairs on many machines. The shuffle partitions them by key and sends each key's pairs to one reducer, grouped, so `reduce(key, values)` sees all values of its key.
+
+@practice text
+prompt: This program mimics the map phase of a word count over two documents. Type exactly what it prints.
+
+```python
+docs = ["a b a", "b c"]
+pairs = [(w, 1) for d in docs for w in d.split()]
+print(len(pairs))
+print(sorted(set(w for w, _ in pairs)))
+```
+answer:
+```
+5
+['a', 'b', 'c']
+```
+check: run("docs = ['a b a', 'b c']\npairs = [(w, 1) for d in docs for w in d.split()]\nprint(len(pairs))\nprint(sorted(set(w for w, _ in pairs)))\n")
+hint: There is one pair per word occurrence, including repeats.
+solution: The documents contain 3 + 2 = 5 words, so 5 pairs are emitted. The distinct words, sorted, are `a`, `b` and `c`, printed as a Python list.
+
+@practice code
+prompt: Write `shuffle(pairs)`. `pairs` is a list of `(key, value)` tuples. Return a dict that maps each key to the list of its values, in the order they appear in `pairs`.
+starter:
+```python
+def shuffle(pairs):
+    pass
+```
+tests:
+```python
+assert shuffle([("a", 1), ("b", 1), ("a", 1)]) == {"a": [1, 1], "b": [1]}
+assert shuffle([]) == {}
+assert shuffle([("x", 3), ("x", 1), ("x", 2)]) == {"x": [3, 1, 2]}
+assert shuffle([("k", "p"), ("j", "q")]) == {"k": ["p"], "j": ["q"]}
+```
+model:
+```python
+def shuffle(pairs):
+    groups = {}
+    for key, value in pairs:
+        groups.setdefault(key, []).append(value)
+    return groups
+```
+hint: Use a dict whose values are lists, creating a list the first time a key appears.
+hint: `groups.setdefault(key, []).append(value)` does both steps at once.
+solution: Appending each value to the list of its key groups the pairs while preserving arrival order within each key, which is what a reducer receives after the shuffle.
+
+@practice code
+prompt: Block deliverable: a MapReduce word count. Write two functions. `wc_map(doc)` takes a string and returns a list of `(word, 1)` pairs, one per whitespace-separated word, with each word converted to lower case. `wc_reduce(key, values)` takes a word and the list of its values and returns their sum. (The tests supply the driver that runs the job.)
+starter:
+```python
+def wc_map(doc):
+    pass
+
+def wc_reduce(key, values):
+    pass
+```
+tests:
+```python
+def run_job(docs, map_fn, reduce_fn):
+    groups = {}
+    for doc in docs:
+        for key, value in map_fn(doc):
+            groups.setdefault(key, []).append(value)
+    return {k: reduce_fn(k, v) for k, v in groups.items()}
+
+assert wc_map("Go go GO") == [("go", 1), ("go", 1), ("go", 1)]
+assert wc_map("") == []
+assert wc_reduce("go", [1, 1, 1]) == 3
+assert run_job(["to be or", "not to be"], wc_map, wc_reduce) == {
+    "to": 2, "be": 2, "or": 1, "not": 1}
+assert run_job(["A a", "b"], wc_map, wc_reduce) == {"a": 2, "b": 1}
+```
+model:
+```python
+def wc_map(doc):
+    return [(w.lower(), 1) for w in doc.split()]
+
+def wc_reduce(key, values):
+    return sum(values)
+```
+hint: `doc.split()` splits on whitespace and `str.lower()` converts case.
+hint: `wc_map` is a list comprehension producing `(w.lower(), 1)`; `wc_reduce` is `sum(values)`. The key itself is not needed in the reducer.
+solution: The map function emits one `(word, 1)` pair per word, the framework groups pairs by key, and the reduce function sums each group. Lower-casing in the map step makes `A` and `a` the same key.
+
+@practice code
+prompt: Write `tumbling_counts(events, size)`. `events` is a list of `(timestamp, key)` pairs with non-negative integer timestamps. Group them into tumbling windows of `size` time units, where an event with timestamp `t` belongs to the window starting at `(t // size) * size`. Return a dict mapping each window start to a dict mapping each key in that window to its count. Windows with no events do not appear.
+starter:
+```python
+def tumbling_counts(events, size):
+    pass
+```
+tests:
+```python
+ev = [(1, "a"), (4, "b"), (6, "a"), (9, "a"), (12, "b")]
+assert tumbling_counts(ev, 5) == {0: {"a": 1, "b": 1}, 5: {"a": 2}, 10: {"b": 1}}
+assert tumbling_counts([], 5) == {}
+assert tumbling_counts([(5, "x")], 5) == {5: {"x": 1}}
+assert tumbling_counts([(0, "x"), (0, "x"), (1, "y")], 10) == {0: {"x": 2, "y": 1}}
+assert tumbling_counts([(3, "a"), (13, "a")], 5) == {0: {"a": 1}, 10: {"a": 1}}
+```
+model:
+```python
+def tumbling_counts(events, size):
+    windows = {}
+    for t, key in events:
+        start = (t // size) * size
+        counts = windows.setdefault(start, {})
+        counts[key] = counts.get(key, 0) + 1
+    return windows
+```
+hint: Compute each event's window start first, then update a counter for that window and key.
+hint: Use `windows.setdefault(start, {})` to get the inner dict and `counts.get(key, 0) + 1` to count.
+solution: Integer division maps each timestamp to its window start; a dict of dicts accumulates the counts. An event exactly on a boundary (timestamp 5 with size 5) starts the next window, because windows are half-open `[start, start + size)`.
+
+@quiz code
+prompt: Write `combine(pairs)`, a map-side combiner for word count. `pairs` is a list of `(word, count)` pairs. Return a list of `(word, total)` pairs with one pair per distinct word, sorted by word.
+starter:
+```python
+def combine(pairs):
+    pass
+```
+tests:
+```python
+assert combine([("a", 1), ("b", 1), ("a", 1)]) == [("a", 2), ("b", 1)]
+assert combine([]) == []
+assert combine([("z", 3), ("y", 2), ("z", 4)]) == [("y", 2), ("z", 7)]
+assert combine([("x", 1)]) == [("x", 1)]
+```
+model:
+```python
+def combine(pairs):
+    totals = {}
+    for word, count in pairs:
+        totals[word] = totals.get(word, 0) + count
+    return sorted(totals.items())
+```
+hint: Add up the counts per word in a dict.
+hint: `sorted(totals.items())` returns the `(word, total)` pairs sorted by word.
+solution: A combiner sums counts locally before the shuffle, so a mapper sends one pair per distinct word instead of one pair per occurrence. Addition is associative and commutative, so the final result is unchanged.
+
+@quiz ms
+prompt: Which statements about batch and stream processing are true?
+choice*: A MapReduce framework can recover from a failed worker by re-running its task elsewhere, because tasks are deterministic.
+choice: A combiner can be used with any reduce function, including computing a mean from partial means.
+choice*: A watermark is an estimate that events older than some event time will no longer arrive.
+choice*: A tumbling window is a fixed-size window that does not overlap with other windows.
+choice: Processing time is the time when the event actually occurred in the world.
+hint: Check associativity for the combiner and the definition of each time notion.
+solution: Deterministic tasks can be safely re-executed. Combiners need associative and commutative operations (a mean of means is wrong). Watermarks and tumbling windows are as described. Event time is when the event occurred, while processing time is when the system handles it.

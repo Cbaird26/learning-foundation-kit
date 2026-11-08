@@ -1,0 +1,220 @@
+@lesson
+title: Deadlock
+summary: State the four conditions for deadlock, detect deadlock with a wait-for graph, check safe states with the banker's algorithm, and choose a prevention strategy such as lock ordering.
+objective: State the four necessary conditions for deadlock and show which one each prevention technique removes.
+objective: Detect a cycle in a wait-for graph and decide whether a resource-allocation state is safe using the banker's algorithm.
+objective: Diagnose and fix the deadlock caused by acquiring semaphores in the wrong order in the producer-consumer problem.
+reading: Operating Systems: Three Easy Pieces, the chapter "Common Concurrency Problems" (the deadlock section).
+
+@article
+A **deadlock** is a state in which a set of threads each wait for something that only another thread in the set can provide, so none can ever proceed. The classic case uses two locks.
+
+```c
+/* Thread 1 */              /* Thread 2 */
+pthread_mutex_lock(&A);     pthread_mutex_lock(&B);
+pthread_mutex_lock(&B);     pthread_mutex_lock(&A);
+```
+
+If thread 1 takes A and thread 2 takes B before either takes the second lock, each waits for the lock the other holds. The deadlock does not occur on every run; it depends on the interleaving, which is why it is hard to find by testing.
+
+### Four conditions
+
+Deadlock can occur only if all four of these hold at once (the Coffman conditions):
+
+1. **Mutual exclusion:** a resource can be held by only one thread at a time.
+2. **Hold and wait:** a thread holds resources while waiting for others.
+3. **No preemption:** a resource cannot be forcibly taken from the thread holding it.
+4. **Circular wait:** there is a cycle of threads, each waiting for a resource held by the next.
+
+Because all four are necessary, removing any one prevents deadlock. That gives the main **prevention** techniques.
+
+- **Break circular wait with a global lock order.** Number all locks and always acquire in increasing order. This is the most practical technique in real programs. When a function takes two locks with no natural order, order them by address.
+- **Break hold-and-wait** by acquiring all the locks at once, under another lock that guards the acquisition. It needs to know all locks in advance and reduces concurrency.
+- **Break no-preemption** with `pthread_mutex_trylock`: if the second lock is unavailable, release the first and retry. This can **livelock** (threads repeatedly retry in step and make no progress) unless a random delay is added.
+- **Break mutual exclusion** with lock-free data structures that use atomic instructions such as compare-and-swap.
+
+### Avoidance: safe states and the banker's algorithm
+
+Avoidance needs advance knowledge of each process's maximum demand. A state is **safe** if some order exists in which every process can obtain its remaining **need** (maximum minus current allocation), finish and release what it holds. An unsafe state is not yet deadlocked, but the system might deadlock. The **banker's algorithm** grants a request only if the resulting state is safe. To test safety, let `work` be the available vector. Repeatedly find an unfinished process whose need is at most `work` (in every resource type), pretend it finishes, and add its allocation to `work`. If all processes can finish, the state is safe.
+
+For one resource type there is a quick bound: if $n$ processes each need at most $m$ units, then $n(m-1)+1$ units in total guarantee that deadlock is impossible, because even if each process holds $m-1$, one unit left lets someone finish.
+
+### Detection and recovery
+
+Systems that cannot prevent deadlock (databases, for instance) detect it. Build a **wait-for graph** with an edge from thread $P$ to thread $Q$ when $P$ waits for a resource that $Q$ holds. For resources with a single instance, a **cycle** in this graph means deadlock. Recovery means terminating a thread, or rolling back a transaction and retrying it. Many general-purpose systems simply ignore rare deadlocks and leave the fix to the programmer.
+
+### The producer-consumer deadlock
+
+Last week's bounded buffer is deadlock-free only because of the order of its semaphore operations. Suppose the producer does `sem_wait(&mutex)` first and `sem_wait(&empty)` second. If the buffer is full, the producer holds the mutex while it waits for a free slot. The consumer needs the mutex to take an item and free a slot, but it cannot get it: hold-and-wait and circular wait together form a deadlock. The fix is to take `empty` (or `full`) before `mutex`, so no thread ever sleeps while holding the buffer's mutex.
+
+@example
+title: A safe-state check
+problem: One resource type, 3 units available. Processes P0, P1 and P2 hold 2, 2 and 3 units and have maximum demands of 5, 4 and 6. Is the state safe?
+step: Needs are maximum minus allocation: P0 needs 3, P1 needs 2, P2 needs 3. `work` is 3.
+step: P1 needs 2, which is at most 3, so P1 can finish; `work` becomes $3 + 2 = 5$.
+step: P0 needs 3, at most 5, so P0 can finish; `work` becomes $5 + 2 = 7$.
+step: P2 needs 3, at most 7, so it can finish. All processes finish in the order P1, P0, P2, so the state is safe.
+answer: Safe, with safe order P1, P0, P2
+
+@example
+title: Finding a deadlock in a wait-for graph
+problem: Thread T1 waits for a lock held by T2, T2 waits for T3, T3 waits for T1, and T4 waits for T1. Which threads are deadlocked?
+step: Edges: T1 to T2, T2 to T3, T3 to T1, T4 to T1.
+step: Follow T1 to T2 to T3 and back to T1: a cycle.
+step: T4 is not on the cycle, but it waits for T1 and can never proceed while T1 is stuck.
+step: T1, T2 and T3 are deadlocked; T4 is blocked behind them.
+answer: Deadlock among T1, T2 and T3 (T4 is blocked by it)
+
+@mistakes
+- Treating an unsafe state as a deadlock: unsafe only means that deadlock is possible, not certain.
+- Thinking one condition suffices: deadlock needs all four conditions simultaneously, which is why breaking one prevents it.
+- Using `trylock` retry loops without any delay, which can livelock instead of deadlocking.
+- Assuming a lock order is only needed for two locks: it must cover all locks that can be held together.
+
+@practice mc
+prompt: Every function in a program acquires locks in increasing order of a global lock number. Which of the four deadlock conditions does this remove?
+choice*: Circular wait
+choice: Mutual exclusion
+choice: Hold and wait
+choice: No preemption
+hint: A cycle of waits would need some thread to wait for a lower-numbered lock while holding a higher one.
+solution: With a global order, a thread holding lock $k$ waits only for locks numbered above $k$, so a cycle of waits cannot form. The locks are still exclusive, still held while waiting, and still not preemptible.
+
+@practice code
+prompt: Write `has_deadlock(waits_for)` where `waits_for` is a dictionary mapping each thread name to a list of the thread names it waits for (a thread may be missing from the keys if it only appears as a target). Return `True` if the wait-for graph contains a cycle, otherwise `False`. A thread that waits for itself is a cycle.
+starter:
+```python
+def has_deadlock(waits_for):
+    pass
+```
+tests:
+```python
+assert has_deadlock({}) is False
+assert has_deadlock({"A": ["B"], "B": ["A"]}) is True
+assert has_deadlock({"A": ["B"], "B": ["C"], "C": []}) is False
+assert has_deadlock({"A": ["B"], "B": ["C"], "C": ["A"]}) is True
+assert has_deadlock({"A": ["A"]}) is True
+assert has_deadlock({"A": ["B"]}) is False
+assert has_deadlock({"A": ["B", "C"], "B": ["D"], "C": ["D"], "D": []}) is False
+```
+model:
+```python
+def has_deadlock(waits_for):
+    state = {}  # node -> "visiting" or "done"
+
+    def visit(node):
+        if state.get(node) == "visiting":
+            return True
+        if state.get(node) == "done":
+            return False
+        state[node] = "visiting"
+        for nxt in waits_for.get(node, []):
+            if visit(nxt):
+                return True
+        state[node] = "done"
+        return False
+
+    return any(visit(n) for n in list(waits_for))
+```
+hint: Do a depth-first search and keep track of the nodes on the current path.
+hint: Reaching a node that is on the current path means a cycle; reaching a node that is completely finished does not.
+solution: Depth-first search with three states (unseen, on the current path, finished). Meeting a node that is on the current path closes a cycle. The diamond graph in the last test reaches `D` twice but never along one path, so it is not a cycle.
+
+@practice code
+prompt: Write `is_safe(available, allocation, need)` for the banker's algorithm. `available` is a list with the free units of each resource type. `allocation[i]` and `need[i]` are lists with process `i`'s currently held units and remaining needs. Return `True` if some order lets every process finish, `False` otherwise. A process can finish when every entry of its need is at most the corresponding entry of `work`; when it finishes, its allocation is added to `work`.
+starter:
+```python
+def is_safe(available, allocation, need):
+    pass
+```
+tests:
+```python
+assert is_safe([1, 1], [[1, 0], [0, 1], [1, 1]], [[1, 1], [0, 1], [0, 0]]) is True
+assert is_safe([0, 1], [[1, 0], [0, 1]], [[1, 1], [1, 0]]) is False
+assert is_safe([2], [[1], [1]], [[3], [2]]) is True
+assert is_safe([1], [[1], [1]], [[3], [2]]) is False
+assert is_safe([0], [], []) is True
+```
+model:
+```python
+def is_safe(available, allocation, need):
+    work = list(available)
+    finished = [False] * len(allocation)
+    progress = True
+    while progress:
+        progress = False
+        for i in range(len(allocation)):
+            if not finished[i] and all(n <= w for n, w in zip(need[i], work)):
+                work = [w + a for w, a in zip(work, allocation[i])]
+                finished[i] = True
+                progress = True
+    return all(finished)
+```
+hint: Keep a `work` vector and a `finished` flag for each process; scan repeatedly for a process that can finish.
+hint: Stop when a full pass finishes no process; the state is safe exactly when every process finished.
+solution: Simulate finishing processes: any process whose need fits in `work` can run to completion and returns its allocation. Repeat until no further process can finish. If all finished, a safe order exists. In the second test neither process's need fits in `[0, 1]`, so the state is unsafe.
+
+@practice num
+prompt: Three processes each need at most 4 units of a single resource type, and they request one unit at a time. What is the smallest total number of units that guarantees deadlock cannot occur?
+answer: 10
+check: 3 * (4 - 1) + 1
+hint: Consider the worst case, in which each process holds one fewer unit than its maximum.
+solution: In the worst case each holds $4 - 1 = 3$ units, using $9$. One more unit lets some process reach its maximum, finish, and release. So $3(4-1)+1 = 10$ units suffice, and 9 do not.
+
+@practice self
+prompt: A bounded buffer uses semaphores `empty` (initially MAX), `full` (initially 0) and `mutex` (initially 1). The producer is written as below, and the consumer takes `full`, then `mutex`.
+
+```c
+sem_wait(&mutex);
+sem_wait(&empty);
+put(item);
+sem_post(&full);
+sem_post(&mutex);
+```
+Explain exactly how this deadlocks, name the deadlock conditions that hold, and give the corrected producer.
+solution: Suppose the buffer is full (`empty` is 0) and a producer runs. It takes `mutex` and then blocks in `sem_wait(&empty)` while still holding `mutex`. The consumer wants to take an item, which would free a slot with `sem_post(&empty)`, but it must first acquire `mutex` (after `sem_wait(&full)`), and the sleeping producer holds it. The producer waits for the consumer's post, the consumer waits for the producer's mutex: a cycle. Mutual exclusion (the mutex), hold-and-wait (producer holds `mutex` while waiting for `empty`), no preemption (a semaphore cannot be taken away) and circular wait all hold. The fix is to wait on the counting semaphore first: `sem_wait(&empty); sem_wait(&mutex); put(item); sem_post(&mutex); sem_post(&full);`. Now a thread that sleeps on `empty` holds nothing, and the mutex is held only briefly and never while waiting.
+hint: Trace what happens when the buffer is already full and a producer starts.
+hint: Look for who holds the mutex while sleeping and who needs it to wake the sleeper.
+rubric: Describes the full-buffer scenario: the producer holds `mutex` while blocked on `empty`, and the consumer cannot get `mutex` to free a slot.
+rubric: Identifies hold-and-wait and circular wait (and mentions that the other two conditions also hold).
+rubric: Gives the corrected order: wait on `empty` before `mutex`, and post `mutex` before or after `full` without waiting while holding it.
+
+@quiz code
+prompt: Write `order_violations(order, sequences)`. `order` is a list of lock names giving the global lock order (earlier means must be acquired earlier). `sequences` is a list; each element is the list of lock names that one thread acquires, in the order it acquires them. Return the sorted list of indexes of the threads whose acquisitions are not in strictly increasing global order (acquiring the same lock twice in a row counts as a violation).
+starter:
+```python
+def order_violations(order, sequences):
+    pass
+```
+tests:
+```python
+order = ["A", "B", "C"]
+assert order_violations(order, [["A", "B"], ["B", "A"], ["A", "C", "B"]]) == [1, 2]
+assert order_violations(order, []) == []
+assert order_violations(order, [["C"], []]) == []
+assert order_violations(order, [["A", "A"]]) == [0]
+assert order_violations(order, [["A", "B", "C"], ["B", "C"]]) == []
+```
+model:
+```python
+def order_violations(order, sequences):
+    rank = {name: i for i, name in enumerate(order)}
+    bad = []
+    for idx, seq in enumerate(sequences):
+        ranks = [rank[name] for name in seq]
+        if any(a >= b for a, b in zip(ranks, ranks[1:])):
+            bad.append(idx)
+    return bad
+```
+hint: Convert each lock name to its position in `order`.
+hint: A sequence is fine only if each rank is strictly greater than the one before it.
+solution: Map names to ranks and compare neighbors with `zip(ranks, ranks[1:])`; any pair with `a >= b` is a violation. Equal ranks (the same lock twice) also violate the rule.
+
+@quiz mc
+prompt: A database periodically builds a graph of which transactions wait for which, finds a cycle, and aborts one transaction in the cycle. Which strategy is this?
+choice*: Deadlock detection and recovery
+choice: Deadlock prevention by breaking circular wait
+choice: Deadlock avoidance with the banker's algorithm
+choice: Ignoring deadlock
+hint: The system lets deadlock happen and then reacts.
+solution: Deadlocks are allowed to occur, found afterwards as cycles in a wait-for graph, and resolved by aborting a participant. Prevention removes a necessary condition in advance, and avoidance refuses requests that would lead to an unsafe state.

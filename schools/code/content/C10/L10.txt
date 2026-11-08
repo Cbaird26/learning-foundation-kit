@@ -1,0 +1,211 @@
+@lesson
+title: Query processing and optimization
+summary: Trace how a query becomes a plan, estimate the I/O cost of join algorithms, and choose indexes for a workload.
+objective: Describe the stages from SQL text to execution and the iterator model of operators.
+objective: Compute I/O costs for nested-loop, sort-merge and hash joins, and estimate selectivity.
+objective: Choose indexes for a query workload and justify them using costs and write overhead.
+reading: CMU 15-445/645 Database Systems, the lectures on operator execution (sorting, joins) and query optimization.
+@article
+SQL says *what* you want. The **query processor** decides *how* to get it. A query goes through these stages:
+
+1. **Parsing** checks syntax and resolves names against the catalog.
+2. **Rewriting** turns the query into a **logical plan**, a tree of relational-algebra operators (week 2), and applies rules such as flattening views.
+3. **Optimization** chooses a **physical plan**: for each logical operator an algorithm (index scan or table scan; which join algorithm) and an order of operations.
+4. **Execution** runs the physical plan.
+
+You can inspect the chosen plan with `EXPLAIN` (PostgreSQL and MySQL) or `EXPLAIN QUERY PLAN` (SQLite).
+
+### The iterator model
+
+Most engines run a plan with the **iterator** (Volcano) model. Every operator offers `open()`, `next()` and `close()`, and `next()` returns one row at a time by calling `next()` on its children. A root `LIMIT 1` only pulls the rows it needs, and a selection passes rows through without storing them (**pipelining**). Operators such as sorting and the build side of a hash join are **blocking**: they must consume all input first. Python generators mimic this pull-based style exactly.
+
+### Join algorithms and their I/O cost
+
+Let $M$ and $N$ be the page counts of tables $R$ (outer) and $S$ (inner), and $B$ the number of buffer pages. Cost counts page I/Os and ignores the cost of writing the final result.
+
+- **Page nested-loop join**: for each page of $R$, scan all of $S$: $M + M \cdot N$.
+- **Block nested-loop join**: load $B - 2$ pages of $R$ at a time (one page for reading $S$, one for output), scan $S$ once per block: $M + \lceil M / (B - 2) \rceil \cdot N$. Putting the *smaller* table outside usually helps.
+- **Index nested-loop join**: for each row of $R$ look up matches in an index on $S$: $M + |R| \cdot c$, where $c$ is the cost of one index probe. Good when $R$ is small and $S$ is indexed.
+- **Sort-merge join**: sort both inputs on the join key (external merge sort), then merge them in one pass: about sort cost $+ M + N$. The output is sorted on the join key, and the sort step is free when an input is already sorted (for example from a B+ tree).
+- **Hash join**: build a hash table on the smaller input and probe it with the other. If the build side fits in memory the cost is $M + N$. Otherwise **Grace hash join** partitions both inputs with a hash function, writing the partitions out, then joins matching partitions: about $3(M + N)$ I/Os (read and write both inputs once, then read the partitions once).
+
+Hash join requires an equality condition and sort-merge is designed for equijoins; nested loops handle any join condition.
+
+### Optimization
+
+**Heuristic rules** are always safe: push selections down (filter before joining, since a join on fewer rows is cheaper), push projections down, and avoid Cartesian products. A **cost-based optimizer** estimates the cost of alternatives from **statistics** stored in the catalog (row counts, number of distinct values, histograms) and picks the cheapest.
+
+The **selectivity** of a predicate is the fraction of rows it keeps. For `A = c` under a uniform assumption it is $1 / V(A)$, where $V(A)$ is the number of distinct values of $A$. With 1000 rows and 50 distinct values, an equality predicate is expected to keep $1000 / 50 = 20$ rows. For an equijoin of $R$ and $S$ on $A$ the usual estimate of the output size is
+
+$$\frac{|R| \cdot |S|}{\max(V(R, A),\, V(S, A))}.$$
+
+These estimates assume uniform, independent values, so they can be far off for skewed or correlated data; stale statistics are a common cause of bad plans. For several tables the optimizer also chooses the **join order**. The number of orders grows factorially, so systems use dynamic programming over subsets, restrict to **left-deep** trees, or fall back to heuristics for large queries.
+
+### Choosing indexes for a workload
+
+List the workload's queries with their frequency, then ask for each: which predicate is selective, which columns does it filter, join on and sort by, and could one index serve several queries? Rules of thumb: index primary and foreign keys used in joins; index columns of selective equality and range predicates; make a composite index with equality columns first, then the range or ordering column; consider a covering index for a hot query; skip low-selectivity columns (a boolean flag); and weigh each index against the write cost it adds. Verify with the plan: the index should actually appear in `EXPLAIN`.
+
+@example
+title: Cost of a block nested-loop join
+problem: $R$ has $M = 100$ pages and $S$ has $N = 50$ pages; the buffer has $B = 12$ pages. Compare the cost with $R$ outer and with $S$ outer.
+step: With $R$ outer: blocks of $B - 2 = 10$ pages give $\lceil 100 / 10 \rceil = 10$ scans of $S$. Cost $= 100 + 10 \cdot 50 = 600$.
+step: With $S$ outer: $\lceil 50 / 10 \rceil = 5$ scans of $R$. Cost $= 50 + 5 \cdot 100 = 550$.
+step: The smaller table outside is cheaper, by 50 I/Os here.
+answer: 600 I/Os with R outer, 550 with S outer.
+
+@example
+title: Estimating a join size
+problem: $R$ has 1000 rows and $V(R, A) = 100$; $S$ has 500 rows and $V(S, A) = 50$. Estimate $|R \bowtie_A S|$.
+step: Use $|R||S| / \max(V(R, A), V(S, A))$.
+step: Numerator: $1000 \cdot 500 = 500{,}000$. Denominator: $\max(100, 50) = 100$.
+step: Estimate: $500{,}000 / 100 = 5000$ rows.
+answer: About 5000 rows.
+
+@mistakes
+- Joining first and filtering later; selections should be pushed below joins so the join sees fewer rows.
+- Using the page count of the wrong table as the outer loop in the cost formula, or forgetting to reserve buffer pages for the inner scan and output.
+- Trusting a cost estimate when statistics are stale or the data is skewed; check the actual plan and row counts.
+- Adding indexes without measuring: an index the optimizer does not use is pure write overhead.
+
+@practice code
+prompt: Write `hash_join(r, s, r_key, s_key)` for two lists of dictionaries. Build a hash table (a dictionary) on `s` keyed by `s_key`, then for each row `x` of `r` in order output `{**x, **y}` for each matching row `y` of `s`, in the order of `s`. Rows whose join key is `None` never match. Return the list of merged rows.
+starter:
+```python
+def hash_join(r, s, r_key, s_key):
+    pass
+```
+tests:
+```python
+r = [{"id": 1, "d": 10}, {"id": 2, "d": 20}, {"id": 3, "d": 10},
+     {"id": 4, "d": None}]
+s = [{"did": 10, "n": "x"}, {"did": 10, "n": "y"}, {"did": None, "n": "z"}]
+out = hash_join(r, s, "d", "did")
+assert len(out) == 4
+assert out[0] == {"id": 1, "d": 10, "did": 10, "n": "x"}
+assert out[1] == {"id": 1, "d": 10, "did": 10, "n": "y"}
+assert out[2]["id"] == 3 and out[3]["n"] == "y"
+assert hash_join([], s, "d", "did") == []
+assert hash_join(r, [], "d", "did") == []
+```
+model:
+```python
+def hash_join(r, s, r_key, s_key):
+    table = {}
+    for y in s:
+        if y[s_key] is not None:
+            table.setdefault(y[s_key], []).append(y)
+    out = []
+    for x in r:
+        if x[r_key] is None:
+            continue
+        for y in table.get(x[r_key], []):
+            out.append({**x, **y})
+    return out
+```
+hint: Build phase: group the rows of `s` in a dictionary mapping key to list of rows.
+hint: Probe phase: for each row of `r`, look up its key in the dictionary, skipping `None`.
+solution: Build `table[key] -> [rows of s]` skipping `None` keys, then probe it with each row of `r`. This costs $O(|R| + |S| + \text{output})$ expected time, compared with $O(|R| \cdot |S|)$ for nested loops.
+
+@practice num
+prompt: Table $R$ has 80 pages, table $S$ has 30 pages and the buffer pool has $B = 22$ pages. Using the block nested-loop formula $M + \lceil M / (B - 2) \rceil \cdot N$ with $R$ as the outer table ($M = 80$, $N = 30$), what is the cost in page I/Os?
+answer: 200
+check: 80 + ceil(80 / (22 - 2)) * 30
+hint: Compute how many blocks of $B - 2$ pages the outer table needs.
+solution: $B - 2 = 20$, so the outer table is read in $\lceil 80 / 20 \rceil = 4$ blocks. Each block needs a full scan of $S$. Cost $= 80 + 4 \cdot 30 = 200$.
+
+@practice num
+prompt: A table has 2000 rows and column `status` has 8 distinct values, uniformly distributed. Using the uniform-selectivity estimate, how many rows are expected to match `WHERE status = 'shipped'`?
+answer: 250
+check: 2000 / 8
+hint: Selectivity of an equality predicate is one over the number of distinct values.
+solution: The selectivity is $1/8$, so the expected number of matching rows is $2000 / 8 = 250$.
+
+@practice text
+prompt: This Python program mimics the iterator model with generators. Type the output exactly.
+
+```python
+from itertools import islice
+
+
+def scan(rows):
+    for r in rows:
+        print("scan", r)
+        yield r
+
+
+def select(it, pred):
+    for r in it:
+        if pred(r):
+            yield r
+
+
+plan = select(scan([1, 2, 3, 4]), lambda x: x % 2 == 0)
+print(list(islice(plan, 1)))
+```
+answer:
+```
+scan 1
+scan 2
+[2]
+```
+check: run("from itertools import islice\n\n\ndef scan(rows):\n    for r in rows:\n        print('scan', r)\n        yield r\n\n\ndef select(it, pred):\n    for r in it:\n        if pred(r):\n            yield r\n\n\nplan = select(scan([1, 2, 3, 4]), lambda x: x % 2 == 0)\nprint(list(islice(plan, 1)))\n")
+hint: Rows are pulled one at a time, and `islice(plan, 1)` stops after the first result.
+solution: The first pull reads row 1 (printed by `scan`), which fails the predicate, then reads row 2, which passes and is returned. The consumer wants only one row, so rows 3 and 4 are never read. This is lazy, pipelined execution.
+
+@practice self
+prompt: A table `orders(order_id PRIMARY KEY, customer_id, status, created_at, total)` has 50 million rows. The workload is: (Q1) `SELECT * FROM orders WHERE order_id = ?`, 10,000 per second; (Q2) `SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 10`, 200 per second; (Q3) `SELECT status, COUNT(*) FROM orders GROUP BY status`, once per night; (Q4) `UPDATE orders SET status = ? WHERE order_id = ?`, 50 per second; plus 300 inserts per second. Choose indexes and justify each choice and each omission.
+solution: Q1 and Q4 use the primary-key index on `order_id`, which the system creates automatically; no extra index is needed. For Q2 create a composite index on `(customer_id, created_at)`: the equality column comes first, so the index seeks to the customer's entries, which are already sorted by `created_at`, so the newest 10 are read with no sort and the scan stops early (read descending). Do not index `status`: it has few distinct values so an index is not selective, Q3 must read all rows anyway, and it runs once a night. The `status` updates in Q4 do not touch the `(customer_id, created_at)` index, so it adds write cost only for the 300 inserts per second, which is a fair price for 200 fast lookups per second. Confirm with the plan that Q2 uses the composite index.
+rubric: Uses the primary-key index for Q1 and Q4 and does not add a redundant index.
+rubric: Proposes a composite index with the equality column customer_id before the ordering column created_at and explains why this avoids a sort.
+rubric: Explains why status is not indexed (low selectivity, full scan needed, infrequent query) and weighs the write overhead of the index it adds.
+hint: For each query ask which columns it filters, sorts and groups by, and how often it runs compared with the writes.
+
+@quiz code
+prompt: Write `merge_join_count(a, b)`. `a` and `b` are lists of integers, each sorted in ascending order and possibly containing duplicates. Return the number of pairs `(i, j)` with `a[i] == b[j]`, using a single merge-style pass with two pointers (not a nested loop over all pairs, and not `Counter`). For a value occurring `p` times in `a` and `q` times in `b`, it contributes `p * q`.
+starter:
+```python
+def merge_join_count(a, b):
+    pass
+```
+tests:
+```python
+assert merge_join_count([1, 2, 2, 3], [2, 2, 3, 4]) == 5
+assert merge_join_count([], [1, 2]) == 0
+assert merge_join_count([1, 1, 1], [1]) == 3
+assert merge_join_count([1, 3, 5], [2, 4, 6]) == 0
+assert merge_join_count([2, 2], [2, 2, 2]) == 6
+```
+model:
+```python
+def merge_join_count(a, b):
+    i = j = total = 0
+    while i < len(a) and j < len(b):
+        if a[i] < b[j]:
+            i += 1
+        elif a[i] > b[j]:
+            j += 1
+        else:
+            value = a[i]
+            p = 0
+            while i < len(a) and a[i] == value:
+                i += 1
+                p += 1
+            q = 0
+            while j < len(b) and b[j] == value:
+                j += 1
+                q += 1
+            total += p * q
+    return total
+```
+hint: Advance the pointer that points at the smaller value.
+hint: When the values are equal, count the run of that value in each list and add the product of the run lengths.
+solution: Two pointers walk both sorted lists. A smaller value cannot match anything later, so it is skipped. On equality, count both runs of the value, add `p * q`, and move past both runs. The pass costs $O(|a| + |b|)$, which is why sorted inputs make merge join cheap.
+
+@quiz mc
+prompt: A query joins `orders` (millions of rows) with `customer` and keeps only orders from the year 2025. Why does a query optimizer push the selection on the order date below the join?
+choice*: The join then processes far fewer rows, which reduces the cost, without changing the result.
+choice: The selection must be done first or the join gives wrong answers.
+choice: Selections cannot be evaluated after a join.
+choice: It lets the optimizer skip the join entirely.
+hint: Does applying the filter earlier change which rows end up in the answer?
+solution: Because the predicate mentions only attributes of `orders`, filtering before or after the join gives the same rows (an algebra equivalence), but filtering first shrinks the input of the join. The join is still needed.

@@ -1,0 +1,247 @@
+@lesson
+title: API design: REST, versioning and errors
+summary: Design an HTTP API with clear resources, correct methods and status codes, safe pagination and retries, a consistent error format and a versioning plan.
+objective: Model a service as resources and choose HTTP methods and status codes correctly, including safety and idempotency.
+objective: Design pagination, idempotent creation and a consistent machine-readable error format.
+objective: Classify API changes as breaking or compatible and choose a versioning strategy.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 4 "Our First Use Case: Flask API and Service Layer" for how a thin API sits on top of a service layer; also look up REST resource design, HTTP method semantics in RFC 9110 and RFC 9457 problem details.
+@article
+An API is a design you cannot take back. Once other teams, mobile apps and customers depend on it, every mistake becomes a promise you must keep. This is information hiding (week 2) with the interface made public, so it deserves more care than any internal class. Here is a working approach for HTTP APIs, the kind you will most often build and consume.
+
+### Resources, not remote procedure calls
+
+**REST** (representational state transfer) models the system as **resources** named by URLs, manipulated through a small set of HTTP methods. Name resources with nouns, plural, and nest only where ownership is real:
+
+- `/orders` is the collection, `/orders/42` one order, `/orders/42/lines` its lines.
+- Avoid verbs in paths (`/createOrder`). Where an action is not a simple create or update, model it as a sub-resource or an action noun: `POST /orders/42/cancellation`.
+
+The API should speak the **domain's language** (week 7) and not mirror your tables. Your service layer (week 8) is the use-case boundary; the API handler is a thin driving adapter: parse, call the service, translate the result or error into HTTP.
+
+### Methods, safety and idempotency
+
+| Method | Meaning | Safe | Idempotent |
+|---|---|---|---|
+| GET | read a representation | yes | yes |
+| POST | create, or run a non-idempotent action | no | no |
+| PUT | replace a resource entirely | no | yes |
+| PATCH | partially update | no | not guaranteed |
+| DELETE | remove | no | yes |
+
+**Safe** means it does not change state, so caches and crawlers may call it. **Idempotent** means repeating the request has the same effect as sending it once, which makes retries after a timeout harmless. `POST` is not idempotent, so a client that retries after a network failure can create two orders. The fix is an **idempotency key**: the client sends a unique `Idempotency-Key` header, and the server stores the result under that key and returns it on repeat.
+
+### Status codes
+
+Use them for what they mean, so clients can react without parsing messages:
+
+- `200` OK, `201` Created (with a `Location` header), `204` No Content.
+- `400` malformed request, `401` not authenticated, `403` authenticated but not allowed, `404` not found, `409` conflict with current state (for example a double booking), `422` well-formed but failing validation, `429` too many requests.
+- `500` your bug, `503` temporarily unavailable.
+
+A `200` with `{"error": ...}` in the body breaks every client, proxy and monitoring tool that reads the status line.
+
+### Errors as a contract
+
+Make errors as consistent as successes. The standard format is **problem details** (RFC 9457, media type `application/problem+json`): fields `type` (a URI identifying the kind of problem), `title`, `status`, `detail` and any extensions such as an `errors` list for field validation. Give clients a stable `type` to switch on, a human message for logs, and never leak stack traces or SQL. Decide once and use it everywhere.
+
+### Collections: pagination, filtering, ordering
+
+Never return an unbounded list. **Offset pagination** (`?page=3&per_page=20`) is simple but slows down and can skip or repeat items when data changes between requests. **Cursor (keyset) pagination** (`?after=<opaque cursor>&limit=20`) stays fast and stable, so prefer it for large or fast-changing data. Always return a total or a link or cursor for the next page, and cap `limit`.
+
+### Versioning and compatibility
+
+The question is not "how do I version?" but "how do I avoid breaking people?" **Compatible** changes: adding a new endpoint, adding an optional request field, adding a response field (clients must ignore unknown fields). **Breaking** changes: removing or renaming a field, changing a type or meaning, making an optional field required, tightening validation, changing an error code.
+
+Strategies when a break is unavoidable: a version in the URL (`/v2/orders`: visible and cacheable, the most common), a header or media type (cleaner URLs, harder to test), or date-based versions. Whichever you choose, keep the old version running with a published **deprecation** period and a `Sunset` header, measure who still uses it, and hold the translation between versions at the edge, so the domain has only one model.
+
+### Documenting
+
+Describe the API in an **OpenAPI** document: the single machine-readable source for docs, client generation and contract tests. Write examples for every error.
+
+### A review checklist
+
+Resource names are nouns; methods are used correctly; creates are idempotent where retried; every collection is paginated; errors have one format; status codes are accurate; no field exposes internals; changes are additive; authentication and rate limits are defined.
+
+@example
+title: Designing endpoints for a bike-share service
+problem: Design the endpoints for renting a bike, including the failure when the bike is already taken.
+step: Resources: `bikes` (with a status), `rentals`. Renting creates a rental, so use `POST /rentals` with body `{"bike_id": "b7"}`.
+step: Success: `201 Created`, a `Location: /rentals/981` header, and the new rental as the body.
+step: The bike is already rented: that is a conflict with current state, so `409` with a problem-details body whose `type` is `/problems/bike-unavailable`.
+step: Unknown `bike_id`: `404`. Missing or badly typed `bike_id`: `422`.
+step: A mobile client on bad signal may retry, so accept an `Idempotency-Key` header on `POST /rentals` and return the stored result for a repeated key; it cannot create two rentals.
+step: Ending a rental: `POST /rentals/981/return` (an action) or `PATCH /rentals/981` with `{"status": "returned"}`; choose one and document it.
+answer: `POST /rentals` returns 201 with `Location`; 409 when the bike is taken; 404 and 422 for bad input; idempotency key for safe retries.
+
+@example
+title: Is this change breaking?
+problem: The `GET /users/7` response is `{"id": 7, "name": "Ada Lovelace"}`. You must support separate first and last names. Which approach avoids breaking existing clients?
+step: Splitting `name` into `first_name` and `last_name` and removing `name` is a **breaking** change: every existing client that reads `name` fails.
+step: Adding `first_name` and `last_name` while keeping `name` is **compatible**: clients must ignore fields they do not know, and old clients keep working.
+step: Mark `name` as deprecated in the OpenAPI document and a changelog, with a removal date.
+step: Measure usage (for example by client version in logs). When no one reads `name`, remove it in `/v2/users` and keep `/v1` until its sunset date.
+step: Do the translation at the API edge: the domain stores first and last name once, and the v1 serializer builds `name` from them.
+answer: Add the new fields and keep `name`; remove it only in a new version after a deprecation period.
+
+@mistakes
+- Using `GET` for actions with side effects (`GET /deleteUser?id=3`), which crawlers, prefetchers and caches will happily trigger.
+- Returning `200 OK` with an error message in the body, or using `500` for client mistakes, so clients and dashboards cannot tell failures apart.
+- Returning unbounded collections, then discovering a customer with 200,000 orders takes down the endpoint.
+- Treating a "small" rename as safe. Any field removal, rename, type change or newly required input breaks some client.
+
+@practice mc
+prompt: A client sends `POST /payments` and the network drops before the response arrives. The client retries. Which design prevents a double charge?
+choice: Change the method to `GET` so it can be retried safely
+choice: Return `500` for every retried request
+choice*: Require an idempotency key and return the stored result when the same key arrives again
+choice: Tell clients never to retry
+hint: How can the server recognize that the second request is the same intent as the first?
+solution: An idempotency key lets the server detect a repeated intent and return the original result instead of charging again. `GET` must not change state, a blanket `500` helps no one, and telling clients not to retry gives up reliability.
+
+@practice code
+prompt: Write `paginate(items, page, per_page)` for offset pagination. Pages start at 1. Return a dict with keys `"items"` (the slice for that page), `"page"`, `"total"` (the number of items overall) and `"next_page"` (the next page number, or `None` if there are no more items after this page). A page past the end returns an empty `"items"` list and `None`.
+starter:
+```python
+def paginate(items, page, per_page):
+    pass
+```
+tests:
+```python
+data = list(range(5))
+assert paginate(data, 1, 2) == {"items": [0, 1], "page": 1, "total": 5, "next_page": 2}
+assert paginate(data, 3, 2) == {"items": [4], "page": 3, "total": 5, "next_page": None}
+assert paginate(data, 4, 2) == {"items": [], "page": 4, "total": 5, "next_page": None}
+assert paginate([], 1, 10) == {"items": [], "page": 1, "total": 0, "next_page": None}
+assert paginate(data, 1, 5)["next_page"] is None
+```
+model:
+```python
+def paginate(items, page, per_page):
+    start = (page - 1) * per_page
+    end = start + per_page
+    return {
+        "items": items[start:end],
+        "page": page,
+        "total": len(items),
+        "next_page": page + 1 if end < len(items) else None,
+    }
+```
+hint: Page 1 starts at index 0, so the start index is `(page - 1) * per_page`.
+hint: There is a next page only if the end index is still less than the number of items.
+solution: Slice from `(page - 1) * per_page` to that plus `per_page`; slicing past the end gives an empty list safely. Offer `next_page` only while `end < len(items)`, so a client can loop until it is `None`.
+
+@practice text
+prompt: What does this program print? Type the output exactly (one line of four values separated by spaces).
+
+```python
+processed = {}
+
+def create(key, amount):
+    if key in processed:
+        return processed[key]
+    processed[key] = {"id": len(processed) + 1, "amount": amount}
+    return processed[key]
+
+a = create("k1", 5)
+b = create("k1", 5)
+c = create("k2", 7)
+print(a["id"], b["id"], c["id"], len(processed))
+```
+answer: 1 1 2 2
+check: run("processed = {}\n\ndef create(key, amount):\n    if key in processed:\n        return processed[key]\n    processed[key] = {'id': len(processed) + 1, 'amount': amount}\n    return processed[key]\n\na = create('k1', 5)\nb = create('k1', 5)\nc = create('k2', 7)\nprint(a['id'], b['id'], c['id'], len(processed))\n")
+hint: The second call uses the same key as the first.
+solution: The first call stores a new record with id 1. The repeated key returns that stored record, so `b["id"]` is 1 and nothing new is created. The new key creates id 2, and the store holds two records. That is idempotent creation.
+
+@practice code
+prompt: Write `validate_order(body)` for a handler. `body` is a dict. The `"item"` must be a non-empty string (after stripping spaces) and `"qty"` must be an integer greater than 0 (not a bool, not a string). If valid, return `(201, {"item": item, "qty": qty})`. Otherwise return `(422, problem)` where `problem` is `{"type": "/problems/validation", "title": "Validation failed", "status": 422, "errors": [...]}`; `errors` lists one dict per failing field, in the order item then qty, each `{"field": name, "message": text}`, with message `"required"` for item and `"must be a positive integer"` for qty.
+starter:
+```python
+def validate_order(body):
+    pass
+```
+tests:
+```python
+assert validate_order({"item": "bike", "qty": 2}) == (201, {"item": "bike", "qty": 2})
+status, problem = validate_order({})
+assert status == 422
+assert problem == {
+    "type": "/problems/validation",
+    "title": "Validation failed",
+    "status": 422,
+    "errors": [
+        {"field": "item", "message": "required"},
+        {"field": "qty", "message": "must be a positive integer"},
+    ],
+}
+status, problem = validate_order({"item": "bike", "qty": 0})
+assert [e["field"] for e in problem["errors"]] == ["qty"]
+assert [e["field"] for e in validate_order({"item": "  ", "qty": 1})[1]["errors"]] == ["item"]
+assert validate_order({"item": "x", "qty": "3"})[0] == 422
+assert validate_order({"item": "x", "qty": True})[0] == 422
+```
+model:
+```python
+def validate_order(body):
+    errors = []
+    item = body.get("item")
+    if not isinstance(item, str) or not item.strip():
+        errors.append({"field": "item", "message": "required"})
+    qty = body.get("qty")
+    if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+        errors.append({"field": "qty", "message": "must be a positive integer"})
+    if errors:
+        return 422, {
+            "type": "/problems/validation",
+            "title": "Validation failed",
+            "status": 422,
+            "errors": errors,
+        }
+    return 201, {"item": item, "qty": qty}
+```
+hint: Collect every problem in a list first, then decide which response to return.
+hint: `isinstance(True, int)` is `True` in Python, so exclude `bool` explicitly.
+solution: Validation gathers all field errors, so the client can fix everything in one round trip, and returns the same problem-details shape every time. Excluding `bool` closes the loophole that `True` counts as the integer 1.
+
+@practice self
+prompt: Design the HTTP API for a library lending service. Members can search books, borrow a book (at most 3 at a time), return it, and see their current loans. Staff can add books. Deliver: the resources and endpoints with methods and success status codes; the error responses for at least three failure cases (with status code and problem `type`); pagination for the book search; how retried borrow requests stay safe; and how you would version the API and add a `due_date` field later.
+hint: Start with the nouns, then ask for each action which method and which failure codes fit.
+solution: Resources: `books`, `loans`, `members`. Endpoints: `GET /books?query=&after=&limit=` (200, cursor pagination with `next_cursor`, `limit` capped at 100); `POST /books` (staff only, 201 with `Location: /books/123`); `GET /books/123` (200 or 404); `POST /loans` with `{"book_id": "123"}` (201, `Location: /loans/55`); `POST /loans/55/return` (200; the action is a sub-resource rather than a verb path); `GET /members/me/loans` (200, paginated). Errors use problem details (`application/problem+json`): `409` with `type` `/problems/book-unavailable` when someone else has the book; `409` or `422` with `/problems/loan-limit-reached` when the member already has 3 loans; `404` `/problems/book-not-found`; `403` for a member calling `POST /books`; `401` without a token; `422` with an `errors` list for a missing `book_id`. Retries: `POST /loans` accepts an `Idempotency-Key` header; the server stores the response for that key for 24 hours and returns it on repeat, so a dropped connection cannot create two loans. Versioning: put `/v1` in the path; additive changes need no new version. Adding `due_date` to the loan response is compatible (clients ignore unknown fields), so it ships in v1 and is documented in the OpenAPI file; only removals, renames or type changes would require `/v2`, with `/v1` kept through a published sunset period.
+rubric: Uses noun resources with correct methods and success codes (201 with Location for creates, 200 for reads) and models return as an action sub-resource or a state update.
+rubric: Specifies at least three distinct error cases with accurate status codes and a consistent problem-details style body.
+rubric: Gives a pagination design with a capped limit and next cursor or page, an idempotency mechanism for the borrow request, and explains that adding `due_date` is a compatible change and what a breaking change would need.
+
+@quiz code
+prompt: Write `serialize_user(user, version)`. `user` is a dict with keys `"first"` and `"last"`. Version `1` returns `{"name": "<first> <last>"}`; version `2` returns `{"first_name": first, "last_name": last}`. Any other version raises `ValueError`. This keeps the old shape available while the domain stores the new one.
+starter:
+```python
+def serialize_user(user, version):
+    pass
+```
+tests:
+```python
+u = {"first": "Ada", "last": "Lovelace"}
+assert serialize_user(u, 1) == {"name": "Ada Lovelace"}
+assert serialize_user(u, 2) == {"first_name": "Ada", "last_name": "Lovelace"}
+assert raises(ValueError, serialize_user, u, 3)
+assert raises(ValueError, serialize_user, u, 0)
+assert u == {"first": "Ada", "last": "Lovelace"}
+```
+model:
+```python
+def serialize_user(user, version):
+    if version == 1:
+        return {"name": f"{user['first']} {user['last']}"}
+    if version == 2:
+        return {"first_name": user["first"], "last_name": user["last"]}
+    raise ValueError(f"unsupported version: {version}")
+```
+hint: One branch per supported version and an error for the rest.
+solution: The translation between the domain model and each public shape lives in one function at the edge, so the domain keeps a single model. Rejecting unknown versions is better than guessing.
+
+@quiz mc
+prompt: Which of these changes to an existing JSON response is breaking for current clients?
+choice: Adding a new optional field `nickname` to the response
+choice: Adding a new endpoint `GET /users/7/preferences`
+choice*: Renaming the field `email` to `email_address`
+choice: Adding extra fields to the problem-details body of an existing error response
+hint: Which change makes existing code that reads a field stop working?
+solution: Renaming a field removes the name existing clients read, so they break. Adding fields or endpoints is compatible with clients that ignore unknown fields, and extra fields in an error body do not change what current clients read.

@@ -1,0 +1,240 @@
+@lesson
+title: Transactions and isolation
+summary: Explain ACID, test schedules for conflict serializability, and identify the anomalies each isolation level allows.
+objective: State the ACID properties and explain why transactions need concurrency control.
+objective: Build a precedence graph to decide conflict serializability, and explain strict two-phase locking and deadlock.
+objective: Name the anomalies (dirty read, non-repeatable read, phantom, lost update, write skew) and the isolation levels that allow them.
+reading: CMU 15-445/645 Database Systems, the lectures on transactions, two-phase locking, and multi-version concurrency control.
+@article
+A **transaction** is a sequence of operations treated as one logical unit of work, such as transferring money (subtract from one account, add to another). In SQL: `BEGIN;` statements `COMMIT;` or `ROLLBACK;`. The database guarantees the **ACID** properties:
+
+- **Atomicity**: all of a transaction's changes happen or none do. A crash or `ROLLBACK` leaves no partial effect.
+- **Consistency**: a transaction moves the database from one valid state (satisfying all constraints) to another. This depends on the application's logic as well as the system.
+- **Isolation**: concurrent transactions behave as if they ran one at a time.
+- **Durability**: after `COMMIT` returns, the changes survive crashes.
+
+### Schedules and serializability
+
+A **schedule** is an interleaving of the operations of several transactions, each written as `R_i(x)` (transaction $T_i$ reads item $x$) or `W_i(x)` (writes). A **serial schedule** runs transactions one after another with no interleaving. A schedule is **serializable** if its effect equals that of some serial schedule. Interleaving matters for performance, so we want interleaved schedules that are safe.
+
+Two operations **conflict** if they belong to different transactions, access the same item, and at least one is a write. A schedule is **conflict serializable** if it can be turned into a serial schedule by swapping adjacent non-conflicting operations. The test uses the **precedence graph**: one node per transaction and an edge $T_i \to T_j$ whenever an operation of $T_i$ conflicts with and precedes an operation of $T_j$. **A schedule is conflict serializable if and only if its precedence graph has no cycle**, and a topological order of the graph is an equivalent serial order. With $n$ transactions there are $n!$ serial schedules.
+
+### Locking and deadlock
+
+**Two-phase locking (2PL)** guarantees conflict serializability: a transaction acquires shared (read) locks and exclusive (write) locks, and once it releases any lock it may acquire no more (a growing phase, then a shrinking phase). **Strict 2PL** holds all exclusive locks until the transaction commits or aborts, which also prevents **cascading aborts** (another transaction reading data that is later rolled back). Locking can cause **deadlock**: $T_1$ waits for a lock held by $T_2$ while $T_2$ waits for one held by $T_1$. The system detects cycles in the **waits-for graph** and aborts one transaction as the victim, or uses timeouts.
+
+### Multi-version concurrency control
+
+Most modern systems use **multi-version concurrency control (MVCC)**: a write creates a new version of the row, and a reader sees the versions that were committed when its transaction (or statement) started, called a **snapshot**. Readers do not block writers and writers do not block readers. **Snapshot isolation** prevents most anomalies and gives each transaction a consistent snapshot, but it is *not* the same as serializability.
+
+### Anomalies
+
+- **Dirty read**: $T_2$ reads a value written by $T_1$ that has not committed (and may roll back).
+- **Non-repeatable read**: $T_1$ reads a row twice and sees different values because $T_2$ committed an update in between.
+- **Phantom**: $T_1$ runs the same predicate query twice and gets different *sets* of rows because $T_2$ inserted or deleted rows matching the predicate.
+- **Lost update**: two transactions read the same value and both write back a result computed from it, so one write is overwritten.
+- **Write skew**: two transactions read overlapping data, then update *different* rows in a way that together breaks an invariant. For example, a rule that at least one doctor stays on call: two on-call doctors each check that the other is on call and each go off call.
+
+### Isolation levels
+
+The SQL standard defines four **isolation levels** by the anomalies they permit:
+
+| Level | Dirty read | Non-repeatable read | Phantom |
+|---|---|---|---|
+| READ UNCOMMITTED | allowed | allowed | allowed |
+| READ COMMITTED | prevented | allowed | allowed |
+| REPEATABLE READ | prevented | prevented | allowed |
+| SERIALIZABLE | prevented | prevented | prevented |
+
+Real systems differ from this table. PostgreSQL treats READ UNCOMMITTED as READ COMMITTED, its default level is READ COMMITTED, its REPEATABLE READ is snapshot isolation (which also prevents phantoms but permits write skew), and its SERIALIZABLE detects dangerous patterns and aborts a transaction. MySQL's InnoDB defaults to REPEATABLE READ. SQLite allows one writer at a time and is serializable by default. Lower levels are faster; choose the lowest level whose anomalies your application tolerates, and retry transactions that abort with serialization failures or deadlocks.
+
+@example
+title: Testing conflict serializability
+problem: Is the schedule R1(A) W1(A) R2(A) W2(A) R2(B) W2(B) R1(B) W1(B) conflict serializable?
+step: Item A: $W_1(A)$ comes before $R_2(A)$ and $W_2(A)$, so there is an edge $T_1 \to T_2$.
+step: Item B: $W_2(B)$ comes before $R_1(B)$ and $W_1(B)$, so there is an edge $T_2 \to T_1$.
+step: The graph has the cycle $T_1 \to T_2 \to T_1$.
+step: A cycle means no equivalent serial order exists: $T_1$ would have to run first because of A and second because of B.
+answer: No, the precedence graph has a cycle.
+
+@example
+title: A lost update
+problem: Account balance x is 100. $T_1$ adds 10 and $T_2$ adds 20, interleaved as R1(x) R2(x) W1(x) W2(x), each writing the value it computed. What is the final balance, and which anomaly occurred?
+step: $T_1$ reads 100 and $T_2$ reads 100.
+step: $T_1$ writes 110; then $T_2$ writes 120, overwriting $T_1$'s result.
+step: Any serial order would give 130, so the schedule is wrong.
+step: The edges are $T_1 \to T_2$ (from $R_1(x)$ before $W_2(x)$) and $T_2 \to T_1$ (from $R_2(x)$ before $W_1(x)$), a cycle.
+answer: Final balance 120; $T_1$'s update was lost.
+
+@mistakes
+- Saying a schedule is serializable because it produced the right result once; serializability must hold for every possible data value.
+- Counting two reads as a conflict; read-read pairs never conflict.
+- Assuming REPEATABLE READ and SERIALIZABLE mean the same in every system; the standard's table is only a baseline and implementations differ.
+- Believing strict 2PL prevents deadlocks; it prevents non-serializable schedules, not waiting cycles.
+
+@practice code
+prompt: A schedule is a list of operations `(txn, op, item)` in execution order, where `txn` is an integer, `op` is `"R"` or `"W"`, and `item` is a string. Write `precedence_edges(schedule)` that returns the sorted list of distinct edges `(i, j)` with `i != j` such that an operation of transaction `i` comes before a conflicting operation of transaction `j` (same item, different transactions, at least one write).
+starter:
+```python
+def precedence_edges(schedule):
+    pass
+```
+tests:
+```python
+s1 = [(1, "R", "x"), (2, "W", "x"), (1, "W", "x")]
+assert precedence_edges(s1) == [(1, 2), (2, 1)]
+s2 = [(1, "R", "x"), (2, "R", "x"), (3, "W", "y")]
+assert precedence_edges(s2) == []
+s3 = [(1, "W", "x"), (2, "R", "x"), (2, "W", "x"), (3, "R", "x")]
+assert precedence_edges(s3) == [(1, 2), (1, 3), (2, 3)]
+assert precedence_edges([]) == []
+```
+model:
+```python
+def precedence_edges(schedule):
+    edges = set()
+    for a in range(len(schedule)):
+        ti, op_i, x = schedule[a]
+        for b in range(a + 1, len(schedule)):
+            tj, op_j, y = schedule[b]
+            if ti != tj and x == y and "W" in (op_i, op_j):
+                edges.add((ti, tj))
+    return sorted(edges)
+```
+hint: Compare every pair of operations where the first comes earlier in the list.
+hint: A pair conflicts when the transactions differ, the items match and at least one operation is `"W"`.
+solution: Check every earlier/later pair of operations. If they conflict, add the edge from the earlier operation's transaction to the later one's to a set (which removes duplicates), and return it sorted.
+
+@practice code
+prompt: A schedule is a list of operations `(txn, op, item)` in execution order, where `txn` is an integer, `op` is `"R"` or `"W"`, and `item` is a string. Write `conflict_serializable(schedule)` that returns `True` if the schedule is conflict serializable and `False` otherwise. Build the precedence graph from conflicting operation pairs (different transactions, same item, at least one `"W"`) and check that it has no cycle.
+starter:
+```python
+def conflict_serializable(schedule):
+    pass
+```
+tests:
+```python
+serial = [(1, "R", "x"), (1, "W", "x"), (2, "R", "x"), (2, "W", "x")]
+assert conflict_serializable(serial) == True
+bad = [(1, "R", "x"), (2, "W", "x"), (1, "W", "x")]
+assert conflict_serializable(bad) == False
+ok = [(1, "R", "x"), (2, "R", "x"), (1, "W", "y"), (2, "W", "y")]
+assert conflict_serializable(ok) == True
+ring = [(1, "W", "x"), (2, "R", "x"), (2, "W", "y"),
+        (3, "R", "y"), (3, "W", "z"), (1, "R", "z")]
+assert conflict_serializable(ring) == False
+assert conflict_serializable([]) == True
+```
+model:
+```python
+def conflict_serializable(schedule):
+    graph = {}
+    for t, _, _ in schedule:
+        graph.setdefault(t, set())
+    for a in range(len(schedule)):
+        ti, op_i, x = schedule[a]
+        for b in range(a + 1, len(schedule)):
+            tj, op_j, y = schedule[b]
+            if ti != tj and x == y and "W" in (op_i, op_j):
+                graph[ti].add(tj)
+    indegree = {t: 0 for t in graph}
+    for t in graph:
+        for u in graph[t]:
+            indegree[u] += 1
+    ready = [t for t in graph if indegree[t] == 0]
+    seen = 0
+    while ready:
+        t = ready.pop()
+        seen += 1
+        for u in graph[t]:
+            indegree[u] -= 1
+            if indegree[u] == 0:
+                ready.append(u)
+    return seen == len(graph)
+```
+hint: Build a dictionary from each transaction to the set of transactions it must precede.
+hint: A directed graph is acyclic exactly when repeatedly removing nodes with no incoming edges removes all of them (topological sort).
+solution: Build the precedence graph and run Kahn's topological sort: repeatedly remove a node with in-degree zero and decrement its successors. If every node is removed the graph is acyclic and the schedule is conflict serializable; if some nodes remain, they lie on or behind a cycle.
+
+@practice mc
+prompt: Transaction $T_1$ runs `SELECT balance FROM acct WHERE id = 1` and gets 100. Transaction $T_2$ then updates that row to 150 and commits. $T_1$ runs the same `SELECT` again and gets 150. Which anomaly occurred?
+choice*: Non-repeatable read
+choice: Dirty read
+choice: Phantom read
+choice: Write skew
+hint: Did $T_1$ see uncommitted data, and did the set of rows change or only a value in a row?
+solution: $T_1$ read the same row twice and saw a different committed value, which is a non-repeatable read. A dirty read would involve uncommitted data, and a phantom involves rows appearing or disappearing from a predicate's result.
+
+@practice num
+prompt: Four transactions run concurrently. How many different serial schedules (orders of running whole transactions one after another) exist?
+answer: 24
+check: factorial(4)
+hint: A serial schedule is an ordering of the four transactions.
+solution: The number of orderings of 4 items is $4! = 24$.
+
+@practice ms
+prompt: Which statements about strict two-phase locking are true?
+choice*: A transaction holds its exclusive locks until it commits or aborts.
+choice*: It produces only conflict-serializable schedules.
+choice: It guarantees that deadlocks never occur.
+choice: It allows other transactions to read uncommitted writes.
+hint: Think about what holding write locks to the end implies for readers, and what waiting can do.
+solution: Holding write locks until the end prevents others from reading or overwriting uncommitted data, and the two-phase rule gives conflict serializability. Locking can still produce waiting cycles, so deadlock detection or timeouts are still needed.
+
+@quiz code
+prompt: A schedule is a list of operations `(txn, op, item)` in execution order, where `txn` is an integer, `op` is `"R"` or `"W"`, and `item` is a string. Write `serial_order(schedule)`, using the precedence graph (an edge from `i` to `j` when an operation of `i` precedes a conflicting operation of `j`: same item, different transactions, at least one `"W"`). If the schedule is conflict serializable return a list of all transaction ids appearing in it that forms an equivalent serial order: a topological order of the precedence graph, and whenever several transactions could come next choose the smallest id. If the schedule is not conflict serializable return `None`.
+starter:
+```python
+def serial_order(schedule):
+    pass
+```
+tests:
+```python
+s = [(1, "R", "x"), (2, "W", "x"), (3, "R", "y")]
+assert serial_order(s) == [1, 2, 3]
+assert serial_order([(2, "W", "x"), (1, "R", "x")]) == [2, 1]
+assert serial_order([(1, "R", "x"), (2, "W", "x"), (1, "W", "x")]) is None
+assert serial_order([]) == []
+t = [(3, "W", "a"), (1, "R", "a"), (2, "R", "b")]
+assert serial_order(t) == [2, 3, 1]
+```
+model:
+```python
+def serial_order(schedule):
+    graph = {}
+    for t, _, _ in schedule:
+        graph.setdefault(t, set())
+    for a in range(len(schedule)):
+        ti, op_i, x = schedule[a]
+        for b in range(a + 1, len(schedule)):
+            tj, op_j, y = schedule[b]
+            if ti != tj and x == y and "W" in (op_i, op_j):
+                graph[ti].add(tj)
+    indegree = {t: 0 for t in graph}
+    for t in graph:
+        for u in graph[t]:
+            indegree[u] += 1
+    order = []
+    ready = sorted(t for t in graph if indegree[t] == 0)
+    while ready:
+        t = ready.pop(0)
+        order.append(t)
+        for u in graph[t]:
+            indegree[u] -= 1
+            if indegree[u] == 0:
+                ready.append(u)
+        ready.sort()
+    return order if len(order) == len(graph) else None
+```
+hint: Build the precedence graph, then do a topological sort that always takes the smallest ready transaction.
+hint: If the sort ends before all transactions are placed, the graph has a cycle, so return `None`.
+solution: Build the precedence graph (including transactions with no edges), then repeatedly output the smallest transaction with no unprocessed predecessors. If all are output the order is the answer; otherwise a cycle blocked the rest.
+
+@quiz mc
+prompt: A bank rule says the balances of accounts X and Y must always add up to at least 0. Both start at 60. Transaction $T_1$ reads both balances (total 120) and withdraws 100 from X. Transaction $T_2$ reads both balances (total 120) and withdraws 100 from Y. Both commit under snapshot isolation, leaving the total at -80. What is this anomaly called?
+choice*: Write skew
+choice: Dirty read
+choice: Lost update
+choice: Non-repeatable read
+hint: The two transactions update different rows, so neither overwrites the other's write.
+solution: Each transaction read overlapping data and wrote a different row, and together they broke an invariant that each had checked. That is write skew. A lost update would require both writing the same row, and neither a dirty nor a non-repeatable read is involved.

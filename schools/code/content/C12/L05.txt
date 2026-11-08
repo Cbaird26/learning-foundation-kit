@@ -1,0 +1,301 @@
+@lesson
+title: Variables, environments and scope
+summary: Implement variables with environments, explain lexical scope and shadowing, and extend the evaluator with variables and let expressions.
+objective: Define an environment as a chain of bindings and implement define, lookup and assign.
+objective: Explain lexical (static) scope and shadowing, and contrast it with dynamic scope.
+objective: Evaluate variable references and let expressions with an environment parameter.
+reading: Crafting Interpreters, Chapter 8 "Statements and State" and Chapter 11 "Resolving and Binding" (the sections on scope).
+
+@article
+A name such as `x` has no meaning by itself; it means whatever value it is **bound** to where it is used. An interpreter keeps track of bindings in an **environment**: a mapping from names to values. Evaluating `x + 1` becomes `evaluate(node, env)`, and the variable case is a lookup.
+
+### Environments as chains
+
+Programs have nested regions: a block inside a function inside a module. Each region adds its own bindings and can still see the ones outside. We model this with a **chain of environments**: each environment holds a dictionary and a link to its parent.
+
+```python
+class Env:
+    def __init__(self, parent=None):
+        self.vars = {}
+        self.parent = parent
+
+    def define(self, name, value):
+        self.vars[name] = value
+
+    def lookup(self, name):
+        env = self
+        while env is not None:
+            if name in env.vars:
+                return env.vars[name]
+            env = env.parent
+        raise NameError(f"undefined variable {name!r}")
+
+    def assign(self, name, value):
+        env = self
+        while env is not None:
+            if name in env.vars:
+                env.vars[name] = value
+                return
+            env = env.parent
+        raise NameError(f"undefined variable {name!r}")
+```
+
+`define` creates a binding in *this* environment only. `lookup` searches from the innermost environment outwards and uses the first match. `assign` updates an existing binding wherever it is found, and fails if there is none. A lookup takes time proportional to the depth of the chain in the worst case.
+
+### Shadowing
+
+A binding in an inner environment can **shadow** one with the same name outside: the inner name wins inside, and the outer binding is untouched and visible again once the inner region ends. In Python:
+
+```python
+x = "outer"
+
+def f():
+    x = "inner"
+    return x
+
+print(f(), x)   # inner outer
+```
+
+### Lexical versus dynamic scope
+
+Which environment is the parent of a function body's environment? Under **lexical (static) scope**, it is the environment where the function was *written*. You can determine what every name refers to by reading the program text. Almost all modern languages, including Python, JavaScript, C and Rust, are lexically scoped. Under **dynamic scope**, it is the environment of the *caller* at run time, so the same text can refer to different variables depending on who called. Some older Lisps and shell languages behave this way. Lexical scope makes programs easier to reason about, and it is what makes closures (next week) work.
+
+### Let expressions
+
+We add two node kinds to the AST: `("var", name)` and `("let", name, value, body)`, which means "evaluate `value`, bind it to `name`, and evaluate `body` with that binding". For example `let x = 5 in x * 2` is `10`. The binding exists only inside the body:
+
+```python
+def evaluate(node, env):
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "var":
+        return env.lookup(node[1])
+    if kind == "let":
+        value = evaluate(node[2], env)
+        inner = Env(env)
+        inner.define(node[1], value)
+        return evaluate(node[3], inner)
+    if kind == "bin":
+        ...  # as before, passing env to both recursive calls
+```
+
+The key point is that the value is evaluated in the *outer* environment `env`, and the body in a **new child environment**. That is how `let x = 1 in let x = x + 1 in x` gives `2`: the inner `x` is defined from the outer `x`, then shadows it. When the body finishes, the child environment is simply dropped, so there is no cleanup.
+
+Environments also explain **scope rules** in real languages. Python decides whether a name is local to a function at compile time: if a function assigns to `x` anywhere, `x` is local throughout it, and reading it before assignment raises `UnboundLocalError`. The `global` and `nonlocal` statements redirect an assignment to an outer scope. Python's lookup order is summarized by LEGB: Local, Enclosing function, Global (module), Built-in.
+
+@example
+title: Looking up through a chain
+problem: Given the global environment `{a: 1, b: 2}` and a child `{b: 20, c: 30}` whose parent is the global one, what do `lookup("a")`, `lookup("b")` and `lookup("c")` return in the child?
+step: `lookup("a")`: the child has no `a`, so the search moves to the parent and finds `1`.
+step: `lookup("b")`: the child has its own `b`, so the search stops there and returns `20`. The parent's `b = 2` is shadowed.
+step: `lookup("c")`: found in the child, `30`.
+step: `lookup("d")` would search the child and the parent without success and raise `NameError`.
+answer: `1`, `20` and `30`.
+
+@example
+title: Evaluating nested lets
+problem: Evaluate `let x = 3 in let y = x * 2 in x + y`, written as `("let", "x", ("num", 3), ("let", "y", ("bin", "*", ("var", "x"), ("num", 2)), ("bin", "+", ("var", "x"), ("var", "y"))))`.
+step: The outer `let` evaluates `3` and creates an environment `E1 = {x: 3}` whose parent is the starting environment.
+step: Its body is the inner `let`. It evaluates `x * 2` in `E1`: the lookup finds `x = 3`, so the value is `6`.
+step: The inner `let` creates `E2 = {y: 6}` with parent `E1`.
+step: The body `x + y` is evaluated in `E2`: `x` is found in the parent `E1` (3) and `y` in `E2` (6), so the result is `9`.
+answer: `9`
+
+@mistakes
+- Evaluating the `let` value in the new child environment instead of the outer one, so `let x = x + 1` sees the wrong `x`.
+- Using one flat dictionary for all variables, so inner bindings overwrite outer ones permanently instead of shadowing them.
+- Confusing `define` (create here) with `assign` (update where it already exists).
+- Believing a lexically scoped language looks up names in the caller's environment; that is dynamic scope.
+
+@practice mc
+prompt: In a language with lexical scope, a function `f` is defined at the top level and refers to a global variable `n`. It is called from inside another function that has its own local `n`. Which `n` does `f` use?
+choice*: The global `n`, because `f` was defined in the global environment
+choice: The caller's local `n`, because it is the most recent binding
+choice: Whichever `n` was assigned last in the program
+choice: Neither; it is a `NameError`
+hint: Lexical scope is decided by where the function is written, not where it is called.
+solution: Under lexical scope, the body of `f` sees the environment where `f` was defined, so it uses the global `n`. Using the caller's `n` would be dynamic scope.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+x = "global"
+
+def outer():
+    x = "outer"
+    def inner():
+        return x
+    return inner()
+
+print(outer(), x)
+```
+answer: outer global
+check: run("x = 'global'\n\ndef outer():\n    x = 'outer'\n    def inner():\n        return x\n    return inner()\n\nprint(outer(), x)\n")
+hint: `inner` has no `x` of its own, so Python looks in the enclosing function next.
+solution: `inner` finds `x` in `outer`'s scope (`"outer"`), which shadows the global. The global `x` is unchanged, so the program prints `outer global`.
+
+@practice code
+prompt: Write a class `Env` with `__init__(self, parent=None)`, `define(self, name, value)`, `lookup(self, name)` and `assign(self, name, value)`. `define` binds in this environment only. `lookup` searches this environment and then its parents, innermost first, and raises `NameError` if the name is not found. `assign` changes the nearest existing binding and raises `NameError` if there is none.
+starter:
+```python
+class Env:
+    def __init__(self, parent=None):
+        pass
+```
+tests:
+```python
+g = Env()
+g.define("a", 1)
+g.define("b", 2)
+c = Env(g)
+c.define("b", 20)
+assert c.lookup("a") == 1
+assert c.lookup("b") == 20
+assert g.lookup("b") == 2
+assert raises(NameError, c.lookup, "zzz")
+c.assign("a", 10)
+assert g.lookup("a") == 10
+c.assign("b", 21)
+assert c.lookup("b") == 21 and g.lookup("b") == 2
+assert raises(NameError, c.assign, "zzz", 0)
+```
+model:
+```python
+class Env:
+    def __init__(self, parent=None):
+        self.vars = {}
+        self.parent = parent
+
+    def define(self, name, value):
+        self.vars[name] = value
+
+    def lookup(self, name):
+        env = self
+        while env is not None:
+            if name in env.vars:
+                return env.vars[name]
+            env = env.parent
+        raise NameError(f"undefined variable {name!r}")
+
+    def assign(self, name, value):
+        env = self
+        while env is not None:
+            if name in env.vars:
+                env.vars[name] = value
+                return
+            env = env.parent
+        raise NameError(f"undefined variable {name!r}")
+```
+hint: Each environment stores its own dictionary and a reference to its parent.
+hint: Walk outward with a loop: `env = self`, then `env = env.parent` until it is `None`.
+solution: Store a dictionary and a parent link. `lookup` and `assign` share the same outward search; `lookup` returns the value and `assign` overwrites it in the environment where the name was found.
+
+@practice code
+prompt: Write `evaluate(node, env)` for the nodes `("num", n)`, `("var", name)`, `("let", name, value, body)` and `("bin", op, left, right)` with `op` one of `+`, `-`, `*`. Here `env` is a plain Python dictionary mapping names to values. A `var` that is not in `env` raises `NameError`. A `let` evaluates `value` in `env`, then evaluates `body` in a **new dictionary** that is a copy of `env` plus the new binding, so the caller's dictionary is not changed.
+starter:
+```python
+def evaluate(node, env):
+    pass
+```
+tests:
+```python
+assert evaluate(("num", 4), {}) == 4
+assert evaluate(("var", "x"), {"x": 7}) == 7
+assert raises(NameError, evaluate, ("var", "y"), {})
+let_x = ("let", "x", ("num", 5),
+         ("bin", "*", ("var", "x"), ("num", 2)))
+assert evaluate(let_x, {}) == 10
+shadow = ("let", "x", ("num", 1),
+          ("let", "x", ("bin", "+", ("var", "x"), ("num", 1)),
+           ("var", "x")))
+assert evaluate(shadow, {}) == 2
+env = {"x": 100}
+outer = ("bin", "+",
+         ("let", "x", ("num", 1), ("var", "x")),
+         ("var", "x"))
+assert evaluate(outer, env) == 101
+assert env == {"x": 100}
+```
+model:
+```python
+def evaluate(node, env):
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "var":
+        if node[1] not in env:
+            raise NameError(f"undefined variable {node[1]!r}")
+        return env[node[1]]
+    if kind == "let":
+        value = evaluate(node[2], env)
+        inner = dict(env)
+        inner[node[1]] = value
+        return evaluate(node[3], inner)
+    left = evaluate(node[2], env)
+    right = evaluate(node[3], env)
+    if node[1] == "+":
+        return left + right
+    if node[1] == "-":
+        return left - right
+    return left * right
+```
+hint: Pass `env` into every recursive call; only `let` changes it.
+hint: In `let`, evaluate the value first using the old `env`, then make a copy with `dict(env)`, add the binding and evaluate the body in the copy.
+solution: Variables are lookups in `env`. A `let` evaluates its value in the outer `env`, builds a new dictionary with the extra binding and evaluates the body there, which gives shadowing and leaves the caller's `env` unchanged.
+
+@practice num
+prompt: What is the value of the expression `let a = 2 in let b = a + 3 in let a = b * a in a - b`, where each `let` binds its name to the value of the expression before `in`, and the body is evaluated with that binding visible?
+answer: 5
+check: (lambda a: (lambda b: (lambda a2: a2 - b)(b * a))(a + 3))(2)
+hint: Evaluate from the outside in, writing down the bindings: `a = 2`, then `b = 5`.
+solution: `a = 2`, then `b = 2 + 3 = 5`. The innermost `let` computes `b * a = 10` using the earlier `a = 2` and binds a new `a = 10` that shadows it. The body is `a - b = 10 - 5 = 5`.
+
+@quiz code
+prompt: Write `lookup_chain(scopes, name)` where `scopes` is a list of dictionaries ordered from the innermost scope to the outermost. Return the value from the first dictionary that contains `name`. If no dictionary contains it, raise `NameError`. Example: `lookup_chain([{"b": 20}, {"a": 1, "b": 2}], "b")` is `20`.
+starter:
+```python
+def lookup_chain(scopes, name):
+    pass
+```
+tests:
+```python
+inner = {"b": 20, "c": 30}
+outer = {"a": 1, "b": 2}
+assert lookup_chain([inner, outer], "a") == 1
+assert lookup_chain([inner, outer], "b") == 20
+assert lookup_chain([inner, outer], "c") == 30
+assert lookup_chain([outer, inner], "b") == 2
+assert lookup_chain([{"z": None}], "z") is None
+assert raises(NameError, lookup_chain, [inner, outer], "d")
+assert raises(NameError, lookup_chain, [], "a")
+```
+model:
+```python
+def lookup_chain(scopes, name):
+    for scope in scopes:
+        if name in scope:
+            return scope[name]
+    raise NameError(f"undefined variable {name!r}")
+```
+hint: Check the scopes in the order given, and stop at the first one that has the name.
+hint: Use `name in scope` rather than testing the value, so a stored `None` or `0` still counts as found.
+solution: Loop over the scopes from innermost to outermost and return the first match; reaching the end of the loop means the name is undefined. Using `in` instead of truthiness keeps values like `None` or `0` working.
+
+@quiz mc
+prompt: Python code runs this function:
+
+```python
+def f():
+    print(total)
+    total = 5
+```
+
+What happens when `f()` is called, when no global `total` exists?
+choice: It prints `5`
+choice: It prints `None`
+choice: It raises `KeyError` because `total` is missing from the global dictionary
+choice*: It raises `UnboundLocalError` because `total` is local to `f` but read before it is assigned
+hint: Python decides at compile time which names are local to a function.
+solution: Because `f` assigns to `total`, the name is local in all of `f`. The `print` reads it before assignment, so Python raises `UnboundLocalError` (a subclass of `NameError`), not a lookup in the global scope.

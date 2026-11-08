@@ -1,0 +1,216 @@
+@lesson
+title: What makes distributed systems hard: partial failure
+summary: Explain why partial failure and unreliable communication make distributed systems different from single machines, classify failures, and compute simple availability figures.
+objective: Define a distributed system and explain why partial failure is its defining difficulty.
+objective: Classify a failure as crash, omission, timing or Byzantine, and explain why a timeout cannot tell a crashed node from a slow one.
+objective: Use retries with idempotent operations and compute the availability of redundant and non-redundant components.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 1 "Introduction" (design goals and pitfalls) and the start of Chapter 8 "Fault tolerance" (basic concepts and failure models).
+
+@article
+A **distributed system** is a collection of independent computers, connected by a network, that cooperate by exchanging messages and appear to their users as one coherent system. A web search, a bank transfer and a video call all depend on dozens or thousands of machines that share no memory and no clock.
+
+### Why it differs from one machine
+
+On one machine, a program either runs or the whole machine is down. In a distributed system you get **partial failure**: some components fail while others keep running, and the survivors often cannot tell what happened. A request can be lost, delayed, duplicated or reordered; a server can crash before or after doing the work; a network cable can cut the system into groups that cannot talk to each other (a **network partition**).
+
+The classic **fallacies of distributed computing** list the false beliefs that cause bugs: the network is reliable; latency is zero; bandwidth is infinite; the network is secure; topology does not change; there is one administrator; transport cost is zero; the network is homogeneous.
+
+### Failure models
+
+A **failure model** states what faults you assume. From mild to severe:
+
+| model | behavior |
+|---|---|
+| **Crash** (fail-stop) | a node halts and never does anything again |
+| **Omission** | a node or link fails to send or receive some messages |
+| **Timing** | a response arrives, but outside the required time bound |
+| **Byzantine** | a node behaves arbitrarily, including lying or acting maliciously |
+
+Each model includes the milder ones. Crash-tolerant protocols are simpler and cheaper than Byzantine-tolerant ones, so most data-center systems assume crash (and recovery) failures and treat Byzantine faults separately.
+
+### The timeout dilemma
+
+Suppose client A sends a request and hears nothing for one second. Possibilities: the request was lost; the server crashed before processing; the server processed it but the reply was lost; the server is only slow. From A's side these are **indistinguishable**. A timeout therefore gives only a *suspicion*. A **failure detector** such as a heartbeat monitor is *unreliable*: it may suspect a live node (a false positive) or detect a crash late.
+
+```python
+def suspected(last_seen, now, timeout):
+    """Nodes whose last heartbeat is older than the timeout."""
+    return sorted(n for n, t in last_seen.items() if now - t > timeout)
+```
+
+### Retries and idempotence
+
+The natural reaction to a timeout is to retry. If the first attempt did succeed, the operation runs twice. An operation is **idempotent** if doing it several times has the same effect as doing it once: "set balance to 50" is idempotent, "add 10 to the balance" is not. Making non-idempotent operations safe requires a unique **request ID** that the server remembers, so duplicates are recognized and ignored (Lesson 2 builds this).
+
+### Availability arithmetic
+
+If a component is up with probability $p$ and components fail independently, then all of $n$ required components are up with probability $p^n$, so chains of dependencies reduce availability. If only one of $n$ redundant copies must be up, the probability is $1-(1-p)^n$. Independence is an assumption: copies in one rack or sharing one power feed fail together (a **correlated failure**).
+
+Availability is often quoted in "nines": 99.9% ("three nines") allows about $0.001 \times 525600 = 525.6$ minutes of downtime per 365-day year.
+
+@example
+title: Availability of a service chain
+problem: A request needs a load balancer (availability 0.999), an application server tier of 2 redundant servers each with availability 0.95, and a database with availability 0.99. Assuming independent failures, what is the availability of the whole chain, to four decimals?
+step: The redundant tier needs only one of its two servers: $1-(1-0.95)^2 = 1-0.0025 = 0.9975$.
+step: The chain needs every stage, so multiply: $0.999 \times 0.9975 \times 0.99$.
+step: $0.999 \times 0.9975 = 0.9965025$, and $0.9965025 \times 0.99 = 0.986537475$.
+step: The chain is available about 98.65% of the time. The weakest, non-redundant stage (the database) dominates, which is why replication matters most where there is a single point of failure.
+answer: about 0.9865
+
+@example
+title: Why a retry can double-apply
+problem: A client sends "add 10" to an account holding 100. The server applies it and replies, but the reply is lost. The client times out and retries. What are the possible final balances, and how is the problem fixed?
+step: If the first request had been lost, the retry is the only one applied: the balance becomes 110.
+step: If the server applied the first request and only the reply was lost, the retry applies again: the balance becomes 120, which is wrong.
+step: The client cannot distinguish these cases, so it cannot decide safely by itself.
+step: Fix: the client attaches a unique request ID. The server records the IDs it has applied (and their replies); a repeated ID is answered from the record without applying it again. Now the retry is safe and the balance is 110 in both cases.
+
+@mistakes
+- Treating a timeout as proof that the server crashed; the server may be alive and the reply lost or late.
+- Retrying a non-idempotent operation (such as "add 10") without a request ID, so a retry applies it twice.
+- Multiplying availabilities of redundant copies instead of using $1-(1-p)^n$, or forgetting that failures are often correlated.
+- Assuming that a lost message means the operation did not happen.
+
+@practice mc
+prompt: A server computes the correct answer but sends it 5 seconds after the client's deadline of 1 second. Which failure category best describes the server's behavior?
+choice: Crash failure
+choice: Omission failure
+choice*: Timing failure
+choice: Byzantine failure
+hint: The result is correct and it does arrive; what is wrong is when it arrives.
+solution: The response is correct but outside the required time bound, which is a timing failure. A crash would mean the server stopped; an omission would mean the response never arrives; Byzantine behavior would involve wrong or arbitrary results.
+
+@practice num
+prompt: A request must pass through 50 servers in sequence, and each is up independently with probability 0.99. What is the probability that all 50 are up? Give a decimal rounded to three places.
+answer: 0.605
+check: 0.99 ** 50
+tol: 0.001
+hint: Independent events that must all happen multiply: $0.99 \times 0.99 \times \dots$
+hint: Compute $0.99^{50}$.
+solution: The probability is $0.99^{50} \approx 0.6050$. Even with 99% reliable components, a chain of 50 is available barely 60% of the time.
+
+@practice code
+prompt: Write `suspected(last_seen, now, timeout)` for a heartbeat failure detector. `last_seen` is a dict mapping a node name to the time of its last heartbeat. Return a sorted list of the names of nodes whose last heartbeat is **strictly more than** `timeout` time units older than `now`.
+starter:
+```python
+def suspected(last_seen, now, timeout):
+    pass
+```
+tests:
+```python
+assert suspected({"a": 10, "b": 4, "c": 9}, 12, 5) == ["b"]
+assert suspected({"a": 10, "b": 7}, 12, 5) == []
+assert suspected({"x": 0, "y": 1}, 10, 3) == ["x", "y"]
+assert suspected({}, 10, 3) == []
+assert suspected({"a": 7}, 12, 5) == []
+```
+model:
+```python
+def suspected(last_seen, now, timeout):
+    return sorted(n for n, t in last_seen.items() if now - t > timeout)
+```
+hint: A node is suspected when `now - last_seen[node]` exceeds `timeout`.
+hint: Use strict `>`: a heartbeat exactly `timeout` old is not yet suspected. Sort the result.
+solution: Filter the nodes whose silence `now - t` is strictly greater than `timeout` and sort the names. The case `{"a": 7}` at time 12 with timeout 5 is exactly at the boundary, so `a` is not suspected.
+
+@practice code
+prompt: Write `retry_call(func, attempts)`. It calls `func()` (no arguments) and returns its result. If `func` raises `TimeoutError`, call it again, for at most `attempts` calls in total (`attempts >= 1`). If every call raises `TimeoutError`, let the last `TimeoutError` propagate. Any other exception propagates immediately without a retry.
+starter:
+```python
+def retry_call(func, attempts):
+    pass
+```
+tests:
+```python
+calls = []
+def flaky():
+    calls.append(1)
+    if len(calls) < 3:
+        raise TimeoutError("slow")
+    return "ok"
+assert retry_call(flaky, 5) == "ok"
+assert len(calls) == 3
+tries = []
+def dead():
+    tries.append(1)
+    raise TimeoutError("down")
+assert raises(TimeoutError, retry_call, dead, 3)
+assert len(tries) == 3
+def buggy():
+    raise ValueError("bug")
+assert raises(ValueError, retry_call, buggy, 4)
+bugs = []
+def buggy2():
+    bugs.append(1)
+    raise ValueError("bug")
+assert raises(ValueError, retry_call, buggy2, 4)
+assert len(bugs) == 1
+assert retry_call(lambda: 7, 1) == 7
+```
+model:
+```python
+def retry_call(func, attempts):
+    for _ in range(attempts - 1):
+        try:
+            return func()
+        except TimeoutError:
+            pass
+    return func()
+```
+hint: Loop over the first `attempts - 1` calls inside `try`/`except TimeoutError`.
+hint: Make the final attempt outside the `try`, so its exception propagates unchanged.
+solution: Try the first `attempts - 1` calls, swallowing only `TimeoutError`. The last call is made without a handler, so a final `TimeoutError` (or any other exception) reaches the caller. Catching only `TimeoutError` means a `ValueError` is never retried.
+
+@practice text
+prompt: A server applies each request at most once by remembering request IDs. What does this program print? Type the single number.
+
+```python
+seen = set()
+balance = 100
+for rid, amt in [(1, 10), (2, 5), (1, 10), (3, 20), (2, 5)]:
+    if rid not in seen:
+        seen.add(rid)
+        balance += amt
+print(balance)
+```
+answer: 135
+check: run("seen = set()\nbalance = 100\nfor rid, amt in [(1, 10), (2, 5), (1, 10), (3, 20), (2, 5)]:\n    if rid not in seen:\n        seen.add(rid)\n        balance += amt\nprint(balance)\n")
+hint: Duplicate request IDs are skipped.
+solution: Only the first occurrence of IDs 1, 2 and 3 is applied: $100 + 10 + 5 + 20 = 135$. The repeated `(1, 10)` and `(2, 5)` are ignored.
+
+@quiz code
+prompt: Write `at_least_one_up(ps)` where `ps` is a list of probabilities, each the chance that one independent replica is up. Return the probability that at least one replica is up, as a float. An empty list gives `0.0`.
+starter:
+```python
+def at_least_one_up(ps):
+    pass
+```
+tests:
+```python
+assert abs(at_least_one_up([0.9, 0.9, 0.9]) - 0.999) < 1e-9
+assert abs(at_least_one_up([0.5]) - 0.5) < 1e-9
+assert abs(at_least_one_up([0.5, 0.8]) - 0.9) < 1e-9
+assert at_least_one_up([]) == 0.0
+assert abs(at_least_one_up([1.0, 0.1]) - 1.0) < 1e-9
+```
+model:
+```python
+def at_least_one_up(ps):
+    all_down = 1.0
+    for p in ps:
+        all_down *= 1 - p
+    return 1.0 - all_down if ps else 0.0
+```
+hint: "At least one up" is the complement of "all down".
+hint: Multiply $(1-p)$ over all replicas to get the probability that all are down, then subtract from 1. Handle the empty list separately.
+solution: All replicas are down with probability $\prod (1-p_i)$ by independence; the answer is one minus that. For an empty list the product is 1, which would give 0.0 anyway, but the explicit check makes the intent clear.
+
+@quiz ms
+prompt: A client calls a remote service and receives no reply within its timeout. Which statements are true?
+choice*: The request may have been executed even though no reply arrived.
+choice*: The client cannot tell a crashed server from a slow one using only this timeout.
+choice: The server has definitely crashed, because a live server always replies in time.
+choice*: Retrying is safe without further design only if the operation is idempotent.
+choice: The network is guaranteed to have lost the request.
+hint: List every situation in which a client could see silence.
+solution: Silence is consistent with a lost request, a lost reply, a slow server and a crash, so the request may or may not have run. Retrying is safe by itself only for idempotent operations. A timeout proves neither a crash nor a lost request.

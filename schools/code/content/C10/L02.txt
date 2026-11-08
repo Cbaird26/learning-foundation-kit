@@ -1,0 +1,226 @@
+@lesson
+title: Relational algebra
+summary: Write and evaluate relational-algebra expressions using selection, projection, set operations, joins, rename and division.
+objective: Apply the operators selection, projection, union, difference, Cartesian product and rename to relation instances.
+objective: Express joins, intersection and division in terms of the basic operators.
+objective: Translate an English question into a relational-algebra expression and implement operators over lists of dictionaries.
+reading: CMU 15-445/645 Database Systems, the relational algebra part of the first lectures; also the relational algebra chapter of any database textbook.
+@article
+**Relational algebra** is a small set of operators that take relations as input and produce a relation as output. Because the output is again a relation, operators compose into **expressions**. SQL is built on this algebra, and a database's query optimizer rewrites queries internally as algebra trees (week 10), so learning the algebra now explains much of SQL later. In this lesson relations are **sets**: results never contain duplicates.
+
+### The basic operators
+
+- **Selection** $\sigma_{p}(R)$ keeps the tuples of $R$ for which predicate $p$ is true. Example: $\sigma_{major='CS'}(Student)$.
+- **Projection** $\pi_{A_1,\dots,A_k}(R)$ keeps only the listed attributes and removes duplicate tuples that result. Example: $\pi_{major}(Student)$ lists each major once.
+- **Union** $R \cup S$, **difference** $R - S$ and **intersection** $R \cap S$ combine two relations that are **union-compatible**: same number of attributes with matching domains.
+- **Cartesian product** $R \times S$ pairs every tuple of $R$ with every tuple of $S$. Its cardinality is $|R| \cdot |S|$ and its degree is the sum of the degrees.
+- **Rename** $\rho_{T(B_1,\dots,B_k)}(R)$ gives a relation, and optionally its attributes, new names. It is needed to join a relation with itself and to avoid name clashes.
+
+The five operators selection, projection, union, difference and product (with rename) are enough to express every other operator below. A query language that can express everything these can is called **relationally complete**.
+
+### Joins
+
+A **theta join** $R \bowtie_{\theta} S$ is defined as $\sigma_{\theta}(R \times S)$. An **equijoin** uses only equality conditions. The **natural join** $R \bowtie S$ equates all attributes with the same name in both relations and keeps one copy of each. If there are no common attributes, the natural join equals the product.
+
+Suppose `Student(sid, name, major)` and `Took(sid, cid, grade)`. Then $Student \bowtie Took$ pairs each student with their course rows. A student who took nothing disappears from the result, which is why the outer joins of week 4 exist.
+
+### Division
+
+Division answers "for all" questions. For $R(A, B)$ and $S(B)$, the quotient $R \div S$ contains the values $a$ such that for **every** $b \in S$ the tuple $(a, b)$ is in $R$. Using the basic operators:
+
+$$R \div S = \pi_A(R) - \pi_A\big((\pi_A(R) \times S) - R\big)$$
+
+Read it as: take all candidate $a$ values, build every pair they would need, subtract the pairs that really exist, and remove the candidates that have a missing pair.
+
+### Useful equivalences
+
+Selections can be cascaded and reordered: $\sigma_{p \wedge q}(R) = \sigma_p(\sigma_q(R))$. A selection that mentions only attributes of $R$ can be pushed below a join: $\sigma_p(R \bowtie S) = \sigma_p(R) \bowtie S$. Joins are commutative and associative. These identities let an optimizer choose a cheaper order without changing the answer.
+
+### Operators in code
+
+Representing a relation instance as a list of dictionaries, projection is a loop that builds tuples and removes repeats:
+
+```python
+def project(rows, attrs):
+    seen, out = set(), []
+    for row in rows:
+        values = tuple(row[a] for a in attrs)
+        if values not in seen:
+            seen.add(values)
+            out.append(dict(zip(attrs, values)))
+    return out
+```
+
+Selection is a list comprehension, `[r for r in rows if predicate(r)]`. This costs one pass over the input, $O(|R|)$, whereas a naive join is a nested loop over both inputs, $O(|R| \cdot |S|)$.
+
+@example
+title: Evaluating an expression
+problem: Let Student be the relation below. Evaluate $\pi_{name}(\sigma_{major='CS' \wedge year>1}(Student))$.
+
+| sid | name | major | year |
+|---|---|---|---|
+| 1 | Ana | CS | 1 |
+| 2 | Ben | CS | 3 |
+| 3 | Cy | Math | 2 |
+| 4 | Di | CS | 2 |
+step: Work from the inside out. First evaluate the selection with condition `major = 'CS'` and `year > 1`.
+step: Ana is CS but year 1, so she fails. Ben (CS, 3) and Di (CS, 2) pass. Cy is not CS.
+step: The selection leaves the tuples for Ben and Di.
+step: Projection onto `name` keeps just the names and removes duplicates, of which there are none.
+answer: The result has two tuples, `Ben` and `Di`.
+
+@example
+title: Students who took no course
+problem: With `Student(sid, name)` and `Took(sid, cid)`, write an expression for the ids of students who took no course.
+step: "Took no course" is a "not in" question, so use difference.
+step: All student ids: $\pi_{sid}(Student)$.
+step: Ids of students who took at least one course: $\pi_{sid}(Took)$.
+step: The two relations are union-compatible (one attribute `sid`), so subtract.
+answer: $\pi_{sid}(Student) - \pi_{sid}(Took)$
+
+@mistakes
+- Forgetting that projection removes duplicates in the set algebra, so counting results from a projection gives fewer tuples than rows.
+- Applying union, difference or intersection to relations that are not union-compatible.
+- Confusing $\sigma$ (chooses rows by a condition) with $\pi$ (chooses columns).
+- Using join where division is needed: "took at least one CS course" is a join, "took every CS course" is a division.
+
+@practice code
+prompt: Write `project(rows, attrs)` implementing projection. `rows` is a list of dictionaries and `attrs` a list of attribute names. Return a list of new dictionaries containing only those attributes, with duplicate tuples removed, keeping the order in which each distinct tuple first appears.
+starter:
+```python
+def project(rows, attrs):
+    pass
+```
+tests:
+```python
+rows = [
+    {"name": "Ana", "major": "CS", "year": 1},
+    {"name": "Ben", "major": "CS", "year": 3},
+    {"name": "Cy", "major": "Math", "year": 2},
+]
+assert project(rows, ["major"]) == [{"major": "CS"}, {"major": "Math"}]
+assert project(rows, ["name", "year"])[1] == {"name": "Ben", "year": 3}
+assert len(project(rows, ["name", "year"])) == 3
+assert project([], ["major"]) == []
+assert project(rows, ["major"])[0] is not rows[0]
+```
+model:
+```python
+def project(rows, attrs):
+    seen = set()
+    out = []
+    for row in rows:
+        values = tuple(row[a] for a in attrs)
+        if values not in seen:
+            seen.add(values)
+            out.append(dict(zip(attrs, values)))
+    return out
+```
+hint: Two output rows are duplicates exactly when their tuples of values are equal.
+hint: Use a set of value tuples to remember what you have already emitted.
+solution: For each row build `values = tuple(row[a] for a in attrs)`. If it is new, remember it and append a dictionary built with `zip(attrs, values)`. The set removes duplicates while the list keeps first-appearance order.
+
+@practice code
+prompt: Write `natural_join(r, s)` for two relations stored as lists of dictionaries. The shared attributes are the keys that occur in both `r[0]` and `s[0]`. Return, for each row `x` of `r` in order and then each row `y` of `s` in order, the merged dictionary `{**x, **y}` whenever `x` and `y` agree on every shared attribute. If either list is empty return `[]`. With no shared attributes every pair matches (a Cartesian product).
+starter:
+```python
+def natural_join(r, s):
+    pass
+```
+tests:
+```python
+r = [{"sid": 1, "name": "Ana"}, {"sid": 2, "name": "Ben"}]
+s = [{"sid": 1, "cid": "A"}, {"sid": 1, "cid": "B"}, {"sid": 3, "cid": "C"}]
+assert natural_join(r, s) == [
+    {"sid": 1, "name": "Ana", "cid": "A"},
+    {"sid": 1, "name": "Ana", "cid": "B"},
+]
+assert natural_join(r, []) == []
+assert natural_join([], s) == []
+t = [{"x": 1}, {"x": 2}]
+u = [{"y": "p"}, {"y": "q"}]
+assert len(natural_join(t, u)) == 4
+assert natural_join(t, u)[1] == {"x": 1, "y": "q"}
+```
+model:
+```python
+def natural_join(r, s):
+    if not r or not s:
+        return []
+    shared = [a for a in r[0] if a in s[0]]
+    out = []
+    for x in r:
+        for y in s:
+            if all(x[a] == y[a] for a in shared):
+                out.append({**x, **y})
+    return out
+```
+hint: Compute the list of shared attribute names once, from the first row of each relation.
+hint: Use a nested loop; `all(...)` over an empty list is `True`, which gives the product case for free.
+solution: Find `shared`, then test every pair with `all(x[a] == y[a] for a in shared)` and merge matching pairs with `{**x, **y}`. This is a nested-loop join, $O(|R| \cdot |S|)$ comparisons.
+
+@practice num
+prompt: Relations `r(a, b)` and `s(b, c)` hold the data below. How many tuples does the natural join of `r` and `s` contain?
+
+`r`: (1, 'x'), (2, 'y'), (2, 'z'), (3, 'x')
+
+`s`: ('x', 10), ('x', 20), ('y', 30), ('w', 40)
+answer: 5
+check: len(sql("CREATE TABLE r(a INT, b TEXT); INSERT INTO r VALUES (1,'x'),(2,'y'),(2,'z'),(3,'x'); CREATE TABLE s(b TEXT, c INT); INSERT INTO s VALUES ('x',10),('x',20),('y',30),('w',40);", "SELECT * FROM r NATURAL JOIN s"))
+hint: The only common attribute is `b`. Count, for each value of `b`, the rows of `r` times the rows of `s`.
+solution: Value `x` has 2 rows in `r` and 2 in `s`, giving 4 pairs. Value `y` gives 1 pair. Value `z` has no partner and `w` has no partner. The total is 4 + 1 = 5.
+
+@practice mc
+prompt: `Took(sid, cid)` lists which student took which course and `CSCourse(cid)` lists the computer-science courses. Which expression gives the ids of students who took **every** CS course?
+choice*: $Took \div CSCourse$
+choice: $Took \bowtie CSCourse$
+choice: $\pi_{sid}(Took) - \pi_{sid}(CSCourse)$
+choice: $\pi_{sid}(Took \cup CSCourse)$
+hint: "For every" is the signature of one specific operator.
+solution: Division keeps the `sid` values paired in `Took` with each `cid` in `CSCourse`. The natural join keeps students who took at least one CS course, and the other two are not even meaningful (they combine relations with different attributes).
+
+@practice self
+prompt: Schema: `Student(sid, name)`, `Course(cid, title, dept)`, `Took(sid, cid, grade)`. Write relational-algebra expressions for: (a) the names of students who took at least one course whose dept is 'CS'; (b) the ids of students who took no course; (c) the ids of students who took every course whose dept is 'CS'.
+hint: For (c), a "for every" question calls for division; first make the dividend have attributes (sid, cid).
+solution: (a) $\pi_{name}\big(Student \bowtie \sigma_{dept='CS'}(Course \bowtie Took)\big)$. (b) $\pi_{sid}(Student) - \pi_{sid}(Took)$. (c) $\pi_{sid,cid}(Took) \div \pi_{cid}(\sigma_{dept='CS'}(Course))$.
+rubric: (a) joins the three relations on their common attributes, selects on dept and projects name.
+rubric: (b) uses difference between all student ids and ids appearing in Took.
+rubric: (c) projects Took onto (sid, cid) so the divisor attribute matches, and divides by the CS course ids.
+
+@quiz code
+prompt: Write `difference(r, s)` implementing relational difference on lists of dictionaries with the same keys. Return the rows of `r` that do not equal any row of `s`, in the order they appear in `r`, with duplicates removed (the result is a set).
+starter:
+```python
+def difference(r, s):
+    pass
+```
+tests:
+```python
+r = [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 2}]
+s = [{"a": 2}]
+assert difference(r, s) == [{"a": 1}, {"a": 3}]
+assert difference(r, []) == [{"a": 1}, {"a": 2}, {"a": 3}]
+assert difference([], r) == []
+assert difference(r, r) == []
+p = [{"a": 1, "b": 2}, {"a": 1, "b": 3}]
+assert difference(p, [{"a": 1, "b": 2}]) == [{"a": 1, "b": 3}]
+```
+model:
+```python
+def difference(r, s):
+    out = []
+    for row in r:
+        if row not in s and row not in out:
+            out.append(row)
+    return out
+```
+hint: Dictionaries compare equal when they have the same keys and values, so `row in s` works.
+hint: Also check that `row` is not already in the output, to remove duplicates.
+solution: Scan `r`; keep a row only if it is absent from `s` and not already kept. Whole-dictionary equality is exactly tuple equality for a relation.
+
+@quiz num
+prompt: Relation `R(A)` has 6 tuples, `S(A)` has 4 tuples, and 3 tuples appear in both. How many tuples does $R \cup S$ have?
+answer: 7
+check: 6 + 4 - 3
+hint: Tuples in both relations should be counted once.
+solution: By inclusion and exclusion, $|R \cup S| = |R| + |S| - |R \cap S| = 6 + 4 - 3 = 7$.

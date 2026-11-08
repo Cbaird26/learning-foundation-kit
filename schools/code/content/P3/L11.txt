@@ -1,0 +1,259 @@
+@lesson
+title: Reliability: redundancy, rate limiting and graceful degradation
+summary: Make a system survive failures and overload with redundancy, timeouts, circuit breakers, rate limiting, load shedding and planned degradation, and compute the availability that results.
+objective: Compute the availability of components in series and in parallel and identify single points of failure.
+objective: Apply timeouts, bounded retries, circuit breakers and bulkheads so that one failing dependency does not take the system down.
+objective: Implement and choose rate-limiting algorithms, and design graceful degradation for overload.
+reading: The System Design Primer, the sections "Availability in numbers", "Fail-over", "Replication" (availability patterns) and "Security" notes on rate limiting; look up the token bucket algorithm.
+@article
+Everything fails: disks, servers, racks, networks, deploys, dependencies, and, eventually, your own code. Reliability engineering does not try to prevent every failure; it makes sure a failure of one part does not become a failure of the whole, and that overload produces a slower or smaller service rather than no service.
+
+### Availability arithmetic
+
+If components must **all** work (they are in **series**), availabilities multiply:
+
+$$A_{\text{series}} = A_1 \times A_2 \times \cdots \times A_n$$
+
+Three components at 99.9% give $0.999^3 \approx 99.7\%$: every dependency in the request path lowers the total. If **any one** copy suffices (components in **parallel**, and failures are independent), unavailabilities multiply:
+
+$$A_{\text{parallel}} = 1 - (1 - A)^n$$
+
+Two independent copies at 99% give $1 - 0.01^2 = 99.99\%$. The word *independent* matters: two replicas in one rack, on one power feed, or running the same buggy release fail together. Spread copies across **failure domains** (servers, racks, availability zones, regions) and find every **single point of failure** (SPOF) by asking of each box and each shared dependency "what if this disappears?"
+
+### Redundancy patterns
+
+- **Active-active**: all copies serve traffic. Capacity must allow for losing one (N+1, or N+2 for critical systems), and state must be replicated.
+- **Active-passive**: a standby takes over on failure. Simpler for stateful systems, but failover takes time and the standby may be untested, so rehearse failovers.
+- **Multi-region**: survives the loss of a region, at high cost and with hard data-consistency questions (week 8). Use it only for systems whose SLO demands it.
+
+### Containing failures
+
+A slow dependency is often worse than a dead one, because callers pile up waiting. Defenses:
+
+- **Timeouts** on every network call, shorter than the caller's own deadline. No timeout means a hang can hold threads forever.
+- **Bounded retries** with exponential backoff and jitter, only for idempotent operations. Retries multiply load: three layers each trying 3 times can send 27 calls to the bottom service for one user request, which turns a brownout into an outage (a **retry storm**). Use a retry budget (for example at most 10 percent extra calls) and retry at one layer only.
+- **Circuit breaker**: after repeated failures, **open** the circuit and fail fast for a cool-down period instead of calling the broken dependency. Then go **half-open**: allow a trial call; success closes the circuit, failure reopens it.
+- **Bulkheads**: separate thread pools, connection pools or instances per dependency or per customer tier, so one slow part cannot exhaust shared resources.
+
+### Rate limiting
+
+A **rate limiter** caps how much work a client may demand. It protects against abuse, runaway clients and your own bugs, and shares capacity fairly. Typical placement is the API gateway, keyed by user, API key or IP, answering **HTTP 429 Too Many Requests** with a `Retry-After` header.
+
+| Algorithm | Behavior | Note |
+|---|---|---|
+| Fixed window | Count per minute, reset at the boundary | Simple; allows a double burst around the boundary |
+| Sliding window | Count requests in the last 60 seconds | Smoother; needs more memory (log) or an approximation |
+| Token bucket | Tokens refill at a steady rate up to a capacity; each request spends one | Allows bursts up to the capacity while enforcing the average rate |
+| Leaky bucket | Requests queue and drain at a fixed rate | Smooths output; adds queueing delay |
+
+In a fleet, counters must be shared (an in-memory store with atomic increment or a script) or each node enforces a share of the limit locally. Decide what happens when the limiter store is down: **fail open** (allow, risking overload) or **fail closed** (block, risking an outage). For most APIs fail open with local limits as a backstop.
+
+### Overload: load shedding and graceful degradation
+
+When demand exceeds capacity, queues grow, latency rises, and eventually everything times out and **goodput** (useful work) collapses. Better to **shed load** deliberately: reject excess requests early and cheaply, prefer important traffic (checkout over browsing; paid over free), and keep queues short. **Graceful degradation** means planned reduced functionality: serve cached or stale data, drop recommendations, disable expensive features behind **feature flags**, switch to read-only mode, return a static page. Write down in advance which features are shed in which order, and test it.
+
+### Test your failure handling
+
+Practice failure: restore backups regularly (an untested backup is a hope, not a backup), run game days, and inject faults (kill instances, add latency) in a controlled way. Reliability you have not exercised does not exist.
+
+@example
+title: Availability of a request path
+problem: A request passes through a load balancer (99.99% available), a web tier (99.95%) and one database (99.9%), all independent. What is the end-to-end availability, and what happens if the database becomes two independent replicas, either of which can serve requests?
+step: In series, multiply: $0.9999 \times 0.9995 \times 0.999 = 0.99840$, so 99.84 percent, about 14 hours of downtime a year.
+step: The database is the weakest link at 99.9 percent, so it is where redundancy helps most.
+step: Two independent replicas in parallel give $1 - (1 - 0.999)^2 = 1 - 0.000001 = 0.999999$.
+step: New total: $0.9999 \times 0.9995 \times 0.999999 = 0.99940$, so 99.94 percent, about 5 hours a year.
+step: The remaining weak points are now the load balancer and the web tier, so the next step would be redundancy there. This assumes failures are independent and that failover itself works; both are assumptions to test.
+answer: 99.84 percent with one database; 99.94 percent with two independent replicas.
+
+@example
+title: Tracing a token bucket
+problem: A token bucket has capacity 3 and refills 1 token per second. It starts full. Requests arrive at times 0, 0, 0, 0, 1.5 and 1.6 seconds. Which are allowed?
+step: At time 0 there are 3 tokens. The first three requests each spend one and are allowed; the fourth finds 0 tokens and is rejected.
+step: At 1.5 seconds, 1.5 tokens have been added, giving 1.5. The request spends 1 and is allowed, leaving 0.5.
+step: At 1.6 seconds, 0.1 tokens have been added, giving 0.6, which is less than 1, so the request is rejected.
+step: Results: allowed, allowed, allowed, rejected, allowed, rejected. A client can burst up to 3 requests but averages at most 1 per second over time.
+answer: Requests 1, 2, 3 and 5 are allowed; requests 4 and 6 are rejected.
+
+@mistakes
+- Treating replicas as independent when they share a rack, a power feed, a deployment or a software version, so one event takes them all down.
+- Retrying at every layer without a budget, which multiplies load during an incident.
+- Calling dependencies without timeouts, so one slow service exhausts all threads and takes everything down.
+- Having a degradation plan that was never tested, or a rate limiter whose failure blocks all traffic.
+
+@practice num
+prompt: A request must pass through two independent components in series. Component 1 is 99.9 percent available and component 2 is 99.5 percent available. What is the availability of the pair, in percent?
+answer: 99.4005
+check: 100*0.999*0.995
+tol: 0.0001
+unit: percent
+hint: Availabilities in series multiply; convert percentages to fractions first.
+solution: $0.999 \times 0.995 = 0.994005$, which is 99.4005 percent.
+
+@practice num
+prompt: Three replicas of a service run in three different availability zones. Each is 99 percent available, failures are independent, and the service works if at least one replica works. What is the availability of the service, in percent?
+answer: 99.9999
+check: 100*(1-(1-0.99)**3)
+tol: 0.00001
+unit: percent
+hint: The service fails only if all three fail.
+solution: All three fail together with probability $0.01^3 = 10^{-6}$, so availability is $1 - 10^{-6} = 0.999999$, which is 99.9999 percent.
+
+@practice code
+prompt: Implement a token bucket rate limiter. `TokenBucket(rate, capacity, clock)` creates a bucket that refills `rate` tokens per second up to `capacity`, starts full, and reads the current time in seconds from the function `clock()`. `allow()` first adds the tokens earned since the last call (never exceeding `capacity`), then, if at least 1 token is available, spends one and returns `True`; otherwise it returns `False`.
+starter:
+```python
+class TokenBucket:
+    def __init__(self, rate, capacity, clock):
+        pass
+
+    def allow(self):
+        pass
+```
+tests:
+```python
+now = [0.0]
+bucket = TokenBucket(2, 3, lambda: now[0])
+assert [bucket.allow() for _ in range(4)] == [True, True, True, False]
+now[0] = 0.5
+assert bucket.allow() is True
+assert bucket.allow() is False
+now[0] = 100.0
+assert [bucket.allow() for _ in range(4)] == [True, True, True, False]
+now[0] = 100.25
+assert bucket.allow() is False
+now[0] = 100.5
+assert bucket.allow() is True
+```
+model:
+```python
+class TokenBucket:
+    def __init__(self, rate, capacity, clock):
+        self.rate = rate
+        self.capacity = capacity
+        self.clock = clock
+        self.tokens = capacity
+        self.last = clock()
+
+    def allow(self):
+        now = self.clock()
+        earned = (now - self.last) * self.rate
+        self.tokens = min(self.capacity, self.tokens + earned)
+        self.last = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+```
+hint: Store the token count and the time of the last update; compute the refill lazily inside `allow`.
+hint: Cap the tokens at `capacity` after adding, so a long idle period cannot save up unlimited tokens.
+solution: The bucket needs no background timer: each call adds `elapsed * rate` tokens, capped at the capacity, then spends one if possible. After the long idle gap the bucket is full (3 tokens), not 200, which is what bounds the burst size. Injecting `clock` makes the class testable without sleeping.
+
+@practice ms
+prompt: Which of these are graceful degradation techniques for an overloaded e-commerce site? Select all that apply.
+choice*: Serving cached or slightly stale product pages instead of querying the database.
+choice*: Turning off personalised recommendations with a feature flag while keeping search and checkout working.
+choice*: Rejecting low-priority requests early (for example bulk API clients) to protect checkout.
+choice: Retrying every failed request three times at every layer, so that users eventually succeed.
+choice: Removing all timeouts so that slow responses can finish.
+hint: Degradation reduces features or freshness to protect the core function.
+solution: Stale caches, feature flags and prioritized load shedding all keep the critical path alive with reduced functionality. Layered retries and missing timeouts add load and make overload worse.
+
+@practice self
+prompt: Write a graceful degradation plan for the checkout flow of an online shop: the dependencies are a product catalog service, an inventory service, a recommendations service, a payment provider, and an email service. For each dependency, say what happens when it is slow or down (the degraded behavior), which timeout and retry policy you use, and whether a circuit breaker applies. Also describe the order in which you shed load if traffic doubles unexpectedly, and how you would test the plan.
+hint: Decide first which dependencies are essential to taking an order and which are not.
+solution: A model answer:
+
+- Essential dependencies (checkout fails without them): inventory (to avoid overselling) and payment. Non-essential: recommendations, email, and parts of the catalog.
+- Recommendations: timeout 100 ms, no retry. On failure show a static "popular items" list or nothing. Circuit breaker opens after 5 failures in 10 seconds so the page stops waiting. A feature flag can turn the feature off for everyone.
+- Catalog: serve product data from a cache with a long TTL; if the service is down, show cached data (prices are re-verified at checkout). Timeout 300 ms, one retry with jitter for reads.
+- Inventory: timeout 500 ms; one retry (the reservation call is idempotent through a reservation id). If it is down, switch the item to "limited availability" mode: accept the order into a pending state, with a promise to confirm by email, only for items with a large safety stock; otherwise show a temporary "try again shortly" message. A circuit breaker fails fast to protect the service when it recovers.
+- Payment: timeout longer than usual (5 seconds), no automatic retry of the charge without an idempotency key; with a key, retry once. If the provider is down, offer a secondary provider or store the order as "payment pending" for a few minutes. Circuit breaker per provider.
+- Email: asynchronous through a queue with retries, so an outage delays the confirmation email but never blocks the order.
+- Load shedding if traffic doubles: first disable recommendations and personalised content; second serve all browsing pages from cache only and reduce search to basic results; third rate limit bots and bulk API clients (429 with Retry-After); last resort admit checkout users first and queue new visitors in a waiting room. Checkout capacity is reserved and never shed before browsing.
+- Testing: run game days that inject latency and failures in each dependency in a staging environment, then in production for a small percentage of traffic; run a load test at 2 times peak; verify that dashboards and alerts show the degraded modes, and review the plan after every incident.
+rubric: Separates essential from non-essential dependencies and gives a specific degraded behavior for each of the five.
+rubric: Gives timeouts and retry policy per dependency, and retries only operations that are idempotent (or protected by an idempotency key).
+rubric: Describes circuit breakers or feature flags where they apply and an ordered load-shedding sequence that protects checkout.
+rubric: Includes a way to test the plan (game day, fault injection or load test).
+
+@quiz code
+prompt: Implement a circuit breaker. `CircuitBreaker(failure_threshold, reset_after, clock)` wraps calls. `call(fn)` runs `fn()` and returns its result. If `fn` raises, increase a consecutive failure count and re-raise the same exception; when the count reaches `failure_threshold`, the circuit opens at the current time. While the circuit is open and less than `reset_after` seconds have passed since it opened, `call` raises `RuntimeError` without calling `fn`. After `reset_after` seconds, the next call is a trial: if it succeeds the failure count resets and the circuit closes; if it fails the circuit opens again at that time. A success at any time resets the failure count.
+starter:
+```python
+class CircuitBreaker:
+    def __init__(self, failure_threshold, reset_after, clock):
+        pass
+
+    def call(self, fn):
+        pass
+```
+tests:
+```python
+def bad():
+    raise ValueError("down")
+
+
+def good():
+    return "ok"
+
+
+now = [0]
+cb = CircuitBreaker(2, 10, lambda: now[0])
+assert cb.call(good) == "ok"
+assert raises(ValueError, cb.call, bad)
+assert cb.call(good) == "ok"
+assert raises(ValueError, cb.call, bad)
+assert raises(ValueError, cb.call, bad)
+assert raises(RuntimeError, cb.call, good)
+now[0] = 9
+assert raises(RuntimeError, cb.call, good)
+now[0] = 10
+assert cb.call(good) == "ok"
+assert raises(ValueError, cb.call, bad)
+assert cb.call(good) == "ok"
+cb2 = CircuitBreaker(1, 5, lambda: now[0])
+now[0] = 100
+assert raises(ValueError, cb2.call, bad)
+now[0] = 105
+assert raises(ValueError, cb2.call, bad)
+now[0] = 109
+assert raises(RuntimeError, cb2.call, good)
+now[0] = 110
+assert cb2.call(good) == "ok"
+```
+model:
+```python
+class CircuitBreaker:
+    def __init__(self, failure_threshold, reset_after, clock):
+        self.threshold = failure_threshold
+        self.reset_after = reset_after
+        self.clock = clock
+        self.failures = 0
+        self.opened_at = None
+
+    def call(self, fn):
+        if self.opened_at is not None:
+            if self.clock() - self.opened_at < self.reset_after:
+                raise RuntimeError("circuit open")
+        try:
+            result = fn()
+        except Exception:
+            self.failures += 1
+            if self.failures >= self.threshold:
+                self.opened_at = self.clock()
+            raise
+        self.failures = 0
+        self.opened_at = None
+        return result
+```
+hint: Track the number of consecutive failures and the time the circuit opened (or `None` when closed).
+hint: A failed trial call after the cool-down raises the failure count above the threshold again, which reopens the circuit with a new timestamp.
+solution: When `opened_at` is set and the cool-down has not elapsed, fail fast. Otherwise call the function: a success clears the count and the open time, a failure counts and (at the threshold) records a new open time, so a failed trial restarts the cool-down. This is the closed, open and half-open cycle without an explicit state variable.
+
+@quiz num
+prompt: A client calls service A, which calls service B, which calls service C, which calls a database service D. Each of the services A, B and C calls the next layer and, if the call fails, tries it up to 3 times in total (1 original attempt plus 2 retries). Assume D always fails. How many calls can reach D for one client request to A?
+answer: 27
+check: 3**3
+hint: Each retrying layer multiplies the calls below it by 3.
+solution: A calls B up to 3 times; each of those B calls calls C up to 3 times (9 calls); each of those C calls calls D up to 3 times, giving $3 \times 3 \times 3 = 27$ calls to D. This is why retries should be done at one layer only, with a budget.

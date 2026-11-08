@@ -1,0 +1,198 @@
+@lesson
+title: Internet routing: OSPF, BGP and NAT
+summary: Explain how the internet scales routing with autonomous systems, how OSPF and BGP differ, and how network address translation rewrites addresses and ports.
+objective: Explain why routing is split into intra-AS and inter-AS protocols and name the protocols used for each.
+objective: Apply the BGP route-selection rules and the AS-path loop check to choose among routes.
+objective: Describe how business relationships shape BGP policy and how BGP can fail.
+objective: Simulate a NAT translation table and explain its consequences.
+reading: Computer Networks: A Systems Approach, Chapter 4 "Advanced Internetworking", the sections on routing areas and interdomain routing (BGP); also look up network address translation (NAT) in the networking chapter on the IP service model.
+
+@article
+The internet has hundreds of thousands of networks and a global table of about a million IPv4 prefixes. One routing algorithm for all of it would not scale, and organizations want to control their own routing. So the internet is divided into **autonomous systems (ASes)**: collections of routers under one administration, each with an **AS number**. Routing is **hierarchical**: an **intra-AS** (interior gateway) protocol runs inside each AS and the **inter-AS** protocol, BGP, connects the ASes.
+
+### Intra-AS routing: OSPF
+
+**OSPF** (Open Shortest Path First, OSPFv2 is RFC 2328) is a **link-state** protocol. Each router floods link-state advertisements to all routers in its area, builds the same topology database and runs Dijkstra's algorithm. Link costs are set by the administrator (often inversely related to bandwidth). OSPF messages are carried directly in IP datagrams (protocol number 89), not in TCP or UDP. A large AS is split into **areas**, joined through a backbone area (area 0), which limits flooding. IS-IS is a similar link-state protocol. **RIP** is an older distance-vector protocol with a hop-count metric and a maximum of 15 hops.
+
+### Inter-AS routing: BGP
+
+**BGP** (Border Gateway Protocol, BGP-4 is RFC 4271) is the protocol that holds the internet together. Neighboring routers set up a TCP connection (port 179) and exchange **route announcements** for prefixes: "I can reach 203.0.113.0/24 via this AS path". A route carries attributes, notably:
+
+- **AS-PATH**: the list of ASes the announcement has passed through. A router **prepends its own AS number** when it announces a route to a neighbor in another AS, and **discards any route that already contains its own AS number**, which prevents loops. BGP is therefore called a **path-vector** protocol.
+- **NEXT-HOP**: the router interface to send packets to.
+- **LOCAL-PREF**: a local preference set by policy inside an AS.
+
+**eBGP** runs between ASes and **iBGP** distributes routes learned from outside to the routers inside an AS.
+
+A router often hears several routes to the same prefix and picks one with a **decision process**. The first rules are, in order: (1) highest LOCAL-PREF; (2) shortest AS-PATH; (3) closest NEXT-HOP according to the intra-AS routing cost (**hot-potato routing**: get the packet out of my AS as soon as possible); then further tie-breakers, ending with the lowest router ID. (Real routers also apply the MED attribute and eBGP-over-iBGP preference between these steps.) The first rule shows that BGP routes by **policy**, not by cost.
+
+### Business relationships and policy
+
+An AS usually pays its **provider** for transit, is paid by its **customers**, and exchanges traffic free with **peers**. The export rules follow the money: an AS announces its customers' routes to everyone, but announces routes learned from a provider or peer only to its customers (otherwise it would carry transit traffic for free). Customers get a higher LOCAL-PREF than peers and providers.
+
+BGP trusts what neighbors announce. A mistaken or malicious announcement of someone else's prefix (a **prefix hijack**) or a **route leak** can redirect or black-hole traffic. **RPKI** lets prefix owners publish signed records authorizing which AS may originate a prefix, so routers can reject invalid origins; it is being deployed widely.
+
+### Network address translation (NAT)
+
+IPv4 addresses are scarce, so a home or company network often uses private addresses behind one public address. A **NAT** router rewrites packets: for an outgoing packet from private `(192.168.0.2, 5000)` it picks an unused public port, say 50000, rewrites the source to `(203.0.113.1, 50000)` and records the mapping in its **NAT translation table**. A reply addressed to port 50000 is looked up and rewritten back to `(192.168.0.2, 5000)`. A packet that arrives with no mapping is normally dropped. With about 64 000 usable ports, one public address supports tens of thousands of simultaneous flows. NAT works, but it violates the end-to-end principle: outside hosts cannot start a connection to an inside host without **port forwarding** or traversal techniques, and it modifies packets (and port numbers inside application data can break). IPv6 removes the shortage that motivated NAT; carrier-grade NAT (`100.64.0.0/10`) is NAT applied by the provider.
+
+@example
+title: Choosing a BGP route
+problem: A router has heard three routes to 198.51.100.0/24: route 1 with LOCAL-PREF 100 and AS-PATH [20, 30], route 2 with LOCAL-PREF 100 and AS-PATH [40], route 3 with LOCAL-PREF 80 and AS-PATH [50]. Which does it choose? Would it accept a route with AS-PATH [60, 10, 70] if its own AS number is 10?
+step: LOCAL-PREF first: routes 1 and 2 have 100, route 3 only 80, so route 3 is eliminated even though it is also short.
+step: Tie between routes 1 and 2: the shorter AS-PATH wins. Route 2 has length 1, route 1 has length 2.
+step: The router chooses route 2.
+step: A path containing the router's own AS number (10) means the announcement went through this AS before, so accepting it would create a loop: the router discards it.
+answer: Route 2; the route containing AS 10 is discarded.
+
+@example
+title: A NAT translation
+problem: A NAT router has public address 203.0.113.1 and assigns public ports from 50000 upward. Host 192.168.0.2 sends from port 5000, then host 192.168.0.3 sends from port 5000. What happens to the first host's replies?
+step: First packet: source `(192.168.0.2, 5000)`; the NAT assigns port 50000, rewrites the source to `(203.0.113.1, 50000)` and stores the mapping.
+step: Second host: its source port 5000 is the same number but a different private address, so it gets a different mapping: `(192.168.0.3, 5000)` becomes `(203.0.113.1, 50001)`.
+step: A reply to `(203.0.113.1, 50000)` matches the first mapping and is rewritten to destination `(192.168.0.2, 5000)`; one to port 50001 goes to the second host.
+step: Further packets from `(192.168.0.2, 5000)` reuse port 50000: the mapping is per flow, not per packet.
+answer: Replies to port 50000 go to 192.168.0.2:5000; replies to port 50001 go to 192.168.0.3:5000.
+
+@mistakes
+- Believing BGP chooses the lowest-cost path. Policy (LOCAL-PREF) comes first, then the shortest AS path.
+- Confusing the AS-PATH check with TTL. The AS-PATH check is what stops BGP routing loops between ASes.
+- Saying that OSPF runs over TCP or UDP. It runs directly over IP.
+- Thinking NAT provides security by design. It blocks unsolicited inbound traffic only as a side effect of having no mapping; it is not a substitute for a firewall.
+
+@practice mc
+prompt: Which pair correctly matches the routing protocol with its role and type?
+choice*: OSPF: routing inside an AS, link-state; BGP: routing between ASes, path-vector, with policy
+choice: OSPF: routing between ASes, path-vector; BGP: routing inside an AS, link-state
+choice: OSPF and BGP are both distance-vector protocols that run only inside one AS
+choice: OSPF runs over TCP port 179 and BGP runs directly over IP
+hint: One of them is designed to apply business policy between organizations.
+solution: OSPF is an intra-AS link-state protocol that runs Dijkstra; BGP is the inter-AS path-vector protocol over TCP port 179 that selects routes by policy.
+
+@practice ms
+prompt: Which statements about NAT with port translation are true?
+choice*: The NAT router rewrites the source address and source port of outgoing packets and records the mapping.
+choice*: An inbound packet that matches no mapping is normally dropped.
+choice: NAT gives every internal host its own globally routable IPv4 address.
+choice*: Without port forwarding, an outside host cannot normally initiate a connection to an internal host.
+choice: NAT changes only link-layer addresses.
+hint: Think about what the NAT table contains and what happens when no entry matches.
+solution: A NAT rewrites addresses and ports using its table and drops unmatched inbound packets, which is also why unsolicited inbound connections fail without port forwarding. Internal hosts share one public address, and the rewriting is at the network and transport layers.
+
+@practice code
+prompt: Write a class `NatTable(public_ip, first_port=50000)`. `outbound(src_ip, src_port)` returns the pair `(public_ip, public_port)` for an internal endpoint: the first time an endpoint is seen it gets the next unused public port (starting at `first_port`), and the same endpoint always gets the same mapping afterwards. `inbound(public_port)` returns the internal `(ip, port)` for a public port, or `None` if there is no mapping.
+starter:
+```python
+class NatTable:
+    pass
+```
+tests:
+```python
+nat = NatTable("203.0.113.1")
+assert nat.outbound("192.168.0.2", 5000) == ("203.0.113.1", 50000)
+assert nat.outbound("192.168.0.3", 5000) == ("203.0.113.1", 50001)
+assert nat.outbound("192.168.0.2", 5000) == ("203.0.113.1", 50000)
+assert nat.outbound("192.168.0.2", 5001) == ("203.0.113.1", 50002)
+assert nat.inbound(50001) == ("192.168.0.3", 5000)
+assert nat.inbound(50003) is None
+other = NatTable("198.51.100.9", first_port=40000)
+assert other.outbound("10.0.0.1", 1234) == ("198.51.100.9", 40000)
+assert other.inbound(40000) == ("10.0.0.1", 1234)
+```
+model:
+```python
+class NatTable:
+    def __init__(self, public_ip, first_port=50000):
+        self.public_ip = public_ip
+        self.next_port = first_port
+        self.out_map = {}
+        self.in_map = {}
+
+    def outbound(self, src_ip, src_port):
+        key = (src_ip, src_port)
+        if key not in self.out_map:
+            self.out_map[key] = self.next_port
+            self.in_map[self.next_port] = key
+            self.next_port += 1
+        return (self.public_ip, self.out_map[key])
+
+    def inbound(self, public_port):
+        return self.in_map.get(public_port)
+```
+hint: Keep two dictionaries: one from internal endpoint to public port and one back.
+hint: Only allocate a new port when the internal endpoint is not already in the first dictionary.
+solution: `outbound` looks up the internal endpoint, allocates `next_port` if it is new (recording the mapping in both directions) and returns the public address with the port. `inbound` is a lookup in the reverse dictionary.
+
+@practice code
+prompt: Write `best_route(routes)` that applies the first three BGP decision rules. Each route is a dictionary with keys `"local_pref"` (integer), `"as_path"` (list of AS numbers) and `"router_id"` (integer). Choose the route with the highest `local_pref`; among those the shortest `as_path`; among those the lowest `router_id`. Return the chosen route dictionary itself, or `None` for an empty list.
+starter:
+```python
+def best_route(routes):
+    pass
+```
+tests:
+```python
+r1 = {"local_pref": 100, "as_path": [2, 5], "router_id": 3}
+r2 = {"local_pref": 200, "as_path": [7, 8, 9], "router_id": 9}
+r3 = {"local_pref": 100, "as_path": [4], "router_id": 8}
+r4 = {"local_pref": 100, "as_path": [6], "router_id": 2}
+assert best_route([r1, r2]) is r2
+assert best_route([r1, r3]) is r3
+assert best_route([r1, r3, r4]) is r4
+assert best_route([r4, r3, r2, r1]) is r2
+assert best_route([]) is None
+```
+model:
+```python
+def best_route(routes):
+    if not routes:
+        return None
+    return min(routes, key=lambda r: (-r["local_pref"], len(r["as_path"]), r["router_id"]))
+```
+hint: Build a sort key as a tuple so that earlier rules take priority.
+hint: Use `-local_pref` in the key because `min` prefers small values but you want the highest preference.
+solution: A tuple key `(-local_pref, len(as_path), router_id)` encodes the three rules in priority order, and `min` with this key returns the best route. An empty list is handled first.
+
+@practice self
+prompt: Consider the undirected network with link costs S-U 3, S-T 9, U-T 4, T-V 2, U-W 6 and V-W 1. (a) Run Dijkstra's algorithm from S and give the order in which nodes are finalized and the final least costs. (b) Run the distance-vector (Bellman-Ford) computation from the point of view of the destination S: in synchronous rounds, each node sets its estimate to the minimum over its neighbors of the neighbor's previous-round estimate plus the link cost (S stays 0, the others start at infinity, and estimates never increase). Give the vector (S, U, T, V, W) after each round until nothing changes, and compare the answers.
+solution: (a) Start S 0. Finalize S: U = 3, T = 9. Finalize U (3): T = min(9, 3 + 4) = 7, W = 3 + 6 = 9. Finalize T (7): V = 7 + 2 = 9. Then V (9) and W (9): V offers W 9 + 1 = 10, which is not better. Order S, U, T, then V and W (9 each). Final costs S 0, U 3, T 7, V 9, W 9. (b) Round 1: (0, 3, 9, inf, inf). Round 2: T = min(9, 3 + 4) = 7, V = 9 + 2 = 11, W = 3 + 6 = 9, giving (0, 3, 7, 11, 9). Round 3: V = min(11, 7 + 2, 9 + 1) = 9, giving (0, 3, 7, 9, 9). Round 4: no change, so the algorithm has converged. Both methods agree: the least costs are 0, 3, 7, 9, 9. Dijkstra needs global knowledge of the graph; the distance-vector computation uses only neighbor exchanges but needs more rounds because the estimates of distant nodes become correct one hop at a time.
+hint: Dijkstra: always finalize the unfinished node with the smallest estimate, then relax its neighbors.
+hint: In the distance-vector rounds use the previous round's vector for every node, not values computed in the current round.
+rubric: Dijkstra order starts S, U, T and the final costs U 3, T 7, V 9, W 9 are correct with the updates shown.
+rubric: The rounds are (0, 3, 9, inf, inf), (0, 3, 7, 11, 9), (0, 3, 7, 9, 9) and a final unchanged round.
+rubric: Notes that both methods give the same least costs and explains that distance vector only uses neighbor information.
+
+@quiz code
+prompt: Write `process_update(my_as, as_path)` for a BGP router in AS number `my_as` that receives a route whose AS path is the list `as_path`. If `my_as` is already in `as_path`, the route would create a loop, so return `None`. Otherwise return the AS path that the router would announce to a neighbor in another AS: a new list with `my_as` added at the front. Do not modify the list passed in.
+starter:
+```python
+def process_update(my_as, as_path):
+    pass
+```
+tests:
+```python
+assert process_update(10, [20, 30]) == [10, 20, 30]
+assert process_update(10, []) == [10]
+assert process_update(10, [20, 10, 30]) is None
+assert process_update(10, [10]) is None
+p = [5, 6]
+assert process_update(7, p) == [7, 5, 6]
+assert p == [5, 6]
+```
+model:
+```python
+def process_update(my_as, as_path):
+    if my_as in as_path:
+        return None
+    return [my_as] + as_path
+```
+hint: The loop check is a simple membership test.
+hint: `[my_as] + as_path` builds a new list and leaves the original alone.
+solution: If the router's own AS is already on the path, discard the route; otherwise prepend the AS number to a copy of the path before announcing it.
+
+@quiz num
+prompt: A NAT router with one public IPv4 address assigns each mapping a unique public port from 49152 to 65535 inclusive. How many simultaneous mappings can it hold?
+answer: 16384
+check: 65535 - 49152 + 1
+hint: Count the ports in an inclusive range.
+solution: $65535 - 49152 + 1 = 16\,384$, which is $2^{14}$.

@@ -1,0 +1,163 @@
+@lesson
+title: Layers and encapsulation
+summary: Describe the five-layer internet model, trace how a message is wrapped in headers on its way down the stack, and compute packet and frame sizes and the delays they cause.
+objective: Name the five layers of the internet model, their protocol data units and typical protocols.
+objective: Explain encapsulation and which headers change as a packet crosses switches and routers.
+objective: Compute the number of segments and the bytes on the wire for a message, given header sizes and the MTU.
+objective: Combine delay, throughput and header overhead in multi-step calculations.
+reading: Computer Networks: A Systems Approach, Chapter 1 "Foundation", the section on layering and protocols (the protocol stack, encapsulation, and the internet architecture).
+
+@article
+A network is too complex to design as one piece, so it is built in **layers**. Each layer provides a **service** to the layer above, using only the services of the layer below, and the details of how it works are hidden behind that interface. A layer can change (Wi-Fi replaces Ethernet, QUIC replaces TCP for some traffic) without rewriting the layers around it. The rules for how two peers at the same layer talk to each other form a **protocol**; the protocols are written down in documents called **RFCs** (published by the IETF) and, for Ethernet and Wi-Fi, in IEEE standards.
+
+### The five-layer internet model
+
+| Layer | Job | Examples | PDU name |
+|---|---|---|---|
+| Application | network applications | HTTP, DNS, SMTP | message |
+| Transport | process-to-process delivery | TCP, UDP | segment (TCP), datagram (UDP) |
+| Network | host-to-host delivery across networks | IP, routing protocols | packet or datagram |
+| Link | delivery across one link | Ethernet, Wi-Fi | frame |
+| Physical | bits on the medium | copper, fibre, radio | bits |
+
+The **OSI model** has seven layers: it splits the application layer into application, presentation and session. The internet protocols do not have separate presentation and session layers; applications handle formatting and sessions themselves. IP is called the **narrow waist** of the internet: many applications and many link technologies, but one network-layer protocol in the middle.
+
+### Encapsulation
+
+A sender's application hands a message to the transport layer, which prepends a **header** to make a segment. The network layer prepends its header to make a packet, and the link layer adds a header (and often a trailer) to make a frame. This wrapping is **encapsulation**; the receiver reverses it, **decapsulating** layer by layer. Minimum header sizes you should know:
+
+- TCP header: 20 bytes (more with options). UDP header: 8 bytes.
+- IPv4 header: 20 bytes (more with options). IPv6 header: 40 bytes.
+- Ethernet: 14-byte header (destination MAC 6, source MAC 6, EtherType 2) and a 4-byte trailer, the frame check sequence (FCS). The preamble is not counted in the frame size.
+
+The largest payload an Ethernet frame carries is the **MTU** (maximum transmission unit), 1500 bytes. With TCP and IPv4, the **MSS** (maximum segment size, the largest TCP payload) is therefore $1500 - 20 - 20 = 1460$ bytes. A message larger than the MSS is split across several segments, and every one of them pays the header overhead. Ethernet also requires a payload of at least 46 bytes; shorter payloads are padded.
+
+### Who looks at which header
+
+A **switch** forwards frames using only the link-layer header. A **router** removes the incoming frame's link header, reads the network-layer header to choose an output link, decrements the **TTL** (time to live, which stops packets looping forever), recomputes the header checksum in IPv4, and wraps the packet in a new frame for the next link. The source and destination IP addresses stay the same end to end (unless NAT rewrites them, week 10), but the MAC addresses change at every hop. Transport headers are examined only by the end hosts, which is the **end-to-end principle**: functions such as reliability are best implemented at the ends, because only the ends know whether the data really arrived.
+
+### Costs of layering
+
+Layers hide detail, but they add header overhead and can hide information that a layer would like to use (for example, a transport protocol cannot see that a link is wireless). The benefit is modularity and the ability to evolve one layer at a time.
+
+@example
+title: Bytes on the wire for a message
+problem: An application sends a 3000-byte message with TCP over IPv4 over Ethernet, with no options and an MTU of 1500. How many segments are sent, and how many bytes cross the link in total (count Ethernet header and FCS, not the preamble)? How long does that take at 100 Mb/s?
+step: The MSS is $1500 - 20 - 20 = 1460$ bytes, so the payloads are 1460, 1460 and $3000 - 2920 = 80$ bytes: 3 segments.
+step: Every frame adds $20 + 20 + 14 + 4 = 58$ bytes of headers and trailer, so the frames are 1518, 1518 and 138 bytes.
+step: Total on the wire: $1518 + 1518 + 138 = 3174$ bytes, which equals $3000 + 3 \times 58$.
+step: Transmission time: $3174 \times 8 = 25\,392$ bits at $10^8$ bits per second is $253.92\ \mu\text{s}$.
+answer: 3 segments, 3174 bytes, 253.92 microseconds
+
+@example
+title: Following headers through a router
+problem: Host A (IP 10.0.1.5) sends a packet to server S (IP 203.0.113.9) through one router. Which header fields differ in the frame on the A-to-router link and in the frame on the router-to-S link?
+step: On both links the IP source is 10.0.1.5 and the IP destination is 203.0.113.9: the IP addresses name the end hosts and do not change.
+step: The Ethernet destination of the first frame is the router's interface MAC; the source is A's MAC. The router strips this header.
+step: For the second link the router builds a new Ethernet header: source is the router's other interface, destination is S's MAC (or the next hop's).
+step: The IP TTL is one smaller in the second packet and its header checksum is recomputed. The TCP header and payload are unchanged.
+answer: The Ethernet addresses, FCS, IP TTL and IP header checksum differ; everything else is the same.
+
+@mistakes
+- Saying that a router changes the IP addresses of a packet. It changes the link-layer addresses; only a NAT rewrites IP addresses.
+- Forgetting that every frame, not every message, pays the header overhead, so small segments waste more bandwidth.
+- Counting the 1500-byte MTU as the amount of application data. The MTU includes the IP and TCP headers.
+- Thinking that a switch reads IP addresses or TCP ports. An ordinary switch uses only the Ethernet header.
+
+@practice mc
+prompt: A router forwards an IPv4 packet from one Ethernet link to another, with no NAT. Which fields of the packet and its frame change?
+choice*: The Ethernet source and destination addresses and the IP TTL (with the IP header checksum)
+choice: The IP source address and the TCP source port
+choice: Nothing: a router forwards each frame unchanged
+choice: The application payload, which is re-encoded for the new link
+hint: Which addresses identify the end hosts, and which identify the hop?
+solution: The router removes the old frame and builds a new one with new MAC addresses, and it decrements TTL, which forces a new IP header checksum. IP addresses, ports and the payload are untouched.
+
+@practice num
+prompt: An application sends 1000 bytes of data with TCP over IPv4 over Ethernet (20-byte TCP header, 20-byte IPv4 header, 14-byte Ethernet header, 4-byte FCS, no options). How many bytes is the Ethernet frame?
+answer: 1058
+check: 1000 + 20 + 20 + 14 + 4
+hint: Add each layer's header or trailer to the payload.
+solution: $1000 + 20 + 20 + 14 + 4 = 1058$ bytes.
+
+@practice code
+prompt: Write `wire_bytes(message, mss=1460, overhead=58)` that returns the total number of bytes sent on the link for a message of `message` bytes. The message is split into segments of at most `mss` bytes of payload (the last one may be smaller), and every segment adds `overhead` bytes of headers and trailer. A message of 0 bytes sends nothing (return 0). Ignore Ethernet padding.
+starter:
+```python
+def wire_bytes(message, mss=1460, overhead=58):
+    pass
+```
+tests:
+```python
+assert wire_bytes(3000) == 3174
+assert wire_bytes(1460) == 1518
+assert wire_bytes(1461) == 1577
+assert wire_bytes(0) == 0
+assert wire_bytes(100, mss=500, overhead=40) == 140
+```
+model:
+```python
+def wire_bytes(message, mss=1460, overhead=58):
+    segments = -(-message // mss)
+    return message + segments * overhead
+```
+hint: First find how many segments are needed: a division that rounds up.
+hint: `-(-message // mss)` is ceiling division for positive integers; the result is `message + segments * overhead`.
+solution: The number of segments is the ceiling of `message / mss`. Each adds `overhead` bytes, so the total is `message + segments * overhead`. For 1461 bytes there are 2 segments, so 1461 plus 2 times 58 is 1577.
+
+@practice ms
+prompt: Which statements about layering in the internet model are true?
+choice*: Each layer uses the service of the layer below and provides a service to the layer above.
+choice*: An ordinary Ethernet switch forwards frames using only link-layer information.
+choice: A router must parse the TCP header of every packet in order to forward it.
+choice*: IP offers best-effort delivery: it does not guarantee delivery, order or timing.
+choice: The source and destination MAC addresses of a frame stay the same from the sending host to the receiving host across routers.
+hint: Think about which device looks at which header.
+solution: Layers form a service hierarchy, switches look at Ethernet headers, and IP is best effort. Routers forward on the IP header only, and MAC addresses change at every router hop.
+
+@practice self
+prompt: Compute the delay for each of these five scenarios (use $2 \times 10^8$ m/s for propagation and ignore processing and queuing unless stated): (1) the transmission delay of a 1500-byte packet on a 100 Mb/s link; (2) the propagation delay of a 1000 km link; (3) the time for one 1500-byte packet to cross three store-and-forward links of 10 Mb/s each, ignoring propagation; (4) the time to transfer a 100 MB file (take 1 MB as $10^6$ bytes) over a path whose links are 50, 20 and 100 Mb/s; (5) the traffic intensity when 800 packets of 1500 bytes arrive per second at a 10 Mb/s link.
+hint: Convert every packet and file size to bits before dividing by a rate.
+hint: For the file transfer use the slowest link; for the three-link path charge one transmission delay per link.
+solution: (1) $L = 12\,000$ bits, $12\,000 / (100 \times 10^6) = 120\ \mu\text{s}$. (2) $10^6 / (2 \times 10^8) = 5$ ms. (3) Each link takes $12\,000 / (10 \times 10^6) = 1.2$ ms and the packet is stored and forwarded three times, so $3 \times 1.2 = 3.6$ ms. (4) $F = 800 \times 10^6$ bits; the bottleneck is 20 Mb/s, so $800 \times 10^6 / (20 \times 10^6) = 40$ s. (5) $La/R = 12\,000 \times 800 / (10 \times 10^6) = 0.96$, so the queue is almost always busy and delays and drops will be large.
+rubric: Converts bytes to bits before dividing by a rate in every scenario.
+rubric: Gets the five values 120 microseconds, 5 ms, 3.6 ms, 40 s and 0.96.
+rubric: Uses the bottleneck link rate (not the sum or the average) in scenario 4 and charges a transmission per link in scenario 3.
+rubric: Interprets 0.96 as a heavily loaded queue (close to 1).
+
+@quiz code
+prompt: Write `segment_sizes(message, mss)` that returns the list of payload sizes, in order, into which a message of `message` bytes is split when each segment carries at most `mss` bytes. For example `segment_sizes(3000, 1460)` is `[1460, 1460, 80]`. A message of 0 bytes gives the empty list.
+starter:
+```python
+def segment_sizes(message, mss):
+    pass
+```
+tests:
+```python
+assert segment_sizes(3000, 1460) == [1460, 1460, 80]
+assert segment_sizes(1460, 1460) == [1460]
+assert segment_sizes(1, 1460) == [1]
+assert segment_sizes(0, 1460) == []
+assert segment_sizes(10, 4) == [4, 4, 2]
+```
+model:
+```python
+def segment_sizes(message, mss):
+    sizes = []
+    remaining = message
+    while remaining > 0:
+        size = min(mss, remaining)
+        sizes.append(size)
+        remaining -= size
+    return sizes
+```
+hint: Keep track of how many bytes remain and take at most `mss` of them each time.
+hint: Use a `while remaining > 0:` loop with `min(mss, remaining)`.
+solution: Repeatedly take `min(mss, remaining)` bytes until nothing remains. Full segments come first and the last one holds the leftover, which is why the sizes for 3000 bytes are 1460, 1460 and 80.
+
+@quiz num
+prompt: With IPv6 (a 40-byte header, no extension headers) and TCP (20-byte header, no options) over a link with a 1500-byte MTU, what is the largest TCP payload (the MSS) in bytes?
+answer: 1440
+check: 1500 - 40 - 20
+hint: The MTU covers the IP header, the TCP header and the data.
+solution: $1500 - 40 - 20 = 1440$ bytes.

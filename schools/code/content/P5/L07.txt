@@ -1,0 +1,230 @@
+@lesson
+title: Deployment to the cloud
+summary: Choose a hosting option, deploy the containerized application with a health check, database and HTTPS, and verify it with a smoke test.
+objective: Compare the main kinds of hosting options and choose one for a small application.
+objective: List the steps of a first deployment: build, configure, migrate, start, verify.
+objective: Implement and use health checks and retries with exponential backoff.
+reading: The Twelve-Factor App, the "Build, release, run" (V), "Processes" (VI) and "Backing services" (IV) factors.
+
+@article
+Until your application runs somewhere other than your laptop, it is not a product; it is a demo. The first deployment is also the moment you learn the most, so do it early and do it with something trivial. In this lesson we stay **vendor-neutral**: hosting companies change their consoles, names and prices constantly, so you need the concepts that carry across all of them.
+
+### The main options
+
+| Option | What you manage | Typical fit |
+|---|---|---|
+| **Platform as a service (PaaS)** | Your code or image and its settings; the platform runs servers, TLS and restarts | Small web apps; fastest path to a URL |
+| **Managed container host** | An image, its size, scaling rules and networking | Apps already in containers; moderate control |
+| **Virtual machine** you administer | The operating system, updates, a reverse proxy, process supervision | Learning how everything works; full control, most work |
+| **Serverless functions or static hosting** | Functions or files only | Static front ends, small event-driven pieces |
+
+For a capstone, a PaaS or a managed container host is usually best, because the time you save goes into the engineering you want to show. **Prices and free tiers change, and some free tiers sleep idle apps or limit hours.** Check the current pricing page and any usage limits yourself, set a spending alert if the provider offers one, and choose an option that costs nothing for your project. You should never need to pay to finish this course; if a provider asks for a card you do not want to give, pick another, or deploy to a local virtual machine or your own computer and document it.
+
+### The deployment steps, in any platform
+
+1. **Build an artifact.** For you, this is the container image from last week, tagged with a version or commit hash. Build it in CI, not on your laptop.
+2. **Provide infrastructure.** Create the app service and a **backing service**: a managed database is better than running one yourself, and it is attached by configuration (`DATABASE_URL`).
+3. **Set configuration and secrets** in the platform's environment settings or secrets store. Never bake them into the image.
+4. **Run database migrations** (schema changes) as a separate, explicit step before or as the new version starts, not by hand on a laptop.
+5. **Start the app** and give the platform a **health check**: a URL it calls to decide whether to send traffic and when to restart.
+6. **Add a domain name and HTTPS.** Most platforms issue and renew certificates for you. Use TLS everywhere; TLS 1.3 is the current version, and a current platform negotiates it automatically (TLS 1.2 is still widely accepted).
+7. **Verify** with a smoke test (below), then write down the steps in the README so anyone can repeat them.
+
+### The health endpoint
+
+A health endpoint answers: "can this instance do its job right now?" Keep it cheap and honest:
+
+```python
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+
+@app.get("/health")
+def health():
+    db_ok = check_database()          # a quick `SELECT 1`
+    status = "ok" if db_ok else "degraded"
+    code = 200 if db_ok else 503
+    return jsonify(status=status, db="ok" if db_ok else "down"), code
+```
+
+Return 200 only when the instance can actually serve; a `503` tells the platform to stop sending traffic. Do not expose secrets or version details you would not want public.
+
+### Retries and exponential backoff
+
+After a deploy, things take time: the database accepts connections, the app finishes starting. A client or a deploy script should **retry** instead of giving up at once, but retrying in a tight loop hammers a service that is already struggling. **Exponential backoff** doubles the wait between attempts (1 s, 2 s, 4 s, 8 s) up to a cap, and often adds random **jitter** so many clients do not retry in lockstep. Retry only operations that are safe to repeat, and always give up after a limit.
+
+```python
+def backoff_delays(retries, base=1, cap=30):
+    return [min(cap, base * 2 ** i) for i in range(retries)]
+
+print(backoff_delays(5))   # [1, 2, 4, 8, 16]
+```
+
+### Smoke test
+
+A **smoke test** is the smallest check that the deployed system lives: request the home page and the health URL over HTTPS, create one record and read it back. Run it automatically after every deploy (next week). If it fails, roll back.
+
+@example
+title: Choosing hosting for the capstone
+problem: Your app is a container with a Flask service and a small PostgreSQL database. You expect fewer than ten users. You have no budget. What do you choose?
+step: Rule out administering a virtual machine: it teaches a lot but takes time for patches, TLS and restarts that you would rather spend on the app.
+step: Compare a PaaS and a managed container host that both run images. Read each current pricing page and the limits of any free tier (sleeping apps, monthly hours, database size).
+step: Pick one whose free tier covers the app and the database for the length of the course. If none does, a managed host with a small spending cap, or a local virtual machine, are fallbacks.
+step: Record the choice, the cost check date and how to tear everything down in the architecture notes, so you can delete it when you are done.
+answer: A PaaS or managed container host whose current free tier covers the app, with the date of the price check recorded.
+
+@example
+title: Waiting for a service to become healthy
+problem: After deployment, the health URL returns 503 for about ten seconds while the database warms up. Design a deploy-script wait that is polite and bounded.
+step: Poll the health endpoint instead of sleeping a fixed time: succeed as soon as it returns 200.
+step: Wait between attempts with exponential backoff: 1, 2, 4, 8 seconds, capped at 10.
+step: Bound the loop: after six attempts, stop and fail the deploy, so a broken release is noticed instead of waited on forever.
+step: On failure, print the last status code and trigger the rollback from next week.
+answer: Poll `/health` with capped exponential backoff and a maximum of six attempts, failing the deploy when exhausted.
+
+@mistakes
+- Choosing a hosting option by its marketing instead of reading the current free-tier limits, then discovering the app sleeps or the database expires.
+- Setting environment variables by hand in a console and never writing them down, so the next deploy cannot be reproduced.
+- Health checks that always return 200, so the platform keeps sending traffic to a broken instance.
+- Retrying forever or in a tight loop instead of using a capped backoff with a retry limit.
+
+@practice mc
+prompt: Which hosting choice best fits a small team that wants minimal server administration and already has a Dockerfile?
+choice: Buy physical servers and install the operating system yourself.
+choice*: A platform as a service or managed container host that runs images and handles TLS and restarts.
+choice: A static file host, because the app has a database.
+choice: Your own laptop left switched on at home.
+hint: The question is about who manages the servers.
+solution: A PaaS or managed container host runs your image and takes care of servers, TLS and restarts. A static host cannot run a back end with a database, and the other options are heavy or unreliable.
+
+@practice code
+prompt: Write `backoff_delays(retries, base, cap)` that returns a list of `retries` waiting times in seconds. The i-th delay (starting at i = 0) is `base * 2**i`, but never more than `cap`. Zero retries gives an empty list.
+starter:
+```python
+def backoff_delays(retries, base, cap):
+    pass
+```
+tests:
+```python
+assert backoff_delays(5, 1, 30) == [1, 2, 4, 8, 16]
+assert backoff_delays(6, 1, 10) == [1, 2, 4, 8, 10, 10]
+assert backoff_delays(0, 1, 10) == []
+assert backoff_delays(3, 5, 100) == [5, 10, 20]
+assert backoff_delays(2, 50, 30) == [30, 30]
+```
+model:
+```python
+def backoff_delays(retries, base, cap):
+    return [min(cap, base * 2 ** i) for i in range(retries)]
+```
+hint: The i-th delay depends only on `i`, so a list comprehension over `range(retries)` works.
+hint: `min(cap, value)` applies the cap.
+solution: For each `i` in `range(retries)`, compute `base * 2 ** i` and cap it with `min`. Because the cap is applied to each value, the delays flatten at `cap` once the doubling exceeds it.
+
+@practice code
+prompt: Write `wait_until_healthy(probe, max_attempts, sleep)`. Call `probe()` (which returns `True` when healthy). If it returns `True`, return `True` immediately. Otherwise call `sleep(delay)` and try again, up to `max_attempts` calls to `probe` in total. The delays between attempts are 1, 2, 4, 8, ... seconds, capped at 8. Do not sleep after the last failed attempt. Return `False` if every attempt failed.
+starter:
+```python
+def wait_until_healthy(probe, max_attempts, sleep):
+    pass
+```
+tests:
+```python
+results = iter([False, False, True])
+slept = []
+assert wait_until_healthy(lambda: next(results), 5, slept.append) is True
+assert slept == [1, 2]
+
+slept = []
+assert wait_until_healthy(lambda: False, 4, slept.append) is False
+assert slept == [1, 2, 4]
+
+slept = []
+assert wait_until_healthy(lambda: False, 7, slept.append) is False
+assert slept == [1, 2, 4, 8, 8, 8]
+
+slept = []
+assert wait_until_healthy(lambda: True, 3, slept.append) is True
+assert slept == []
+assert wait_until_healthy(lambda: True, 0, slept.append) is False
+```
+model:
+```python
+def wait_until_healthy(probe, max_attempts, sleep):
+    delay = 1
+    for attempt in range(max_attempts):
+        if probe():
+            return True
+        if attempt < max_attempts - 1:
+            sleep(delay)
+            delay = min(8, delay * 2)
+    return False
+```
+hint: Loop `max_attempts` times; keep a `delay` variable that doubles up to 8.
+hint: Only sleep when another attempt will follow, that is when `attempt < max_attempts - 1`.
+solution: Try the probe in a loop of `max_attempts` iterations, returning `True` at the first success. After a failure that is not the last attempt, call the injected `sleep(delay)` and double the delay with a cap of 8. With zero attempts the loop never runs and the function returns `False`.
+
+@practice ms
+prompt: Which items belong on a checklist for the first deployment? Select all that apply.
+choice*: Configuration and secrets set in the platform, not in the image.
+choice*: A health check the platform can call, and a smoke test run after the deploy.
+choice: Disable HTTPS until the application is finished to avoid certificate problems.
+choice*: A database migration step that runs in a controlled way as part of the release.
+choice: Check pricing only after the first bill arrives.
+hint: Think about repeatability, safety and cost.
+solution: Platform-held configuration, health and smoke checks, and controlled migrations make a deployment repeatable and verifiable. HTTPS should be on from the start, and prices and limits must be checked before deploying.
+
+@practice self
+prompt: Write the deployment plan for your capstone in vendor-neutral terms: which kind of hosting you choose and why (name at least two alternatives you rejected), what the backing services are, the numbered deployment steps, how you verify, how you roll back, and how you checked cost and will tear the resources down when finished.
+hint: Compare the options by what you have to manage, then by cost and limits you verified yourself.
+solution: Choice: a platform as a service that runs my container image, because I do not want to patch servers or manage TLS. Rejected: a virtual machine I administer (too much operating-system work for the time I have) and serverless functions (a poor fit for a Flask app with a database). Backing services: a managed PostgreSQL instance attached through `DATABASE_URL`. Steps: (1) CI builds the image and tags it with the commit hash; (2) the image is pushed to the platform's registry; (3) configuration and secrets are set in the platform settings; (4) a migration command runs against the database; (5) the platform starts the new version and polls `/health`; (6) the domain is attached and HTTPS is enabled; (7) a smoke test requests `/health`, creates a record and reads it back. Verification: the smoke test passes and logs show no errors. Rollback: redeploy the previous image tag, and keep migrations backwards compatible so the old version still works. Cost: on the date written in the notes I read the current pricing and free-tier limits (sleep behavior, hours, storage), set a spending alert, and tear down by deleting the app, database and registry images when the course ends, recording this in the README.
+rubric: Chooses a hosting kind with a reason tied to the project and names at least two rejected alternatives with reasons.
+rubric: Lists numbered steps covering build, configuration and secrets, migrations, health check, HTTPS and verification.
+rubric: Includes a concrete rollback and a smoke test.
+rubric: Addresses cost: a dated pricing check, limits, and teardown, without assuming prices or free tiers stay the same.
+
+@quiz code
+prompt: Write `is_healthy(body)` for the text body of a health endpoint. It returns `True` only if `body` is valid JSON for an object whose `"status"` is the string `"ok"` and every other value in the object is also the string `"ok"`. Return `False` for invalid JSON, for JSON that is not an object, and when `"status"` is missing.
+starter:
+```python
+def is_healthy(body):
+    pass
+```
+tests:
+```python
+assert is_healthy('{"status": "ok"}') is True
+assert is_healthy('{"status": "ok", "db": "ok", "cache": "ok"}') is True
+assert is_healthy('{"status": "ok", "db": "down"}') is False
+assert is_healthy('{"status": "degraded"}') is False
+assert is_healthy('{"db": "ok"}') is False
+assert is_healthy('not json') is False
+assert is_healthy('["ok"]') is False
+assert is_healthy('') is False
+```
+model:
+```python
+import json
+
+
+def is_healthy(body):
+    try:
+        data = json.loads(body)
+    except Exception:
+        return False
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        return False
+    return all(value == "ok" for value in data.values())
+```
+hint: `json.loads` raises an exception for bad input, so wrap it in `try`.
+hint: After parsing, check the type, then `status`, then all values.
+solution: Parse with `json.loads` inside `try`, return `False` if it raises, require a dict whose `status` is `"ok"`, and finally require that `all` values equal `"ok"`.
+
+@quiz mc
+prompt: A deploy script checks the health URL once, one second after starting the new version, and fails the deploy because the response was 503. The app was simply still starting. What is the best improvement?
+choice: Remove the health check so deploys always succeed.
+choice*: Retry the health check with capped exponential backoff and a maximum number of attempts before failing.
+choice: Retry in a loop with no delay and no limit.
+choice: Make the health endpoint always return 200.
+hint: You want to tolerate a slow start, but not forever.
+solution: Backoff with a limit allows for startup time without hammering the service or hiding a real failure. The other choices remove the signal or can loop forever.

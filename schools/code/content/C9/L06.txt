@@ -1,0 +1,189 @@
+@lesson
+title: Reliable transfer and TCP
+summary: Build reliable delivery on an unreliable channel with acknowledgments, timeouts and windows, and trace a TCP connection with its sequence and acknowledgment numbers.
+objective: Explain stop-and-wait, Go-Back-N and selective repeat, and compute the utilization of a stop-and-wait sender.
+objective: Describe TCP's byte-stream sequence numbers, cumulative acknowledgments, handshake and teardown.
+objective: Estimate the round-trip time and retransmission timeout from samples.
+objective: Trace a TCP connection with correct sequence and acknowledgment numbers.
+reading: Computer Networks: A Systems Approach, Chapter 5 "End-to-End Protocols", the sections on TCP (segment format, connection establishment and termination, sliding window, adaptive retransmission).
+
+@article
+IP is best effort: packets can be lost, duplicated, delayed or reordered. A **reliable transport protocol** hides this from the application. The tools are **acknowledgments** (ACKs) from the receiver, **sequence numbers** to detect loss and duplication, **timeouts** and **retransmissions**, and, for speed, a **window** of unacknowledged data.
+
+### Stop-and-wait
+
+The sender transmits one packet, waits for its ACK, and retransmits if a timer expires. It is correct but slow. If a packet has $L$ bits, the link has rate $R$ and the round-trip time is RTT, the sender is busy for $L/R$ seconds out of every $\text{RTT} + L/R$, so the **utilization** is
+
+$$U_{\text{sender}} = \frac{L/R}{\text{RTT} + L/R}.$$
+
+On a 1 Gb/s link with a 30 ms RTT, a 1000-byte packet gives $U \approx 0.00027$: the link is idle almost all the time. The cure is **pipelining**: keep $W$ packets in flight, so utilization is about $W \cdot (L/R)/(\text{RTT} + L/R)$ until it reaches 1.
+
+### Sliding-window protocols
+
+- **Go-Back-N (GBN):** the sender may have up to $N$ unacknowledged packets. The receiver accepts only the next expected packet and sends a **cumulative ACK** for the highest in-order packet. On a timeout the sender retransmits the oldest unacknowledged packet **and all later ones**.
+- **Selective repeat (SR):** the receiver buffers out-of-order packets and acknowledges each one individually; the sender keeps a timer per packet and retransmits only the lost ones. Selective repeat needs a window size of at most half the sequence-number space to avoid confusing old and new packets.
+
+### TCP
+
+**TCP** (RFC 9293) provides a reliable, ordered, full-duplex **byte stream** between two processes, after a connection is established. It is a hybrid of these ideas.
+
+- **Sequence numbers count bytes**, not segments. The header's 32-bit sequence number is the stream position of the first data byte of the segment. The **acknowledgment number** is the sequence number of the **next byte expected**, and it is cumulative: `ack = 1301` means "all bytes before 1301 arrived".
+- The header has source and destination ports, sequence and acknowledgment numbers, flag bits (**SYN**, **ACK**, **FIN**, **RST**, **PSH**), a 16-bit receive window (week 7), a checksum and options (such as the MSS); the minimum size is 20 bytes.
+- **Three-way handshake:** the client sends SYN with its **initial sequence number** (ISN) $x$; the server replies SYN-ACK with its ISN $y$ and ack $x+1$; the client sends ACK with ack $y+1$ (and may carry data). A SYN consumes one sequence number, as does a FIN. The ISNs are chosen unpredictably to avoid old segments being accepted and to make off-path spoofing harder.
+- **Teardown:** each side sends FIN when it is done sending and the other acknowledges it, so a normal close takes four segments (the middle two can be combined). The side that closes first waits in **TIME-WAIT** for twice the maximum segment lifetime before the connection is fully forgotten. A **RST** aborts a connection.
+- **Duplicate ACKs and fast retransmit:** if a segment is lost, later segments cause the receiver to repeat the same ACK. After **three duplicate ACKs** the sender retransmits the missing segment without waiting for the timer.
+
+### Setting the timeout
+
+The timeout must exceed the RTT but not by much. TCP measures RTT samples and keeps a smoothed average and a variance (RFC 6298). For the first sample $R$: $\text{SRTT} = R$, $\text{RTTVAR} = R/2$. For each later sample $R$ (using the old SRTT):
+
+$$\text{RTTVAR} \leftarrow (1-\beta)\,\text{RTTVAR} + \beta\,|\text{SRTT} - R|,\qquad \text{SRTT} \leftarrow (1-\alpha)\,\text{SRTT} + \alpha R,$$
+
+with $\alpha = 1/8$ and $\beta = 1/4$, and $\text{RTO} = \text{SRTT} + 4\,\text{RTTVAR}$ (real implementations also enforce a minimum, and back off the timer exponentially after each timeout). Samples are never taken from retransmitted segments, because it is ambiguous which transmission an ACK refers to (Karn's algorithm).
+
+@example
+title: Stop-and-wait utilization
+problem: A sender uses stop-and-wait with 8000-bit packets on a 1 Gb/s link; RTT is 30 ms. Find the utilization, and the window needed to keep the link busy.
+step: Transmission time $L/R = 8000/10^9 = 8\ \mu\text{s}$.
+step: $U = 8\ \mu\text{s} / (30\,000\ \mu\text{s} + 8\ \mu\text{s}) \approx 0.000267$, about 0.027 percent.
+step: To fill the pipe the sender needs about $(\text{RTT} + L/R)/(L/R) = 30\,008/8 = 3751$ packets in flight.
+answer: utilization about 0.027 percent; a window of about 3751 packets
+
+@example
+title: A short TCP conversation
+problem: A client with ISN 4000 connects to a server with ISN 9000, sends 100 bytes, receives 200 bytes, and the client acknowledges. Give the segments.
+step: Client SYN: `seq=4000`. Server SYN-ACK: `seq=9000, ack=4001` (the SYN used up number 4000). Client ACK: `seq=4001, ack=9001`.
+step: Client sends 100 bytes: `seq=4001`, bytes 4001 to 4100. Server ACK: `seq=9001, ack=4101`.
+step: Server sends 200 bytes: `seq=9001`, bytes 9001 to 9200 (it may carry `ack=4101` in the same segment).
+step: Client ACK: `seq=4101, ack=9201`: it expects byte 9201 next.
+answer: The acknowledgment number is always the next byte expected: 4101 for the client's data and 9201 for the server's.
+
+@mistakes
+- Treating TCP sequence numbers as segment counts. They count bytes, and a SYN or FIN counts as one byte.
+- Reading `ack = n` as "I received segment n". It means that every byte before `n` was received and `n` is expected next.
+- Forgetting that stop-and-wait utilization uses RTT plus the transmission time in the denominator.
+- Mixing up GBN and selective repeat: GBN retransmits everything after the loss, SR only the lost packet.
+
+@practice num
+prompt: A stop-and-wait sender sends packets of 12 000 bits on a 1 Gb/s link ($10^9$ bits per second) with an RTT of 30 ms. What is the sender utilization (a fraction between 0 and 1)? Round to 4 decimal places.
+answer: 0.0004
+check: (12000 / 1e9) / (0.03 + 12000 / 1e9)
+tol: 1%
+hint: Utilization is transmission time divided by transmission time plus RTT.
+solution: $L/R = 12\,000/10^9 = 12\ \mu\text{s}$, so $U = 12\ \mu\text{s}/(30\,000\ \mu\text{s} + 12\ \mu\text{s}) \approx 0.0004$.
+
+@practice mc
+prompt: A TCP receiver has received bytes 0 through 2999 of a stream in order. A segment containing bytes 3000 through 3999 arrives next. What acknowledgment number does the receiver send?
+choice: 3999
+choice: 3000
+choice*: 4000
+choice: 2999
+hint: The acknowledgment number names the next byte the receiver expects.
+solution: Bytes 0 to 3999 are now all received, so the next expected byte is 4000 and the ACK carries 4000.
+
+@practice code
+prompt: Write `estimate_rtt(samples)` that takes a non-empty list of RTT samples (in milliseconds) and returns the tuple `(srtt, rttvar, rto)` after processing all of them with the RFC 6298 rules: for the first sample `srtt = R` and `rttvar = R / 2`; for each later sample `R`, first update `rttvar = 0.75 * rttvar + 0.25 * abs(srtt - R)` using the old `srtt`, then `srtt = 0.875 * srtt + 0.125 * R`. At the end `rto = srtt + 4 * rttvar` (no minimum value).
+starter:
+```python
+def estimate_rtt(samples):
+    pass
+```
+tests:
+```python
+assert estimate_rtt([100]) == (100, 50, 300)
+assert estimate_rtt([100, 140]) == (105, 47.5, 295)
+assert estimate_rtt([100, 140, 100]) == (104.375, 36.875, 251.875)
+assert estimate_rtt([80, 80, 80, 80])[0] == 80
+assert estimate_rtt([80, 80])[1] == 30
+```
+model:
+```python
+def estimate_rtt(samples):
+    srtt = samples[0]
+    rttvar = samples[0] / 2
+    for r in samples[1:]:
+        rttvar = 0.75 * rttvar + 0.25 * abs(srtt - r)
+        srtt = 0.875 * srtt + 0.125 * r
+    return srtt, rttvar, srtt + 4 * rttvar
+```
+hint: Initialize from the first sample, then loop over the remaining samples.
+hint: Update `rttvar` before `srtt`, because it uses the old `srtt`.
+solution: Start with `srtt = R1`, `rttvar = R1 / 2`; for every later sample update `rttvar` first (it uses the old `srtt`) and then `srtt`; finally `rto = srtt + 4 * rttvar`. For `[100, 140]` this gives `rttvar = 47.5`, `srtt = 105` and `rto = 295`.
+
+@practice code
+prompt: Write `tcp_acks(arrivals)` that simulates a TCP receiver that buffers out-of-order data. `arrivals` is a list of segment numbers (0, 1, 2, ...) in the order they arrive; a segment may arrive more than once. After each arrival the receiver sends an ACK carrying the number of the lowest segment it has **not** yet received. Return the list of ACKs, one per arrival.
+starter:
+```python
+def tcp_acks(arrivals):
+    pass
+```
+tests:
+```python
+assert tcp_acks([0, 1, 2]) == [1, 2, 3]
+assert tcp_acks([0, 1, 3, 2, 4]) == [1, 2, 2, 4, 5]
+assert tcp_acks([1, 2, 0]) == [0, 0, 3]
+assert tcp_acks([0, 0, 1]) == [1, 1, 2]
+assert tcp_acks([]) == []
+```
+model:
+```python
+def tcp_acks(arrivals):
+    received = set()
+    expected = 0
+    acks = []
+    for seg in arrivals:
+        received.add(seg)
+        while expected in received:
+            expected += 1
+        acks.append(expected)
+    return acks
+```
+hint: Remember which segments have arrived in a set, and keep the lowest missing number.
+hint: After adding a segment, advance `expected` while it is in the set; then record `expected` as the ACK.
+solution: Keep a set of received segments and the lowest missing segment number `expected`. After each arrival advance `expected` past every contiguous received segment; the ACK is `expected`. Duplicate ACKs (the repeated 2 in the second test) appear when a segment is missing.
+
+@practice self
+prompt: A client with initial sequence number 1000 opens a TCP connection to a server with initial sequence number 5000. The client sends 300 bytes of data; the server acknowledges them, then sends 500 bytes; the client acknowledges them, and then the client closes the connection first, followed by the server closing. List every segment with its flags, sequence number and acknowledgment number (acknowledge each FIN, and treat the server's data and ACK as separate segments).
+solution: (1) Client to server: SYN, seq=1000. (2) Server to client: SYN+ACK, seq=5000, ack=1001. (3) Client to server: ACK, seq=1001, ack=5001. (4) Client to server: data, seq=1001, 300 bytes (bytes 1001 to 1300). (5) Server to client: ACK, seq=5001, ack=1301. (6) Server to client: data, seq=5001, 500 bytes (5001 to 5500). (7) Client to server: ACK, seq=1301, ack=5501. (8) Client to server: FIN, seq=1301, ack=5501. (9) Server to client: ACK, seq=5501, ack=1302 (the FIN used number 1301). (10) Server to client: FIN, seq=5501, ack=1302. (11) Client to server: ACK, seq=1302, ack=5502. The client then waits in TIME-WAIT.
+hint: A SYN and a FIN each consume one sequence number; data consumes one per byte.
+hint: The acknowledgment number is always the sequence number of the next byte expected from the other side.
+rubric: The handshake has SYN with seq=1000, SYN+ACK with seq=5000 and ack=1001, and ACK with ack=5001.
+rubric: Data segments use seq=1001 (300 bytes) and seq=5001 (500 bytes) with ACKs of 1301 and 5501.
+rubric: The FIN from the client has seq=1301 and is acknowledged with 1302; the server's FIN has seq=5501 and is acknowledged with 5502.
+rubric: States that SYN and FIN each take one sequence number.
+
+@quiz code
+prompt: Write `seq_numbers(isn, sizes)` that returns a list with one pair `(seq, next_seq)` per segment: `seq` is the sequence number of the segment and `next_seq` is the sequence number of the next segment (`seq` plus the payload size). The first segment has sequence number `isn`, and all sequence numbers wrap around modulo $2^{32}$. `sizes` lists the payload sizes in bytes in order. An empty list gives an empty list.
+starter:
+```python
+def seq_numbers(isn, sizes):
+    pass
+```
+tests:
+```python
+assert seq_numbers(1000, [300, 500]) == [(1000, 1300), (1300, 1800)]
+assert seq_numbers(2**32 - 100, [300]) == [(4294967196, 200)]
+assert seq_numbers(0, []) == []
+assert seq_numbers(2**32 - 1, [1, 1]) == [(4294967295, 0), (0, 1)]
+```
+model:
+```python
+def seq_numbers(isn, sizes):
+    result = []
+    seq = isn % 2**32
+    for size in sizes:
+        nxt = (seq + size) % 2**32
+        result.append((seq, nxt))
+        seq = nxt
+    return result
+```
+hint: Each segment starts where the previous one ended.
+hint: Take every sum modulo `2**32`, so values wrap around to 0.
+solution: Keep the current sequence number, add the segment size modulo $2^{32}$ to get the next one, record the pair, and continue from the next number.
+
+@quiz num
+prompt: A sender uses a sliding window with 10 000-bit packets on a 100 Mb/s link ($10^8$ bits per second) with an RTT of 40 ms. What is the smallest integer window size (in packets) that makes the sender utilization reach 1, that is, keeps the sender transmitting continuously?
+answer: 401
+check: 1 + 40000 // (10000 * 10**6 // 10**8)
+hint: The window must cover one RTT plus one transmission time.
+solution: $L/R = 10^4/10^8 = 100\ \mu\text{s}$ and RTT is $40\,000\ \mu\text{s}$, so the window must be at least $(40\,000 + 100)/100 = 401$ packets.

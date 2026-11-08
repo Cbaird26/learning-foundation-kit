@@ -1,0 +1,304 @@
+@lesson
+title: Refactoring safely
+summary: Change the structure of code without changing its behavior by locking behavior in with characterization tests and then making small, verified steps.
+objective: Define refactoring and explain why tests are the precondition for doing it safely.
+objective: Write characterization tests that pin down what legacy code actually does.
+objective: Apply common refactorings (rename, extract, replace conditional with data) in small steps that keep the tests green.
+reading: Test-Driven Development with Python, the sections on refactoring in the TDD cycle (the "refactor" step and "Three strikes and refactor"); also look up "characterization tests" and "golden master" and a catalogue of refactorings such as "Extract Function" and "Replace Conditional with Polymorphism".
+@article
+**Refactoring** means changing the *structure* of code without changing its *observable behavior*. The goal is to make the next change easier: clearer names, smaller functions, less duplication. The definition has two halves, and the second is the dangerous one. If behavior changes, you did not refactor; you edited. So the first question before any refactoring is always: *how will I know the behavior did not change?*
+
+### The safety net
+
+You need tests that exercise the code you are about to restructure. If good tests exist, run them before you start (they must be green), and after each small step. If they do not exist, **write them first**. This is the situation with most legacy code, which, in a useful working definition, is simply code without tests.
+
+### Characterization tests
+
+When you do not have a specification, you cannot write tests of what the code *should* do. Instead you write **characterization tests** (also called golden master or approval tests) that record what the code **actually** does today:
+
+1. Pick inputs: ordinary values, the edge cases from the test-design lesson, and any input a bug report mentions.
+2. Run the code and capture its outputs, including the exceptions it raises.
+3. Write those outputs into the test as the expected values.
+
+```python
+def test_legacy_shipping_is_unchanged():
+    assert ship(0.5, False) == 5
+    assert ship(1, False) == 5
+    assert ship(1.1, True) == 16
+    assert ship(25, False) == 30
+```
+
+Nothing here claims the behavior is *right*; it claims the behavior is *current*. If you spot a bug while characterizing, write it down, keep the test (marked or commented as a known bug), and fix it later in a separate, deliberate change. Mixing a refactoring with a behavior change makes failures impossible to diagnose. Think of it as wearing two hats, never both at once: a **refactoring hat** (tests stay green, behavior unchanged) and a **feature or bug-fix hat** (tests change on purpose).
+
+For larger outputs (a rendered report, a generated file), a golden-master test stores the full output in a file and compares future runs with it, and approval-testing tools automate the "accept this new output" step.
+
+### Small steps
+
+The discipline is: **one tiny change, run the tests, commit if green, repeat.** A step might be renaming a variable, extracting four lines into a function, or replacing one magic number. If the tests go red, you know the last tiny step caused it, so you revert it and try a smaller step. Large "rewrite and hope" changes leave you debugging ten changes at once. Use your editor's automated refactorings (rename symbol, extract function or variable, inline) where you can; they are usually safer than hand edits. Keep commits small and labeled "refactor:" so reviewers can tell them apart from behavior changes.
+
+### A refactoring toolbox
+
+- **Rename** a variable, function or class to say what it is.
+- **Extract function**: turn a block with a comment above it into a function named after the comment.
+- **Inline** a function whose body is as clear as its name.
+- **Replace magic number** with a named constant.
+- **Introduce parameter object**: group parameters that travel together into a dataclass.
+- **Replace nested conditionals with guard clauses** or **with a lookup table**.
+- **Replace conditional with polymorphism** when the same `if kind == ...` chain appears in many places.
+- **Separate query from command**: a function either answers a question or changes state, not both.
+- **Move function** to the class or module whose data it uses.
+
+### Smells that suggest a refactoring
+
+Long functions, duplicated code, long parameter lists, deeply nested conditions, a class that knows too much about another's internals, comments explaining confusing code, and one change requiring edits in many places ("shotgun surgery"). A smell is a prompt to look, not an order to change; refactor where you are about to work, not everywhere at once.
+
+### Making untestable code testable
+
+Legacy code often hides dependencies (a global, a database call, `datetime.now()`) inside functions, which blocks tests. Find a **seam**: a place where you can change behavior without editing the code under test. The smallest safe change is often to add a parameter with the old behavior as the default (`def report(rows, now=None)` with `now = now or datetime.now()`), then test through it. Make that tiny change first, with whatever manual verification you can, and then refactor under the new tests.
+
+### When not to refactor
+
+Not before a deadline fix that must ship today, not code you are about to delete, and not as a giant standalone "cleanup" pull request nobody can review. Prefer the **boy scout rule**: leave the code a little cleaner than you found it, in small steps attached to the work you are already doing.
+
+@example
+title: Characterize, then refactor in steps
+problem: Refactor this function under test, without changing behavior.
+
+```python
+def ship(w, e):
+    if w <= 1:
+        c = 5
+    else:
+        if w <= 5:
+            c = 8
+        else:
+            if w <= 20:
+                c = 15
+            else:
+                c = 30
+    if e:
+        c = c * 2
+    return c
+```
+step: Characterize first: write asserts for each band and both sides of each boundary, with express on and off: `ship(1, False) == 5`, `ship(1.5, False) == 8`, `ship(5, False) == 8`, `ship(5.5, False) == 15`, `ship(20, False) == 15`, `ship(21, False) == 30`, `ship(1, True) == 10`. Run them: green.
+step: Step 1, rename only: `ship` stays but the parameters become `weight_kg` and `express`, and `c` becomes `cost`. Run the tests: green.
+step: Step 2, replace the nesting with a table and a loop:
+
+```python
+RATE_BANDS = [(1, 5), (5, 8), (20, 15)]
+LARGE_PARCEL_RATE = 30
+
+
+def ship(weight_kg, express):
+    cost = LARGE_PARCEL_RATE
+    for limit, rate in RATE_BANDS:
+        if weight_kg <= limit:
+            cost = rate
+            break
+    return cost * 2 if express else cost
+```
+step: Run the tests after the change: still green, so the behavior is unchanged. The rates are now data, and adding a band is a one-line edit.
+answer: Characterization tests at every boundary made it safe to turn nested ifs into a table, one verified step at a time.
+
+@example
+title: A refactoring caught by a characterization test
+problem: Someone "simplifies" a function and a characterization test goes red. What happened?
+
+```python
+def legacy(n):
+    if n > 0:
+        return n * 2
+    return -1
+```
+step: The refactored version was `return n * 2 if n >= 0 else -1`, because "it looked cleaner".
+step: The characterization test `assert legacy(0) == -1` fails against the new code: it returns `0` for `n = 0`.
+step: The change from `>` to `>=` was a behavior change disguised as a refactoring. The test pinned down the boundary, so the mistake showed up in seconds.
+step: Restore `>`. If `0` should really give `0`, make that a separate, deliberate change with its own test update.
+answer: The boundary test turned an accidental behavior change into an immediate failure.
+
+@mistakes
+- Refactoring code that has no tests, and relying on "it looks the same" to prove behavior is unchanged.
+- Making many changes before running the tests, so a failure could come from any of them.
+- Fixing a bug in the middle of a refactoring, so a red test cannot tell you which change broke it.
+- Treating characterization tests as a specification; they record current behavior, bugs included.
+
+@practice mc
+prompt: You must restructure a 200-line function that has no tests, and nobody remembers what all of it does. What is the right first step?
+choice: Rewrite it from scratch and compare by eye.
+choice*: Write characterization tests that record its current outputs for a range of inputs.
+choice: Start renaming variables and run the program to see if it still starts.
+choice: Delete the parts that look unused.
+hint: You need a way to detect a change in behavior before you change the structure.
+solution: Characterization tests pin down current behavior, bugs included, so every following step can be checked. Rewriting or deleting without tests, or merely checking that the program starts, gives no real evidence that behavior is unchanged.
+
+@practice text
+prompt: A refactoring replaced `legacy` with `refactored`. What does this program print? Type the output exactly, one line per print.
+
+```python
+def legacy(n):
+    if n > 0:
+        return n * 2
+    return -1
+
+
+def refactored(n):
+    return n * 2 if n >= 0 else -1
+
+
+for n in (-1, 0, 3):
+    print(n, legacy(n) == refactored(n))
+```
+answer:
+```
+-1 True
+0 False
+3 True
+```
+check: run("def legacy(n):\n    if n > 0:\n        return n * 2\n    return -1\n\n\ndef refactored(n):\n    return n * 2 if n >= 0 else -1\n\n\nfor n in (-1, 0, 3):\n    print(n, legacy(n) == refactored(n))\n")
+hint: Evaluate both functions at `0`; the two conditions `n > 0` and `n >= 0` differ there.
+solution: For `-1` both return `-1`; for `3` both return `6`; for `0`, `legacy` returns `-1` but `refactored` returns `0`. The refactoring changed behavior at the boundary, which a characterization test at `0` would have caught.
+
+@practice code
+prompt: Write `characterize(func, inputs)`, a helper for building characterization tests. `inputs` is a list of argument tuples. For each one call `func(*args)`. Return a list of `(args, outcome)` pairs, in order. The outcome is the returned value, or, if the call raises an exception, the string `"raises "` followed by the exception class name (for example `"raises ValueError"`).
+starter:
+```python
+def characterize(func, inputs):
+    pass
+```
+tests:
+```python
+def f(x):
+    if x < 0:
+        raise ValueError("negative")
+    return x + 1
+
+assert characterize(f, [(1,), (-1,)]) == [((1,), 2), ((-1,), "raises ValueError")]
+assert characterize(f, []) == []
+assert characterize(len, [("ab",), (5,)]) == [(("ab",), 2), ((5,), "raises TypeError")]
+assert characterize(max, [(1, 9), (4, 2)]) == [((1, 9), 9), ((4, 2), 4)]
+```
+model:
+```python
+def characterize(func, inputs):
+    results = []
+    for args in inputs:
+        try:
+            outcome = func(*args)
+        except Exception as exc:
+            outcome = "raises " + type(exc).__name__
+        results.append((args, outcome))
+    return results
+```
+hint: Wrap the call in `try`/`except Exception` so one failing input does not stop the others.
+hint: The exception class name is `type(exc).__name__`.
+solution: For each argument tuple, call the function and store either its return value or a description of the exception, then collect `(args, outcome)` pairs. The output can be pasted into a test as the expected values, which is how a golden master is created.
+
+@practice ms
+prompt: Which of these are good refactoring practices?
+choice*: Run the tests after every small change and commit when they are green.
+choice*: Keep refactoring commits separate from commits that change behavior.
+choice: Fix any bugs you notice immediately, inside the same change, to save time.
+choice*: Write characterization tests first when the code has no tests.
+choice: Rename, extract and rewrite everything in one large change, then run the tests once at the end.
+hint: The point is to know quickly which step broke behavior.
+solution: Small verified steps, separate commits, and characterization tests for untested code make refactoring safe and reviewable. Mixing in bug fixes or doing one giant change makes it impossible to tell which edit caused a failure.
+
+@practice self
+prompt: You inherit this function, which has no tests and is used in checkout. Write a step-by-step refactoring plan: what you do before changing anything, the first four refactoring steps in order, and how you check each step.
+
+```python
+def calc(o, c):
+    t = 0
+    for i in o:
+        t = t + i[1] * i[2]
+    if c == "g":
+        if t > 100:
+            t = t * 0.9
+    elif c == "s":
+        if t > 50:
+            t = t * 0.95
+    return round(t, 2)
+```
+hint: Start from what you need before touching the code, then order the steps from the safest (renaming) to the more structural.
+solution: Before changing anything: work out what the inputs are (`o` is a list of `(name, price, quantity)` items, `c` is a customer tier) and write characterization tests: an empty order, one item, several items, each tier on both sides of its threshold (a total of 100 and 100.01 for `"g"`, 50 and 50.01 for `"s"`), an unknown tier such as `"x"`, and a case where rounding matters. Record the actual results as expected values and note any surprising behavior (for example that the thresholds are strict) as current behavior, not as bugs to fix now. Run them: green. Step 1, rename: `calc` to `order_total`, `o` to `items`, `c` to `tier`, `t` to `total`; run tests. Step 2, unpack the tuples in the loop (`for _, price, quantity in items`) and use `total += price * quantity`; run tests. Step 3, replace the magic numbers with named constants or a table, `TIER_RULES = {"g": (100, 0.9), "s": (50, 0.95)}`, so the tier logic becomes data; run tests. Step 4, extract `subtotal(items)` and `apply_tier_discount(total, tier)` as separate functions with the original function calling them; run tests. Commit after each green step with a "refactor:" message. Any behavior I want to change, such as unknown tiers, becomes a separate change with its own failing test.
+rubric: Begins with characterization tests that include threshold boundaries, an unknown tier and the empty order, before any edit.
+rubric: Orders at least four small steps (rename, unpack or simplify, named constants or table, extraction) and says to run the tests after each.
+rubric: Keeps behavior changes out of the refactoring and mentions committing in small steps.
+
+@quiz code
+prompt: Below is legacy code. Write `late_fee(days_late, is_member)` that behaves **exactly** the same, but is structured as a table of bands (day limit and fee) instead of nested `if` statements. The fees: up to and including 0 days late costs 0, up to 7 days costs 2, up to 30 days costs 10, anything later costs 25, and members pay half.
+
+```python
+def fee(d, m):
+    if d <= 0:
+        f = 0
+    else:
+        if d <= 7:
+            f = 2
+        else:
+            if d <= 30:
+                f = 10
+            else:
+                f = 25
+    if m:
+        f = f / 2
+    return f
+```
+starter:
+```python
+def late_fee(days_late, is_member):
+    pass
+```
+tests:
+```python
+def fee(d, m):
+    if d <= 0:
+        f = 0
+    else:
+        if d <= 7:
+            f = 2
+        else:
+            if d <= 30:
+                f = 10
+            else:
+                f = 25
+    if m:
+        f = f / 2
+    return f
+
+assert late_fee(-3, False) == fee(-3, False)
+assert late_fee(0, False) == fee(0, False)
+assert late_fee(1, False) == fee(1, False)
+assert late_fee(7, True) == fee(7, True)
+assert late_fee(8, False) == fee(8, False)
+assert late_fee(30, False) == fee(30, False)
+assert late_fee(31, True) == fee(31, True)
+assert late_fee(100, False) == 25
+assert late_fee(100, True) == 12.5
+```
+model:
+```python
+FEE_BANDS = [(0, 0), (7, 2), (30, 10)]
+LATE_FEE = 25
+
+
+def late_fee(days_late, is_member):
+    fee = LATE_FEE
+    for limit, band_fee in FEE_BANDS:
+        if days_late <= limit:
+            fee = band_fee
+            break
+    return fee / 2 if is_member else fee
+```
+hint: Store the bands in order from the earliest to the latest and take the first band whose limit is not below the days late.
+hint: Use `<=` so a value exactly on a limit stays in the lower band, and `break` at the first match.
+solution: Keep `(limit, fee)` pairs in ascending order, pick the first band with `days_late <= limit`, fall back to the top fee, and halve it for members. The tests compare against the legacy function at every boundary, which is what a characterization test does during a real refactoring.
+
+@quiz mc
+prompt: During a refactoring, a characterization test fails after your latest small change. What should you do?
+choice: Update the test's expected value so it matches the new output.
+choice*: Revert the last change, or fix it, because behavior should not have changed.
+choice: Delete the failing test, since the code is now cleaner.
+choice: Continue refactoring and fix all the failures at the end.
+hint: The test recorded the behavior you promised to keep.
+solution: A failing characterization test means the last step changed behavior, so undo or correct that step. Editing the expected value or deleting the test throws away the safety net, and continuing buries the cause under more changes.

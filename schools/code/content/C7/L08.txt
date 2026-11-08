@@ -1,0 +1,259 @@
+@lesson
+title: Memory bugs and tools: gdb and Valgrind
+summary: Recognize the common memory errors in C programs and find them with gdb, Valgrind and the compiler's sanitizers.
+objective: Classify memory errors: leaks, invalid reads and writes, use after free, double free and uninitialized reads.
+objective: Read the key lines of a Valgrind Memcheck report and locate the faulty source line.
+objective: Use basic gdb commands to run, stop, inspect and step a program.
+objective: Apply a systematic process to find and fix a memory bug.
+reading: Beej's Guide to C Programming, the sections on undefined behavior and debugging; also the Valgrind and GDB user manuals (look up "Memcheck" and "Debugging with GDB").
+@article
+C does not check array bounds, track which blocks are still in use, or zero new memory. A memory error therefore often stays silent until something far away crashes. Tools exist to catch the error at the moment it happens.
+
+### The bug catalogue
+
+- **Invalid read or write**: touching memory outside any live object: a heap or stack buffer overflow (`a[n]`), an underflow (`a[-1]`), or a dangling pointer to a returned local.
+- **Use after free**: accessing a block after `free`.
+- **Double free** and **invalid free**: freeing twice, or freeing a pointer that did not come from `malloc` (or points into the middle of a block).
+- **Memory leak**: a block still allocated at exit with no remaining pointer to it.
+- **Uninitialized read**: using a variable or `malloc`ed memory before writing it; any decision based on it is unpredictable.
+
+### Compile for debugging
+
+Compile with `-g` (debug information, so tools can report file and line numbers) and `-O0` (no optimization, so the code runs as written): `gcc -std=c17 -Wall -Wextra -g -O0 -o prog prog.c`.
+
+### Valgrind Memcheck
+
+Valgrind runs your program on a simulated CPU and tracks every allocation and every memory access. It makes the program run many times slower, but it needs no recompilation. Run:
+
+```bash
+valgrind --leak-check=full ./prog
+```
+
+A typical report for writing one `int` past the end of a 5-`int` array:
+
+```text
+==4242== Invalid write of size 4
+==4242==    at 0x1091B2: main (bug.c:9)
+==4242==  Address 0x4a8f054 is 0 bytes after a block of size 20 alloc'd
+==4242==    at 0x4848899: malloc (vg_replace_malloc.c:381)
+==4242==    by 0x10919E: main (bug.c:6)
+```
+
+Read it top to bottom: the **kind** of error (`Invalid write of size 4`), the **stack trace** of the faulty access (`bug.c:9`), and a description of the **address** relative to a block, together with where that block was allocated (`bug.c:6`). "0 bytes after a block of size 20" means the access starts exactly where the block ends: an off-by-one overflow. Other messages: `Invalid read ... is 4 bytes inside a block of size 40 free'd` (use after free; the report also shows where it was freed), `Conditional jump or move depends on uninitialised value(s)` (an `if` or loop used an uninitialized value), `Invalid free() / delete / delete[] / realloc()` (double or invalid free). At exit the leak summary groups blocks as **definitely lost** (no pointer remains: a real leak), **indirectly lost** (reachable only through a lost block), **possibly lost** and **still reachable** (a pointer exists at exit, usually harmless). A clean run reports `All heap blocks were freed -- no leaks are possible` and `ERROR SUMMARY: 0 errors`. Memcheck cannot see overflows of stack or global arrays as precisely.
+
+### Sanitizers
+
+GCC and Clang can instrument the program at compile time: `-fsanitize=address` (AddressSanitizer: heap, stack and global overflows, use after free, and leaks on Linux) and `-fsanitize=undefined` (UndefinedBehaviorSanitizer: signed overflow, bad shifts, misaligned or null accesses). Combine them: `gcc -std=c17 -g -fsanitize=address,undefined -o prog prog.c`. They are much faster than Valgrind and catch stack overflows, but need a rebuild. Use both tools in testing.
+
+### gdb
+
+`gdb` lets you stop the program and look inside. Start with `gdb ./prog`, then:
+
+- `break main` or `break file.c:20`: set a breakpoint; `run`: start (arguments go after `run`).
+- `next` runs one line without entering calls; `step` enters a call; `finish` runs until the current function returns; `continue` runs to the next breakpoint.
+- `print x`, `print *p`, `print arr[0]@5` (five elements from `arr[0]`), `print p->next->value`: show values; `info locals` lists local variables; `display x` prints `x` after every stop.
+- `backtrace` (or `bt`): the call stack; `frame 1` and `up`/`down` move between frames. After a segmentation fault, `bt` shows which line crashed and who called it.
+- `watch x` stops when `x` changes; `x/4dw p` examines four words in decimal at an address; `quit` exits.
+
+### A debugging process
+
+1. **Reproduce** the failure reliably. 2. **Shrink** the input or code until the bug is small. 3. Run Valgrind or a sanitizer and read the **first** error: later errors are often consequences. 4. Use gdb to inspect the state at that line. 5. Fix the **root cause** (a wrong size, a double owner) instead of the symptom, and add a test.
+
+@example
+title: Reading a Valgrind report
+problem: A program prints correct output but Valgrind reports `Invalid read of size 4 ... Address 0x4a8f040 is 0 bytes inside a block of size 12 free'd`, with a stack trace for the read in `main (bug.c:12)` and one for the free in `main (bug.c:10)`. What is the bug?
+step: `Invalid read` means a read of memory that the program may not touch.
+step: "0 bytes inside a block ... free'd" means the address lies in a block that has already been freed, and the second trace says it was freed at `bug.c:10`.
+step: So line 12 reads through a pointer after line 10 freed its target: **use after free**.
+step: The fix is to move the read before the `free` (or stop using the pointer), and to set the pointer to `NULL` after freeing so a later misuse fails loudly.
+
+@example
+title: Finding a crash with gdb
+problem: `./prog` prints `Segmentation fault`. Describe a gdb session that finds the line.
+step: Rebuild with `-g -O0` so gdb can show source lines.
+step: Run `gdb ./prog`, then `run`. gdb stops at the faulting instruction and prints the function and line.
+step: Type `bt` to see the call stack and `info locals` (or `print p`) to inspect variables in that frame.
+step: If `print p` shows `(struct node *) 0x0`, the pointer is `NULL`: dereferencing it caused the crash, and you look at the caller (`frame 1`) to find why it was never set.
+
+@mistakes
+- Debugging without `-g`, so the tools report addresses instead of lines, or with `-O2`, so the code you step through is not the code you wrote.
+- Fixing the last error in a Valgrind report instead of the first one.
+- Treating "still reachable" blocks as the same as "definitely lost": the first has a pointer at exit, the second does not.
+- Concluding a program is correct because it ran once without crashing; undefined behavior can look fine until memory layout changes.
+- Setting a pointer to `NULL` after `free` and assuming that fixes other copies of the same pointer.
+
+@practice mc
+prompt: Which memory error does this code contain?
+
+```c
+int *p = malloc(sizeof *p);
+*p = 3;
+free(p);
+printf("%d\n", *p);
+```
+choice: A memory leak, because `p` is never freed.
+choice: A double free.
+choice*: Use after free: `*p` is read after the block was released.
+choice: An uninitialized read, because `*p` was never assigned.
+hint: Check the order of the statements.
+solution: `*p` is assigned before `free`, and freed exactly once, so it is not a leak, a double free or an uninitialized read. The final `printf` reads freed memory, which is undefined behavior; Valgrind reports it as `Invalid read of size 4`.
+
+@practice code
+prompt: Write `leak_report(events)` that analyzes a log of allocation events. `events` is a list of `(op, id)` pairs where `op` is `"alloc"` or `"free"` and `id` names a block. An `id` may be allocated again after it has been freed. Return a dict with three sorted lists of distinct ids: `"leaked"` (ids still allocated at the end), `"double_free"` (ids freed while not currently allocated but allocated earlier in the log) and `"invalid_free"` (ids freed that were never allocated at all).
+starter:
+```python
+def leak_report(events):
+    pass
+```
+tests:
+```python
+r = leak_report([("alloc", 1), ("alloc", 2), ("free", 1)])
+assert r == {"leaked": [2], "double_free": [], "invalid_free": []}
+r = leak_report([("alloc", 1), ("free", 1), ("free", 1)])
+assert r == {"leaked": [], "double_free": [1], "invalid_free": []}
+r = leak_report([("free", 9), ("alloc", 3), ("free", 3)])
+assert r == {"leaked": [], "double_free": [], "invalid_free": [9]}
+r = leak_report([("alloc", 1), ("free", 1), ("alloc", 1)])
+assert r == {"leaked": [1], "double_free": [], "invalid_free": []}
+r = leak_report([])
+assert r == {"leaked": [], "double_free": [], "invalid_free": []}
+```
+model:
+```python
+def leak_report(events):
+    live = set()
+    seen = set()
+    double = set()
+    invalid = set()
+    for op, ident in events:
+        if op == "alloc":
+            live.add(ident)
+            seen.add(ident)
+        elif ident in live:
+            live.remove(ident)
+        elif ident in seen:
+            double.add(ident)
+        else:
+            invalid.add(ident)
+    return {
+        "leaked": sorted(live),
+        "double_free": sorted(double),
+        "invalid_free": sorted(invalid),
+    }
+```
+hint: Keep a set of live ids and a set of ids that have ever been allocated.
+hint: On a `free`: if the id is live, remove it; otherwise it is a double free if it was ever allocated, and an invalid free if not.
+solution: The live set at the end is exactly the leaks. Distinguishing a double free from an invalid free needs the history, hence the `seen` set. Valgrind's Memcheck keeps similar bookkeeping for every block.
+
+@practice text
+prompt: Type the single command line (no prompt) that runs the program `./prog` under Valgrind Memcheck with a full leak check, using only the one option `--leak-check=full`.
+answer: valgrind --leak-check=full ./prog
+nocheck: a shell command that cannot be computed here
+hint: The tool is called `valgrind`; the option comes before the program name.
+solution: `valgrind --leak-check=full ./prog` runs the program under Memcheck and lists every leaked block with the stack trace of its allocation. Compile with `-g` first so the traces show line numbers.
+
+@practice code
+prompt: A memory checker knows which blocks are live. Model the heap as a list of `(start, size)` tuples for the live blocks. Write `classify_access(blocks, addr, width)` that returns `"ok"` if all `width` bytes `addr` to `addr + width - 1` lie inside a single live block, and `"invalid"` otherwise (including partial overlap, an access before the first block, or one in a gap). `width` is at least 1.
+starter:
+```python
+def classify_access(blocks, addr, width):
+    pass
+```
+tests:
+```python
+blocks = [(100, 20), (200, 8)]
+assert classify_access(blocks, 100, 4) == "ok"
+assert classify_access(blocks, 116, 4) == "ok"
+assert classify_access(blocks, 118, 4) == "invalid"
+assert classify_access(blocks, 120, 1) == "invalid"
+assert classify_access(blocks, 99, 1) == "invalid"
+assert classify_access(blocks, 207, 1) == "ok"
+assert classify_access([], 0, 1) == "invalid"
+assert classify_access([(100, 20), (120, 8)], 118, 4) == "invalid"
+```
+model:
+```python
+def classify_access(blocks, addr, width):
+    for start, size in blocks:
+        if start <= addr and addr + width <= start + size:
+            return "ok"
+    return "invalid"
+```
+hint: An access is fine only if it fits entirely within one block.
+hint: For a block `(start, size)`, check `start <= addr` and `addr + width <= start + size`.
+solution: Check both ends of the access against each block. The partial-overlap test `(118, 4)` fails the second condition: it would touch byte 120, one past the block, which is exactly the off-by-one overflow Memcheck reports as "0 bytes after a block".
+
+@practice self
+prompt: This program has several memory bugs. List every bug, say how a tool such as Valgrind would report it, and write the corrected program.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+char *join(const char *a, const char *b) {
+    char *out = malloc(strlen(a) + strlen(b));
+    strcpy(out, a);
+    strcat(out, b);
+    return out;
+}
+
+int main(void) {
+    char *s = join("foo", "bar");
+    printf("%s\n", s);
+    free(s);
+    free(s);
+    int *nums = malloc(3 * sizeof *nums);
+    for (int i = 0; i <= 3; i++) {
+        nums[i] = i;
+    }
+    return 0;
+}
+```
+hint: Check each allocation's size against how it is used, count the calls to `free` for each block, and check each loop bound.
+hint: There are four distinct bugs: two writes outside a block, one invalid free, and one leak.
+solution: There are four bugs. (1) `join` allocates `strlen(a) + strlen(b)` bytes, one short of the room needed for the terminator, so `strcpy` and `strcat` write one byte past the block (an invalid write, "0 bytes after a block of size 6"); allocate `strlen(a) + strlen(b) + 1`. (2) `s` is freed twice (an invalid free); delete the second `free(s)`. (3) The loop `i <= 3` writes `nums[3]`, one element past the 3-element block (an invalid write of size 4); use `i < 3`. (4) `nums` is never freed, so Valgrind reports it as definitely lost; add `free(nums);` before `return 0;`. Neither `malloc` result is checked for `NULL`, which a robust version would also add.
+rubric: Finds the missing byte for the terminator in `join` and fixes the allocation size.
+rubric: Finds the double free of `s` and removes one call.
+rubric: Finds the off-by-one loop bound that writes past `nums`.
+rubric: Finds the leak of `nums` and adds a `free`, and describes at least one tool message correctly.
+
+@quiz code
+prompt: Valgrind's leak summary says how many bytes in how many blocks are definitely lost. Write `leak_summary(events, sizes)` where `events` is a list of `(op, id)` pairs with `op` equal to `"alloc"` or `"free"` (each `free` frees a block that is currently allocated; an `id` may be allocated again after being freed) and `sizes` maps each id to its size in bytes. Return a tuple `(blocks, total_bytes)` for the blocks still allocated at the end.
+starter:
+```python
+def leak_summary(events, sizes):
+    pass
+```
+tests:
+```python
+sizes = {1: 16, 2: 8, 3: 100}
+assert leak_summary([("alloc", 1), ("alloc", 2), ("free", 1)], sizes) == (1, 8)
+assert leak_summary([("alloc", 1), ("alloc", 3)], sizes) == (2, 116)
+assert leak_summary([("alloc", 2), ("free", 2)], sizes) == (0, 0)
+assert leak_summary([], sizes) == (0, 0)
+assert leak_summary([("alloc", 1), ("free", 1), ("alloc", 1)], sizes) == (1, 16)
+```
+model:
+```python
+def leak_summary(events, sizes):
+    live = set()
+    for op, ident in events:
+        if op == "alloc":
+            live.add(ident)
+        else:
+            live.discard(ident)
+    return len(live), sum(sizes[i] for i in live)
+```
+hint: Track which ids are currently allocated, adding on `alloc` and removing on `free`.
+hint: At the end, count the live ids and add up their sizes.
+solution: The ids left in the live set at the end are the leaked blocks; their count and the sum of their sizes give the summary line. A block allocated again after being freed is live once, because the set holds ids.
+
+@quiz mc
+prompt: A program writes the 6th `int` of an array that was allocated with `malloc(5 * sizeof(int))`. Valgrind reports an `Invalid write of size 4`. What does its description of the address most likely say?
+choice: `Address ... is 4 bytes inside a block of size 20 free'd`
+choice*: `Address ... is 0 bytes after a block of size 20 alloc'd`
+choice: `Address ... is not stack'd, malloc'd or (recently) free'd` with a size of 5
+choice: `definitely lost: 20 bytes in 1 blocks`
+hint: The array occupies 20 bytes, and the 6th element starts at byte offset 20.
+solution: Element 5 (the 6th) begins at offset `5 * 4 = 20`, exactly at the end of the 20-byte block, so Memcheck describes the address as "0 bytes after a block of size 20 alloc'd". The "free'd" form means use after free, and "definitely lost" is a leak message printed at exit.

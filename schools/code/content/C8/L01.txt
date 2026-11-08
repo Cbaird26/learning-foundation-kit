@@ -1,0 +1,223 @@
+@lesson
+title: What an operating system does: processes and the kernel
+summary: Explain how an operating system virtualizes the CPU for processes using user and kernel mode, system calls, traps and timer interrupts, and trace a process through its states.
+objective: Describe the three roles of an operating system: virtualizer, resource manager and provider of a standard library of services.
+objective: Explain user mode, kernel mode, system calls and the trap mechanism, and why the timer interrupt is essential.
+objective: Trace a process through the ready, running and blocked states and compute the overhead of context switching.
+reading: Operating Systems: Three Easy Pieces, the chapters "The Abstraction: The Process" and "Mechanism: Limited Direct Execution".
+
+@article
+A computer has a handful of CPU cores, some RAM, a disk and a network card, yet you run dozens of programs at once, each behaving as though it owned the machine. The **operating system (OS)** makes this possible. It is the software that manages the hardware on behalf of programs and gives them a convenient, safe interface to it. The part that is always resident and runs with full hardware privileges is the **kernel**.
+
+### Three roles
+
+- **Virtualizer.** The OS turns one physical resource into many virtual ones: one CPU into many apparent CPUs, and one RAM into a private address space per program.
+- **Resource manager.** The OS decides who gets the CPU, which memory frames and which disk blocks, and it must do so efficiently and fairly.
+- **Standard library.** The OS exports **system calls** (open, read, fork and so on) so programs need not know the details of each device.
+
+### The process
+
+A **process** is a running program. Its machine state has three parts you should be able to list: its **address space** (the memory it can address: code, static data, heap and stack), its **registers** (including the program counter and stack pointer) and its **open resources** (such as open files). The OS keeps a record for each process, the **process control block (PCB)**, holding the saved registers, state, identifier and so on.
+
+At any moment a process is in one of three basic states:
+
+| state | meaning |
+|---|---|
+| running | executing instructions on a CPU |
+| ready | could run, but the OS has chosen another process |
+| blocked | waiting for an event (such as disk I/O) and cannot use the CPU |
+
+The scheduler moves a process ready to running and back; starting an I/O request moves running to blocked; the I/O completing moves blocked to ready (never directly to running).
+
+### Limited direct execution
+
+To be fast, the OS runs a program **directly** on the CPU. To stay in control, the execution is **limited** by two hardware mechanisms.
+
+1. **Privilege modes.** Code runs in **user mode**, where privileged operations (talking to devices, changing page tables, disabling interrupts) are forbidden, or in **kernel mode**, where everything is allowed. A user program that needs a privileged service executes a special **trap** instruction. The hardware raises the privilege level, saves the program's registers on a kernel stack, and jumps to a handler whose address the kernel stored in a **trap table** at boot. A user program cannot choose where the jump lands, which is why the mechanism is safe. A **return-from-trap** instruction lowers the privilege and resumes the program.
+2. **The timer interrupt.** Without it, a program stuck in an infinite loop would own the CPU forever. A hardware timer raises an interrupt every few milliseconds; the hardware jumps into the kernel, which may then run the scheduler.
+
+When the kernel decides to run a different process it performs a **context switch**: save the current process's registers into its PCB, load the registers of the next process, and return-from-trap into it. A context switch is pure overhead, so a time slice that is too short wastes CPU time. If a slice is $q$ ms and a switch costs $s$ ms, the fraction of time spent on useful work is $q/(q+s)$.
+
+### A system call, traced
+
+```c
+#include <unistd.h>
+
+int main(void) {
+    write(1, "hi\n", 3);   /* wrapper in libc: puts number, traps */
+    return 0;
+}
+```
+
+The C library's `write` places the system call number and arguments in registers and executes the trap instruction. In kernel mode the handler looks up the number in a table of system call handlers, performs the write on file descriptor 1 (standard output), and returns the byte count to the user program.
+
+@example
+title: Tracing a process through its states
+problem: A process starts ready. The scheduler picks it, it starts a disk read, the read finishes, and the scheduler picks it again. Give the state after each event, and say when the CPU could run some other process.
+step: Start: the process is `ready`. It can run, but it is not running yet.
+step: Event "scheduled": the OS loads its registers and runs it, so the state is `running`.
+step: Event "starts a disk read": the process cannot continue until the data arrives, so it moves to `blocked`. This is when the CPU is free to run another process.
+step: Event "disk read finishes": an interrupt tells the OS the data is ready, so the process moves to `ready`, not directly to `running`; the scheduler has not yet chosen it.
+step: Event "scheduled again": the state is `running`. The full sequence is ready, running, blocked, ready, running.
+answer: ready, running, blocked, ready, running
+
+@example
+title: The cost of context switching
+problem: A time slice is 4.5 ms and one context switch costs 0.5 ms. What fraction of the CPU time is useful work, and how much does it change if the slice is lengthened to 19.5 ms?
+step: Useful fraction is $q/(q+s)$, where $q$ is the slice and $s$ the switch cost.
+step: For $q = 4.5$ and $s = 0.5$: $4.5/5.0 = 0.9$, so 90% is useful and 10% is overhead.
+step: For $q = 19.5$: $19.5/20.0 = 0.975$, so 97.5% is useful.
+step: Longer slices cut overhead but make interactive programs wait longer for their turn, so the OS must balance throughput against responsiveness.
+answer: 90% and 97.5%
+
+@mistakes
+- Believing the blocked state returns directly to running: a process whose I/O completes becomes ready and waits for the scheduler.
+- Thinking a system call is an ordinary function call: it changes the privilege level and jumps to an address chosen by the kernel, not by the caller.
+- Thinking the OS is constantly running alongside programs: the kernel runs only on traps, interrupts and exceptions (and when it schedules itself).
+- Counting the context-switch cost as zero: it is overhead during which no user instruction runs.
+
+@practice mc
+prompt: Which of these actions must be performed in kernel mode (a privileged operation)?
+choice*: Executing the instruction that disables interrupts
+choice: Adding the contents of two registers
+choice: Calling a function defined in the same program
+choice: Reading a local variable from the process's own stack
+hint: Privileged instructions are the ones that could let one program take control of the machine.
+solution: Disabling interrupts would let a program prevent the timer from ever returning control to the OS, so it is privileged. Arithmetic, ordinary calls and stack reads are normal user-mode work.
+
+@practice num
+prompt: A timer interrupt gives each process a time slice of 9.5 ms, and each context switch costs 0.5 ms. What percentage of the CPU's time goes to the processes' own work? Give a number.
+answer: 95
+check: 100 * 9.5 / (9.5 + 0.5)
+tol: 0.01
+unit: %
+hint: Useful time divided by useful time plus switch time.
+solution: Each cycle is 9.5 ms of work plus 0.5 ms of switching, 10 ms in total, so 9.5/10 = 95% is useful work.
+
+@practice code
+prompt: Write `final_state(events)` that models a process. It starts in the state `"ready"` and processes the event strings in order: `"schedule"` moves ready to running, `"deschedule"` moves running to ready, `"io_start"` moves running to blocked, and `"io_done"` moves blocked to ready. Return the final state as a string. If an event is not allowed in the current state, raise `ValueError`.
+starter:
+```python
+def final_state(events):
+    pass
+```
+tests:
+```python
+assert final_state([]) == "ready"
+assert final_state(["schedule"]) == "running"
+assert final_state(["schedule", "io_start", "io_done", "schedule"]) == "running"
+assert final_state(["schedule", "deschedule"]) == "ready"
+assert raises(ValueError, final_state, ["io_done"])
+assert raises(ValueError, final_state, ["schedule", "schedule"])
+```
+model:
+```python
+TRANSITIONS = {
+    ("ready", "schedule"): "running",
+    ("running", "deschedule"): "ready",
+    ("running", "io_start"): "blocked",
+    ("blocked", "io_done"): "ready",
+}
+
+
+def final_state(events):
+    state = "ready"
+    for event in events:
+        if (state, event) not in TRANSITIONS:
+            raise ValueError(f"{event!r} not allowed in state {state!r}")
+        state = TRANSITIONS[(state, event)]
+    return state
+```
+hint: A dictionary keyed by `(state, event)` pairs makes the allowed moves easy to look up.
+hint: Loop over the events, look up the pair, and raise `ValueError` if the pair is not in the dictionary.
+solution: Keep the current state, and for each event either move to the state in the transition table or raise `ValueError`. Events such as `io_done` while ready have no entry, so they raise.
+
+@practice code
+prompt: Write `dispatch(table, number, *args)` that models a kernel's system call dispatch. `table` is a dictionary mapping system call numbers to handler functions. If `number` is in the table, return the result of calling that handler with `*args`; otherwise return `-1` (an invalid system call).
+starter:
+```python
+def dispatch(table, number, *args):
+    pass
+```
+tests:
+```python
+table = {0: lambda: 42, 1: lambda a, b: a + b, 2: lambda s: s.upper()}
+assert dispatch(table, 0) == 42
+assert dispatch(table, 1, 2, 3) == 5
+assert dispatch(table, 2, "ok") == "OK"
+assert dispatch(table, 9) == -1
+assert dispatch(table, -3, 1, 2) == -1
+assert dispatch({}, 0) == -1
+```
+model:
+```python
+def dispatch(table, number, *args):
+    if number not in table:
+        return -1
+    return table[number](*args)
+```
+hint: The system call number is just a key into the table.
+solution: Check membership first and return `-1` for unknown numbers; otherwise call `table[number](*args)`. A real kernel does the same lookup in its system call table and returns an error code for an unknown number.
+
+@practice text
+prompt: A process is `ready`. The events that happen to it, in order, are: scheduled, starts disk I/O, I/O completes. Type its state after the last event, as one lowercase word.
+answer: ready
+nocheck: a state-machine fact, not a computed output
+hint: After a disk read finishes, does the process run immediately, or does it wait to be chosen?
+solution: Scheduling makes it running, starting I/O makes it blocked, and completion makes it ready. It returns to running only when the scheduler picks it again.
+
+@practice self
+prompt: Explain why an operating system needs both a trap table and a timer interrupt to implement limited direct execution. What would go wrong without each?
+hint: Ask who chooses where a trap jumps, and what brings control back from a looping program.
+solution: The trap table is set up by the kernel at boot, in kernel mode, and holds the addresses of the handlers that traps jump to. Because a user program can only trap, not choose the destination, it can request services but cannot run its own code with kernel privileges; without a trap table (or with one the program could change) any program could take over the machine. The timer interrupt guarantees that control returns to the kernel periodically, even if the program never makes a system call. Without it, a program with an infinite loop would keep the CPU forever, and the OS could never switch to another process (cooperative scheduling would depend on every program behaving well).
+rubric: States that the kernel installs the trap table at boot and the program cannot choose the jump target, so privileged code runs only at vetted entry points.
+rubric: States that the timer interrupt forces control back to the kernel without the program's cooperation.
+rubric: Gives the consequence of each missing mechanism (privilege escalation without the trap table; a runaway program monopolizing the CPU without the timer).
+
+@quiz code
+prompt: Write `run_interleaved(procs)`. Each element of `procs` is a Python generator standing for a process; each `next()` on it runs the process for one time slice and yields a label. Simulate round-robin: repeatedly take the live processes in list order and call `next()` once on each, appending the yielded label to a result list; a generator that is exhausted is removed. Return the result list.
+starter:
+```python
+def run_interleaved(procs):
+    pass
+```
+tests:
+```python
+def p(name, n):
+    for i in range(n):
+        yield f"{name}{i}"
+
+assert run_interleaved([p("A", 2), p("B", 3)]) == ["A0", "B0", "A1", "B1", "B2"]
+assert run_interleaved([p("X", 1)]) == ["X0"]
+assert run_interleaved([]) == []
+assert run_interleaved([p("A", 0), p("B", 2)]) == ["B0", "B1"]
+assert run_interleaved([p("A", 1), p("B", 1), p("C", 2)]) == ["A0", "B0", "C0", "C1"]
+```
+model:
+```python
+def run_interleaved(procs):
+    out = []
+    live = list(procs)
+    while live:
+        still_live = []
+        for gen in live:
+            try:
+                out.append(next(gen))
+                still_live.append(gen)
+            except StopIteration:
+                pass
+        live = still_live
+    return out
+```
+hint: One pass over the live list gives each process one slice.
+hint: Catch `StopIteration` from `next(gen)` to detect a finished process, and do not keep it for the next pass.
+solution: Each outer pass is one round of the round-robin queue. A generator that raises `StopIteration` has terminated, so it is dropped; the others stay in order for the next round.
+
+@quiz mc
+prompt: A user program executes a system call using the trap instruction. What does the hardware do?
+choice*: Raises the privilege level, saves the program's registers on a kernel stack, and jumps to a handler address stored earlier by the kernel
+choice: Jumps to an address supplied by the user program in a register so that the program can choose its own handler
+choice: Switches directly to another process without entering the kernel
+choice: Copies the kernel's code into the process's address space and runs it in user mode
+hint: Think about who controls the destination of the jump.
+solution: The trap goes to a vetted handler registered by the kernel at boot, with privilege raised and the registers saved so that return-from-trap can resume the program. Letting the program pick the destination would defeat protection.

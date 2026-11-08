@@ -1,0 +1,321 @@
+@lesson
+title: Abstraction and information hiding
+summary: Design modules with small interfaces that hide their decisions, so callers cannot depend on details that are likely to change.
+objective: Separate a module's interface from its implementation and say what each promises.
+objective: Apply information hiding in Python with private names, properties and defensive copies.
+objective: Recognize leaky and shallow abstractions and audit supplied code for coupling problems.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 2 on repository (read the argument for putting an abstraction in front of storage); also look up "information hiding" and "deep modules".
+@article
+Last week you learned to name coupling. This week you learn the main tool for reducing it: **abstraction** with **information hiding**.
+
+An **abstraction** is a simplified view of something that keeps what a user needs and leaves out the rest. A `list` is an abstraction: you append and index without knowing how memory is resized. The **interface** is what callers may rely on: names, parameters, return values, errors and documented behavior. The **implementation** is everything else. **Information hiding** is the discipline of making each module hide one design decision, the thing most likely to change, behind its interface.
+
+### Why hiding pays
+
+Suppose a `Cart` exposes `cart.items`, a plain list, and ten modules do `cart.items.append(x)` and `for i in cart.items`. When product asks for a limit of 50 lines, or you want to merge duplicate products, ten modules must change. If instead the cart offers `add(product, qty)` and `lines()`, the list is a secret. You can change it to a dict keyed by product and nothing outside notices.
+
+A useful test: **what would I have to change if this decision changed?** If the answer is "one module", the decision is hidden. If the answer is "everything that touches the data", it leaked.
+
+### Hiding in Python
+
+Python has no enforced `private`. By convention a leading underscore (`_balance`) means "internal, do not use". Tools and reviewers treat it as a rule. A **property** exposes a value through an interface you can later change without breaking callers:
+
+```python
+class Account:
+    def __init__(self, balance=0):
+        self._balance = balance
+
+    @property
+    def balance(self):
+        return self._balance
+
+    def withdraw(self, amount):
+        if amount <= 0 or amount > self._balance:
+            raise ValueError("invalid amount")
+        self._balance -= amount
+```
+
+Callers read `account.balance` but cannot assign to it (a property without a setter raises `AttributeError`), so the only way to change the money is through `withdraw`, which protects the rule that the balance never goes negative. That rule is an **invariant**: a fact that is always true of a valid object. Encapsulation means the object, not its callers, is responsible for keeping its invariants.
+
+Beware leaking through return values. If a method returns your internal list, callers can mutate it. Return a copy (`list(self._items)`) or an immutable view such as a tuple.
+
+### Tell, don't ask
+
+Code that fetches data from an object, decides, and writes the data back has spread the object's logic into the caller:
+
+```python
+if account.balance >= amount:
+    account.balance = account.balance - amount
+```
+
+Instead *tell* the object what you want, `account.withdraw(amount)`, and let it enforce its own rules once, in one place.
+
+### Deep and shallow modules
+
+A **deep** module has a small interface and does a lot of work behind it. `open()` has two common arguments and hides buffering, encodings and system calls. A **shallow** module has an interface almost as complicated as its implementation: a class of getters and setters for every field, or a wrapper that passes every argument straight through. Shallow modules add names to learn without hiding anything. Aim for deep ones.
+
+### Leaky abstractions
+
+An abstraction **leaks** when callers must understand the hidden detail to use it correctly. A `get_user(id)` that is fine for one user but, called in a loop, issues one database query each time forces callers to know about the query. A leak is not always a bug; it is a cost. Document it, or redesign (here, `get_users(ids)`).
+
+### Auditing code for coupling
+
+When someone hands you unfamiliar code and says "find what makes this hard to change", walk through it with a checklist:
+
+1. Which other modules touch this module's internal data directly?
+2. Which decisions (storage format, third-party library, file layout) appear in many places?
+3. Which functions take flags, globals or whole objects they only half use?
+4. Which return values let callers change internal state?
+
+Write down each finding as: location, kind of coupling, consequence if the hidden decision changes, and a fix. That is the format reviewers respect.
+
+@example
+title: Hiding a list behind an interface
+problem: Callers use `inbox.messages.append(m)` and `len(inbox.messages)`. Product wants an inbox limit of 3 messages, dropping the oldest. How do you make the change cheap?
+step: First find what leaks: the list in `messages`. Every caller depends on it being a list, and none can be stopped from exceeding the limit.
+step: Hide it. Name the attribute `_messages` and give the class an interface that says what callers want to do:
+
+```python
+class Inbox:
+    def __init__(self, limit=3):
+        self._messages = []
+        self._limit = limit
+
+    def add(self, message):
+        self._messages.append(message)
+        if len(self._messages) > self._limit:
+            self._messages.pop(0)
+
+    def __len__(self):
+        return len(self._messages)
+```
+step: The limit rule now lives in one method, so no caller can break it.
+step: Trace: with `limit=3`, adding `"a"`, `"b"`, `"c"`, `"d"` leaves `["b", "c", "d"]`, so `len(inbox)` is `3`.
+step: Because the list is hidden, switching to `collections.deque(maxlen=3)` later changes only this class.
+answer: Hide the list behind `add` and `__len__`; the limit becomes one rule in one place.
+
+@example
+title: A leak through a return value
+problem: This class promises that its playlist order can change only through `move_to_front`. Why is that promise false, and how do you fix it?
+
+```python
+class Playlist:
+    def __init__(self, tracks):
+        self._tracks = list(tracks)
+
+    def tracks(self):
+        return self._tracks
+```
+step: `tracks()` returns the internal list itself, not a copy.
+step: A caller can write `p.tracks().clear()` or `p.tracks().sort()` and change the playlist's state without the playlist knowing. Any rule the class enforces can be bypassed.
+step: Return a copy: `return list(self._tracks)`. Mutating the copy cannot affect the object.
+step: An immutable alternative is `tuple(self._tracks)`, which also tells readers the result is not meant to be changed.
+answer: The method leaks mutable internal state; return a copy or a tuple.
+
+@mistakes
+- Putting an underscore on every name and adding a getter and a setter for each, which hides nothing. Hide decisions, not fields.
+- Returning internal lists or dicts from methods, so callers can silently break invariants.
+- Wrapping a library in a class whose methods pass every argument straight through. A shallow wrapper that exposes the library's types and errors still leaks the library.
+- Treating `_name` as a guarantee. It is a convention; enforce invariants in the methods that change state.
+
+@practice mc
+prompt: A `Cart` class exposes a public list `items`, and eight modules append to and loop over it. The team now wants to merge duplicate products into one line with a quantity. Which design makes that change cheapest next time?
+choice: Keep `items` public and document that it must always be a list
+choice*: Make the storage private and offer methods such as `add(product, qty)` and `lines()`
+choice: Add a getter `get_items()` that returns the same internal list
+choice: Rename `items` to `cart_items` and update the eight modules
+hint: Which option makes the storage a decision that only one class knows?
+solution: Hiding the storage behind `add` and `lines` means only `Cart` knows the representation, so merging duplicates is a one-class change. A getter that returns the same list, or a rename, leaves every caller coupled to a list.
+
+@practice code
+prompt: Write a class `Account` whose constructor takes an optional starting balance (default 0; a negative one raises `ValueError`). It must have a read-only property `balance`, a method `deposit(amount)` and a method `withdraw(amount)`. Both methods raise `ValueError` if `amount` is not positive, and `withdraw` also raises `ValueError` if it would make the balance negative. Assigning to `balance` directly must raise `AttributeError`.
+starter:
+```python
+class Account:
+    pass
+```
+tests:
+```python
+a = Account(10)
+a.deposit(5)
+assert a.balance == 15
+a.withdraw(15)
+assert a.balance == 0
+assert raises(ValueError, a.withdraw, 0)
+assert raises(ValueError, a.withdraw, -5)
+assert Account().balance == 0
+assert raises(ValueError, a.withdraw, 1)
+assert raises(ValueError, a.deposit, 0)
+assert raises(ValueError, Account, -1)
+assert raises(AttributeError, setattr, a, "balance", 100)
+```
+model:
+```python
+class Account:
+    def __init__(self, balance=0):
+        if balance < 0:
+            raise ValueError("balance cannot be negative")
+        self._balance = balance
+
+    @property
+    def balance(self):
+        return self._balance
+
+    def deposit(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        self._balance += amount
+
+    def withdraw(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        if amount > self._balance:
+            raise ValueError("insufficient funds")
+        self._balance -= amount
+```
+hint: Store the number in `self._balance` and expose it with `@property` and no setter.
+hint: Check the invariant (never negative) inside the methods that change the balance.
+solution: The only way to change `_balance` is through `deposit` and `withdraw`, which check their inputs, so the non-negative invariant holds for every `Account`. A property with no setter makes direct assignment raise `AttributeError`.
+
+@practice text
+prompt: What does this program print? Type the two lines of output exactly.
+
+```python
+class Temp:
+    def __init__(self, celsius):
+        self._c = celsius
+
+    @property
+    def f(self):
+        return self._c * 9 / 5 + 32
+
+t = Temp(100)
+print(t.f)
+t._c = 0
+print(t.f)
+```
+answer:
+```
+212.0
+32.0
+```
+check: run("class Temp:\n    def __init__(self, celsius):\n        self._c = celsius\n\n    @property\n    def f(self):\n        return self._c * 9 / 5 + 32\n\nt = Temp(100)\nprint(t.f)\nt._c = 0\nprint(t.f)\n")
+hint: The property `f` is recomputed from `_c` every time you read it.
+solution: `100 * 9 / 5 + 32` is `212.0`. After `_c` is set to 0, the property computes `0 + 32 = 32.0`. Division with `/` always gives a float. Assigning to `_c` from outside also shows that the underscore is only a convention.
+
+@practice code
+prompt: Write a class `Stack` that hides its storage. It needs `push(item)`, `pop()` (returns and removes the newest item; raises `IndexError` if empty), `peek()` (returns the newest item without removing it; raises `IndexError` if empty), `__len__` and `is_empty()`. Callers must not need to know it is backed by a list.
+starter:
+```python
+class Stack:
+    pass
+```
+tests:
+```python
+s = Stack()
+assert s.is_empty()
+s.push(1)
+s.push(2)
+assert len(s) == 2
+assert s.peek() == 2
+assert s.pop() == 2
+assert s.pop() == 1
+assert s.is_empty()
+assert raises(IndexError, s.pop)
+assert raises(IndexError, s.peek)
+```
+model:
+```python
+class Stack:
+    def __init__(self):
+        self._items = []
+
+    def push(self, item):
+        self._items.append(item)
+
+    def pop(self):
+        if not self._items:
+            raise IndexError("pop from empty stack")
+        return self._items.pop()
+
+    def peek(self):
+        if not self._items:
+            raise IndexError("peek at empty stack")
+        return self._items[-1]
+
+    def __len__(self):
+        return len(self._items)
+
+    def is_empty(self):
+        return not self._items
+```
+hint: Keep a private list and make the last element the top.
+solution: The list is the secret; callers see only `push`, `pop`, `peek`, `len` and `is_empty`. The explicit `IndexError` makes the error part of the stack's own interface instead of leaking the list's message.
+
+@practice self
+prompt: A teammate hands you this module and asks, "What makes it hard to change?" Write an audit with at least three findings. For each: the kind of coupling, what happens if the hidden decision changes, and a fix.
+
+```python
+# store.py
+inventory = {}          # product name -> [quantity, price]
+
+# report.py
+from store import inventory
+def low_stock():
+    return [n for n, v in inventory.items() if v[0] < 5]
+
+# checkout.py
+from store import inventory
+def buy(name, qty):
+    inventory[name][0] -= qty
+    return inventory[name][1] * qty
+```
+hint: Ask who knows that each entry is a two-item list, and who is allowed to change the quantities.
+solution: (1) Global coupling: `inventory` is a shared mutable dict imported by two modules. Any module can change stock, so a bug anywhere corrupts it. Fix: wrap it in an `Inventory` class that owns the data and offers `quantity(name)`, `remove(name, qty)` and `low_stock(threshold)`. (2) Content coupling to the representation: both modules know that a value is `[quantity, price]`, with the quantity at index 0 and the price at index 1. If you add a currency or a supplier, or change the list to a dataclass, both modules break. Fix: hide the entry behind a small `Product` object or methods. (3) A missing invariant: `buy` subtracts without checking, so stock can go negative, and the rule would have to be repeated in every caller. Fix: `Inventory.remove` raises an error if stock is insufficient. (4) Magic number and policy in `report.py`: the value `5` is hidden inside a list comprehension. Fix: make it a parameter of `low_stock`.
+rubric: Finds at least three genuine problems (the shared global, the knowledge of the entry layout, the missing invariant or the leaked policy).
+rubric: For each finding, names the coupling kind and states what would break if the hidden decision changed.
+rubric: Proposes fixes that hide the decision behind an interface instead of renaming or documenting it.
+
+@quiz code
+prompt: Write a class `Roster` with `add(name)` and `names()`. The `names()` method must return the names in the order they were added, and changing the returned list must not change the roster. Adding a name that is already present must be ignored (no duplicates).
+starter:
+```python
+class Roster:
+    pass
+```
+tests:
+```python
+r = Roster()
+r.add("ann")
+r.add("bo")
+r.add("ann")
+assert r.names() == ["ann", "bo"]
+r.names().append("zed")
+r.names().clear()
+assert r.names() == ["ann", "bo"]
+assert Roster().names() == []
+```
+model:
+```python
+class Roster:
+    def __init__(self):
+        self._names = []
+
+    def add(self, name):
+        if name not in self._names:
+            self._names.append(name)
+
+    def names(self):
+        return list(self._names)
+```
+hint: Callers get a copy of the internal list, not the list itself.
+solution: The duplicate rule lives in `add`, and `names()` returns `list(self._names)`, so appending to or clearing the result touches only the copy. The internal list stays a secret that you could replace with a dict or a set plus order later.
+
+@quiz mc
+prompt: Which class is the best example of a shallow module?
+choice: A `Logger` with `info(message)` that hides formatting, file rotation and thread safety
+choice*: A `UserWrapper` with one getter and one setter per field, each simply reading or writing that field
+choice: A `Cache` with `get(key)` and `put(key, value)` that hides eviction and expiry
+choice: A `Money` class that hides the rounding rules behind `add` and `multiply`
+hint: A shallow module has an interface as large as its implementation.
+solution: Getters and setters that only forward to fields add names to learn and hide no decision, so the interface is as big as the work done. The others expose a small interface over a substantial hidden decision, which makes them deep.

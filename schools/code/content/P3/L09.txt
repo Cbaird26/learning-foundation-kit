@@ -1,0 +1,212 @@
+@lesson
+title: Designing a URL shortener and a news feed
+summary: Walk through two classic designs end to end: a read-heavy URL shortener and a fan-out-heavy news feed, using requirements, estimates, APIs, data models and bottleneck analysis.
+objective: Apply the design process to a URL shortener, including key generation, caching and redirect semantics.
+objective: Compare fan-out on write, fan-out on read and hybrid approaches for a news feed.
+objective: Identify the bottleneck in each design from the numbers and say how you would scale and protect it.
+reading: The System Design Primer, the worked solutions "Design Pastebin.com (or Bit.ly)" and "Design the Twitter timeline and search (or Facebook feed and search)".
+@article
+Worked designs are where the earlier lessons come together. Both systems below look trivial and both are interview favorites, because the interesting part is not the boxes, it is the one hard question each hides. Follow the same sequence each time: requirements, estimates, API, data model, high-level design, deep dive, failures.
+
+### Design 1: a URL shortener
+
+**Requirements.** Functional: create a short link for a long URL (optionally a custom alias and an expiry); visiting the short link redirects to the long URL; owners can see click counts. Non-functional: redirects are fast (p99 under 100 ms) and highly available (99.99% monthly: a dead short link breaks every page that embeds it); creation can be a little slower and 99.9%. Non-goals: link preview, editing the target.
+
+**Estimates.** Say 100 million new links per day and 100 reads per write: about 1,160 writes per second, 116,000 reads per second on average and about 350,000 at peak (3 times). A record of about 500 bytes kept for 5 years is roughly 90 TB. This is a **read-heavy, small-record, key-value** workload.
+
+**API.** `POST /v1/links` with `{long_url, custom_alias?, expires_at?}` returns `{short_code, short_url}`. `GET /{short_code}` returns an HTTP redirect with a `Location` header. Use **302** (or 307) if you must count every click or may change targets, because browsers and intermediaries cache a **301** permanently and later clicks never reach you.
+
+**Data model.** One table keyed by `short_code`: `(short_code, long_url, owner_id, created_at, expires_at)`. Lookup is only by key, so a key-value or wide-column store, or a sharded relational table by hash of the code, all work. A second table maps `(owner_id, created_at)` to codes for listing.
+
+**Key generation, the hard question.** A 7-character code over 62 characters (0-9, a-z, A-Z) gives $62^7 \approx 3.5 \times 10^{12}$ codes. Options: (1) **random codes** with a conditional insert that retries on collision: simple, unguessable, collisions are rare while the space is mostly empty; (2) a **counter** encoded in base 62: no collisions, but sequential codes are guessable and a single counter is a bottleneck, so hand each application server a block of numbers (for example 1,000 at a time) from a coordinator; (3) hashing the URL and truncating: collisions are likely and need handling, but identical URLs can map to the same code.
+
+**Scaling the read path.** Put a CDN or an in-memory cache in front of the store (cache-aside, TTL, LRU). Traffic follows a skewed distribution, so a cache holding the hot few percent of links serves most reads. Analytics must not slow the redirect: publish a click event to a queue and aggregate it asynchronously. Protect the creation path with rate limiting and check destinations against abuse lists.
+
+### Design 2: a news feed
+
+**Requirements.** A user sees a feed of recent posts from the accounts they follow, newest first (ranking is out of scope here), with fast loads (p99 under 300 ms for the first page) and new posts appearing within a few seconds. Say 200 million daily users, each opens the feed 10 times a day and posts once a day on average, with 300 followers on average but a few accounts with tens of millions.
+
+**API.** `POST /v1/posts`, and `GET /v1/feed?cursor=...&limit=20`. Use **cursor** pagination (the last seen post id or timestamp), not page numbers, because new posts shift offsets.
+
+**The hard question: when do you build the feed?**
+
+- **Fan-out on read (pull)**: store each post once, and when a user opens the feed, fetch the recent posts of everyone they follow and merge them. Writes are cheap; reads are expensive, because a user following 500 accounts triggers 500 lookups on every load.
+- **Fan-out on write (push)**: when a post is created, insert its id into the precomputed feed of every follower. Reads become one lookup, at the price of write amplification: a post by an account with 30 million followers means 30 million inserts.
+- **Hybrid**: push for ordinary accounts, pull for celebrity accounts. At read time, take the precomputed feed and merge in the latest posts of the few celebrities the user follows. This bounds both costs.
+
+**Data model.** `posts(post_id, author_id, text, media_url, created_at)` sharded by post id or author; `follows(follower_id, followee_id)` with an index in each direction; `feed:{user_id}`, a capped list of the latest few hundred post ids, in a cache or a key-value store. Media lives in object storage behind a CDN, never in the database.
+
+**Deep dive.** The feed list stores ids only; a batch call hydrates posts, authors and counts (served from caches). Fan-out is done by workers consuming a post-created event from a queue, so posting returns fast, the work is retried, and a surge is absorbed as backlog. Feed insertions are idempotent (adding the same id twice to a sorted set has no effect). Inactive users need no precomputed feed; build theirs lazily on first return.
+
+**Failures.** If the fan-out workers fall behind, feeds are stale but correct. If the feed cache is lost, rebuild from the follow graph and recent posts (a slower path, which must be rate limited to protect the database). Deleting a post must remove it from feeds or filter it when hydrating.
+
+@example
+title: Cache sizing for the URL shortener
+problem: The shortener serves about 116,000 redirects per second on average. Assume 50 million distinct links are read on a typical day, a cache entry takes 500 bytes (code, long URL, metadata), and a cache that holds the hottest 20 percent of those links serves about 80 percent of reads. Size the cache and estimate the load that remains on the database.
+step: Entries to cache: $0.20 \times 50{,}000{,}000 = 10{,}000{,}000$ links.
+step: Memory: $10{,}000{,}000 \times 500 \text{ bytes} = 5$ GB, which fits on one cache node (use 2 or 3 for availability and throughput).
+step: Hit rate is about 80 percent, so the store sees 20 percent of reads: $0.2 \times 116{,}000 \approx 23{,}200$ reads per second on average, about 70,000 at peak.
+step: A single database leader cannot comfortably do that, so shard the store by a hash of the short code, or enlarge the cache to push the hit rate toward 95 percent, which cuts the database load to about 5,800 per second on average.
+answer: About 5 GB of cache gives 80 percent hits and about 23,000 database reads per second; a larger cache or sharding handles the rest.
+
+@example
+title: Hybrid fan-out for a celebrity post
+problem: Ana follows 400 accounts. One of them has 20 million followers and posts 5 times a day. Show how the hybrid design produces Ana's feed and why pure push would be a problem.
+step: Pure push: each celebrity post causes 20 million feed inserts, so 5 posts cost 100 million inserts a day for one account, and a new post takes minutes to reach everyone.
+step: Hybrid rule: accounts above a threshold (say 100,000 followers) are not fanned out. Their posts are stored once in the posts table.
+step: When Ana opens her feed the service reads her precomputed list of ids (posts from the 399 ordinary accounts) and separately queries the celebrity's latest posts.
+step: It merges the two sorted lists by time, takes the first 20, hydrates them and returns them with a cursor.
+step: The extra read cost is one query per followed celebrity, a small number per user, so both write amplification and read cost stay bounded.
+answer: Skip fan-out for celebrity accounts and merge their recent posts into the precomputed feed at read time.
+
+@mistakes
+- Using a 301 redirect when you need click counts or the ability to change the target, because clients cache it.
+- Generating short codes from a single database counter with no plan for the bottleneck, or from a sequence that makes every code guessable.
+- Choosing pure fan-out on write for a graph with huge accounts, or pure fan-out on read for a graph where users follow thousands of accounts.
+- Paginating a feed with page numbers or offsets, which duplicate or skip items as new posts arrive.
+
+@practice num
+prompt: A URL shortener uses 7-character codes drawn from 62 characters (0-9, a-z, A-Z), so there are $62^7$ possible codes, and assumes every code can be used. It creates 100 million new links per day, every day, and never reuses a code. For how many whole years can it keep issuing codes before running out? Round down to a whole number of years of 365 days.
+answer: 96
+check: floor(62**7/(100_000_000*365))
+hint: Divide the number of possible codes by the number of links created per year.
+solution: $62^7 = 3{,}521{,}614{,}606{,}208$. Links per year are $100{,}000{,}000 \times 365 = 3.65 \times 10^{10}$. The ratio is about 96.5, so the codes last 96 whole years.
+
+@practice code
+prompt: Write the key-generation helpers for a URL shortener. Use the alphabet `ALPHABET` given in the starter. `encode(n)` converts a non-negative integer to a base-62 string with no leading zeros, except that `encode(0)` is `"0"`. `decode(code)` converts such a string back to the integer. Example: `encode(62)` is `"10"`.
+starter:
+```python
+ALPHABET = (
+    "0123456789"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+def encode(n):
+    pass
+
+
+def decode(code):
+    pass
+```
+tests:
+```python
+assert encode(0) == "0"
+assert encode(61) == "Z"
+assert encode(62) == "10"
+assert encode(125) == "21"
+assert encode(3844) == "100"
+assert decode("10") == 62
+assert decode("Z") == 61
+for n in [0, 1, 61, 62, 12345, 10**12]:
+    assert decode(encode(n)) == n
+```
+model:
+```python
+ALPHABET = (
+    "0123456789"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+def encode(n):
+    if n == 0:
+        return ALPHABET[0]
+    digits = []
+    while n > 0:
+        n, remainder = divmod(n, 62)
+        digits.append(ALPHABET[remainder])
+    return "".join(reversed(digits))
+
+
+def decode(code):
+    n = 0
+    for char in code:
+        n = n * 62 + ALPHABET.index(char)
+    return n
+```
+hint: Converting to base 62 works like converting to base 10: repeatedly take the remainder and divide.
+hint: Digits come out least significant first, so reverse them at the end. `decode` multiplies the running value by 62 and adds each digit.
+solution: `encode` repeatedly applies `divmod(n, 62)` to peel off digits from the least significant end and reverses them; `0` is a special case because the loop would produce an empty string. `decode` is Horner's rule: `n = n * 62 + digit`. Each code takes $O(\log_{62} n)$ steps, and seven characters cover about 3.5 trillion ids.
+
+@practice mc
+prompt: A marketing team wants a click count for every visit to every short link, and wants to be able to change a link's target after it is published. Which redirect status should the shortener return?
+choice: 301 (moved permanently), because it is the most standard redirect and lets browsers cache the target.
+choice*: 302 or 307 (temporary redirect), so that clients return to the shortener on every visit.
+choice: 200 with the target URL in the body, because redirects cannot be counted.
+choice: 404, and let the client look up the target itself.
+hint: Which redirect do browsers cache permanently?
+solution: A permanent redirect is cached by browsers, so later clicks may never reach the service and a changed target would not be seen. A temporary redirect keeps every visit passing through the shortener so it can count and re-point links.
+
+@practice mc
+prompt: A social app lets users follow accounts, and a few accounts have tens of millions of followers while most have a few hundred. Which feed generation approach best bounds both read and write cost?
+choice: Fan-out on write for every account, so reads are always a single lookup.
+choice: Fan-out on read for every account, so writes are always cheap.
+choice*: Fan-out on write for ordinary accounts and fan-out on read (merged at load time) for the accounts with huge follower counts.
+choice: Regenerate every user's feed from scratch every minute.
+hint: Each pure approach is expensive for one kind of user.
+solution: The hybrid avoids millions of inserts for each celebrity post while keeping reads cheap for the common case, since only a few celebrity lookups are merged into a precomputed feed. Regenerating all feeds periodically is wasteful and stale.
+
+@practice self
+prompt: Write the design core for a URL shortener at 100 million new links per day with 100 reads per write. Give: the API (two endpoints with status codes), the data model and store choice, the key generation scheme with its collision handling, how a redirect is served (read path, cache), how clicks are counted without slowing redirects, and one abuse protection.
+hint: Follow the sequence API, data, key generation, read path, analytics.
+solution: A model answer:
+
+- API: `POST /v1/links` with body `{long_url, custom_alias?, expires_at?}` returns 201 with `{short_code, short_url}` (409 if a custom alias is taken, 400 for an invalid URL, 429 when rate limited). `GET /{short_code}` returns 302 with a `Location` header (404 when unknown, 410 when expired).
+- Data model: a key-value or wide-column table keyed by `short_code` with `long_url, owner_id, created_at, expires_at`; reads are always by key, so hash sharding by `short_code` distributes load. About 90 TB over 5 years at 500 bytes per record, so it is sharded. A secondary table keyed by owner supports listing.
+- Key generation: each app server obtains a block of 1,000 numbers from a small coordinator service (itself replicated) and turns each number into a 7-character base-62 code, permuted with a keyed scheme so codes are not sequential. No collisions are possible between blocks. Custom aliases use a conditional insert (create only if absent) and return 409 on conflict.
+- Read path: the redirect service checks a cache (cache-aside, LRU, TTL of hours; about 5 GB holds the hottest 20 percent), falls back to the store, and returns the redirect. A CDN can cache redirects for very hot links. A negative cache entry guards against repeated lookups of unknown codes.
+- Click counting: the redirect handler publishes a click event to a queue after responding (fire and forget with a local buffer); consumers aggregate counts per link per minute and write them to an analytics store. Losing a few events is acceptable; the redirect never waits for analytics.
+- Abuse protection: per-user and per-IP rate limits on creation, and a check of destination URLs against a blocklist before issuing and periodically afterwards.
+rubric: The API gives method, path, request and response fields and appropriate status codes, including a temporary redirect for the read path.
+rubric: The data model and store follow from the access pattern (lookup by code), and the size estimate justifies sharding.
+rubric: Key generation explains how uniqueness is ensured (blocks, counters, or conditional insert on collision) and addresses guessability or collisions.
+rubric: The read path uses caching with a reasoned size or hit rate, analytics are asynchronous, and one abuse protection is named.
+
+@quiz code
+prompt: In a fan-out-on-read feed, each followed account has a list of recent posts, each list sorted newest first as `(timestamp, post_id)` tuples with distinct timestamps. Write `merge_feeds(feeds, k)` that takes a list of such lists and returns the `k` newest posts across all of them, newest first, as a list of the same tuples. If there are fewer than `k` posts in total, return all of them. Do not modify the input lists.
+starter:
+```python
+def merge_feeds(feeds, k):
+    pass
+```
+tests:
+```python
+feeds = [[(9, "a"), (5, "b"), (1, "c")], [(8, "d"), (7, "e")], []]
+assert merge_feeds(feeds, 4) == [(9, "a"), (8, "d"), (7, "e"), (5, "b")]
+assert merge_feeds(feeds, 10) == [
+    (9, "a"), (8, "d"), (7, "e"), (5, "b"), (1, "c")
+]
+assert merge_feeds(feeds, 0) == []
+assert merge_feeds([[], []], 3) == []
+assert feeds[0] == [(9, "a"), (5, "b"), (1, "c")]
+```
+model:
+```python
+import heapq
+
+
+def merge_feeds(feeds, k):
+    heap = []
+    for i, feed in enumerate(feeds):
+        if feed:
+            heapq.heappush(heap, (-feed[0][0], i, 0))
+    result = []
+    while heap and len(result) < k:
+        _, i, j = heapq.heappop(heap)
+        result.append(feeds[i][j])
+        if j + 1 < len(feeds[i]):
+            heapq.heappush(heap, (-feeds[i][j + 1][0], i, j + 1))
+    return result
+```
+hint: Keep a heap holding the newest unread post of each feed; pop the newest, then push that feed's next post.
+solution: This is the k-way merge pattern: a heap of one candidate per list. Python's heap is a min-heap, so the timestamp is negated to pop the newest first. Cost is $O((m + k) \log m)$ for $m$ feeds, which is better than sorting every post when you only need the first page. The index `i` breaks ties and avoids comparing tuples of unrelated data.
+
+@quiz num
+prompt: A social app creates 10 million posts per day. Each author has 500 followers on average and the system uses fan-out on write, so each post causes one insert into each follower's feed. Assume a day has 86,400 seconds and posts are spread evenly. How many feed inserts per second does the system perform on average, rounded to the nearest whole number?
+answer: 57870
+check: round(10_000_000*500/86400)
+hint: Total inserts per day is posts times followers; then divide by the seconds in a day.
+solution: Inserts per day are $10{,}000{,}000 \times 500 = 5 \times 10^9$. Dividing by 86,400 gives about 57,870 per second on average, and peak traffic could be 3 times that, which is why feed insertion is done by queue-driven workers and not in the request path.

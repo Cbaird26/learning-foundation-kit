@@ -1,0 +1,287 @@
+@project
+title: A memory-safe key-value store in C
+overview: Build a command-line key-value store of 400 to 800 lines of C that reads commands from standard input, keeps its data in a hash table on the heap, and cleans up completely. You will build it with a Makefile, test it with a script, run it under Valgrind and AddressSanitizer, and explain its memory management in writing.
+goal: Design and implement a multi-file C program that uses structs, dynamic memory, strings and file I/O correctly.
+goal: Prove memory safety with a clean Valgrind run and a sanitizer build, and a test script that checks the output.
+goal: Explain who owns every allocation and when it is freed.
+step: Read the specification in the material below and sketch the data structures on paper: the entry struct, the table struct with its bucket array, and who owns each key and value string. Write down the function prototypes first.
+step: Create the files `kv.h`, `kv.c` (the table: create, put, get, delete, count, destroy), `main.c` (the line-reading command loop) and a `Makefile`. Use include guards and `static` for helpers. Compile with `-std=c17 -Wall -Wextra -Wpedantic -g`.
+step: Implement the table as a chained hash table with the djb2 hash. Allocate each entry and copy the key and value strings onto the heap. Handle `realloc` or table growth with a temporary pointer if you implement resizing, and check every allocation.
+step: Implement the command loop with `fgets`, parse each line as the specification says, and write replies to standard output and errors to standard error. Handle over-long lines without overflowing a buffer.
+step: Add the `SAVE` and `LOAD` commands with `fopen`, `fprintf`, `fgets` and `fclose`, checking every return value.
+step: Write `tests/run.sh`, a shell script that feeds the provided sample sessions (and your own) to the program and compares the output with the expected text using `diff`.
+step: Build once with `-fsanitize=address,undefined` and run all tests; then build normally and run the tests under `valgrind --leak-check=full --error-exitcode=1`. Fix every report, starting with the first.
+step: Write `MEMORY.md` (one page) describing every allocation, its owner, when it is freed, and how the tests and tools show that no leaks or invalid accesses remain.
+material: **Specification.** The program reads one command per line from standard input and writes one reply line per command to standard output. Keys are non-empty strings without spaces; values are non-empty strings that may contain spaces. Commands are upper case. A line that does not match any form below produces `ERR bad command`.
+
+```text
+SET key value    store value under key        reply: OK
+GET key          read the value               reply: the value, or NOT FOUND
+DEL key          remove the key               reply: OK, or NOT FOUND
+COUNT            number of stored keys        reply: the number
+SAVE path        write all pairs to a file    reply: OK, or ERR cannot write
+LOAD path        replace the table with the   reply: OK, or ERR cannot read
+                 contents of a file
+```
+
+The file format for `SAVE` and `LOAD` is one pair per line, `key value`, in any order. Lines in the file that do not contain a space are ignored by `LOAD`.
+material: **Sample session** (input lines marked `>`, replies unmarked; the `>` is not part of the input):
+
+```text
+> SET color dark blue
+OK
+> SET size 12
+OK
+> GET color
+dark blue
+> GET shape
+NOT FOUND
+> SET size 13
+OK
+> COUNT
+2
+> DEL size
+OK
+> DEL size
+NOT FOUND
+> COUNT
+1
+> HELLO
+ERR bad command
+```
+material: **Hash function.** Use djb2 on the bytes of the key, with an unsigned 32-bit accumulator:
+
+```c
+#include <stdint.h>
+
+static uint32_t hash_key(const char *s) {
+    uint32_t h = 5381;
+    while (*s != '\0') {
+        h = h * 33 + (unsigned char)*s;
+        s++;
+    }
+    return h;
+}
+```
+
+The bucket index is `hash_key(key) % nbuckets`. Start with 16 buckets; resizing is optional.
+material: **Makefile skeleton.** Each recipe line must begin with a tab character (shown here as spaces).
+
+```make
+CC = gcc
+CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -g
+
+kvstore: main.o kv.o
+    $(CC) $(CFLAGS) -o kvstore main.o kv.o
+
+main.o: main.c kv.h
+    $(CC) $(CFLAGS) -c main.c
+
+kv.o: kv.c kv.h
+    $(CC) $(CFLAGS) -c kv.c
+
+test: kvstore
+    sh tests/run.sh
+
+clean:
+    rm -f kvstore *.o
+
+.PHONY: test clean
+```
+deliverable: The source files, `Makefile`, test script and test sessions, in one folder that builds with `make` without warnings.
+deliverable: Terminal output showing a clean `valgrind --leak-check=full` run (`All heap blocks were freed` and `ERROR SUMMARY: 0 errors`) and a passing test run.
+deliverable: `MEMORY.md`, a one-page explanation of the program's memory management.
+rubric: Correctness: every command in the specification behaves as described on the sample session and on your own tests, including `SET` on an existing key and `DEL` of a missing key.
+rubric: Memory safety: no Valgrind errors or leaks, a clean sanitizer run, all allocations checked, and no unbounded `strcpy`, `sprintf` or `gets`.
+rubric: Structure: header with include guards, helpers declared `static`, no globals shared between files, functions short and documented with ownership notes.
+rubric: Build and tests: the Makefile rebuilds only what changed (headers are listed as dependencies) and `make test` runs the checks.
+rubric: Explanation: `MEMORY.md` names the owner and the lifetime of each allocation and explains how the tools provide evidence.
+safety: Run the program only on files you create yourself; `SAVE` overwrites its target file, so use a scratch folder.
+tutor: Here is my ownership plan for the entry struct and its strings; can you spot any case where a string could be freed twice or never?
+tutor: Valgrind reports an invalid read in my `DEL` function. How do I read the report and work out which line to fix first?
+tutor: How can I design a test script that checks both the program's output and its exit status?
+
+@review
+### Week by week
+
+- **Week 1, basics.** Integer division truncates toward zero; `%` takes the sign of the dividend; unsigned types wrap modulo $2^N$ but signed overflow is undefined; `=` is not `==`; a `switch` falls through without `break`.
+- **Week 2, build.** Declaration versus definition; pass by value; headers hold declarations and use include guards; the four stages are preprocess, compile, assemble and link; `make` rebuilds a target when a dependency is newer.
+- **Week 3, pointers.** `&` takes an address and `*` follows one; pass an address to modify the caller's variable; never use a dangling, null or uninitialized pointer; draw boxes and arrows.
+- **Week 4, arrays.** `a[i]` is `*(a + i)`; pointer arithmetic is scaled by the element size; arrays decay to pointers, so pass a length; row-major layout for multidimensional arrays.
+- **Week 5, strings.** NUL-terminated `char` arrays; capacity must include the terminator; `strncpy` does not always terminate; use `snprintf` and check lengths; never `gets`.
+- **Week 6, structs.** `.` and `->`; struct copies are shallow; padding and alignment determine `sizeof`; unions and enums.
+- **Week 7, heap.** `malloc` must be checked and paired with exactly one `free`; `calloc` zeroes; `realloc` uses a temporary pointer; doubling gives amortized $O(1)$ appends.
+- **Week 8, tools.** Compile with `-g`; Valgrind reports the kind of error, the faulting line and the block's allocation site; sanitizers and gdb (`bt`, `print`, `next`, `watch`) find the rest; fix the first error first.
+- **Week 9, linked lists.** Save `next` before freeing; `node **` removes the head special case; reversal is $O(n)$ time and $O(1)$ space; appending without a tail pointer is $O(n)$.
+- **Week 10, files.** Check `fopen`; loop on the return value of the read, not on `feof`; `sscanf` returns the number of conversions; `fread` returns complete items.
+- **Week 11, processes.** `fork` returns twice; `exec` replaces the program; `waitpid` collects the status; shells implement redirection with `dup2` and pipes with `pipe`; `cd` is a built-in.
+- **Week 12, undefined behavior.** UB means no requirements; compilers exploit it; check overflow before it happens; bound every copy; never pass untrusted text as a format.
+
+### Self-check
+
+- Can you draw memory for any pointer program in this course and predict its output?
+- Can you compute the size and offsets of a struct, and say how reordering changes it?
+- Can you write a linked-list removal and a string copy that are correct on empty, one-item and full-buffer inputs?
+- Can you read a Valgrind report and name the bug?
+- Can you explain, aloud and without notes, one idea such as why `cd` is built in or why signed overflow checks must happen first?
+
+### Common errors
+
+Off-by-one in buffer sizes (forgetting the terminator), using memory after `free` or after `realloc` moved it, `sizeof` on an array parameter, comparing strings with `==`, forgetting `break` or a `NULL` check, and testing for overflow after it has happened. Fix each by writing down an invariant, and use the tools to confirm it.
+
+@exam code
+prompt: A chained hash table is a list of buckets, each bucket a list of `[key, value]` pairs. Write three functions. `djb2(s)` returns the djb2 hash of the string `s` (all characters have codes below 128): start with `h = 5381`, and for each character with code `c` set `h = (h * 33 + c) % 2**32`. `put(buckets, key, value)` finds the bucket at index `djb2(key) % len(buckets)`; if `key` is already present it replaces the value in place and returns `False`; otherwise it inserts `[key, value]` at the **front** of the bucket and returns `True`. `get(buckets, key)` returns the value for `key`, or `None` if it is absent.
+starter:
+```python
+def djb2(s):
+    pass
+
+
+def put(buckets, key, value):
+    pass
+
+
+def get(buckets, key):
+    pass
+```
+tests:
+```python
+assert djb2("") == 5381
+assert djb2("a") == 177670
+assert djb2("ab") == 5863208
+assert djb2("hello") == 261238937
+one = [[]]
+assert put(one, "a", 1) is True
+assert put(one, "b", 2) is True
+assert one[0] == [["b", 2], ["a", 1]]
+assert put(one, "a", 9) is False
+assert one[0] == [["b", 2], ["a", 9]]
+assert get(one, "a") == 9
+assert get(one, "zzz") is None
+four = [[], [], [], []]
+put(four, "a", 1)
+put(four, "ab", 2)
+assert four[2] == [["a", 1]]
+assert four[0] == [["ab", 2]]
+assert get(four, "ab") == 2
+```
+model:
+```python
+def djb2(s):
+    h = 5381
+    for ch in s:
+        h = (h * 33 + ord(ch)) % 2 ** 32
+    return h
+
+
+def put(buckets, key, value):
+    bucket = buckets[djb2(key) % len(buckets)]
+    for pair in bucket:
+        if pair[0] == key:
+            pair[1] = value
+            return False
+    bucket.insert(0, [key, value])
+    return True
+
+
+def get(buckets, key):
+    for k, v in buckets[djb2(key) % len(buckets)]:
+        if k == key:
+            return v
+    return None
+```
+hint: Compute the hash with a loop, reducing modulo `2**32` after each step, as an unsigned 32-bit variable would wrap.
+hint: Both `put` and `get` start by selecting the bucket with `djb2(key) % len(buckets)` and scanning its pairs for the key.
+solution: The hash is the same loop as the C function with `uint32_t` arithmetic. A lookup scans one bucket, so the expected time is $O(1 + n/m)$ for $n$ keys in $m$ buckets with a good hash. Inserting at the front of the chain mirrors `push_front` on a linked list.
+
+@exam text
+prompt: What does this program print? Type the output exactly (one line).
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    char *name;
+    int score;
+} entry;
+
+static char *dupstr(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    if (p == NULL) {
+        exit(1);
+    }
+    memcpy(p, s, n);
+    return p;
+}
+
+int main(void) {
+    entry *es = calloc(2, sizeof *es);
+    if (es == NULL) {
+        return 1;
+    }
+    es[0].name = dupstr("ann");
+    es[1].name = dupstr("bob");
+    es[1].score = 3;
+    entry *p = es;
+    p->score += 4;
+    p++;
+    p->score *= 2;
+    p->name[0] = 'B';
+    for (int i = 0; i < 2; i++) {
+        printf("%s:%d ", es[i].name, es[i].score);
+    }
+    printf("\n");
+    for (int i = 0; i < 2; i++) {
+        free(es[i].name);
+    }
+    free(es);
+    return 0;
+}
+```
+answer: ann:4 Bob:6
+check: run_c('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\ntypedef struct {\n    char *name;\n    int score;\n} entry;\n\nstatic char *dupstr(const char *s) {\n    size_t n = strlen(s) + 1;\n    char *p = malloc(n);\n    if (p == NULL) {\n        exit(1);\n    }\n    memcpy(p, s, n);\n    return p;\n}\n\nint main(void) {\n    entry *es = calloc(2, sizeof *es);\n    if (es == NULL) {\n        return 1;\n    }\n    es[0].name = dupstr("ann");\n    es[1].name = dupstr("bob");\n    es[1].score = 3;\n    entry *p = es;\n    p->score += 4;\n    p++;\n    p->score *= 2;\n    p->name[0] = \'B\';\n    for (int i = 0; i < 2; i++) {\n        printf("%s:%d ", es[i].name, es[i].score);\n    }\n    printf("\\n");\n    for (int i = 0; i < 2; i++) {\n        free(es[i].name);\n    }\n    free(es);\n    return 0;\n}\n')
+hint: `calloc` zeroes both scores, and `p` first points at `es[0]`, then at `es[1]`.
+solution: `p->score += 4` makes `es[0].score` equal to `4`. After `p++`, `p` points at `es[1]`, whose score `3` is doubled to `6`, and `p->name[0] = 'B'` changes the heap copy of `"bob"` to `"Bob"`. The program prints `ann:4 Bob:6`.
+
+@exam code
+prompt: The key-value store of the project reads lines such as `SET color dark blue`. Write `parse_kv_command(line)` that parses one line (with an optional trailing newline, which you ignore) and returns a tuple: `("SET", key, value)`, `("GET", key)`, `("DEL", key)` or `("COUNT",)`. Fields are separated by single spaces. `SET` takes a non-empty key without spaces and a non-empty value that is the rest of the line (it may contain spaces); `GET` and `DEL` take exactly one non-empty key without spaces; `COUNT` takes no arguments. Command words are upper case. Return `None` for anything else.
+starter:
+```python
+def parse_kv_command(line):
+    pass
+```
+tests:
+```python
+assert parse_kv_command("SET color dark blue\n") == ("SET", "color", "dark blue")
+assert parse_kv_command("SET size 12") == ("SET", "size", "12")
+assert parse_kv_command("GET color") == ("GET", "color")
+assert parse_kv_command("DEL color\n") == ("DEL", "color")
+assert parse_kv_command("COUNT") == ("COUNT",)
+assert parse_kv_command("COUNT 1") is None
+assert parse_kv_command("GET a b") is None
+assert parse_kv_command("SET key") is None
+assert parse_kv_command("SET  v") is None
+assert parse_kv_command("set a b") is None
+assert parse_kv_command("") is None
+assert parse_kv_command("HELLO") is None
+```
+model:
+```python
+def parse_kv_command(line):
+    line = line.rstrip("\n")
+    parts = line.split(" ", 2)
+    cmd = parts[0]
+    if cmd == "SET" and len(parts) == 3 and parts[1] and parts[2]:
+        return ("SET", parts[1], parts[2])
+    if cmd in ("GET", "DEL") and len(parts) == 2 and parts[1]:
+        return (cmd, parts[1])
+    if cmd == "COUNT" and len(parts) == 1:
+        return ("COUNT",)
+    return None
+```
+hint: Split at most twice on a single space with `line.split(" ", 2)`, so that a value with spaces stays in one piece.
+hint: Check the command word and the number of parts for each form, and require the key (and for `SET`, the value) to be non-empty.
+solution: `split(" ", 2)` yields the command, the key and the rest of the line. `SET` needs three non-empty-key-and-value parts, `GET` and `DEL` exactly two (a key containing a space would produce a third part), and `COUNT` exactly one. The C version would use `strchr` to find the spaces and copy each field with a length check.

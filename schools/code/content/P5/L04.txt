@@ -1,0 +1,236 @@
+@lesson
+title: Continuous integration: automated tests and checks
+summary: Build a CI pipeline that runs linting, tests and coverage on every push and pull request, and know how to keep it fast and trustworthy.
+objective: Explain what continuous integration is and which checks belong in a pipeline.
+objective: Write a valid GitHub Actions workflow that installs dependencies, lints and runs tests.
+objective: Handle flaky tests, caching and required status checks.
+reading: The Twelve-Factor App, the "Dev/prod parity" factor (X) and the "Build, release, run" factor (V).
+
+@article
+**Continuous integration (CI)** means every change is automatically built and tested, in a clean environment, as soon as it is pushed. The point is fast, objective feedback: "it works on my machine" is replaced by "it works on a fresh machine, and here is the log." On a team, CI is the safety net that lets many people merge many times a day.
+
+### What goes in the pipeline
+
+Order the checks from cheapest to most expensive, so failures appear quickly:
+
+1. **Lint and format check:** for Python, a tool such as Ruff or Flake8 plus a formatter check.
+2. **Type check** (if you use type hints): for example mypy or Pyright.
+3. **Unit tests:** fast, no network.
+4. **Integration tests:** against a real database in a container if you can.
+5. **Build:** build the container image (week 6) to prove it builds.
+6. **Security scans:** dependency audit and secret scanning (week 10).
+
+Keep the main pipeline under about ten minutes. A slow pipeline gets ignored, and engineers will merge without waiting.
+
+### A GitHub Actions workflow
+
+GitHub Actions reads YAML files in `.github/workflows/`. Other CI services (GitLab CI, CircleCI and others) use similar ideas: triggers, jobs, steps. This workflow runs on every push to `main` and every pull request:
+
+```yaml
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Lint
+        run: ruff check .
+      - name: Test with coverage
+        run: pytest --cov=app --cov-fail-under=80
+```
+
+Read it line by line. `on` lists the triggers. `permissions` gives the workflow's token only read access, following least privilege. `runs-on` picks the runner image. Each step either `uses` a reusable action or `run`s a shell command, and a step that exits non-zero fails the job. `cache: pip` reuses downloaded packages between runs. The `--cov` options come from the `pytest-cov` package, which must be in your requirements. Pin actions to a major version tag as shown, or to a full commit SHA for stricter supply-chain safety, and check the current major versions when you write yours. To test several Python versions, add a `strategy: matrix:` with a list of versions.
+
+### Coverage and what it means
+
+**Coverage** is the share of lines (or branches) your tests execute. A threshold (for example 80 percent) prevents decay, but coverage measures what ran, not what was verified: a test with no assertions gives coverage and no safety. Use it as a floor, and rely on review for test quality.
+
+### Flaky tests
+
+A **flaky test** passes and fails on the same code, usually because of timing, shared state, random data or the network. Flakiness destroys trust: people rerun until green and then miss real failures. Fix the cause (inject the clock, isolate state, seed or avoid randomness, fake the network). If you cannot fix it today, quarantine it with a ticket and a deadline rather than letting it block everyone silently.
+
+### Make CI a gate
+
+CI only protects you if it is required. In the repository settings, mark the CI job as a **required status check** on `main` (week 3). Fail loudly: never use `|| true` to hide a failing step, and read failures from the top of the log, because the first error is usually the cause.
+
+### Secrets in CI
+
+Never print secrets in logs and never put them in the workflow file. Store them in the CI service's secrets store and reference them as `${{ secrets.NAME }}`. Be careful with pull requests from forks, which by default do not receive secrets, for good reason.
+
+@example
+title: Reading a failing pipeline
+problem: A pull request shows a red check. The log ends with `FAILED tests/test_api.py::test_overlap - assert 200 == 409` and, above it, `ruff` reported nothing. What do you do?
+step: Find the first failure, not the last line of output: lint passed, so the failure is a real test.
+step: Read the assertion: the test expected status 409 for an overlapping reservation, but the code returned 200.
+step: Reproduce locally with `pytest tests/test_api.py::test_overlap`. It fails the same way, so it is not flaky.
+step: Fix the overlap check, rerun the whole suite locally, then push. The check turns green and the PR can merge.
+answer: A genuine regression in overlap handling, fixed locally and confirmed by CI.
+
+@example
+title: Checking a workflow before you trust it
+problem: A colleague's workflow has `on: [push]`, no `permissions`, installs dependencies on every run and ends with `pytest || true`. List the problems.
+step: `|| true` makes the test step always succeed, so a failing test can never turn the check red. This is the worst problem.
+step: With no `permissions` block, the token may have broader rights than needed; add `permissions: contents: read`.
+step: `on: [push]` alone does not run on pull requests from forks; add `pull_request` so changes are checked before they merge.
+step: Add `cache: pip` to the Python setup step so installs are fast.
+answer: Remove `|| true`, add least-privilege permissions, trigger on pull requests, and cache dependencies.
+
+@mistakes
+- Hiding failures with `|| true` or `continue-on-error`, so a red build can never stop a bad merge.
+- Not making the CI check required, so people merge before it finishes.
+- Chasing 100 percent coverage with tests that have no assertions.
+- Putting a token or password in the workflow file instead of the secrets store.
+
+@practice mc
+prompt: What is the main benefit of running CI on every pull request?
+choice: It removes the need to write tests.
+choice*: Problems are found on a clean machine before the change is merged, while they are cheap to fix.
+choice: It makes the code run faster in production.
+choice: It guarantees the code has no bugs.
+hint: Think about when the feedback arrives and where it runs.
+solution: CI gives fast, repeatable feedback on a clean environment before merge. It does not replace tests, speed up code or guarantee correctness.
+
+@practice code
+prompt: Write `parse_summary(line)` for a pytest-style summary line such as `2 failed, 10 passed, 1 skipped, 1 error in 3.21s`. Return a dict with the integer keys `"passed"`, `"failed"`, `"skipped"` and `"errors"`. A missing count is `0`, and both `error` and `errors` count under `"errors"`. Ignore everything else (such as the time and any `=` signs).
+starter:
+```python
+def parse_summary(line):
+    pass
+```
+tests:
+```python
+r = parse_summary("== 2 failed, 10 passed, 1 skipped, 1 error in 3.21s ==")
+assert r == {"passed": 10, "failed": 2, "skipped": 1, "errors": 1}
+r = parse_summary("5 passed in 0.12s")
+assert r == {"passed": 5, "failed": 0, "skipped": 0, "errors": 0}
+r = parse_summary("2 errors in 1.0s")
+assert r == {"passed": 0, "failed": 0, "skipped": 0, "errors": 2}
+assert parse_summary("no tests ran in 0.01s")["passed"] == 0
+```
+model:
+```python
+import re
+
+
+def parse_summary(line):
+    result = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0}
+    for count, word in re.findall(r"(\d+) (passed|failed|skipped|errors?)", line):
+        key = "errors" if word.startswith("error") else word
+        result[key] = int(count)
+    return result
+```
+hint: `re.findall` with two groups returns a list of `(count, word)` pairs.
+hint: Map both `error` and `errors` to the key `"errors"` before storing.
+solution: Find every `number word` pair for the four known words, convert the number with `int`, and store it under the matching key, mapping `error` to `errors`. Anything that does not match, like `in 3.21s`, is ignored.
+
+@practice code
+prompt: A workflow is a dict like `{"on": "push", "jobs": {...}}`. Each job is a dict with a `"runs-on"` string and a `"steps"` list, and each step is a dict. Write `invalid_jobs(workflow)` that returns a sorted list of the ids of jobs that are invalid. A job is invalid if it has no `"runs-on"`, or its `"steps"` is missing or empty, or any step has neither a `"uses"` nor a `"run"` key. If there are no jobs, return an empty list.
+starter:
+```python
+def invalid_jobs(workflow):
+    pass
+```
+tests:
+```python
+wf = {
+    "on": "push",
+    "jobs": {
+        "test": {"runs-on": "ubuntu-latest", "steps": [{"run": "pytest"}]},
+        "lint": {"steps": [{"run": "ruff check ."}]},
+        "build": {"runs-on": "ubuntu-latest", "steps": []},
+        "deploy": {"runs-on": "x", "steps": [{"name": "oops"}]},
+    },
+}
+assert invalid_jobs(wf) == ["build", "deploy", "lint"]
+assert invalid_jobs({"on": "push", "jobs": {}}) == []
+assert invalid_jobs({"on": "push"}) == []
+assert invalid_jobs({"jobs": {"a": {"runs-on": "x"}}}) == ["a"]
+ok = {"jobs": {"a": {"runs-on": "x", "steps": [{"uses": "actions/checkout@v7"}]}}}
+assert invalid_jobs(ok) == []
+```
+model:
+```python
+def invalid_jobs(workflow):
+    bad = []
+    for job_id, job in workflow.get("jobs", {}).items():
+        steps = job.get("steps") or []
+        broken = (
+            "runs-on" not in job
+            or not steps
+            or any("uses" not in s and "run" not in s for s in steps)
+        )
+        if broken:
+            bad.append(job_id)
+    return sorted(bad)
+```
+hint: Use `workflow.get("jobs", {})` so a missing key does not crash.
+hint: `any(...)` over the steps checks the "uses or run" rule in one expression.
+solution: For each job, mark it bad if `runs-on` is missing, the steps list is empty or missing, or any step lacks both `uses` and `run`. Return the sorted ids.
+
+@practice ms
+prompt: Which practices keep a CI pipeline trustworthy? Select all that apply.
+choice*: Make the CI job a required status check on `main`.
+choice*: Fix or quarantine flaky tests with a ticket instead of rerunning until green.
+choice: Append `|| true` to the test command so the build never fails.
+choice*: Store tokens in the CI secrets store and give the workflow only the permissions it needs.
+choice: Run every possible check on every push even if the pipeline takes an hour.
+hint: A trustworthy pipeline fails when it should, finishes quickly and does not leak secrets.
+solution: Required checks, handling flaky tests, and least privilege with a secrets store all build trust. `|| true` disables the gate, and an hour-long pipeline will be ignored.
+
+@practice self
+prompt: Write a GitHub Actions workflow file (`.github/workflows/ci.yml`) for a Python 3.13 project with a `requirements.txt` that runs Ruff and pytest on pushes to `main` and on pull requests, with read-only permissions and dependency caching. Then list three settings or habits outside the file that make the pipeline effective.
+hint: Start from the three top-level keys `on`, `permissions` and `jobs`.
+solution: The workflow is the same shape as the one in the article: `name: ci`; triggers `push` on `main` and `pull_request`; `permissions: contents: read`; one job `test` on `ubuntu-latest` with steps `actions/checkout`, `actions/setup-python` with `python-version: "3.13"` and `cache: pip`, a step running `pip install -r requirements.txt`, a step running `ruff check .`, and a step running `pytest`. Outside the file: (1) mark the `test` job as a required status check on `main` so a red build blocks merging; (2) treat a red build on `main` as the team's top priority and never merge on red; (3) keep the pipeline under ten minutes and fix flaky tests promptly so people trust the result. Another good answer: store secrets only in the secrets store.
+rubric: The workflow triggers on both pushes to `main` and pull requests, and sets `permissions` to read-only contents.
+rubric: It checks out the code, sets up Python 3.13 with caching, installs dependencies, and runs both lint and tests as separate steps with no failure suppression.
+rubric: The YAML is valid (consistent two-space indentation, a list under `steps`).
+rubric: Names three real practices, such as required checks, fixing flakiness and keeping the pipeline fast.
+
+@quiz code
+prompt: Write `coverage_ok(current, previous, minimum, max_drop)` for a coverage gate. It returns `True` only when `current` is at least `minimum` **and** coverage did not fall by more than `max_drop` percentage points compared with `previous`. All values are percentages.
+starter:
+```python
+def coverage_ok(current, previous, minimum, max_drop):
+    pass
+```
+tests:
+```python
+assert coverage_ok(85, 84, 80, 2) is True
+assert coverage_ok(79, 79, 80, 2) is False
+assert coverage_ok(85, 90, 80, 2) is False
+assert coverage_ok(88, 90, 80, 2) is True
+assert coverage_ok(80, 80, 80, 0) is True
+assert coverage_ok(95, 80, 80, 2) is True
+```
+model:
+```python
+def coverage_ok(current, previous, minimum, max_drop):
+    return current >= minimum and previous - current <= max_drop
+```
+hint: There are two independent conditions joined by `and`.
+hint: The drop is `previous - current`; a negative drop (coverage went up) is fine.
+solution: Check `current >= minimum` and `previous - current <= max_drop`. When coverage rises, the drop is negative, so it always passes the second test.
+
+@quiz mc
+prompt: A test fails about one run in ten on the same code, because it compares timestamps taken a few milliseconds apart. What is the best fix?
+choice: Rerun the pipeline until it passes and merge.
+choice: Delete the CI pipeline.
+choice*: Make the code under test take the current time as an injected value, so the test controls the clock.
+choice: Add `|| true` after the test command.
+hint: The cause is dependence on real time.
+solution: Injecting the clock removes the timing dependency, so the test becomes deterministic. Rerunning and suppressing failures hide the flakiness and let real regressions through.

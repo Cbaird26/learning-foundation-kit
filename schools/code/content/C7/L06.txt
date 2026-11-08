@@ -1,0 +1,288 @@
+@lesson
+title: Structs and typedef
+summary: Define and use structs, unions and enums, pass them to functions by value and by pointer, and compute a struct's size from alignment and padding rules.
+objective: Declare structs and access members with `.` and `->`.
+objective: Use `typedef` to give types convenient names, and initialize structs with designated initializers.
+objective: Predict struct copying behavior, including what is shared when a member is a pointer.
+objective: Compute member offsets and `sizeof` for a struct using alignment rules.
+reading: Beej's Guide to C Programming, the chapter on structs (look up "Structs", "Padding Bytes", "Unions" and "Enums").
+@article
+A **struct** groups named members of possibly different types into one object:
+
+```c
+struct point {
+    int x;
+    int y;
+};
+
+struct point a = {1, 2};
+struct point b = {.y = 5, .x = 3};   /* designated initializers (C99) */
+```
+
+Members are accessed with `.`: `a.x`. Through a pointer, use `->`: if `struct point *p = &a;` then `p->x` means `(*p).x`. Members not mentioned in an initializer are set to zero. `typedef` gives a type a new name, so `typedef struct point point;` lets you write `point` alone; a common form defines both at once:
+
+```c
+typedef struct {
+    char name[16];
+    int age;
+} person;
+```
+
+A struct that refers to itself, such as a list node, needs a tag: `struct node { int value; struct node *next; };`.
+
+### Copying and passing
+
+Assigning one struct to another copies **every member**, and passing a struct to a function copies it, just as with an `int`. The copy is **shallow**: an array member is copied element by element, but a pointer member is copied as an address, so both structs then point at the same object. A function that must modify its caller's struct takes a pointer; a large read-only struct is usually passed as `const struct point *` to avoid the copy. You cannot compare structs with `==`; compare member by member.
+
+### Size, alignment and padding
+
+Hardware prefers each object to sit at an address that is a multiple of its **alignment** (usually its size for basic types). The compiler therefore inserts **padding** bytes. The rules (for a typical 64-bit Linux ABI, where `char` is 1 byte, `short` 2, `int` 4, `long`, `double` and pointers 8, each aligned to its own size):
+
+1. Each member is placed at the next offset that is a multiple of its alignment.
+2. The struct's alignment is the largest member alignment.
+3. The total size is rounded up to a multiple of the struct's alignment, so that arrays of structs keep every element aligned.
+
+```c
+struct a { char c; int i; char d; };   /* c at 0, i at 4, d at 8 -> size 12 */
+struct b { int i; char c; char d; };   /* i at 0, c at 4, d at 5 -> size 8  */
+```
+
+The members are identical but `struct a` wastes 4 bytes. Ordering members from largest to smallest alignment usually minimizes padding. Members always appear in declaration order, never reordered by the compiler. `offsetof(type, member)` from `<stddef.h>` gives a member's byte offset, and `sizeof` gives the size including padding. The exact numbers depend on the platform (ABI), so portable code never assumes them; it asks `sizeof` and `offsetof`.
+
+### Unions and enums
+
+A **union** stores one member at a time: all members share the same bytes and its size is that of the largest member (rounded to alignment). Unions are used for tagged variants, with a separate field recording which member is valid:
+
+```c
+struct value {
+    enum { V_INT, V_DOUBLE } kind;
+    union { int i; double d; } as;
+};
+```
+
+An **enum** defines integer constants: `enum color { RED, GREEN = 5, BLUE };` gives `RED` the value 0, `GREEN` 5 and `BLUE` 6 (each constant is the previous plus one unless set). Enumeration constants are `int`s that you can use in `switch` statements; C does not stop you from storing other integers in an enum variable.
+
+### Arrays of structs
+
+`person group[3];` is an array like any other: `group[1].age` is the `age` of the second element, and `sizeof(group) / sizeof(group[0])` is the count. Combine with pointer parameters (`person *people, size_t n`) to process collections.
+
+@example
+title: Computing a struct layout
+problem: On a typical 64-bit Linux system, find the offsets and `sizeof` of `struct s { char a; double b; short c; };`, and a better ordering.
+step: `char a` has size and alignment 1, so it goes at offset 0 and uses byte 0.
+step: `double b` needs alignment 8, so the next valid offset is 8 (bytes 1 to 7 are padding). It occupies bytes 8 to 15.
+step: `short c` needs alignment 2; offset 16 is fine. It occupies bytes 16 and 17. The data ends at 18.
+step: The struct's alignment is 8 (from `double`), so the size is rounded up from 18 to 24.
+step: Reordering as `double b; short c; char a;` puts `b` at 0, `c` at 8 and `a` at 10, with the data ending at 11 and the size rounded up to 16: it saves 8 bytes.
+
+@example
+title: Struct copies and pointers
+problem: What does this program print?
+
+```c
+#include <stdio.h>
+
+struct counter {
+    int n;
+    int *total;
+};
+
+int main(void) {
+    int total = 0;
+    struct counter a = {1, &total};
+    struct counter b = a;
+    b.n = 5;
+    *b.total += 10;
+    printf("%d %d %d\n", a.n, b.n, *a.total);
+    return 0;
+}
+```
+step: `b = a` copies both members: `b.n` is `1` and `b.total` is the same address `&total` as `a.total`.
+step: `b.n = 5` changes only `b`'s own copy of `n`, so `a.n` is still `1`.
+step: `*b.total += 10` writes through the shared pointer, so `total` becomes `10`.
+step: `*a.total` reads the same `total`. The output is `1 5 10`.
+answer: `1 5 10`
+
+@mistakes
+- Assuming `sizeof(struct)` is the sum of the member sizes: padding makes it larger.
+- Comparing two structs with `==` (not allowed) or with `memcmp` (padding bytes may differ).
+- Thinking a struct copy duplicates what a pointer member points to; only the address is copied.
+- Using `.` on a pointer or `->` on a struct value.
+- Forgetting the tag in a self-referential struct, so `next` has an unknown type.
+
+@practice text
+prompt: On a typical 64-bit Linux system with gcc, what does this program print? Type the output exactly (two numbers separated by one space).
+
+```c
+#include <stdio.h>
+
+struct a { char c; int i; char d; };
+struct b { int i; char c; char d; };
+
+int main(void) {
+    printf("%zu %zu\n", sizeof(struct a), sizeof(struct b));
+    return 0;
+}
+```
+answer: 12 8
+check: run_c('#include <stdio.h>\n\nstruct a { char c; int i; char d; };\nstruct b { int i; char c; char d; };\n\nint main(void) {\n    printf("%zu %zu\\n", sizeof(struct a), sizeof(struct b));\n    return 0;\n}\n')
+hint: Place each member at the next multiple of its alignment, then round the total up to a multiple of the largest alignment (4 here).
+solution: In `struct a`, `c` is at 0, `i` at 4 and `d` at 8; the data ends at 9 and is rounded up to `12`. In `struct b`, `i` is at 0, `c` at 4 and `d` at 5; the data ends at 6 and is rounded up to `8`.
+
+@practice code
+prompt: Write `struct_layout(fields)` that computes a C struct layout. `fields` is a list of `(size, alignment)` pairs in declaration order (both powers of two, at least 1). Return a tuple `(offsets, total)`: the list of each member's byte offset and the struct's total size, following the rules above (each member at the next multiple of its alignment; total rounded up to a multiple of the largest member alignment).
+starter:
+```python
+def struct_layout(fields):
+    pass
+```
+tests:
+```python
+assert struct_layout([(1, 1), (4, 4), (1, 1)]) == ([0, 4, 8], 12)
+assert struct_layout([(4, 4), (1, 1), (1, 1)]) == ([0, 4, 5], 8)
+assert struct_layout([(1, 1), (8, 8), (2, 2)]) == ([0, 8, 16], 24)
+assert struct_layout([(8, 8), (2, 2), (1, 1)]) == ([0, 8, 10], 16)
+assert struct_layout([(1, 1)]) == ([0], 1)
+assert struct_layout([(2, 2), (2, 2), (2, 2)]) == ([0, 2, 4], 6)
+```
+model:
+```python
+def struct_layout(fields):
+    offsets = []
+    pos = 0
+    biggest = 1
+    for size, align in fields:
+        pos = (pos + align - 1) // align * align
+        offsets.append(pos)
+        pos += size
+        biggest = max(biggest, align)
+    total = (pos + biggest - 1) // biggest * biggest
+    return offsets, total
+```
+hint: Keep a running position; before placing a member, round it up to a multiple of that member's alignment.
+hint: Rounding up `x` to a multiple of `a`: `(x + a - 1) // a * a`. Apply the same rounding to the final size with the largest alignment.
+solution: Round the position up before each member, record it, then advance by the member's size. Track the largest alignment, and round the final position up to a multiple of it. Reordering fields changes the result, which is why ordering members by decreasing alignment saves space.
+
+@practice mc
+prompt: Given this declaration and code, which statement is true?
+
+```c
+struct item {
+    char name[8];
+    char *tag;
+};
+
+struct item a = {"pen", "stationery"};
+struct item b = a;
+```
+choice: `b.name` and `a.name` are the same array, so changing `b.name[0]` changes `a.name[0]`.
+choice*: `b.name` is an independent copy of the 8 bytes of `a.name`, while `b.tag` holds the same address as `a.tag`, so both point to the same string.
+choice: The assignment does not compile, because a struct containing an array cannot be copied.
+choice: `b.tag` points to a new copy of the string `"stationery"`.
+hint: Which members are copied by value, and what is the value of a pointer?
+solution: Struct assignment copies each member's bytes. An array member is stored inside the struct, so it is duplicated; a pointer member contains only an address, so the copy points at the same target (a shallow copy).
+
+@practice code
+prompt: Struct members are stored in memory at fixed offsets, in the byte order of the machine; most current desktop and phone processors are little-endian (the least significant byte comes first). Write `read_member(mem, base, offset, size)` where `mem` is a list of byte values (0 to 255), `base` is the address of the struct and `offset` the member's offset. Return the unsigned integer stored in the `size` bytes starting at `base + offset`, interpreted as little-endian. Do not use `int.from_bytes`.
+starter:
+```python
+def read_member(mem, base, offset, size):
+    pass
+```
+tests:
+```python
+mem = [0, 0, 1, 0, 0, 0, 2, 1, 255, 255]
+assert read_member(mem, 2, 0, 4) == 1
+assert read_member(mem, 2, 4, 2) == 258
+assert read_member(mem, 8, 0, 2) == 65535
+assert read_member(mem, 6, 1, 1) == 1
+assert read_member(mem, 0, 0, 1) == 0
+```
+model:
+```python
+def read_member(mem, base, offset, size):
+    start = base + offset
+    value = 0
+    for k in range(size):
+        value += mem[start + k] << (8 * k)
+    return value
+```
+hint: Little-endian means the byte at the lowest address has weight $256^0$, the next $256^1$, and so on.
+hint: Add `mem[start + k] << (8 * k)` for each byte `k` from 0 to `size - 1`.
+solution: The value is $\sum_k \text{byte}_k \cdot 256^k$. For the bytes `2, 1` the value is `2 + 1 * 256 = 258`. When reading real data from a file or network, byte order must be specified by the format.
+
+@practice text
+prompt: What does this program print? Type the output exactly (three numbers separated by single spaces).
+
+```c
+#include <stdio.h>
+
+struct p {
+    int x;
+    int y;
+};
+
+static void move(struct p *q, int dx) {
+    q->x += dx;
+}
+
+static struct p moved(struct p q, int dx) {
+    q.x += dx;
+    return q;
+}
+
+int main(void) {
+    struct p a = {1, 2};
+    move(&a, 5);
+    struct p b = moved(a, 10);
+    printf("%d %d %d\n", a.x, b.x, b.y);
+    return 0;
+}
+```
+answer: 6 16 2
+check: run_c('#include <stdio.h>\n\nstruct p {\n    int x;\n    int y;\n};\n\nstatic void move(struct p *q, int dx) {\n    q->x += dx;\n}\n\nstatic struct p moved(struct p q, int dx) {\n    q.x += dx;\n    return q;\n}\n\nint main(void) {\n    struct p a = {1, 2};\n    move(&a, 5);\n    struct p b = moved(a, 10);\n    printf("%d %d %d\\n", a.x, b.x, b.y);\n    return 0;\n}\n')
+hint: `move` receives a pointer to `a`; `moved` receives a copy.
+solution: `move(&a, 5)` changes `a.x` to `6`. `moved(a, 10)` modifies only its own copy and returns it, so `b.x` is `16`, `b.y` is `2`, and `a` keeps `x == 6`.
+
+@quiz code
+prompt: Write `align_up(n, a)` that returns the smallest multiple of `a` that is greater than or equal to `n`, where `n` is a non-negative integer and `a` is a power of two. Use the bit trick a C programmer would use (add `a - 1`, then clear the low bits with a mask), not division.
+starter:
+```python
+def align_up(n, a):
+    pass
+```
+tests:
+```python
+assert align_up(9, 4) == 12
+assert align_up(12, 4) == 12
+assert align_up(0, 8) == 0
+assert align_up(1, 16) == 16
+assert align_up(17, 8) == 24
+assert align_up(5, 1) == 5
+```
+model:
+```python
+def align_up(n, a):
+    return (n + a - 1) & ~(a - 1)
+```
+hint: For a power of two `a`, the multiples of `a` are exactly the numbers whose low bits (the bits of `a - 1`) are all zero.
+hint: Add `a - 1` first so that any nonzero low part carries into the next multiple, then clear the low bits with `& ~(a - 1)`.
+solution: `(n + a - 1) & ~(a - 1)` rounds up. For `n = 9`, `a = 4`: `9 + 3 = 12`, and `12 & ~3 = 12`. For `n = 12`: `15 & ~3 = 12`, unchanged. This is how allocators and compilers round sizes to alignment.
+
+@quiz num
+prompt: What number does this program print?
+
+```c
+#include <stdio.h>
+
+enum level { LOW = 2, MID, HIGH = 10, TOP };
+
+int main(void) {
+    printf("%d\n", TOP + MID);
+    return 0;
+}
+```
+answer: 14
+check: int(run_c('#include <stdio.h>\n\nenum level { LOW = 2, MID, HIGH = 10, TOP };\n\nint main(void) {\n    printf("%d\\n", TOP + MID);\n    return 0;\n}\n'))
+hint: An enumeration constant without an initializer is one more than the previous constant.
+solution: `LOW` is explicitly `2`, so `MID` is `3`; `HIGH` is explicitly `10`, so `TOP` is `11`. `TOP + MID` is `14`.

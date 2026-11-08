@@ -1,0 +1,186 @@
+@project
+title: Security review of NoteBoard
+overview: You will act as the security reviewer of NoteBoard, a small supplied note-taking web application. You threat-model it, review its code for vulnerabilities, fix at least three issues with tests that prove each fix works, and write a professional security report with risk ratings.
+goal: Produce a threat model with assets, trust boundaries and STRIDE threats for a supplied application.
+goal: Find vulnerabilities by code review and connect each to its vulnerability class and the course lesson that explains the defense.
+goal: Fix at least three issues, each with a test that fails on the original code and passes on the fix.
+goal: Communicate findings in a report with risk ratings that an engineering team could act on.
+step: Read the NoteBoard description and code in the materials. Run the code on your own computer with Python 3, and write a short script that registers two users, logs both in, and has each add a note, so you understand the normal behavior before you judge it.
+step: Threat-model the application. Draw the components and data flows, mark the trust boundaries, list the assets, and write at least eight threats using STRIDE, each tied to a specific flow.
+step: Review the code function by function. For each suspected problem write the vulnerability class, where it is, why it happens, and which principle or lesson covers it. Aim to find at least six issues, and do not rely on guessing: point to the line that causes each.
+step: Rate each finding by likelihood and impact (1 to 5) and give a severity band (Low, Medium, High, Critical) with a one-sentence reason that mentions exposure, not only the score. Order the findings by risk.
+step: Choose at least three findings from different classes and fix them in a copy of the code. For each, write a unit test (use `unittest` with an in-memory database) that fails against the original code and passes against your fix. Keep the public function names, so one test file can run against both versions.
+step: Check your fixes for new problems: does each error path fail closed, do error messages stay generic, and does a fix for one function leave the same pattern in another?
+step: Write the security report using the template in the materials: executive summary, scope and method, findings table, detail for each finding with the fix and the test, residual risks and recommendations for process changes.
+material: **NoteBoard (supplied code).** This is a deliberately flawed teaching program. Review it and fix it only on your own computer, and never reuse its patterns. It stands in for the application layer behind a web server: each function is what a route handler would call, and `sid` is the value of the browser's `sid` cookie.
+
+```python
+import hashlib
+import sqlite3
+
+SESSIONS = {}          # session id (str) -> user id (int)
+NEXT_SESSION = [1000]  # counter used to make session ids
+
+
+def connect():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT UNIQUE, pw TEXT);"
+        "CREATE TABLE notes(id INTEGER PRIMARY KEY, owner INTEGER, body TEXT);"
+    )
+    return conn
+
+
+def register(conn, name, password):
+    digest = hashlib.md5(password.encode()).hexdigest()
+    conn.execute("INSERT INTO users(name, pw) VALUES (?, ?)", (name, digest))
+    conn.commit()
+
+
+def login(conn, name, password):
+    digest = hashlib.md5(password.encode()).hexdigest()
+    sql = ("SELECT id FROM users WHERE name = '" + name
+           + "' AND pw = '" + digest + "'")
+    row = conn.execute(sql).fetchone()
+    if row is None:
+        return None
+    NEXT_SESSION[0] += 1
+    sid = str(NEXT_SESSION[0])
+    SESSIONS[sid] = row[0]
+    return sid
+
+
+def add_note(conn, sid, body):
+    conn.execute(
+        "INSERT INTO notes(owner, body) VALUES (?, ?)", (SESSIONS[sid], body)
+    )
+    conn.commit()
+
+
+def get_note(conn, sid, note_id):
+    if sid not in SESSIONS:
+        return None
+    row = conn.execute(
+        "SELECT body FROM notes WHERE id = ?", (note_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def render_note(conn, sid, note_id):
+    body = get_note(conn, sid, note_id)
+    return "<div class='note'>" + (body or "not found") + "</div>"
+
+
+def search(conn, sid, term):
+    sql = ("SELECT id, body FROM notes WHERE owner = " + str(SESSIONS[sid])
+           + " AND body LIKE '%" + term + "%'")
+    return conn.execute(sql).fetchall()
+
+
+def delete_note(conn, sid, note_id):
+    if sid in SESSIONS:
+        conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        conn.commit()
+```
+material: **Deployment description (supplied).** Browsers talk to a web server over HTTPS. The web server maps routes to the functions above: `POST /register`, `POST /login` (sets cookie `sid=<value>` with no extra attributes), `POST /notes` (add), `GET /notes/<id>` (calls `render_note` and returns the HTML), `GET /search?q=<term>`, and `POST /notes/<id>/delete`. There are no anti-CSRF tokens. The database file is readable by the web server account, which also owns the database schema. Errors from the code are shown to the user as full Python tracebacks, and the server log records every request line, including the login form fields. The application is operated by a team of three developers who deploy by copying files by hand.
+material: **Report template (supplied).** Use these headings: (1) Executive summary (five sentences a manager can act on); (2) Scope and method (what you reviewed, what you did not, how); (3) Findings table with columns: ID, title, class (for example OWASP category), location, likelihood, impact, severity; (4) One section per finding: description, why it matters, evidence (code line, safe demonstration on your own copy), recommended fix, and the test; (5) Residual risks and process recommendations (secure development practices, dependency, logging and monitoring); (6) Appendix: the threat model diagram and STRIDE table.
+deliverable: A threat model: component and data-flow description with trust boundaries, assets, and at least eight STRIDE threats.
+deliverable: A fixed copy of the code and a test file with at least three tests that fail before the fix and pass after.
+deliverable: A security report following the template, with at least six findings, risk ratings and an ordered remediation plan.
+rubric: The threat model identifies the trust boundaries (browser to server, server to database) and ties each STRIDE threat to a specific flow or asset.
+rubric: At least six genuine vulnerabilities are found and correctly classified, covering several classes such as injection, broken access control, cryptographic failures, session management, XSS, CSRF and logging or error handling.
+rubric: Each of at least three fixes uses the right defense (parameters, ownership checks, output encoding, salted slow hashing, random session ids, or tokens) and has a test that fails on the original code.
+rubric: Risk ratings are justified by likelihood, impact and exposure, and the remediation order follows them.
+rubric: The report is clear and professional: precise, reproducible on the learner's own copy, with no attack tooling and with concrete, prioritized recommendations.
+safety: Test only the supplied NoteBoard code on your own computer. Do not point any testing tool at a real website, account or network you do not own, and do not publish techniques for attacking real systems in your report; describe the flaw, its impact and the fix.
+tutor: Which of the NoteBoard functions cross a trust boundary, and what untrusted data enters each of them?
+tutor: How can I write a test that fails on the original login or search function and passes after I switch to a parameterized query?
+tutor: How should I decide the severity band for a finding, and how do exposure and impact change the order of the fixes?
+@review
+## Review guide for Computer security
+
+### Key ideas by week
+
+- **Week 1, principles and threat modeling.** The CIA goals, least privilege, defense in depth, fail-safe defaults, complete mediation. Threat model = assets + adversary + trust boundaries + STRIDE; risk = likelihood × impact.
+- **Week 2, memory safety.** Unchecked writes overflow buffers and corrupt control data. Fixes: bounded APIs, memory-safe languages. Canaries, NX and ASLR raise the cost but do not remove the bug. Check size arithmetic before multiplying.
+- **Week 3, symmetric cryptography.** Kerckhoffs's principle; the one-time pad; block ciphers and modes. ECB leaks patterns; CBC needs unpredictable IVs; CTR needs unique nonces. PKCS#7 padding.
+- **Week 4, hashes, MACs, AEAD.** Preimage, second-preimage and collision resistance; birthday bound $2^{n/2}$. HMAC, not hash(key||message). Constant-time comparison. AEAD for confidentiality plus integrity.
+- **Week 5, public-key cryptography.** Diffie-Hellman and RSA arithmetic, hybrid encryption, ephemeral keys and forward secrecy, man-in-the-middle, padding (OAEP), Shor's algorithm and the post-quantum standards (ML-KEM, ML-DSA, SLH-DSA).
+- **Week 6, signatures, certificates, TLS.** Hash-and-sign, chains of trust, hostname checks, revocation, Certificate Transparency. TLS 1.3 one-round-trip handshake: ClientHello, ServerHello, then encrypted Certificate, CertificateVerify, Finished.
+- **Week 7, authentication.** Factors and MFA, NIST SP 800-63B Revision 4 rules, salted slow password hashing (Argon2id, scrypt, bcrypt, PBKDF2), TOTP, passkeys.
+- **Week 8, access control.** ACLs and capabilities; DAC, MAC, RBAC, ABAC; Unix permission bits; Bell-LaPadula; deny by default; object-level checks (IDOR); path validation.
+- **Week 9, SQL injection and XSS.** Parameterized queries, identifier allowlists, context-aware output encoding, CSP.
+- **Week 10, CSRF and sessions.** Origin, same-origin policy, CORS, SameSite, anti-CSRF tokens, Origin checks, random session ids, regeneration at login, cookie attributes.
+- **Week 11, network defenses.** Stateless, stateful and application firewalls (first match, default deny), IDS and the base-rate fallacy, SYN cookies, amplification, ingress filtering, rate limiting.
+- **Week 12, secure development and disclosure.** SDLC, supply chain, secrets, fail closed, logging, CVSS bands, coordinated disclosure, authorization and law (not legal advice), ethics.
+
+### Self-check
+
+- Can you threat-model a system on a whiteboard and rank threats?
+- Can you explain, for each primitive (hash, MAC, AEAD, signature), what it does and does not protect?
+- Can you trace a TLS 1.3 handshake and say where forward secrecy comes from?
+- Can you explain why each of salting, slow hashing and a blocklist is needed?
+- Can you fix a SQL injection, an XSS bug, an IDOR and a CSRF hole in code, and write a test for each?
+- Can you do the small calculations: padding sizes, modular exponentiation, subnet matches, base rates, amplification factors?
+
+### Common errors
+
+- Confusing authentication with authorization, or checking only that a user is logged in.
+- Encrypting without authenticating, or reusing a nonce or IV.
+- Using a fast hash for passwords, or one salt for everyone.
+- Fixing a vulnerability class with a blocklist instead of the structural fix.
+- Failing open when an error occurs.
+- Ignoring the base rate when judging a detector.
+@exam code
+prompt: Write `render_note_safe(notes, user_id, note_id)`. `notes` is a dict mapping a note id to a dict with keys `"owner"` (a user id) and `"body"` (a string). If the note exists and its owner equals `user_id`, return `<div class="note">BODY</div>` where BODY is the body HTML-escaped with `html.escape`. If the note does not exist or belongs to another user, raise `PermissionError` (the same error in both cases).
+starter:
+```python
+import html
+
+
+def render_note_safe(notes, user_id, note_id):
+    pass
+```
+tests:
+```python
+notes = {
+    1: {"owner": 7, "body": "hello"},
+    2: {"owner": 7, "body": "<b>x</b> & 'y'"},
+    3: {"owner": 8, "body": "private"},
+}
+assert render_note_safe(notes, 7, 1) == '<div class="note">hello</div>'
+assert render_note_safe(notes, 7, 2) == (
+    '<div class="note">&lt;b&gt;x&lt;/b&gt; &amp; &#x27;y&#x27;</div>'
+)
+assert raises(PermissionError, render_note_safe, notes, 7, 3)
+assert raises(PermissionError, render_note_safe, notes, 7, 99)
+assert render_note_safe(notes, 8, 3) == '<div class="note">private</div>'
+```
+model:
+```python
+import html
+
+
+def render_note_safe(notes, user_id, note_id):
+    note = notes.get(note_id)
+    if note is None or note["owner"] != user_id:
+        raise PermissionError("not found")
+    return '<div class="note">' + html.escape(note["body"]) + "</div>"
+```
+hint: Do the authorization check first, then build the HTML.
+hint: Use `notes.get(note_id)` so a missing note and a note owned by someone else lead to the same `PermissionError`.
+solution: Combine two defenses from different weeks: an object-level ownership check with a uniform error (access control) and output escaping (XSS prevention). Only after the check passes is the body escaped and wrapped in the markup.
+@exam num
+prompt: A service sends each message with AES-GCM as `nonce || ciphertext || tag`, where the nonce is 12 bytes, the tag is 16 bytes, and GCM adds no padding (the ciphertext is as long as the plaintext). How many bytes are transmitted for a 100-byte plaintext?
+answer: 128
+check: 12 + 100 + 16
+hint: Add the three parts that are sent. Decide whether a stream-style mode needs padding.
+solution: $12 + 100 + 16 = 128$ bytes. GCM is built on counter mode, so the ciphertext has the plaintext's length; the nonce travels in the clear and the tag authenticates the ciphertext (and any associated data).
+@exam self
+prompt: Design the "forgot password" flow for a web application. Give the steps, the token's properties, what you store, how you avoid revealing which email addresses have accounts, how you limit abuse, and what happens to existing sessions. Name the lesson or principle behind each decision.
+solution: The user enters an email address; the response is always the same generic message ("if an account exists, we sent a link"), which avoids account enumeration, and the work is done in the same time either way. For an existing account the server creates a token from a cryptographically secure random generator (at least 128 bits), stores only a hash of it with an expiry (for example 15 to 60 minutes) and a single-use flag, and emails a link containing the token. When the link is opened over HTTPS, the server hashes the presented token, compares in constant time, checks expiry and use, and shows a form with an anti-CSRF token. The new password is checked against the NIST rules (length, blocklist, no composition rules) and stored with a salted slow hash (Argon2id). On success the token is invalidated, all existing sessions are revoked and a fresh session is issued, and the user is notified by email, with MFA still required if enabled. Abuse limits: rate limit requests per account and per source, and log reset requests and completions with alerts on unusual volume. Do not use security questions or reveal the old password.
+hint: Walk through the flow in time order: request, email, link, new password, cleanup, and ask at each step what an attacker could do.
+rubric: Prevents account enumeration with a uniform response and avoids hints or security questions.
+rubric: Describes a random, single-use, expiring token stored as a hash and verified in constant time.
+rubric: Applies password rules and salted slow hashing to the new password, and revokes existing sessions.
+rubric: Includes rate limiting, logging and CSRF protection for the reset form.

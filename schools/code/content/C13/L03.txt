@@ -1,0 +1,274 @@
+@lesson
+title: Software design and modularity
+summary: Apply abstraction, information hiding, high cohesion, low coupling and the SOLID principles to decide how to divide a program into modules, and use dependency injection to make modules replaceable and testable.
+objective: Define cohesion and coupling and judge a design by them.
+objective: Explain information hiding and apply it by exposing a small interface over private state.
+objective: State the SOLID principles and recognize violations of the single-responsibility, Liskov substitution and dependency-inversion principles.
+objective: Use dependency injection to replace a hard-wired collaborator with one passed in.
+reading: Software Engineering at Google, the chapters on code quality and on testing (look up "dependency injection" and "design for testability"); also the topic "modularity and information hiding" in any software design text.
+
+@article
+Software design is the art of deciding *where code lives*. Requirements say what the system must do; design divides it into parts so that people can understand, change and test each part without understanding all the others. Since maintenance dominates the cost of software, the best design is the one whose likely changes touch the fewest places.
+
+### Abstraction and information hiding
+
+An **abstraction** presents what something does and omits how. A **module** (a function, class, package or service) has an **interface** (what callers may use) and an **implementation** (everything else). **Information hiding** means a module keeps its design decisions, such as its data layout or algorithm, private behind the interface. If callers depend only on the interface, the implementation can change without breaking them.
+
+```python
+class Account:
+    def __init__(self, balance=0):
+        self._balance = balance      # leading underscore: internal detail
+
+    @property
+    def balance(self):
+        return self._balance
+
+    def deposit(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        self._balance += amount
+```
+
+Callers cannot set the balance to an arbitrary value by accident, and the class could later store a list of transactions instead, with no change for callers. (Python marks internals by convention, with `_name`, rather than enforcing privacy.)
+
+### Cohesion and coupling
+
+**Cohesion** is how strongly the parts of one module belong together. A `PriceCalculator` that only calculates prices is cohesive; a `Utils` class mixing date parsing, email and tax rules is not. **Coupling** is how much one module depends on the internals of another. The goal is **high cohesion and low coupling**: changes stay local. Signs of tight coupling are reaching into another object's fields, sharing global variables, and one class constructing the concrete classes it uses.
+
+### SOLID
+
+Five widely taught principles for object-oriented design:
+
+- **S**ingle responsibility: a class should have one reason to change.
+- **O**pen/closed: open for extension, closed for modification; add behavior by adding code, not by editing tested code.
+- **L**iskov substitution: a subclass must be usable wherever its base class is expected without surprising the caller.
+- **I**nterface segregation: prefer several small interfaces to one large one, so clients depend only on what they use.
+- **D**ependency inversion: high-level modules should depend on abstractions, not on concrete low-level modules.
+
+These are heuristics, not laws; they can be over-applied into needless layers. Also prefer **composition over inheritance**: build behavior by holding other objects rather than extending a class just to reuse code.
+
+### Dependency injection
+
+A class that creates its own collaborator is hard to change and hard to test:
+
+```python
+class Checkout:
+    def __init__(self):
+        self.gateway = RealPaymentGateway()   # hard-wired
+```
+
+With **dependency injection** the collaborator is passed in:
+
+```python
+class Checkout:
+    def __init__(self, gateway):
+        self.gateway = gateway                # any object with charge()
+
+    def pay(self, cents):
+        return "paid" if self.gateway.charge(cents) else "declined"
+```
+
+Production code passes the real gateway; a test passes a simple fake. This applies the dependency-inversion principle: `Checkout` depends on "something with a `charge` method", not on a particular payment company.
+
+@example
+title: Spotting a single-responsibility violation
+problem: A class `Invoice` calculates totals, formats a PDF and sends it by email. Why is this a design problem, and how would you divide it?
+step: List the reasons the class might change: the tax rules change (calculation), the layout changes (formatting), the mail provider changes (delivery). That is three reasons to change.
+step: A class with three reasons to change violates single responsibility and has low cohesion: a layout tweak risks breaking tax logic.
+step: Split it into `InvoiceCalculator` (totals), `InvoiceFormatter` (layout) and `InvoiceMailer` (delivery), each with a small interface.
+step: Add a small coordinating function that calls the three in order. Each part can now be tested and replaced alone.
+answer: Split into calculator, formatter and mailer, one reason to change each.
+
+@example
+title: Testing with an injected fake
+problem: Using the injected `Checkout` above, show how a test can check that a declined card is reported, without a real payment service.
+step: Write a fake with the same `charge` method that records its calls and returns a chosen result:
+
+```python
+class FakeGateway:
+    def __init__(self, ok):
+        self.ok = ok
+        self.charged = []
+
+    def charge(self, cents):
+        self.charged.append(cents)
+        return self.ok
+```
+step: Build `Checkout(FakeGateway(False))` and call `pay(500)`. The fake returns `False`, so `pay` returns `"declined"`.
+step: Inspect the fake's `charged` list to confirm `charge` was called exactly once with `500`.
+step: Nothing was charged and no network was used, yet the test exercised the real `Checkout` logic.
+answer: `"declined"`, and `charged == [500]`.
+
+@mistakes
+- Confusing cohesion with coupling: cohesion is about the inside of a module, coupling about the connections between modules.
+- Using inheritance only to reuse code, which creates a subclass that cannot honor the base class's contract (a Liskov violation).
+- Creating concrete collaborators inside a class (`self.db = Database()`), which makes it impossible to substitute them in tests.
+- Over-applying principles by adding interfaces and layers for changes that will never happen.
+
+@practice mc
+prompt: Which description best defines high cohesion?
+choice: A module that depends on as many other modules as possible
+choice*: A module whose parts all contribute to one well-defined purpose
+choice: A module whose internals are visible to every other module
+choice: A module with the largest possible number of public functions
+hint: Cohesion looks inside a single module.
+solution: High cohesion means the elements of a module belong together because they serve one purpose. The other choices describe the opposite or are unrelated to cohesion.
+
+@practice ms
+prompt: Which of these are signs of tight coupling between two classes? Select all that apply.
+choice*: Class A reads and modifies private fields of class B directly
+choice*: Class A constructs a specific concrete class B inside its own methods
+choice: Class A calls only the documented public methods of class B
+choice*: Both classes read and write the same global variable
+choice: Class A receives an object with the needed methods through its constructor
+hint: Tight coupling means depending on details that may change.
+solution: Touching another object's internals, hard-wiring a concrete collaborator and sharing global state all make changes ripple. Using a public interface or an injected collaborator keeps coupling low.
+
+@practice code
+prompt: Write a class `Checkout` whose constructor takes a `gateway` object. Its method `pay(cents)` raises `ValueError` if `cents` is zero or negative (without calling the gateway); otherwise it calls `gateway.charge(cents)` exactly once and returns the string `"paid"` if that call returned a true value and `"declined"` otherwise.
+starter:
+```python
+class Checkout:
+    pass
+```
+tests:
+```python
+class FakeGateway:
+    def __init__(self, ok):
+        self.ok = ok
+        self.charged = []
+
+    def charge(self, cents):
+        self.charged.append(cents)
+        return self.ok
+
+g = FakeGateway(True)
+assert Checkout(g).pay(500) == "paid"
+assert g.charged == [500]
+g2 = FakeGateway(False)
+assert Checkout(g2).pay(75) == "declined"
+assert g2.charged == [75]
+g3 = FakeGateway(True)
+assert raises(ValueError, Checkout(g3).pay, 0)
+assert g3.charged == []
+```
+model:
+```python
+class Checkout:
+    def __init__(self, gateway):
+        self.gateway = gateway
+
+    def pay(self, cents):
+        if cents <= 0:
+            raise ValueError("cents must be positive")
+        return "paid" if self.gateway.charge(cents) else "declined"
+```
+hint: Store the gateway in `__init__` and use it in `pay`; do not create one yourself.
+hint: Validate `cents` before calling `charge`, so an invalid amount never reaches the gateway.
+solution: The constructor keeps the injected gateway. `pay` validates first, then calls `charge` once and maps its result to a string. Because the gateway is passed in, the test substitutes a fake that records calls.
+
+@practice text
+prompt: Type the exact output of this program.
+
+```python
+class Rectangle:
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+
+    def set_width(self, w):
+        self.w = w
+
+    def area(self):
+        return self.w * self.h
+
+
+class Square(Rectangle):
+    def __init__(self, side):
+        super().__init__(side, side)
+
+    def set_width(self, w):
+        self.w = w
+        self.h = w
+
+
+def stretch(r):
+    r.set_width(4)
+    return r.area()
+
+
+print(stretch(Rectangle(2, 5)))
+print(stretch(Square(3)))
+```
+answer:
+```
+20
+16
+```
+check: run("class Rectangle:\n    def __init__(self, w, h):\n        self.w = w\n        self.h = h\n\n    def set_width(self, w):\n        self.w = w\n\n    def area(self):\n        return self.w * self.h\n\n\nclass Square(Rectangle):\n    def __init__(self, side):\n        super().__init__(side, side)\n\n    def set_width(self, w):\n        self.w = w\n        self.h = w\n\n\ndef stretch(r):\n    r.set_width(4)\n    return r.area()\n\n\nprint(stretch(Rectangle(2, 5)))\nprint(stretch(Square(3)))\n")
+hint: For the rectangle, only the width changes. For the square, `set_width` also changes the height.
+solution: The rectangle becomes 4 by 5, area 20. The square's override sets both sides to 4, area 16. Code written for rectangles expects the height to stay the same (here 4 by 3 would give 12), so `Square` surprises callers: a Liskov substitution violation.
+
+@practice self
+prompt: A class `UserManager` currently validates sign-up forms, writes users to a SQL database, sends welcome emails and builds the HTML for the profile page. Propose a division into modules. For each module give its single responsibility and its public interface (method names), and say how `sign_up` would receive its collaborators.
+solution: Modules: `SignUpValidator.validate(form)` checks fields and returns a list of errors; `UserRepository.save(user)` and `find(email)` hide the database; `WelcomeMailer.send(user)` hides the mail provider; `ProfileView.render(user)` builds HTML. A function or small class `SignUpService(validator, repository, mailer)` has `sign_up(form)`, which validates, saves and mails in order. The three collaborators are injected through the constructor, so each can be replaced by a fake in tests and a change of database or mail provider touches one module only.
+rubric: Splits the class so each module has one reason to change (validation, persistence, email, presentation).
+rubric: Gives each module a small interface of named methods and hides implementation details.
+rubric: Passes collaborators in (constructor or parameters) instead of creating concrete classes inside.
+hint: List the reasons `UserManager` might change; each reason suggests a module.
+
+@quiz mc
+prompt: A `ReportGenerator` class creates a `MySQLConnection` inside its constructor, so unit tests cannot run without a database. Which change best applies the dependency-inversion principle?
+choice: Make the connection a global variable
+choice: Copy the connection code into the test file
+choice*: Pass an object with the needed query methods into the constructor, so tests can supply a fake
+choice: Make `ReportGenerator` a subclass of `MySQLConnection`
+hint: High-level code should depend on an abstraction it receives, not on a concrete class it builds.
+solution: Injecting an object that offers the needed methods lets production code pass the real connection and tests pass a fake. A global, copied code or inheritance keep the dependency hard-wired.
+
+@quiz code
+prompt: Write a class `Account` with a constructor `Account(balance=0)`, a read-only property `balance`, a method `deposit(amount)` and a method `withdraw(amount)`. Both methods raise `ValueError` if `amount` is zero or negative; `withdraw` also raises `ValueError` if `amount` exceeds the balance (and then leaves the balance unchanged). Assigning to `balance` directly must raise `AttributeError`.
+starter:
+```python
+class Account:
+    pass
+```
+tests:
+```python
+a = Account(100)
+a.deposit(50)
+assert a.balance == 150
+a.withdraw(30)
+assert a.balance == 120
+assert Account().balance == 0
+assert raises(ValueError, a.withdraw, 500)
+assert a.balance == 120
+assert raises(ValueError, a.deposit, 0)
+assert raises(ValueError, a.withdraw, -5)
+assert raises(AttributeError, setattr, a, "balance", 1)
+```
+model:
+```python
+class Account:
+    def __init__(self, balance=0):
+        self._balance = balance
+
+    @property
+    def balance(self):
+        return self._balance
+
+    def deposit(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        self._balance += amount
+
+    def withdraw(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        if amount > self._balance:
+            raise ValueError("insufficient funds")
+        self._balance -= amount
+```
+hint: Keep the balance in `self._balance` and expose it only through a property without a setter.
+hint: Validate the amount before changing the balance, so a failed call leaves the state unchanged.
+solution: The leading underscore marks the field as internal, and a property with no setter makes `account.balance = 1` raise `AttributeError`. Each method validates first and mutates last, so an invalid call changes nothing.

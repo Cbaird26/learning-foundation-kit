@@ -1,0 +1,249 @@
+@lesson
+title: Coverage and mutation testing
+summary: Measure which code your tests execute, understand why coverage alone cannot show test quality, and use mutation testing to check that tests actually detect bugs.
+objective: Read a coverage report and distinguish line, branch and diff coverage.
+objective: Explain why high coverage does not prove good tests, and how to use it as a tool instead of a target.
+objective: Explain how mutation testing works and interpret its score.
+reading: Test-Driven Development with Python, the chapters on continuous integration and quality tooling are the closest; also look up "coverage.py" and "pytest-cov" in their documentation, and "mutation testing" with the tools "mutmut" or "Cosmic Ray".
+@article
+You have written tests. How good are they? Two tools give two different answers. **Coverage** tells you which code your tests *ran*. **Mutation testing** tells you whether your tests would *notice* if that code were wrong. The gap between the two is the subject of this lesson.
+
+### Measuring coverage
+
+With the `coverage` package, or its pytest plugin, you run the suite and get a report:
+
+```bash
+pip install pytest pytest-cov
+pytest --cov=mypackage --cov-branch --cov-report=term-missing
+```
+
+The report lists, per file, the percentage of code executed and the **line numbers that never ran**. `term-missing` shows those numbers, which is the useful part: each missed line is a question ("is this code dead, or untested?"). `--cov-report=html` writes a browsable page that highlights them.
+
+There are several kinds:
+
+- **Line (statement) coverage**: the share of executable statements that ran at least once.
+- **Branch coverage**: also tracks whether each `if` took *both* directions, and each loop both ran and exited. Turn it on (`--cov-branch`), because line coverage can be 100% while one side of an `if` never executed.
+- **Diff coverage**: coverage of only the lines changed in a pull request. This is often the most useful number in review.
+
+```python
+def label(n):
+    result = "small"
+    if n > 10:
+        result = "big"
+    return result
+```
+
+The single test `label(50) == "big"` runs every line (100% line coverage), but the case where the `if` is false never ran. Branch coverage reports it as incomplete.
+
+### What coverage cannot tell you
+
+Coverage proves code *ran*, not that anything *checked* it. This test gives 100% coverage and verifies nothing:
+
+```python
+def test_label():
+    label(50)
+```
+
+Coverage also cannot see missing code (a case you forgot to handle has no lines to be uncovered) and says nothing about whether the right values were asserted. This is why a coverage **target** gets gamed: once a number becomes the goal, people write assertion-free tests to reach it. That is **Goodhart's law**: when a measure becomes a target, it stops being a good measure.
+
+### Using coverage well
+
+Use it as a **flashlight**, not a score. Look at the *uncovered* lines and decide for each: write a test, delete the dead code, or mark it as deliberately excluded (`# pragma: no cover`, sparingly). A sensible policy is a floor in CI (for example `--cov-fail-under=80`, or a rule that new code must be covered) combined with human judgment in review. Low coverage in critical code (payments, permissions) is a stronger signal than a high overall percentage.
+
+### Mutation testing: testing your tests
+
+Mutation testing asks: *if I introduce a small bug, does a test fail?* A tool makes many **mutants**, copies of your code with one small change each: `>` becomes `>=`, `+` becomes `-`, `True` becomes `False`, a `return x` becomes `return None`. It runs your tests against each mutant. If some test fails, the mutant is **killed** (good). If all tests pass, the mutant **survived**: your tests cannot tell the buggy code from the correct code.
+
+$$\text{mutation score} = \frac{\text{killed mutants}}{\text{total mutants}}$$
+
+In Python, tools such as **mutmut** and **Cosmic Ray** do this; you typically point them at one module and its tests, since they run the suite many times and are slow. Each survivor is a concrete to-do: either a missing assertion, a missing boundary test, or an *equivalent mutant* (a change that does not alter behavior, which cannot be killed and is ignored).
+
+### A worked intuition
+
+Take `is_adult(age): return age >= 18`. A mutation tool changes `>=` to `>`. If your only tests are `is_adult(10)` and `is_adult(30)`, both versions give the same answers, so the mutant survives. The surviving mutant says: "you never tested age 18." That is exactly the boundary advice from the edge-case lesson, now found by a machine.
+
+### Practical limits
+
+Mutation testing is expensive, so run it on important modules, on a schedule or on changed files, not on every commit. Combine the tools: coverage finds code that no test touches, mutation testing finds code that tests touch but do not check, and reviewers find what neither can: missing requirements.
+
+@example
+title: Reading a coverage report
+problem: The report for `grade` shows 83% (5 of 6 statements) and `term-missing` lists line 5. What does that tell you and what do you do?
+
+```python
+def grade(score):
+    if score >= 90:
+        return "A"
+    if score >= 50:
+        return "pass"      # line 5
+    return "fail"
+```
+step: Line 5 never ran: no test passed a score from 50 to 89.
+step: Decide what the line deserves: it is real logic, so it needs a test, not an exclusion.
+step: Add `assert grade(70) == "pass"`, plus the boundaries `grade(50)`, `grade(49)`, `grade(90)` and `grade(89)`.
+step: Rerun with `--cov-branch`: now both directions of each `if` have run. Coverage is 100%, and the boundary tests also protect against `>=` versus `>` mistakes.
+answer: The missed line led to a real test and to boundary tests that coverage alone would not have demanded.
+
+@example
+title: A surviving mutant
+problem: `is_adult(age)` returns `age >= 18`; the tests are `is_adult(10) is False` and `is_adult(30) is True`. A mutation tool reports that the mutant `age > 18` survived. What now?
+step: Both tests give the same answer for original and mutant, since 10 and 30 are far from 18, so nothing fails.
+step: The survivor is useful information: a boundary is untested.
+step: Add `assert is_adult(18) is True` (and `is_adult(17) is False`). Against the mutant, 18 gives `False`, so a test now fails and the mutant is killed.
+step: Rerun the tool: the mutant is reported as killed and the mutation score for this function rises.
+answer: Add the boundary tests at 17 and 18; the surviving mutant exposed the missing case.
+
+@mistakes
+- Chasing 100% line coverage and writing tests without assertions, which satisfies the number and checks nothing.
+- Trusting line coverage when branch coverage would show an untested `else` or an untested loop exit.
+- Treating a missed line as an automatic task to test it, instead of asking whether the code is dead and should be deleted.
+- Running mutation testing across the entire project on every commit, when it is slow and best aimed at important modules.
+
+@practice mc
+prompt: A test calls `label(50)` once, with no assertion, and the report shows 100% line coverage for `label`. What does this show?
+choice: The function is correct for all inputs.
+choice*: Every line ran at least once, but nothing was checked, so bugs could still pass.
+choice: Branch coverage must also be 100%.
+choice: The mutation score must be high.
+hint: Coverage measures execution, not verification.
+solution: Coverage only records that lines were executed. With no assertion a wrong result passes silently, and the untested false branch of the `if` could even leave branch coverage below 100%. Neither correctness nor a high mutation score follows.
+
+@practice text
+prompt: A mutation tool created the function `mutant` from `is_adult`. What does this program print? Type the output exactly, one line per print.
+
+```python
+def is_adult(age):
+    return age >= 18
+
+
+def mutant(age):
+    return age > 18
+
+
+tests = [(10, False), (30, True)]
+print(all(is_adult(a) == e for a, e in tests))
+print(all(mutant(a) == e for a, e in tests))
+```
+answer:
+```
+True
+True
+```
+check: run("def is_adult(age):\n    return age >= 18\n\n\ndef mutant(age):\n    return age > 18\n\n\ntests = [(10, False), (30, True)]\nprint(all(is_adult(a) == e for a, e in tests))\nprint(all(mutant(a) == e for a, e in tests))\n")
+hint: Evaluate both functions for the ages 10 and 30; do they ever disagree?
+solution: For 10 both return `False`, and for 30 both return `True`, so every test passes for the original and for the mutant. A mutant that passes all tests has survived, which tells you the suite lacks the boundary case `18`.
+
+@practice code
+prompt: Write `coverage_percent(executed, total)`. `executed` is a set of line numbers that ran and `total` is a set of all executable line numbers. Return the percentage of the lines in `total` that are in `executed`, rounded to one decimal place. If `total` is empty return `100.0`. Lines in `executed` that are not in `total` do not count.
+starter:
+```python
+def coverage_percent(executed, total):
+    pass
+```
+tests:
+```python
+assert coverage_percent({1, 2, 3, 4}, {1, 2, 3, 4}) == 100.0
+assert coverage_percent({1, 2, 4}, {1, 2, 3, 4}) == 75.0
+assert coverage_percent(set(), {1, 2, 3}) == 0.0
+assert coverage_percent({1, 2}, {1, 2, 3}) == 66.7
+assert coverage_percent({1, 99}, {1, 2}) == 50.0
+assert coverage_percent(set(), set()) == 100.0
+```
+model:
+```python
+def coverage_percent(executed, total):
+    if not total:
+        return 100.0
+    covered = len(executed & total)
+    return round(covered / len(total) * 100, 1)
+```
+hint: The covered lines are the intersection of the two sets.
+hint: Guard the empty `total` first to avoid dividing by zero; then `round(covered / len(total) * 100, 1)`.
+solution: Intersect the sets so stray line numbers do not count, divide by the number of executable lines, scale to a percentage and round. An empty `total` is defined as 100.0, which also avoids a division by zero.
+
+@practice ms
+prompt: Which statements about coverage and mutation testing are true?
+choice*: A mutant that survives means your tests could not tell the changed code from the original.
+choice*: Branch coverage can reveal an untested `else` that line coverage reports as fully covered.
+choice: 100% line coverage proves that the code has no bugs.
+choice*: Coverage can show code that no test runs, but not requirements that were never implemented.
+choice: A mutation tool should run on the whole project on every commit, however large.
+hint: Coverage measures what ran; mutation testing measures what the tests would notice.
+solution: Survivors show weak tests; branch coverage is stricter than line coverage; and coverage only sees code that exists. Full line coverage does not prove correctness, and mutation testing is usually aimed at key modules or changed files because it re-runs the suite many times.
+
+@practice self
+prompt: This function and test give 100% line coverage. Explain why the test is weak, name at least three mutants that would survive, and write a better set of tests.
+
+```python
+def shipping(total, express):
+    cost = 7
+    if total >= 50:
+        cost = 0
+    if express:
+        cost += 12
+    return cost
+
+
+def test_shipping():
+    shipping(80, True)
+    shipping(20, False)
+```
+hint: The test has no assert at all; list small changes to the code (an operator, a constant, a branch) that would not make it fail.
+solution: The test has no assertions, so it passes whatever the function returns, and it reaches every line only by calling the function twice. Surviving mutants include: `total >= 50` changed to `total > 50` (or `<= 50`), `cost = 7` changed to `cost = 8`, `cost += 12` changed to `cost += 11` or `cost -= 12`, `cost = 0` changed to `cost = 1`, and `if express` changed to `if not express`; all pass because nothing is checked. A better set asserts exact values at the boundary and for each combination: `shipping(49, False) == 7`, `shipping(50, False) == 0`, `shipping(51, False) == 0`, `shipping(49, True) == 19`, `shipping(50, True) == 12`, `shipping(0, False) == 7`. Each mutant above now fails at least one assertion. For example `>` instead of `>=` fails on `shipping(50, False)`, and `+= 11` fails on both express cases. The lesson: coverage said the lines ran, mutation testing says whether the tests would notice a change.
+rubric: Says clearly that the test makes no assertions, so coverage shows execution but not verification.
+rubric: Names at least three realistic surviving mutants (boundary operator, constant, flipped condition or changed arithmetic).
+rubric: Provides tests with exact expected values including the boundary at 50 and both express settings, and explains which mutant each kills.
+
+@quiz code
+prompt: Write `mutation_score(cases, mutants)`. `cases` is a list of `(args, expected)` pairs, where `args` is a tuple. `mutants` is a list of functions. A mutant is **killed** if for at least one case it returns a value different from `expected`, or raises an exception. Return the fraction of mutants killed as a float (`killed / len(mutants)`). If there are no mutants, return `1.0`.
+starter:
+```python
+def mutation_score(cases, mutants):
+    pass
+```
+tests:
+```python
+def is_adult(age):
+    return age >= 18
+
+m_gt = lambda age: age > 18
+m_always = lambda age: True
+m_crash = lambda age: age.missing
+
+weak = [((10,), False), ((30,), True)]
+strong = [((10,), False), ((17,), False), ((18,), True), ((30,), True)]
+
+assert mutation_score(weak, [m_gt]) == 0.0
+assert mutation_score(strong, [m_gt]) == 1.0
+assert mutation_score(weak, [m_gt, m_always, m_crash]) == 2 / 3
+assert mutation_score(strong, []) == 1.0
+assert mutation_score([], [m_always]) == 0.0
+```
+model:
+```python
+def mutation_score(cases, mutants):
+    if not mutants:
+        return 1.0
+    killed = 0
+    for mutant in mutants:
+        for args, expected in cases:
+            try:
+                got = mutant(*args)
+            except Exception:
+                killed += 1
+                break
+            if got != expected:
+                killed += 1
+                break
+    return killed / len(mutants)
+```
+hint: For each mutant, check the cases one by one and stop at the first case that exposes it.
+hint: An exception counts as a kill; use `try`/`except Exception` and `break` after counting, so a mutant is counted once.
+solution: Loop over mutants; for each, run the cases until one returns the wrong value or raises, count the mutant once and `break`. Return `killed / len(mutants)`, with `1.0` for an empty mutant list. With no cases nothing can be killed, so the score is 0.0, which is why a suite with no tests has a mutation score of zero.
+
+@quiz num
+prompt: A function has five statements: two `if` statements and three `return` statements. A test suite executes the first `if`, the first `return`, the second `if` and the last `return`, but never the middle `return`. What is the statement coverage, as a percentage?
+answer: 80
+check: 100 * 4 / 5
+hint: Count how many of the five statements ran.
+solution: Four of the five statements ran, so statement coverage is 4/5 = 80%. The one missed statement is exactly what a `term-missing` report would list by line number.

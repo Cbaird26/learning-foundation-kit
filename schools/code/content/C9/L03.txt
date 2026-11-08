@@ -1,0 +1,220 @@
+@lesson
+title: The web and HTTP
+summary: Read and write HTTP requests and responses, explain cookies and caching, and compute page load times for non-persistent and persistent connections.
+objective: Parse an HTTP request and response into method, target, status, headers and body.
+objective: Explain statelessness, cookies, and conditional requests with validators such as ETag.
+objective: Compute page load time in round-trip times for non-persistent, persistent and pipelined connections.
+objective: Describe what HTTP/2 and HTTP/3 change compared with HTTP/1.1.
+reading: Computer Networks: A Systems Approach, Chapter 9 "Applications", the section on the World Wide Web (HTTP); also look up RFC 9110 "HTTP Semantics" for the full method and status code definitions.
+
+@article
+The web is a client-server application. A browser (the client) requests **objects** (an HTML file, an image, a script) from a web server using the **Hypertext Transfer Protocol**, HTTP. Each object is named by a **URL** such as `https://www.example.com:443/shop/item?id=7#reviews`: a scheme (`https`), a host, an optional port (default 80 for `http`, 443 for `https`), a path, a query string and a fragment (the fragment is used by the browser and is never sent to the server).
+
+### Messages
+
+HTTP/1.1 messages are text. A request has a request line, header lines, a blank line, and an optional body; lines end with CRLF (`\r\n`):
+
+```text
+GET /index.html HTTP/1.1
+Host: www.example.com
+Accept: text/html
+
+```
+
+The response has a status line, headers, a blank line and the body:
+
+```text
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 1256
+
+<html> ...
+```
+
+Common **methods** are `GET` (fetch), `HEAD` (headers only), `POST` (submit data), `PUT` (replace) and `DELETE`. `GET` and `HEAD` must be **safe** (no side effects). **Status codes** come in classes: 1xx informational, 2xx success (`200 OK`, `201 Created`), 3xx redirection (`301 Moved Permanently`, `304 Not Modified`), 4xx client error (`400 Bad Request`, `403 Forbidden`, `404 Not Found`) and 5xx server error (`500 Internal Server Error`, `503 Service Unavailable`). The `Host` header is required in HTTP/1.1 because one server address can host many sites.
+
+### Statelessness and cookies
+
+HTTP is **stateless**: the server keeps no memory of earlier requests. Sites that need state (a login session, a cart) use **cookies**. The server sends `Set-Cookie: session=abc123` in a response; the browser stores it and returns `Cookie: session=abc123` in later requests to that site. Cookies are also used for tracking, which is why browsers restrict third-party cookies.
+
+### Caching and conditional GET
+
+A cache (in the browser or a **proxy** or **CDN**) keeps copies of objects. A response may carry `Cache-Control: max-age=3600`, meaning the copy is fresh for an hour, and a **validator** such as `ETag: "v42"` or `Last-Modified`. When the copy is stale, the cache sends a **conditional GET** with `If-None-Match: "v42"` (or `If-Modified-Since`). If the object is unchanged, the server answers `304 Not Modified` with no body, saving the transfer; otherwise it sends `200` and the new object.
+
+### Connections and page load time
+
+HTTP runs over TCP. Opening a TCP connection costs one round-trip time (RTT) for the handshake, and each request-response then costs one more RTT plus the transmission time of the object. With **non-persistent** connections every object needs a new TCP connection: $2$ RTT per object. With **persistent** connections (the HTTP/1.1 default) the connection stays open and later objects cost 1 RTT each. With **pipelining** several requests are sent without waiting for earlier responses. Ignoring transmission times, a page with a base HTML file and $n$ embedded objects fetched one after another takes $2(1 + n)$ RTT non-persistent, $2 + n$ RTT persistent, and $3$ RTT persistent with all $n$ requests pipelined (when $n \ge 1$): 1 RTT to connect, 1 RTT for the base file, then 1 RTT for all the objects.
+
+### HTTP/2 and HTTP/3
+
+HTTP/2 (RFC 9113) keeps the same semantics but uses a binary framing layer and **multiplexes** many request-response streams on one TCP connection, with header compression. A lost TCP segment still stalls every stream behind it (head-of-line blocking). HTTP/3 (RFC 9114) runs over QUIC (RFC 9000), which is built on UDP, gives each stream independent loss recovery, and integrates the TLS 1.3 handshake into the transport handshake, so a new secure connection needs only 1 RTT.
+
+@example
+title: Page load times
+problem: A page has one base HTML file and 8 embedded images. RTT is 50 ms; ignore transmission times. How long does the page take to load with non-persistent connections, with persistent connections, and with persistent connections plus pipelining?
+step: Non-persistent: each of the 9 objects needs a TCP handshake (1 RTT) and a request-response (1 RTT), so $9 \times 2 \times 50 = 900$ ms.
+step: Persistent without pipelining: one handshake, then one request-response per object: $(1 + 9) \times 50 = 500$ ms.
+step: Persistent with pipelining: 1 RTT for the handshake, 1 RTT to fetch the base file (the browser cannot know the image names before it), then 1 RTT for all 8 image requests sent together: $3 \times 50 = 150$ ms.
+answer: 900 ms, 500 ms and 150 ms
+
+@example
+title: A conditional GET
+problem: A browser cached `/logo.png` with `ETag: "a1"`. Describe the exchange when the file has not changed and when it has changed to ETag `"b2"`.
+step: The browser sends `GET /logo.png HTTP/1.1` with `Host: www.example.com` and `If-None-Match: "a1"`.
+step: Unchanged: the server compares the validator, finds it equal, and replies `HTTP/1.1 304 Not Modified` with no body. The browser reuses its copy.
+step: Changed: the validators differ, so the server replies `HTTP/1.1 200 OK` with `ETag: "b2"`, `Content-Length` and the new image in the body.
+step: Either way one RTT is spent, but the 304 response is only a few hundred bytes, not the whole image.
+answer: 304 with no body when unchanged; 200 with the new body and ETag "b2" when changed.
+
+@mistakes
+- Believing that HTTP keeps a session on the server by itself. Sessions are built on top of it with cookies or tokens.
+- Treating a 304 response as an error. It means "your cached copy is still valid".
+- Counting only one RTT per object for non-persistent HTTP and forgetting the TCP handshake.
+- Forgetting that the browser must fetch the base HTML before it can request the embedded objects, so pipelining cannot start earlier.
+
+@practice mc
+prompt: A cache holds a copy of an object with `ETag: "v7"`. It sends a conditional request containing `If-None-Match: "v7"` and the object on the server has not changed. What does the server reply?
+choice: `200 OK` with the full object again
+choice*: `304 Not Modified` with no body
+choice: `404 Not Found`, because the cache sent an unexpected header
+choice: `301 Moved Permanently` to the cached copy
+hint: The validator matches, so there is nothing new to send.
+solution: When the validator matches, the server sends `304 Not Modified` with no body and the cache reuses its stored copy.
+
+@practice num
+prompt: A web page has one base HTML file and 4 embedded images. The browser uses non-persistent HTTP, fetching objects one after another. RTT is 40 ms and transmission times are negligible. How long does the page take to load, in milliseconds?
+answer: 400
+check: (1 + 4) * 2 * 40
+unit: ms
+hint: How many RTTs does one object cost with a fresh connection?
+solution: Each object costs 2 RTT (handshake and request-response), and there are $1 + 4 = 5$ objects: $5 \times 2 \times 40 = 400$ ms.
+
+@practice code
+prompt: Write `build_request(method, host, path)` that returns the HTTP/1.1 request text with exactly these lines, each ending in `\r\n`, followed by one empty line: the request line `METHOD PATH HTTP/1.1`, then `Host: HOST`, then `Connection: close`. For example `build_request("GET", "example.com", "/")` returns `"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"`.
+starter:
+```python
+def build_request(method, host, path):
+    pass
+```
+tests:
+```python
+assert build_request("GET", "example.com", "/") == (
+    "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+assert build_request("HEAD", "a.org", "/x/y?q=1") == (
+    "HEAD /x/y?q=1 HTTP/1.1\r\nHost: a.org\r\nConnection: close\r\n\r\n")
+assert build_request("DELETE", "h", "/i").endswith("\r\n\r\n")
+assert build_request("GET", "h", "/").count("\r\n") == 4
+```
+model:
+```python
+def build_request(method, host, path):
+    return (f"{method} {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Connection: close\r\n"
+            "\r\n")
+```
+hint: A message is a sequence of lines; each line ends with `\r\n` and a final empty line ends the header section.
+hint: Build the three header lines and then add one more `"\r\n"`.
+solution: Join the request line, the `Host` header and the `Connection` header, each with a trailing CRLF, and add a final CRLF for the blank line that ends the headers. That makes four CRLFs in total.
+
+@practice code
+prompt: Write `parse_request(text)` for an HTTP request given as a string with `\r\n` line endings. It returns a tuple `(method, target, version, headers)`. `headers` is a dictionary whose keys are the header names in lower case and whose values are the header values with surrounding spaces removed. Split each header line at the first colon only. Stop at the first empty line and ignore any body.
+starter:
+```python
+def parse_request(text):
+    pass
+```
+tests:
+```python
+req = "GET /a/b?x=1 HTTP/1.1\r\nHost: example.com\r\nAccept: text/html\r\n\r\n"
+assert parse_request(req) == (
+    "GET", "/a/b?x=1", "HTTP/1.1",
+    {"host": "example.com", "accept": "text/html"})
+assert parse_request("GET / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n")[3] == {
+    "host": "localhost:8080"}
+post = "POST /f HTTP/1.1\r\nContent-Length: 3\r\nX-Test:   hi  \r\n\r\nabc"
+assert parse_request(post) == (
+    "POST", "/f", "HTTP/1.1", {"content-length": "3", "x-test": "hi"})
+assert parse_request("GET / HTTP/1.1\r\n\r\n") == ("GET", "/", "HTTP/1.1", {})
+```
+model:
+```python
+def parse_request(text):
+    head = text.split("\r\n\r\n")[0]
+    lines = head.split("\r\n")
+    method, target, version = lines[0].split(" ")
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    return method, target, version, headers
+```
+hint: The header section ends at the first blank line, that is, at the first `"\r\n\r\n"`.
+hint: `str.partition(":")` splits at the first colon only, so `localhost:8080` survives.
+solution: Cut the text at the first blank line, split what remains into lines, split the first line on spaces for the three request-line fields, and use `partition(":")` on each other line, lower-casing the name and stripping the value.
+
+@practice code
+prompt: Write `page_load_rtts(n_objects, persistent, pipelined)` that returns the number of RTTs to load a page with one base HTML file and `n_objects` embedded objects over HTTP/1.1 over TCP, ignoring transmission times. If `persistent` is false, each object uses its own connection and the objects are fetched one after another (`pipelined` is ignored). If `persistent` is true and `pipelined` is false, there is one connection and requests are sequential. If both are true, all embedded-object requests are sent together after the base file arrives.
+starter:
+```python
+def page_load_rtts(n_objects, persistent, pipelined):
+    pass
+```
+tests:
+```python
+assert page_load_rtts(8, False, False) == 18
+assert page_load_rtts(8, False, True) == 18
+assert page_load_rtts(8, True, False) == 10
+assert page_load_rtts(8, True, True) == 3
+assert page_load_rtts(0, True, True) == 2
+assert page_load_rtts(0, False, False) == 2
+```
+model:
+```python
+def page_load_rtts(n_objects, persistent, pipelined):
+    if not persistent:
+        return 2 * (1 + n_objects)
+    if pipelined and n_objects > 0:
+        return 3
+    return 2 + n_objects
+```
+hint: Handle the three situations separately, starting with the non-persistent case.
+hint: Pipelining only helps when there is at least one embedded object; with none, the page costs 2 RTT.
+solution: Non-persistent costs 2 RTT for each of the `1 + n_objects` objects. Persistent costs a handshake and the base file (2 RTT) plus 1 RTT per object, or just 1 RTT for all objects together when pipelined and there is at least one.
+
+@quiz code
+prompt: Write `parse_cookie_header(value)` that parses the value of a `Cookie` request header such as `"a=1; b=two"` into a dictionary `{"a": "1", "b": "two"}`. Pairs are separated by `;` and optional spaces, and each pair is split at its first `=`. An empty string gives an empty dictionary.
+starter:
+```python
+def parse_cookie_header(value):
+    pass
+```
+tests:
+```python
+assert parse_cookie_header("a=1; b=two") == {"a": "1", "b": "two"}
+assert parse_cookie_header("session=abc==") == {"session": "abc=="}
+assert parse_cookie_header("") == {}
+assert parse_cookie_header("x=1;y=2;  z=3") == {"x": "1", "y": "2", "z": "3"}
+```
+model:
+```python
+def parse_cookie_header(value):
+    cookies = {}
+    for pair in value.split(";"):
+        pair = pair.strip()
+        if pair:
+            name, _, val = pair.partition("=")
+            cookies[name] = val
+    return cookies
+```
+hint: Split on `;`, then strip each piece and skip empty ones.
+hint: Use `partition("=")` so that a value that itself contains `=` is kept whole.
+solution: Split on semicolons, strip spaces, skip empty pieces and partition each pair at its first equals sign, so `abc==` stays intact.
+
+@quiz num
+prompt: A browser fetches a page with one base HTML file and 9 embedded images over one persistent HTTP/1.1 connection, without pipelining. RTT is 20 ms; ignore transmission times. How long does the page take to load, in milliseconds?
+answer: 220
+check: (2 + 9) * 20
+unit: ms
+hint: Count one RTT for the TCP handshake and one for each of the 10 objects.
+solution: The handshake costs 1 RTT, and the 10 objects (base file plus 9 images) cost 1 RTT each, so $11 \times 20 = 220$ ms.

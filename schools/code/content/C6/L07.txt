@@ -1,0 +1,248 @@
+@lesson
+title: Assembly: functions and the stack
+summary: Implement function calls in RISC-V with the standard calling convention, build stack frames, and trace recursive calls.
+objective: Call and return from functions with `jal` and `ret`, passing arguments in `a0`-`a7` and returning results in `a0`.
+objective: Explain caller-saved and callee-saved registers and decide which registers a function must save.
+objective: Build and tear down a stack frame, and trace the stack pointer through recursive calls.
+reading: Dive into Systems, the chapters on assembly (the sections on function calls, the stack and the call stack frame layout) and Chapter 6 on how C maps onto the machine; for the RISC-V convention, look up "RISC-V calling convention" in the RISC-V ELF psABI documentation.
+
+@article
+A program is built from functions, but the hardware has no notion of a function. A call is just a jump that remembers where to come back to, and the **calling convention** is an agreement that lets separately compiled functions cooperate.
+
+### Calling and returning
+
+`jal ra, label` ("jump and link") writes the address of the next instruction into `ra` and jumps to `label`. Returning is `ret`, a pseudo-instruction for `jalr x0, 0(ra)`: jump to the address in `ra`, discarding the link. A call to a far-away function is written with the pseudo-instruction `call label`.
+
+The standard **calling convention** says:
+
+- Arguments go in `a0`-`a7` (further arguments are passed on the stack). The result is returned in `a0` (and `a1` for a 64-bit result on RV32).
+- `ra` holds the return address; `sp` is the stack pointer, kept **16-byte aligned**.
+- Registers are split into two groups.
+
+**Caller-saved** registers (`t0`-`t6`, `a0`-`a7` and `ra`) may be overwritten by any function it calls, so a caller that needs such a value after a call must save it first. **Callee-saved** registers (`s0`-`s11` and `sp`) must have the same value when the function returns as when it was entered, so a function that wants to use one must save it and restore it.
+
+### The stack
+
+The **stack** is a region of memory used for the local state of active calls. By convention it **grows downward**: `sp` starts high and each call lowers it. A function that needs space executes a **prologue** that allocates a **frame** and saves registers, and an **epilogue** that restores them and frees the frame:
+
+```text
+func:
+    addi sp, sp, -16     # allocate a 16-byte frame
+    sw   ra, 12(sp)      # save the return address
+    sw   s0, 8(sp)       # save a callee-saved register we will use
+    ...                  # body (may call other functions)
+    lw   s0, 8(sp)       # restore in the epilogue
+    lw   ra, 12(sp)
+    addi sp, sp, 16      # free the frame
+    ret
+```
+
+A **leaf** function (one that calls nothing) usually needs no frame at all, because `ra` is never overwritten. A non-leaf function must save `ra`, or its own `jal` would destroy the address it must return to. Frame sizes are rounded up to a multiple of 16. On RV32 each saved register takes 4 bytes; on RV64 it takes 8, with `sd` and `ld`.
+
+### Recursion
+
+Each activation has its own frame, so recursion works without extra machinery. Here is `fact(n)`, returning 1 for $n<2$ and $n\cdot\text{fact}(n-1)$ otherwise. It uses the M extension's `mul`, since the base RV32I has no multiplication:
+
+```text
+fact:
+    addi sp, sp, -16
+    sw   ra, 12(sp)
+    sw   a0, 8(sp)         # keep n across the call
+    li   t0, 2
+    blt  a0, t0, base      # n < 2: result is 1
+    addi a0, a0, -1
+    jal  ra, fact          # a0 = fact(n - 1)
+    lw   t1, 8(sp)         # t1 = n
+    mul  a0, a0, t1        # a0 = n * fact(n - 1)
+    j    done
+base:
+    li   a0, 1
+done:
+    lw   ra, 12(sp)
+    addi sp, sp, 16
+    ret
+```
+
+The saving of `a0` is essential: `a0` is caller-saved, so the recursive call overwrites it. The stack depth grows linearly with $n$, and a very deep recursion exhausts the stack (a **stack overflow**).
+
+### Rules for writing correct functions
+
+Save and restore exactly what you modify of the callee-saved registers; save `ra` if you make any call; keep `sp` balanced so that every path through the function undoes its prologue; and never keep data below `sp`, since that space is free for the next call to use.
+
+@example
+title: Tracing a recursive call
+problem: Starting from `sp = 0x7FFFF000`, trace the stack pointer inside each activation of `fact(3)` and the value returned by each.
+step: `fact(3)` enters and subtracts 16: `sp = 0x7FFFEFF0`. It saves `ra` and `n = 3`, and since $3 \ge 2$ calls `fact(2)`.
+step: `fact(2)` has `sp = 0x7FFFEFE0` and calls `fact(1)`.
+step: `fact(1)` has `sp = 0x7FFFEFD0`. Since $1 < 2$ it takes the base case and returns 1, restoring `sp` to `0x7FFFEFE0`.
+step: `fact(2)` reloads `n = 2` and computes $2 \cdot 1 = 2$; `fact(3)` reloads 3 and returns $3 \cdot 2 = 6$.
+answer: `sp` values `0x7FFFEFF0`, `0x7FFFEFE0`, `0x7FFFEFD0`; results 1, 2, 6
+
+@example
+title: A value that does not survive a call
+problem: The code below keeps a value in `t0` across `jal ra, helper`. Why is it buggy, and how do you fix it?
+
+```text
+    li   t0, 42
+    jal  ra, helper
+    add  a0, a0, t0
+```
+step: `t0` is a temporary, so it is **caller-saved**: `helper` is allowed to overwrite it.
+step: Fix 1: before the call store it in the caller's frame with `sw t0, 8(sp)`, and reload it after the call with `lw t0, 8(sp)`.
+step: Fix 2: keep the value in a callee-saved register such as `s1`. Then `helper` must preserve it, and this function must save the caller's `s1` in its own prologue and restore it in its epilogue.
+answer: `t0` is caller-saved; save it on the stack or use a callee-saved register
+
+@mistakes
+- Not saving `ra` in a function that makes a call, so `ret` jumps to the wrong place (often into an endless loop).
+- Using `s0`-`s11` without saving them, which breaks the caller's variables.
+- Keeping a value in a temporary or argument register across a call.
+- Leaving `sp` unbalanced (different adjustment in prologue and epilogue, or an early `ret` that skips the epilogue).
+
+@practice mc
+prompt: Which instruction does the pseudo-instruction `ret` stand for?
+choice: `jal ra, 0`
+choice*: `jalr x0, 0(ra)`
+choice: `beq ra, x0, 0`
+choice: `lw pc, 0(sp)`
+hint: A return jumps to the address stored in `ra` and does not need a new link address.
+solution: `ret` is `jalr x0, 0(ra)`: jump to the address in `ra` plus 0, writing the link into `x0` (discarded). There is no `pc` register that can be loaded, and `jal ra, 0` would jump to the call site itself.
+
+@practice code
+prompt: Model a downward-growing stack of 32-bit words in Python. Write a class `Stack` whose constructor `Stack(top)` sets the attribute `sp` to the integer `top` and creates an empty dictionary `mem` mapping addresses to words. `push(value)` decreases `sp` by 4 and stores `value` at the new `sp`. `pop()` returns the word at `sp` and then increases `sp` by 4.
+starter:
+```python
+class Stack:
+    def __init__(self, top):
+        pass
+
+    def push(self, value):
+        pass
+
+    def pop(self):
+        pass
+```
+tests:
+```python
+s = Stack(0x1000)
+assert s.sp == 0x1000
+s.push(7)
+assert s.sp == 0x0FFC
+s.push(9)
+assert s.sp == 0x0FF8
+assert s.mem[0x0FF8] == 9
+assert s.pop() == 9
+assert s.sp == 0x0FFC
+assert s.pop() == 7
+assert s.sp == 0x1000
+```
+model:
+```python
+class Stack:
+    def __init__(self, top):
+        self.sp = top
+        self.mem = {}
+
+    def push(self, value):
+        self.sp -= 4
+        self.mem[self.sp] = value
+
+    def pop(self):
+        value = self.mem[self.sp]
+        self.sp += 4
+        return value
+```
+hint: Pushing moves `sp` first and then stores at the new address, so `sp` always points at the most recently pushed word.
+hint: Popping reads at `sp` first and then moves `sp` back up by 4.
+solution: `push` does `sp -= 4` then `mem[sp] = value`; `pop` reads `mem[sp]` and then does `sp += 4`. This is the same order of operations as `addi sp, sp, -4` followed by `sw`, and `lw` followed by `addi sp, sp, 4`.
+
+@practice ms
+prompt: Select every register that a function must preserve for its caller, that is, every callee-saved register in the standard RISC-V calling convention.
+choice*: `s1`
+choice*: `s11`
+choice*: `sp`
+choice: `t0`
+choice: `a0`
+hint: The `s` in `s0`-`s11` stands for "saved".
+solution: `s0`-`s11` and `sp` are callee-saved. The temporaries `t0`-`t6`, the argument registers `a0`-`a7` and `ra` are caller-saved: any call may overwrite them.
+
+@practice code
+prompt: The recursive `fact` function above allocates a 16-byte frame on every call. Write `frame_pointers(sp0, n)` that returns the list of values `sp` has inside the calls `fact(n)`, `fact(n - 1)`, ..., `fact(1)` (in that order, after each prologue), where `sp0` is the value of `sp` just before the first call and `n >= 1`. Example: `frame_pointers(0x1000, 3)` is `[0x0FF0, 0x0FE0, 0x0FD0]`.
+starter:
+```python
+def frame_pointers(sp0, n):
+    pass
+```
+tests:
+```python
+assert frame_pointers(0x1000, 3) == [0x0FF0, 0x0FE0, 0x0FD0]
+assert frame_pointers(0x1000, 1) == [0x0FF0]
+assert frame_pointers(0x7FFFF000, 2) == [0x7FFFEFF0, 0x7FFFEFE0]
+assert len(frame_pointers(0x10000, 10)) == 10
+assert frame_pointers(0x10000, 10)[-1] == 0x10000 - 160
+```
+model:
+```python
+def frame_pointers(sp0, n):
+    return [sp0 - 16 * (i + 1) for i in range(n)]
+```
+hint: There is one call for each value from `n` down to 1, so the list has `n` entries.
+hint: The `i`-th call (counting from 0) has lowered `sp` by `16 * (i + 1)` in total.
+solution: Each activation subtracts 16 from `sp` and keeps it until it returns, so activation `i` (0-based) runs with `sp = sp0 - 16 * (i + 1)`.
+
+@practice self
+prompt: Write the prologue and epilogue (the code before and after the body) for a RISC-V function `f` that calls another function `g` and uses the callee-saved registers `s0` and `s1` in its body. Use a 16-byte frame, and explain why each saved register is saved.
+solution:
+
+```text
+f:
+    addi sp, sp, -16
+    sw   ra, 12(sp)
+    sw   s0, 8(sp)
+    sw   s1, 4(sp)
+    ...                 # body, containing jal ra, g
+    lw   s1, 4(sp)
+    lw   s0, 8(sp)
+    lw   ra, 12(sp)
+    addi sp, sp, 16
+    ret
+```
+
+`ra` is saved because the call to `g` overwrites it and `f` must return to its own caller. `s0` and `s1` are callee-saved, so `f` must give them back unchanged; saving them lets `f` use them freely (they also survive the call to `g`, which must preserve them too).
+rubric: Allocates a frame with a negative `addi` on `sp` and frees it with the same amount before `ret`.
+rubric: Saves and restores `ra`, `s0` and `s1` at distinct offsets within the frame.
+rubric: Explains that `ra` is saved because of the call, and `s0` and `s1` because they are callee-saved.
+hint: Four bytes per saved register on RV32; three registers fit in 16 bytes.
+hint: Restore in the reverse order of saving and end with `ret`.
+
+@quiz code
+prompt: On RV32 each saved register takes 4 bytes. Write `frame_size(nsaved, local_bytes)` that returns the size of a stack frame holding `nsaved` saved registers (including `ra` if saved) and `local_bytes` bytes of local variables, rounded **up** to a multiple of 16. Example: `frame_size(3, 8)` needs 20 bytes and returns `32`.
+starter:
+```python
+def frame_size(nsaved, local_bytes):
+    pass
+```
+tests:
+```python
+assert frame_size(3, 8) == 32
+assert frame_size(1, 0) == 16
+assert frame_size(4, 0) == 16
+assert frame_size(0, 0) == 0
+assert frame_size(4, 16) == 32
+assert frame_size(2, 8) == 16
+```
+model:
+```python
+def frame_size(nsaved, local_bytes):
+    raw = 4 * nsaved + local_bytes
+    return (raw + 15) // 16 * 16
+```
+hint: Compute the raw size `4 * nsaved + local_bytes` first.
+hint: Round up to a multiple of 16 with `(raw + 15) // 16 * 16`.
+solution: The raw size is 4 bytes per saved register plus the locals. Adding 15 before the integer division by 16 rounds up, and multiplying by 16 gives the aligned size; a raw size of 0 stays 0.
+
+@quiz num
+prompt: The recursive `fact` function uses a 16-byte frame per call. How many bytes of stack are in use, in total, at the deepest point of the computation of `fact(10)` (calls `fact(10)` down to `fact(1)` are all active)?
+answer: 160
+check: 10 * 16
+hint: How many activations are alive at the same time at the deepest point?
+solution: The calls `fact(10)`, `fact(9)`, ..., `fact(1)` are all active at once, so there are 10 frames of 16 bytes: $10\times16=160$ bytes.

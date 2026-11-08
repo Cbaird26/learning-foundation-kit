@@ -1,0 +1,234 @@
+@lesson
+title: Markov decision processes
+summary: Model sequential decisions under uncertainty as a Markov decision process and compute optimal state values with value iteration.
+objective: Define an MDP, a policy, discounted return, the value function $V^\pi$ and the optimal values $V^*$ and $Q^*$.
+objective: Write and apply the Bellman optimality equation.
+objective: Implement value iteration, extract the greedy policy, and state its convergence guarantee.
+reading: Poole and Mackworth, the chapter "Planning with Uncertainty" (decision processes, value iteration and policy iteration for Markov decision processes).
+
+@article
+Planning with certainty assumes that each action has one outcome. When outcomes are random, the right answer is not a sequence of actions but a **policy**: a rule that says what to do in every state. A **Markov decision process (MDP)** is the standard model.
+
+### Definition
+
+An MDP consists of
+
+- a set of **states** $S$,
+- for each state a set of **actions** $A(s)$,
+- a **transition model** $T(s, a, s') = P(s' \mid s, a)$,
+- a **reward** $R(s, a, s')$ received on each transition,
+- a **discount factor** $\gamma \in [0, 1)$ (and a start state or distribution).
+
+The **Markov property** says that the next state and reward depend only on the current state and action, not on the earlier history. A **terminal** state has no actions; its value is 0. A **policy** $\pi$ maps each state to an action. The **return** of a reward sequence $r_0, r_1, r_2, \dots$ is $\sum_{t} \gamma^t r_t$. Discounting makes immediate rewards worth more than distant ones and keeps infinite sums finite: a constant reward $c$ forever is worth $c / (1 - \gamma)$.
+
+### Values and the Bellman equations
+
+The **value** of a state under a policy is the expected return when starting there and following $\pi$:
+$$V^\pi(s) = \sum_{s'} T(s, \pi(s), s')\,\bigl[R(s, \pi(s), s') + \gamma V^\pi(s')\bigr].$$
+The **optimal value** $V^*(s)$ is the best expected return over all policies. It satisfies the **Bellman optimality equation**
+$$V^*(s) = \max_{a \in A(s)} Q^*(s, a), \qquad Q^*(s, a) = \sum_{s'} T(s, a, s')\,\bigl[R(s, a, s') + \gamma V^*(s')\bigr].$$
+$Q^*(s, a)$ is the value of taking $a$ in $s$ and acting optimally afterwards. Given $V^*$, an optimal policy is **greedy**: $\pi^*(s) = \arg\max_a Q^*(s, a)$.
+
+### Value iteration
+
+Start with $V_0(s) = 0$ and repeatedly apply the **Bellman backup** to every state:
+$$V_{k+1}(s) = \max_{a} \sum_{s'} T(s, a, s')\,\bigl[R(s, a, s') + \gamma V_k(s')\bigr].$$
+For $\gamma < 1$ the backup is a **contraction** in the maximum norm: $\|V_{k+1} - V^*\|_\infty \le \gamma \|V_k - V^*\|_\infty$, so $V_k \to V^*$ geometrically from any start. In practice, stop when $\max_s |V_{k+1}(s) - V_k(s)| < \varepsilon (1 - \gamma)/\gamma$, which guarantees $\|V_{k+1} - V^*\|_\infty < \varepsilon$. One sweep costs $O(|S|^2 |A|)$ in the worst case (less for sparse transitions). The values at step $k$ are the optimal values for a horizon of $k$ steps.
+
+```python
+def backup(mdp, V, s, gamma):
+    actions = mdp[s]
+    if not actions:
+        return 0.0                      # terminal state
+    return max(sum(p * (r + gamma * V[s2]) for p, s2, r in outcomes)
+               for outcomes in actions.values())
+```
+
+In this format `mdp[s][a]` is a list of `(probability, next_state, reward)` triples.
+
+### Policy iteration
+
+**Policy iteration** alternates **policy evaluation** (compute $V^\pi$, which is a system of $|S|$ linear equations, solvable in $O(|S|^3)$) with **policy improvement** (make the policy greedy with respect to $V^\pi$). For a finite MDP it terminates in finitely many iterations at an optimal policy, and often needs few iterations.
+
+### Limits
+
+Real problems have huge state spaces, unknown $T$ and $R$ (next week), and states that are only partly observable, which leads to **POMDPs**, where the agent maintains a belief state. The MDP model also assumes the reward function captures what we want, which is a design problem in itself.
+
+@example
+title: Value iteration by hand
+problem: State S has two actions. `safe` goes to the terminal state T with reward 2. `risky` goes to T with probability 0.5 and reward 6, and returns to S with probability 0.5 and reward 0. Take $\gamma = 0.5$ and $V_0 = 0$. Compute $V_1$, $V_2$ and the exact optimal value.
+step: $V_1(S)$: `safe` gives $2$; `risky` gives $0.5 \cdot 6 + 0.5 \cdot (0 + 0.5 \cdot 0) = 3$. So $V_1(S) = 3$.
+step: $V_2(S)$: `safe` is still $2$. `risky` gives $0.5 \cdot 6 + 0.5 \cdot (0 + 0.5 \cdot 3) = 3 + 0.75 = 3.75$. So $V_2(S) = 3.75$.
+step: At the fixed point `risky` is best, so $V = 3 + 0.25\,V$.
+step: Solve: $0.75\,V = 3$, so $V = 4$. (`safe` would give only 2, so the optimal policy takes the risk.)
+answer: $V_1 = 3$, $V_2 = 3.75$ and $V^*(S) = 4$, with the optimal action `risky`.
+
+@example
+title: How the discount factor changes the best plan
+problem: Plan A gets reward 10 at time $t = 2$ (and 0 otherwise). Plan B gets reward 4 at time $t = 0$. Which has the higher return for $\gamma = 0.9$ and for $\gamma = 0.4$?
+step: The return is $\sum_t \gamma^t r_t$. Plan A: $10\,\gamma^2$. Plan B: $4$.
+step: With $\gamma = 0.9$: A is $10 \times 0.81 = 8.1$, which is more than 4, so A wins.
+step: With $\gamma = 0.4$: A is $10 \times 0.16 = 1.6$, which is less than 4, so B wins.
+answer: A is better at $\gamma = 0.9$ (8.1 against 4); B is better at $\gamma = 0.4$ (4 against 1.6).
+
+@mistakes
+- Using $\gamma = 1$ with infinite horizons and positive rewards: the return can be infinite and the contraction argument no longer applies.
+- Updating values in place with a stale mixture of $V_k$ and $V_{k+1}$ and then reporting them as "the values after $k$ sweeps"; the synchronous version uses only $V_k$ on the right-hand side.
+- Forgetting the expectation over next states: the backup sums over outcomes weighted by their probabilities, and the reward belongs inside the sum.
+- Taking the maximum of rewards instead of the maximum of $Q$-values (reward plus discounted future value).
+
+@practice mc
+prompt: In an MDP, what does lowering the discount factor $\gamma$ from 0.99 to 0.5 do to an agent's behavior?
+choice: It makes the agent more patient, preferring distant rewards
+choice*: It makes the agent value near-term rewards more relative to distant ones
+choice: It changes the transition probabilities
+choice: It makes the value function undefined
+hint: A reward received $t$ steps from now is weighted by $\gamma^t$.
+solution: A smaller $\gamma$ shrinks $\gamma^t$ quickly, so rewards in the far future count for little. The transition model is a property of the environment and does not depend on $\gamma$.
+
+@practice num
+prompt: An agent receives a reward of 3 at every time step forever, with discount factor $\gamma = 0.8$ and rewards at times $t = 0, 1, 2, \dots$. What is the return $\sum_{t \ge 0} \gamma^t \cdot 3$?
+answer: 15
+check: Fraction(3) / (1 - Fraction(4, 5))
+hint: Use the geometric series $\sum_{t \ge 0} \gamma^t = 1 / (1 - \gamma)$.
+solution: The return is $3 / (1 - 0.8) = 3 / 0.2 = 15$.
+
+@practice code
+prompt: Write `q_value(mdp, V, s, a, gamma)`. `mdp[s][a]` is a list of `(probability, next_state, reward)` triples, `V` maps each state to its current value, and `gamma` is the discount factor. Return the expected value of taking action `a` in state `s`: the sum over outcomes of `probability * (reward + gamma * V[next_state])`.
+starter:
+```python
+def q_value(mdp, V, s, a, gamma):
+    pass
+```
+tests:
+```python
+mdp = {
+    "s0": {"right": [(1.0, "s1", 0.0)], "left": [(1.0, "s0", 0.0)]},
+    "s1": {"right": [(1.0, "goal", 10.0)], "left": [(1.0, "s0", 0.0)]},
+    "goal": {},
+}
+V = {"s0": 0.0, "s1": 10.0, "goal": 0.0}
+assert abs(q_value(mdp, V, "s1", "right", 0.9) - 10.0) < 1e-9
+assert abs(q_value(mdp, V, "s0", "right", 0.9) - 9.0) < 1e-9
+assert abs(q_value(mdp, V, "s1", "left", 0.9) - 0.0) < 1e-9
+mdp2 = {"X": {"a": [(0.5, "X", 1.0), (0.5, "T", 3.0)]}, "T": {}}
+assert abs(q_value(mdp2, {"X": 2.0, "T": 0.0}, "X", "a", 0.5) - 2.5) < 1e-9
+```
+model:
+```python
+def q_value(mdp, V, s, a, gamma):
+    return sum(p * (r + gamma * V[s2]) for p, s2, r in mdp[s][a])
+```
+hint: Each outcome contributes `p * (r + gamma * V[s2])`.
+hint: Use `sum` over `mdp[s][a]`, unpacking each triple as `p, s2, r`.
+solution: This is the inner sum of the Bellman backup: the expected immediate reward plus the discounted expected value of the next state. Taking `right` in `s0` leads to `s1` with value 10, so $0.9 \times 10 = 9$.
+
+@practice ms
+prompt: Which statements about value iteration for a finite MDP with $\gamma < 1$ are true?
+choice*: Starting from $V_0 = 0$, the values converge to $V^*$
+choice*: Each sweep applies the Bellman backup to every state, using the values from the previous sweep
+choice: It needs the transition model to be deterministic
+choice*: A policy that is greedy with respect to $V^*$ is optimal
+choice: The number of sweeps needed does not depend on $\gamma$
+hint: Think about what the contraction property says about the speed of convergence.
+solution: The backup is a contraction, so convergence is guaranteed and the greedy policy for $V^*$ is optimal. Stochastic transitions are handled by the expectation, and the error shrinks by a factor of $\gamma$ per sweep, so $\gamma$ close to 1 needs more sweeps.
+
+@practice code
+prompt: Implement value iteration. Write `value_iteration(mdp, gamma, k)` that returns a dict of state values after exactly `k` synchronous sweeps, starting from value `0.0` for every state. `mdp[s][a]` is a list of `(probability, next_state, reward)` triples; a state with no actions (an empty dict) is terminal and always has value `0.0`. In each sweep every state's new value is the maximum over its actions of the expected `reward + gamma * V[next_state]`, computed from the values of the previous sweep. `k = 0` returns all zeros.
+starter:
+```python
+def value_iteration(mdp, gamma, k):
+    pass
+```
+tests:
+```python
+mdp = {
+    "s0": {"right": [(1.0, "s1", 0.0)], "left": [(1.0, "s0", 0.0)]},
+    "s1": {"right": [(1.0, "goal", 10.0)], "left": [(1.0, "s0", 0.0)]},
+    "goal": {},
+}
+v0 = value_iteration(mdp, 0.9, 0)
+assert v0 == {"s0": 0.0, "s1": 0.0, "goal": 0.0}
+v1 = value_iteration(mdp, 0.9, 1)
+assert abs(v1["s1"] - 10.0) < 1e-9 and abs(v1["s0"]) < 1e-9
+v2 = value_iteration(mdp, 0.9, 2)
+assert abs(v2["s0"] - 9.0) < 1e-9 and v2["goal"] == 0.0
+v30 = value_iteration(mdp, 0.9, 30)
+assert abs(v30["s0"] - 9.0) < 1e-9 and abs(v30["s1"] - 10.0) < 1e-9
+mdp2 = {"X": {"a": [(0.5, "X", 1.0), (0.5, "T", 3.0)]}, "T": {}}
+assert abs(value_iteration(mdp2, 0.5, 1)["X"] - 2.0) < 1e-9
+assert abs(value_iteration(mdp2, 0.5, 3)["X"] - 2.625) < 1e-9
+chain = {"B": {"go": [(1.0, "T", 1.0)]}, "A": {"go": [(1.0, "B", 0.0)]},
+         "T": {}}
+assert abs(value_iteration(chain, 0.9, 1)["A"] - 0.0) < 1e-9
+assert abs(value_iteration(chain, 0.9, 2)["A"] - 0.9) < 1e-9
+```
+model:
+```python
+def value_iteration(mdp, gamma, k):
+    V = {s: 0.0 for s in mdp}
+    for _ in range(k):
+        new = {}
+        for s, actions in mdp.items():
+            if not actions:
+                new[s] = 0.0
+                continue
+            new[s] = max(
+                sum(p * (r + gamma * V[s2]) for p, s2, r in outcomes)
+                for outcomes in actions.values()
+            )
+        V = new
+    return V
+```
+hint: Build a completely new dict in each sweep so that every state uses only the previous sweep's values.
+hint: For a non-terminal state take `max` over `actions.values()` of the sum of `p * (r + gamma * V[s2])`.
+solution: After one sweep `s1` has value 10 (take `right` for reward 10) and `s0` is still 0; after two sweeps `s0` can reach `s1` and has value $0.9 \times 10 = 9$. Writing into a new dict keeps each sweep synchronous, which is why the values at step $k$ are exactly the optimal $k$-step values. In `mdp2` the value follows $2, 2.5, 2.625, \dots$ toward $8/3$.
+
+@quiz code
+prompt: Write `extract_policy(mdp, V, gamma)` that returns the greedy policy for the state values `V`: a dict mapping every non-terminal state (one with at least one action) to an action that maximizes the expected `reward + gamma * V[next_state]`. `mdp[s][a]` is a list of `(probability, next_state, reward)` triples. Break ties by choosing the action that comes first in sorted order of action names. Terminal states are not in the result.
+starter:
+```python
+def extract_policy(mdp, V, gamma):
+    pass
+```
+tests:
+```python
+mdp = {
+    "s0": {"right": [(1.0, "s1", 0.0)], "left": [(1.0, "s0", 0.0)]},
+    "s1": {"right": [(1.0, "goal", 10.0)], "left": [(1.0, "s0", 0.0)]},
+    "goal": {},
+}
+V = {"s0": 9.0, "s1": 10.0, "goal": 0.0}
+assert extract_policy(mdp, V, 0.9) == {"s0": "right", "s1": "right"}
+tie = {"A": {"y": [(1.0, "B", 1.0)], "x": [(1.0, "B", 1.0)]}, "B": {}}
+assert extract_policy(tie, {"A": 1.0, "B": 0.0}, 0.9) == {"A": "x"}
+pq = {"P": {"up": [(1.0, "Q", 0.0)], "down": [(1.0, "R", 2.0)]},
+      "Q": {}, "R": {}}
+assert extract_policy(pq, {"P": 2.0, "Q": 0.0, "R": 0.0}, 0.9) == {"P": "down"}
+assert extract_policy({"Z": {}}, {"Z": 0.0}, 0.5) == {}
+```
+model:
+```python
+def extract_policy(mdp, V, gamma):
+    policy = {}
+    for s, actions in mdp.items():
+        best_action, best_q = None, None
+        for a in sorted(actions):
+            q = sum(p * (r + gamma * V[s2]) for p, s2, r in actions[a])
+            if best_q is None or q > best_q:
+                best_action, best_q = a, q
+        if best_action is not None:
+            policy[s] = best_action
+    return policy
+```
+hint: For each state, compute the Q-value of every action using `V`.
+hint: Scan the actions in sorted order and replace the best only when a Q-value is strictly larger, which makes ties go to the first action.
+solution: The greedy policy is the argmax of the one-step lookahead. Using a strict `>` while scanning in sorted order implements the tie rule: with equal Q-values the action `"x"` stays. A terminal state has no actions, so it never gets a policy entry.
+
+@quiz num
+prompt: State $s$ has one action. With probability 0.8 it leads to state $s_1$ with reward 5, and with probability 0.2 it leads to state $s_2$ with reward 0. The current values are $V(s_1) = 10$ and $V(s_2) = 0$, and $\gamma = 0.9$. What is the backed-up value of $s$ after one Bellman backup? Give a decimal.
+answer: 11.2
+tol: 0.001
+check: 0.8 * (5 + 0.9 * 10) + 0.2 * (0 + 0.9 * 0)
+hint: Sum the two outcomes, each weighted by its probability.
+solution: $0.8\,(5 + 0.9 \cdot 10) + 0.2\,(0 + 0.9 \cdot 0) = 0.8 \cdot 14 + 0 = 11.2$.

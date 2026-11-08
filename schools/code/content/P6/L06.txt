@@ -1,0 +1,217 @@
+@lesson
+title: Working in legacy code and large codebases
+summary: Understand unfamiliar code safely using git history, characterization tests and small refactorings, and estimate and track a feature in an existing codebase.
+objective: Explore an unfamiliar codebase by running it, tracing one path and using git history tools.
+objective: Pin down current behavior with characterization tests before changing it.
+objective: Choose between incremental improvement and rewriting, and estimate and track a feature in legacy code.
+reading: ACM Code of Ethics and Professional Conduct, principle 2.1 (quality) and principle 2.5 (thorough evaluation of systems, including risks); look up characterization tests, the strangler fig pattern and git blame, git log -S and git bisect.
+
+@article
+On your first weeks you will mostly read code you did not write. In industry, most engineering is changing existing systems, not building new ones. A common working definition of **legacy code** is code you are afraid to change, often because it has no tests. It is also the code that earns money, so respect it. The code below and the teams are **fictional**.
+
+### Read before you change
+
+Start with questions, not edits:
+
+1. **Run it.** Build it, run the tests (if any), start it locally. You learn more in an hour of running than a day of reading.
+2. **Find an entry point** (a request handler, a command, a scheduled job) and **trace one real path** end to end with a debugger or logging.
+3. **Draw a map** as you go: modules, data stores, external services, who owns what. Keep it in a note; share it afterward as documentation.
+4. **Ask people.** The person who wrote or last changed it knows context the code does not. Ask "what would you warn me about?"
+
+Large codebases add scale: many modules, a monorepo or dozens of repositories, a custom build system. Use **code search** (your editor, `grep`, a company tool), the **ownership file** (often `CODEOWNERS`) to find the right team, and the **tests** as executable documentation. Learn the conventions (naming, layering, error handling) and follow them, even when you would choose differently; consistency helps the next reader.
+
+### Code archaeology with Git
+
+History explains why code looks the way it does:
+
+- `git log --follow -p -- path/to/file` shows a file's changes over time, following renames.
+- `git blame path/to/file` shows who last changed each line and in which commit; then read the commit message and its pull request. (Use it to learn why, not to blame people.)
+- `git log -S "some_text"` (the "pickaxe") finds commits that added or removed that exact string.
+- `git bisect` binary-searches history to find the commit that introduced a bug, given a known good and a known bad commit.
+
+Before deleting something odd, ask why it exists (the principle sometimes called *Chesterton's fence*): that strange `sleep(2)` may be protecting against a real race condition.
+
+### Making change safe
+
+Because legacy code often lacks tests, first **pin down its current behavior** with **characterization tests**: call the code with representative inputs and record what it actually does, even if that looks wrong. These tests do not say the behavior is right; they tell you when you change it. Find a **seam**, a place where you can alter behavior without editing the code under test (for example passing a dependency as an argument or wrapping a function), so you can test in isolation. Then make small, behavior-preserving steps (rename, extract function, remove duplication), running the tests after each, in separate commits from feature changes so reviewers can follow.
+
+Apply the **leave it a bit better** rule: when you touch an area, make one small improvement, but do not turn a bug fix into a giant cleanup that nobody can review.
+
+### Rewrite or improve?
+
+Rewrites are tempting and often fail: the old system contains years of hidden rules, and the new one must match them while the business keeps moving. The safer pattern is the **strangler fig**: build new functionality beside the old, route one slice of traffic or one feature at a time to the new code, and retire old parts when nothing uses them. Reserve full rewrites for small systems or when the platform is truly unsupported, and decide with data and your lead, not frustration.
+
+### Finding where change hurts: hotspots
+
+Files that change often and are complicated are where bugs cluster. Counting how often each file appears in recent commits (**churn**) gives a quick list of hotspots to test and refactor first.
+
+### Estimating work in legacy code
+
+Add time for discovery: reading, characterization tests and unexpected coupling. Use a wide range for the first task in an unfamiliar area and narrow it as you learn. Track progress daily, and when the first tasks take longer than planned, update the rest of the plan immediately instead of hoping to catch up.
+
+@example
+title: Characterizing a function before changing it
+problem: A fictional legacy function is `def discount(total): return total * 0.9 if total >= 100 else total`. You must change the threshold later. What do you do first?
+step: Do not edit yet. Call the function at representative and boundary inputs: `49`, `99`, `100`, `101` and a negative number.
+step: Record what it returns: `49` gives `49`, `99` gives `99`, `100` gives `90.0`, `101` gives `90.9`, and a negative input is returned unchanged (that may be a bug, but record it).
+step: Write these as tests, then run them to confirm they pass on the current code.
+step: Now change the threshold. Any failing test points exactly to an output that changed, and you decide whether each change was intended.
+answer: Pin current behavior with characterization tests at the boundary and typical values, then change the code with the tests as a safety net.
+
+@example
+title: Finding why a line exists
+problem: In a fictional codebase you find `retry_limit = 7` with no comment. You want to change it to 3. How do you find out why it is 7?
+step: Run `git blame` on the file to find the commit that last touched that line.
+step: Read that commit's message and linked pull request. If the commit only moved the line, use `git log -S "retry_limit = 7"` to find the commit that introduced it.
+step: Check the tests and the documentation or incident notes for mentions. Ask the owning team if the history is silent.
+step: Change the value only when you understand the reason, and record it in a comment or in your commit message.
+answer: Use git blame and git log -S to find the introducing commit and its discussion, then ask the owners before changing it.
+
+@mistakes
+- Refactoring and adding a feature in the same commit, so reviewers cannot tell what changed behavior.
+- Treating characterization tests as a statement that the current behavior is correct, instead of a record of what it does.
+- Deleting code that looks pointless before learning why it exists.
+- Proposing a rewrite of a large system after one frustrating week, instead of an incremental plan.
+
+@practice mc
+prompt: You want to know which commit added the string `retry_limit` to a repository's history. Which command is designed for this?
+choice: `git blame retry_limit`
+choice*: `git log -S "retry_limit"`
+choice: `git status retry_limit`
+choice: `git diff --stat retry_limit`
+hint: One command searches history for commits that change the number of occurrences of a string.
+solution: `git log -S "text"` is the pickaxe search, listing commits that added or removed that string. `git blame` takes a file path and shows the last change per line, while `git status` and `git diff --stat` describe the working tree and do not search history.
+
+@practice code
+prompt: Write `find_calls(sources, name)` where `sources` is a dict mapping a file name to its source text, and `name` is a function name. Return a list of strings `"file:line"` (line numbers start at 1) for every line that contains a call `name(` as a whole word, excluding lines whose stripped text starts with `def `. Sort by file name, then by numeric line number. Use `re` with a word boundary so `get_user(` does not match `user`.
+starter:
+```python
+import re
+
+
+def find_calls(sources, name):
+    pass
+```
+tests:
+```python
+src = {"a.py": "def f():\n    pass\nx = f()\n", "b.py": "print(f(1))\n"}
+assert find_calls(src, "f") == ["a.py:3", "b.py:1"]
+src2 = {"m.py": "get_user(1)\nuser(2)\nforget(3)\n"}
+assert find_calls(src2, "get") == []
+assert find_calls(src2, "user") == ["m.py:2"]
+lines = "\n" * 8 + "run()\n" + "run()\n"
+assert find_calls({"z.py": lines, "a.py": "run()"}, "run") == ["a.py:1", "z.py:9", "z.py:10"]
+assert find_calls({}, "run") == []
+```
+model:
+```python
+import re
+
+
+def find_calls(sources, name):
+    pattern = re.compile(r"\b" + re.escape(name) + r"\(")
+    found = []
+    for filename in sorted(sources):
+        for number, line in enumerate(sources[filename].splitlines(), 1):
+            if line.strip().startswith("def "):
+                continue
+            if pattern.search(line):
+                found.append(f"{filename}:{number}")
+    return found
+```
+hint: Compile a regular expression of the form `\bname\(` using `re.escape(name)`.
+hint: Iterate files in sorted order and use `enumerate(..., 1)` for line numbers so numeric order is automatic.
+solution: Build the pattern with a leading word boundary, loop over sorted file names and enumerated lines, skip definition lines and record `file:line` for matches. Because you collect line numbers in order inside each file, line 9 comes before line 10; sorting the finished strings would put `z.py:10` first.
+
+@practice code
+prompt: Write `characterize(func, inputs)` that calls `func(x)` for every `x` in the list `inputs` and returns a list of `(x, outcome)` pairs in order. `outcome` is `("returned", value)` when the call returns normally and `("raised", "ExceptionName")` (the exception class's name as a string) when it raises an exception. This records what code currently does, as a characterization test would.
+starter:
+```python
+def characterize(func, inputs):
+    pass
+```
+tests:
+```python
+def legacy(total):
+    if total < 0:
+        raise ValueError("negative")
+    return total * 0.9 if total >= 100 else total
+
+got = characterize(legacy, [50, 100, -1])
+assert got == [(50, ("returned", 50)), (100, ("returned", 90.0)), (-1, ("raised", "ValueError"))]
+assert characterize(legacy, []) == []
+assert characterize(lambda x: 1 // x, [1, 0]) == [(1, ("returned", 1)), (0, ("raised", "ZeroDivisionError"))]
+assert characterize(str.upper, ["ab"]) == [("ab", ("returned", "AB"))]
+```
+model:
+```python
+def characterize(func, inputs):
+    results = []
+    for x in inputs:
+        try:
+            outcome = ("returned", func(x))
+        except Exception as exc:
+            outcome = ("raised", type(exc).__name__)
+        results.append((x, outcome))
+    return results
+```
+hint: Wrap the call in `try` and `except Exception as exc`.
+hint: `type(exc).__name__` gives the class name as a string.
+solution: Call the function inside `try`; on success record `("returned", value)`, on any `Exception` record the class name. The result is a table of current behavior you could turn into assertions.
+
+@practice ms
+prompt: Which practices make changes to legacy code safer?
+choice*: Writing characterization tests around the code before changing it
+choice*: Keeping refactoring commits separate from behavior-changing commits
+choice: Deleting code you do not understand so the codebase becomes smaller
+choice: Rewriting the whole system at once so the old problems disappear
+hint: Safe change needs a safety net and reviewable steps.
+solution: Characterization tests tell you when behavior changes, and separate commits let reviewers verify each kind of change. Deleting unexplained code or rewriting everything at once removes the safety net and hides hidden requirements.
+
+@practice self
+prompt: Deliverable: estimate a supplied feature and track it. A fictional team must add "export orders as CSV" to a ten-year-old order service. Tasks with three-point estimates in focused working days (optimistic, most likely, pessimistic): (1) read and understand the existing export code: 2, 4, 8; (2) add characterization tests for the current export: 1, 2, 4; (3) implement a streaming CSV endpoint: 2, 3, 6; (4) add the UI button and states: 1, 2, 4; (5) docs and rollout behind a flag: 0.5, 1, 2. Compute the total mean and standard deviation (independent tasks), give a range, convert to calendar time using a focus factor of 0.6 (illustrative), and write a tracking plan: what you will record daily, when you will re-estimate and what you will tell the manager if task 1 takes 8 days.
+hint: Mean of each task is (O + 4M + P)/6; add the means. For the spread add the variances and take the square root.
+hint: Calendar working days are focused days divided by the focus factor.
+solution: Means: task 1 is (2+16+8)/6 = 4.33, task 2 is (1+8+4)/6 = 2.17, task 3 is (2+12+6)/6 = 3.33, task 4 is (1+8+4)/6 = 2.17, and task 5 is (0.5+4+2)/6 = 1.08. Total mean = 13.08 focused days. Sigmas are 1.00, 0.50, 0.67, 0.50 and 0.25, so variances are 1.00, 0.25, 0.44, 0.25 and 0.06, total 2.01, giving sigma = 1.42 days. Range (mean plus or minus two sigma): about 10.2 to 15.9 focused days. With a focus factor of 0.6, that is about 21.8 working days (roughly 4 to 5 weeks), with a likely range of about 17 to 26 working days. Tracking plan: keep a table of the five tasks with estimate, actual, remaining and notes; update it at the end of each day and plot remaining effort as a burndown. Re-estimate at the end of task 1, because understanding the code is the biggest unknown and shapes everything after it, and whenever remaining effort rises. If task 1 takes 8 days (the pessimistic value), I would tell the manager the same day: remaining estimate is now about 8.7 focused days for tasks 2 to 5 (which still holds) plus the 8 already spent, so the total is about 16.7 focused days, or roughly 28 working days at the same focus factor; then offer options such as a smaller first release (export without a UI button, or with fixed columns), or adding a second person for tasks 4 and 5.
+rubric: Computes per-task means and the total mean (about 13.1) and combines spread correctly using variances (about 1.4), not by adding sigmas.
+rubric: Presents a range rather than a single number and converts to calendar time using the supplied focus factor.
+rubric: Tracking plan includes a daily record (estimate, actual, remaining) and a defined re-estimate point.
+rubric: Explains an early, option-based message to the manager when task 1 overruns, instead of hiding the slip.
+
+@quiz code
+prompt: Write `hotspots(commits, top)` where `commits` is a list of commits and each commit is a list of the file names it changed. Return the `top` most frequently changed files as a list of `(file, count)` pairs, sorted by count descending and then by file name ascending. If there are fewer than `top` files, return all of them.
+starter:
+```python
+def hotspots(commits, top):
+    pass
+```
+tests:
+```python
+commits = [["a.py", "b.py"], ["a.py"], ["c.py", "a.py"], ["b.py"]]
+assert hotspots(commits, 2) == [("a.py", 3), ("b.py", 2)]
+assert hotspots(commits, 10) == [("a.py", 3), ("b.py", 2), ("c.py", 1)]
+assert hotspots([["z.py"], ["y.py"]], 1) == [("y.py", 1)]
+assert hotspots([], 3) == []
+```
+model:
+```python
+from collections import Counter
+
+
+def hotspots(commits, top):
+    counts = Counter(name for commit in commits for name in commit)
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ordered[:top]
+```
+hint: `collections.Counter` counts items from any iterable.
+hint: Sort with a key of `(-count, name)` and slice the first `top` entries.
+solution: Count every file occurrence across commits, sort by negative count then name, and slice. The `z.py` and `y.py` test checks the alphabetical tie-break.
+
+@quiz mc
+prompt: A team wants to replace a large, working, ten-year-old billing system that nobody fully understands. Which approach is generally lower risk?
+choice: Stop all feature work, rewrite it from scratch and switch over on one day.
+choice*: Build new pieces beside it and move one slice of functionality at a time, retiring old parts as they become unused.
+choice: Delete the parts of the old code that look redundant and see what breaks.
+choice: Wait until the original authors return and ask them to rewrite it.
+hint: Think of the strangler fig pattern.
+solution: Moving one slice at a time keeps the system working, allows comparison with the old behavior, and limits the damage of any mistake. A big-bang rewrite must reproduce years of hidden behavior before it delivers value, and deleting code blindly invites outages.

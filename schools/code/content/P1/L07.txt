@@ -1,0 +1,284 @@
+@lesson
+title: Property-based testing
+summary: State rules that must hold for every input, let a library generate hundreds of cases and shrink failures, and use the technique to find bugs that example tests miss.
+objective: Express a behavior as a property (round trip, invariant, idempotence, oracle) instead of a single example.
+objective: Read and write Hypothesis tests using strategies, and explain how shrinking works.
+objective: Decide when property-based tests add value beyond example-based tests.
+reading: Test-Driven Development with Python does not cover property-based testing, so look up "Hypothesis" in its official documentation (the quickstart, and the pages on strategies and on shrinking) and read about "property-based testing".
+@article
+Example-based tests say: "for *this* input the output is *that*." You choose the inputs, so you only find the bugs you imagined. **Property-based testing** says instead: "for *every* input of this kind, this rule holds." A library generates many inputs, often a hundred or more per run, including nasty ones you would not write by hand, and reports a counterexample if the rule ever fails.
+
+### A first Hypothesis test
+
+In Python the standard tool is **Hypothesis** (`pip install hypothesis`), which works with pytest. You describe the inputs with **strategies** and put the rule in a test function:
+
+```python
+from hypothesis import given, strategies as st
+
+
+@given(st.lists(st.integers()))
+def test_sorting_keeps_length_and_orders_items(xs):
+    result = sorted(xs)
+    assert len(result) == len(xs)
+    assert all(a <= b for a, b in zip(result, result[1:]))
+```
+
+`st.lists(st.integers())` generates lists of integers of all sizes, including the empty list, huge values and negatives. By default Hypothesis tries about 100 examples per test (change with `@settings(max_examples=500)`). Other strategies you will use constantly: `st.text()`, `st.floats(allow_nan=False)`, `st.tuples(...)`, `st.dictionaries(...)`, `st.sampled_from([...])`, `st.builds(MyClass, ...)` and `@st.composite` for custom ones.
+
+### Shrinking: why failures are readable
+
+When a generated input fails, Hypothesis does not show you the 80-element list it found. It **shrinks** the input: it repeatedly simplifies it (removing elements, making numbers smaller) while the test keeps failing, and reports a minimal failing example, such as `xs=[1, 0]`. It also saves the failure in a local example database (the `.hypothesis` directory), so the next run replays it first. You can pin a particular case permanently with `@example(...)`.
+
+### Where do properties come from?
+
+Writing the rule is the skill. Common patterns:
+
+- **Round trip**: `decode(encode(x)) == x` for serializers, parsers and compressors.
+- **Invariant**: something stays true: sorting preserves length and the multiset of items; a balanced tree stays balanced after insert.
+- **Idempotence**: doing it twice equals doing it once: `normalize(normalize(s)) == normalize(s)`.
+- **Oracle**: compare with a simple, obviously correct (maybe slow) version: your fast `fast_median(xs)` equals a naive sort-and-pick.
+- **Metamorphic**: a change in the input has a known effect on the output: shuffling or reversing the input does not change its sorted form; adding a constant to every number adds it to the mean.
+- **No-crash**: for any input of the right type, the function either returns or raises only documented exceptions.
+
+Notice that none of these re-implement the function. If your property is "result equals the same algorithm written again", it is a poor property.
+
+### Constraining inputs
+
+Sometimes only some inputs are valid. Prefer building valid values directly: `st.integers(min_value=1, max_value=100)`. You can filter with `assume(condition)` inside the test, but if most generated values are rejected the test becomes slow and Hypothesis will complain. Prefer a better strategy.
+
+```python
+from hypothesis import assume, given, strategies as st
+
+
+@given(st.integers(), st.integers())
+def test_division_roundtrip(a, b):
+    assume(b != 0)
+    assert (a // b) * b + a % b == a
+```
+
+### Reproducibility and CI
+
+Property tests must be deterministic from the outside. Hypothesis reports a failure with a reproduction (and a seed option), keeps the example database, and you can run a fixed profile in CI (for example `derandomize=True` or a registered settings profile) so builds do not fail randomly. Never write your own un-seeded `random` loops in a test: a failure you cannot reproduce is worse than none.
+
+### When to use it
+
+Reach for properties when you have parsers, serializers, data structures, mathematical code, state machines (Hypothesis has stateful testing for sequences of operations) and any code with a large input space. Keep example tests as well: they are the readable documentation and the place for the known regression cases. The two styles complement each other.
+
+@example
+title: A property that finds a bug
+problem: This function is meant to remove duplicates while keeping the first occurrence of each item in order. A property test finds the bug; what property, and what is the bug?
+
+```python
+def dedupe(items):
+    return list(set(items))
+```
+step: State two properties: the result has no duplicates, and the items appear in the order of their first occurrence. In Hypothesis: `@given(st.lists(st.integers()))`, then `assert len(result) == len(set(result))` and `positions = [xs.index(x) for x in result]` followed by `assert positions == sorted(positions)`.
+step: The no-duplicates property passes (a set never has duplicates). The order property fails.
+step: Hypothesis shrinks the counterexample to something like `[1, 0]`: the set yields `[0, 1]`, which reverses the input order.
+step: The fix is to preserve order, for example `list(dict.fromkeys(items))`, since dictionaries keep insertion order. Rerun the property: it passes for all the generated lists.
+answer: The bug is that `set` does not preserve order; the order property found it and shrinking made it readable.
+
+@example
+title: Round trip with a text strategy
+problem: Test that `decode(encode(s)) == s` for a toy encoder, using real Hypothesis syntax.
+
+```python
+def encode(s):
+    return s.replace(" ", "%20").replace("%", "%25")
+
+
+def decode(s):
+    return s.replace("%20", " ").replace("%25", "%")
+```
+step: Write the property over arbitrary text: `@given(st.text())` and `assert decode(encode(s)) == s`.
+step: Hypothesis quickly finds a failure and shrinks it to `s = " "`, a single space.
+step: Trace it: `encode(" ")` first gives `"%20"`, then the second `replace` turns that `%` into `%25`, giving `"%2520"`. `decode("%2520")` finds no `%20`, then turns `%25` into `%`, giving `"%20"`, which is not a space.
+step: The cause is the order of the replacements in `encode`: escaping `%` must come **first**, before spaces become `%20`. Swap them, rerun, and the property passes for every generated string.
+step: An example test with `"hello world"` also fails here, but a hand-picked example without a space would have passed; the property needed no clever choice of input.
+answer: The encoder escapes in the wrong order; the property found the minimal failing input, a single space.
+
+@mistakes
+- Writing a property that re-implements the function under test, so it can only agree with the code, including its bugs.
+- Using `assume` to throw away most generated inputs instead of building a strategy that generates only valid ones.
+- Generating floats without thinking about `nan` and `inf`, so the test fails on values the function was never meant to handle (or hides real bugs by excluding them carelessly).
+- Replacing example tests entirely: examples remain the readable documentation and the home of regression cases.
+
+@practice mc
+prompt: Which of these is a property that holds for every list `xs` of numbers?
+choice: `sorted(xs) == xs`
+choice*: `sorted(sorted(xs)) == sorted(xs)`
+choice: `sorted(xs)[0] == xs[0]` (for non-empty lists)
+choice: `sorted(xs) == xs[::-1]`
+hint: Which statement stays true even for a list that is already in the wrong order?
+solution: Sorting an already sorted list changes nothing (idempotence), so `sorted(sorted(xs)) == sorted(xs)` always holds. The others fail for most unsorted lists, for example `[2, 1]`.
+
+@practice text
+prompt: This toy encoder and decoder are meant to round trip. What does the program print? Type the output exactly, one line per print.
+
+```python
+def encode(s):
+    return s.upper()
+
+
+def decode(s):
+    return s.lower()
+
+
+for text in ["abc", "Abc", "123"]:
+    print(decode(encode(text)) == text)
+```
+answer:
+```
+True
+False
+True
+```
+check: run("def encode(s):\n    return s.upper()\n\n\ndef decode(s):\n    return s.lower()\n\n\nfor text in ['abc', 'Abc', '123']:\n    print(decode(encode(text)) == text)\n")
+hint: Check what happens to a string that has a capital letter before it is encoded.
+solution: For `"abc"` and `"123"` the round trip returns the original. For `"Abc"` the encoder gives `"ABC"` and the decoder gives `"abc"`, which differs from the input, so the round-trip property fails: exactly the kind of input a property test generates and an example test might skip.
+
+@practice code
+prompt: Write a tiny property checker `check_property(prop, gen, n, rng)`. Call `gen(rng)` to make an input, and `prop(x)` to test it, up to `n` times. Return the first input for which `prop` returns a false value, or `None` if the property held for all `n` inputs.
+starter:
+```python
+def check_property(prop, gen, n, rng):
+    pass
+```
+tests:
+```python
+import random
+
+def gen_int(r):
+    return r.randint(0, 100)
+
+assert check_property(lambda x: x >= 0, gen_int, 200, random.Random(1)) is None
+ce = check_property(lambda x: x < 50, gen_int, 500, random.Random(2))
+assert ce is not None
+assert ce >= 50
+assert check_property(lambda x: False, gen_int, 0, random.Random(3)) is None
+calls = []
+check_property(lambda x: calls.append(x) or True, gen_int, 7, random.Random(4))
+assert len(calls) == 7
+```
+model:
+```python
+def check_property(prop, gen, n, rng):
+    for _ in range(n):
+        x = gen(rng)
+        if not prop(x):
+            return x
+    return None
+```
+hint: Loop `n` times, generating a fresh input each time with `gen(rng)`.
+hint: Return the input as soon as `prop(x)` is false; return `None` only after the loop ends.
+solution: Generate an input per iteration, return it immediately when the property fails, and fall through to `None` otherwise. The tests check properties of the result (a returned counterexample really violates the property, and exactly `n` inputs are tried) instead of particular random values.
+
+@practice code
+prompt: Write `shrink_int(prop, x)`. You are given a non-negative integer `x` for which `prop(x)` is false. Return the **smallest** integer `n` from `0` up to `x` for which `prop(n)` is false. (Real shrinkers are smarter, but this is the idea: report the simplest failing input.)
+starter:
+```python
+def shrink_int(prop, x):
+    pass
+```
+tests:
+```python
+assert shrink_int(lambda n: n < 17, 1000) == 17
+assert shrink_int(lambda n: n % 2 == 0, 9) == 1
+assert shrink_int(lambda n: n != 5, 5) == 5
+assert shrink_int(lambda n: False, 40) == 0
+```
+model:
+```python
+def shrink_int(prop, x):
+    for n in range(x + 1):
+        if not prop(n):
+            return n
+    return x
+```
+hint: Try candidates from smallest to largest and stop at the first one that fails the property.
+hint: `range(x + 1)` includes `x`, which is known to fail, so the loop always finds an answer.
+solution: Scan upward from 0 and return the first `n` where `prop(n)` is false. Since `x` itself fails, the scan always ends with an answer no larger than `x`. A real shrinker applies the same idea with faster strategies (halving, removing list items).
+
+@practice self
+prompt: A teammate wrote `merge_sorted(a, b)`, which takes two sorted lists of integers and returns one sorted list containing all the items of both. Write a Hypothesis test (real syntax) with at least three properties, and say which pattern each uses (round trip, invariant, idempotence, oracle or metamorphic).
+hint: Think about what must be true of the result's order, its contents and its length, and about a simple trusted way to get the same answer.
+solution: Strategy: two sorted lists, built by sorting generated lists.
+
+```python
+from hypothesis import given, strategies as st
+from merging import merge_sorted
+
+sorted_lists = st.lists(st.integers()).map(sorted)
+
+
+@given(sorted_lists, sorted_lists)
+def test_merge_sorted_properties(a, b):
+    result = merge_sorted(a, b)
+    # invariant: the result is in order
+    assert all(x <= y for x, y in zip(result, result[1:]))
+    # invariant: nothing lost or added, including duplicates
+    assert sorted(result) == sorted(a + b)
+    # oracle: the slow, obviously correct version agrees
+    assert result == sorted(a + b)
+
+
+@given(sorted_lists)
+def test_merge_with_empty_is_identity(a):
+    assert merge_sorted(a, []) == a
+    assert merge_sorted([], a) == a
+```
+The first assertion is an invariant (ordered output), the second is an invariant on contents (same multiset, so duplicates are preserved), the third is an oracle (`sorted(a + b)` is simple and obviously correct, if slower). The last test is a metamorphic or identity property for the empty list. Hypothesis generates empty lists, duplicates and negatives automatically, which are the cases where merge code usually breaks.
+rubric: Builds sorted input lists with a strategy (for example `st.lists(st.integers()).map(sorted)`).
+rubric: Includes an ordering property and a contents property that would catch lost or duplicated items.
+rubric: Includes an oracle comparison with `sorted(a + b)` or an identity property for empty lists, and labels each property with its pattern.
+
+@quiz code
+prompt: Write run-length encoding. `rle_encode(s)` returns a list of `(character, count)` pairs for consecutive runs: `rle_encode("aaabcc")` is `[("a", 3), ("b", 1), ("c", 2)]`, and the empty string gives `[]`. `rle_decode(pairs)` rebuilds the string, so that `rle_decode(rle_encode(s)) == s` for every string `s`.
+starter:
+```python
+def rle_encode(s):
+    pass
+
+
+def rle_decode(pairs):
+    pass
+```
+tests:
+```python
+assert rle_encode("aaabcc") == [("a", 3), ("b", 1), ("c", 2)]
+assert rle_encode("") == []
+assert rle_encode("abab") == [("a", 1), ("b", 1), ("a", 1), ("b", 1)]
+assert rle_decode([("a", 3), ("b", 1)]) == "aaab"
+assert rle_decode([]) == ""
+assert rle_decode(rle_encode("")) == ""
+assert rle_decode(rle_encode("a")) == "a"
+assert rle_decode(rle_encode("zzzzyx")) == "zzzzyx"
+assert rle_decode(rle_encode("aabbaa")) == "aabbaa"
+```
+model:
+```python
+def rle_encode(s):
+    pairs = []
+    for ch in s:
+        if pairs and pairs[-1][0] == ch:
+            pairs[-1] = (ch, pairs[-1][1] + 1)
+        else:
+            pairs.append((ch, 1))
+    return pairs
+
+
+def rle_decode(pairs):
+    return "".join(ch * count for ch, count in pairs)
+```
+hint: While scanning, either extend the last run (same character) or start a new run of length 1.
+hint: Decoding multiplies each character by its count: `ch * count`, then joins the pieces. Check that `"aabbaa"` gives three runs, not two.
+solution: Encode by keeping a list of `(char, count)` pairs and updating the last pair when the character repeats; decode by repeating each character and joining. The round-trip assertions are the property in miniature: a Hypothesis test would assert it for thousands of generated strings (complexity of both functions is O(n) time and space).
+
+@quiz mc
+prompt: A Hypothesis test fails and the report shows `xs=[1, 0]`, although the failing list it first generated had 60 elements. What explains this?
+choice: Hypothesis randomly replaced the failing input with a simpler one.
+choice*: Shrinking repeatedly simplified the failing input while the test kept failing, and reported a minimal one.
+choice: The test was run again with a smaller `max_examples` value.
+choice: The code only fails on lists of length two.
+hint: Think about what Hypothesis does after it finds a failing example.
+solution: After finding a failure, Hypothesis shrinks it: it removes elements and simplifies values as long as the test still fails, and reports the minimal example. It does not mean the code fails only for length-two lists; that list is just the simplest one that triggers the bug.

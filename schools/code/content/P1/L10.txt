@@ -1,0 +1,289 @@
+@lesson
+title: Type hints and static checking
+summary: Annotate Python code with type hints, run a static type checker, and fix the kinds of errors it finds before the code ever runs.
+objective: Write type hints for parameters, return values, containers, optional values and callables.
+objective: Explain that hints are not enforced at runtime and that a checker such as mypy or pyright analyzes them statically.
+objective: Narrow optional and union types and fix typical checker errors.
+reading: Test-Driven Development with Python does not focus on typing, so look up the mypy documentation ("Type hints cheat sheet" and "Getting started") and the Python documentation for the typing module and PEP 484.
+@article
+Python is dynamically typed: a variable can hold any value, and type errors appear only when the faulty line runs, perhaps in production. **Type hints** let you write down what types you intend, and a **static type checker** reads the code (without running it) and reports mismatches. Hints also act as documentation that never goes out of date, and they power editor autocomplete. On a large codebase this is one of the cheapest ways to catch bugs.
+
+### The basics
+
+```python
+def total_price(prices: list[float], tax_rate: float = 0.0) -> float:
+    return sum(prices) * (1 + tax_rate)
+
+
+name: str = "Ada"
+scores: dict[str, int] = {"ada": 90}
+point: tuple[int, int] = (3, 4)
+ids: tuple[int, ...] = (1, 2, 3)      # any length
+```
+
+Use the built-in generic types `list[int]`, `dict[str, int]`, `set[str]` and `tuple[int, str]` (Python 3.9+). Write unions with `|`: `int | str` (3.10+). A value that may be missing is `str | None`. (Older code uses `Optional[str]` and `Union[int, str]` from `typing`; they mean the same.)
+
+For parameters that only need to be iterated, prefer the abstract types from `collections.abc`: `Iterable[str]`, `Sequence[int]`, `Mapping[str, int]`. For functions as values use `Callable[[int, str], bool]`. `Any` turns checking off for a value, so use it sparingly.
+
+### Hints are not enforced at runtime
+
+```python
+def double(x: int) -> int:
+    return x * 2
+
+
+print(double("ab"))     # prints abab; Python does not stop you
+```
+
+The interpreter ignores the hints when running. The **checker** is what complains: with `mypy file.py` (or `pyright`) you would get an error such as `Argument 1 to "double" has incompatible type "str"; expected "int"`. Run the checker in your editor and in CI next to your tests. (Libraries such as pydantic can validate at runtime, but that is a different tool.)
+
+Python 3.14 changed how annotations are evaluated: they are now evaluated **lazily**, so a class can refer to itself or to a class defined later without quotes. In earlier versions you wrote the forward reference as a string (`"Node"`) or used `from __future__ import annotations`. The checker's results are the same.
+
+### Optional values and narrowing
+
+The most common checker error is using a value that might be `None`:
+
+```python
+def shout(name: str | None) -> str:
+    return name.upper()          # error: Item "None" of "str | None" has no attribute "upper"
+```
+
+Fix it by **narrowing**: after a check, the checker knows the narrower type.
+
+```python
+def shout(name: str | None) -> str:
+    if name is None:
+        return ""
+    return name.upper()          # here name is str
+```
+
+`isinstance(x, int)`, `if x:` and early `return` or `raise` also narrow. Do not silence a real problem with `# type: ignore`; if you must, name the error code (`# type: ignore[arg-type]`) and add a reason.
+
+### Structured data
+
+Use a **dataclass** instead of a dictionary with string keys when data has a fixed shape; each field has a type and a typo becomes a checker error:
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass
+class Order:
+    order_id: int
+    items: list[str]
+    note: str | None = None
+```
+
+For dictionaries that must stay dictionaries (such as JSON), `TypedDict` describes the keys and value types; `Literal["asc", "desc"]` restricts a parameter to specific values; `Protocol` describes "anything with these methods" (structural typing), which is the typed form of duck typing and works nicely with test doubles. Generic functions use type variables; since Python 3.12 you can write `def first[T](xs: list[T]) -> T:` directly.
+
+### Adopting types gradually
+
+Typing is **gradual**: untyped code is allowed and checked loosely. Start with function signatures at module boundaries, turn the checker on for new code, and tighten with settings (mypy's `--strict`, or per-module configuration) over time. Typed signatures also make test code better: the checker will tell you when a test passes the wrong kind of argument.
+
+### What types do not do
+
+Hints do not replace tests: `-> int` does not say the number is right. And they are not free of cost: over-clever types (deep unions, heavy generics) can hurt readability. Aim for hints that make the function's contract obvious to the next reader.
+
+@example
+title: Fixing the errors a checker reports
+problem: The checker reports two errors for this code. Find and fix them.
+
+```python
+def average(scores: list[int]) -> float:
+    return sum(scores) / len(scores)
+
+
+def best_name(names: list[str]) -> str:
+    longest = None
+    for n in names:
+        if longest is None or len(n) > len(longest):
+            longest = n
+    return longest
+
+
+result: int = average([3, 4])
+```
+step: Error 1 is the last line: `average` returns `float`, but the variable is declared `int` (`Incompatible types in assignment`). Fix the declaration: `result: float = average([3, 4])`.
+step: Error 2 is in `best_name`: `longest` starts as `None`, so at the `return` its type is `str | None`, but the function promises `str` (`Incompatible return value type`).
+step: Decide the contract for an empty list. If it should raise, add `if not names: raise ValueError("no names")` at the top, and give `longest` the type `str` by initializing it with `names[0]`.
+step: Rerun the checker: both errors are gone, and the code now states what happens with empty input.
+answer: Fix the declared type of `result`, and handle the empty list explicitly so `best_name` really returns `str`.
+
+@example
+title: Typing a function that may not find a value
+problem: Write a typed `find_user(users, user_id)` that returns the user's name, or `None` if there is no such user, and show how a caller must handle it.
+step: Annotate the signature: `def find_user(users: dict[int, str], user_id: int) -> str | None:`.
+step: Implement it with `return users.get(user_id)`; `dict.get` returns `None` for a missing key, which matches the return type.
+step: A caller that writes `find_user(users, 3).title()` is flagged by the checker: the result may be `None`.
+step: The caller narrows first: `name = find_user(users, 3)`, then `if name is None: ...` handle it, else use `name.title()`. The type forced the missing-user case to be handled.
+answer: The `str | None` return type makes callers handle the not-found case at check time instead of with a crash in production.
+
+@mistakes
+- Believing that hints are checked when the program runs; only a static checker (or a runtime validation library) enforces them.
+- Using `Any` or blanket `# type: ignore` to make errors disappear instead of narrowing the type or fixing the contract.
+- Annotating a return as `str` while some path returns `None`, which is exactly what the checker flags.
+- Writing `def f(items: list = [])`: a mutable default argument is shared between calls, and hints do not protect against it.
+
+@practice mc
+prompt: A function declared `def double(x: int) -> int` is called as `double("ab")` and the program is run with plain `python` and no type checker. What happens?
+choice: A `TypeError` is raised because the argument is not an `int`.
+choice: The call is rejected before the program starts.
+choice*: It runs and returns `"abab"`; hints are not enforced at runtime.
+choice: It returns `None`.
+hint: The interpreter ignores annotations when executing the code.
+solution: Annotations are metadata. Without a checker nothing stops the call, and `"ab" * 2` is `"abab"`. A tool such as mypy would report the call as an error before you run the program.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def double(x: int) -> int:
+    return x * 2
+
+
+print(double("ab"))
+print(double(4))
+```
+answer:
+```
+abab
+8
+```
+check: run("def double(x: int) -> int:\n    return x * 2\n\n\nprint(double('ab'))\nprint(double(4))\n")
+hint: Python does not check the annotation `int` when the function is called.
+solution: The string `"ab"` is multiplied by 2, which repeats it, giving `abab`. The annotation changes nothing at runtime, so the wrong-typed call succeeds, and `double(4)` prints `8`.
+
+@practice code
+prompt: Write a fully typed function `parse_port(text: str) -> int | None`. It strips whitespace from `text` and returns the port number as an `int` if the text is made of digits and the value is between 1 and 65535 inclusive. Otherwise it returns `None`. Include the type hints in your signature.
+starter:
+```python
+def parse_port(text: str) -> int | None:
+    pass
+```
+tests:
+```python
+assert parse_port("8080") == 8080
+assert parse_port("  443 ") == 443
+assert parse_port("1") == 1
+assert parse_port("65535") == 65535
+assert parse_port("65536") is None
+assert parse_port("0") is None
+assert parse_port("abc") is None
+assert parse_port("") is None
+assert parse_port("-5") is None
+assert parse_port("80.5") is None
+```
+model:
+```python
+def parse_port(text: str) -> int | None:
+    cleaned = text.strip()
+    if not (cleaned.isascii() and cleaned.isdigit()):
+        return None
+    port = int(cleaned)
+    if 1 <= port <= 65535:
+        return port
+    return None
+```
+hint: `str.isdigit()` is false for an empty string, a minus sign and a decimal point.
+hint: Convert with `int(...)` only after the digit check, then test `1 <= port <= 65535`.
+solution: Strip, reject anything that is not all ASCII digits (which also rejects the empty string, `-5` and `80.5`), convert, and check the range. The return type `int | None` tells callers they must handle the `None` case.
+
+@practice ms
+prompt: Which of these statements about type hints and static checking are true?
+choice*: A checker such as mypy analyzes the code without running it.
+choice*: `str | None` means the value is either a string or `None`.
+choice: The Python interpreter raises `TypeError` automatically when an argument does not match its annotation.
+choice*: After `if name is None: return ""`, a checker treats `name` as `str` in the rest of the function.
+choice: Adding hints makes unit tests unnecessary.
+hint: Hints are for tools and readers; they do not change what the interpreter does.
+solution: Static checkers read the code without executing it, `str | None` is a union with `None`, and `is None` checks narrow the type. The interpreter does not enforce annotations, and types never replace tests because they cannot say whether a value is correct.
+
+@practice self
+prompt: Add type hints to this module, then list the two or three errors a checker such as mypy would likely report in the calling code and how you would fix each.
+
+```python
+def find_discount(codes, code):
+    return codes.get(code)
+
+
+def apply(price, codes, code):
+    pct = find_discount(codes, code)
+    return price - price * pct / 100
+
+
+print(apply(80, {"SAVE10": 10}, "SAVE20"))
+```
+hint: What does `dict.get` return when the key is missing, and what does the arithmetic do with that value?
+solution: Typed version:
+
+```python
+def find_discount(codes: dict[str, int], code: str) -> int | None:
+    return codes.get(code)
+
+
+def apply(price: float, codes: dict[str, int], code: str) -> float:
+    pct = find_discount(codes, code)
+    if pct is None:
+        return price
+    return price - price * pct / 100
+```
+Errors the checker reports on the untyped-logic version once hints are added: (1) in `apply`, `pct` has type `int | None`, so `price * pct` is an error (`Unsupported operand types for * ("float" and "None")`); fix by narrowing with `if pct is None: return price` (or raising, if an unknown code is a mistake). (2) If `apply` were annotated `-> int` while `price` is a float, the checker would flag the incompatible return; the honest type is `float`. (3) Passing the wrong container, for example a list of codes instead of a dict, is flagged at the call site (`Argument 2 to "apply" has incompatible type`). The final call crashes at runtime with `TypeError` for `"SAVE20"`, because the code is missing; the checker finds that path before the program runs.
+rubric: Adds correct hints, including `int | None` (or `Optional[int]`) as the return type of `find_discount`.
+rubric: Identifies that `pct` may be `None` and fixes it by narrowing or an explicit decision for unknown codes.
+rubric: Mentions at least one more checker error or runtime consequence (wrong return type, wrong container, the crash for a missing code).
+
+@quiz code
+prompt: Write a typed dataclass `Rect` with float fields `width` and `height`. Give it a method `area(self) -> float` and a method `scaled(self, factor: float) -> "Rect"` that returns a new `Rect` with both sides multiplied by `factor` (the original is unchanged). Negative `width` or `height` raise `ValueError` when the object is created.
+starter:
+```python
+from dataclasses import dataclass
+
+
+@dataclass
+class Rect:
+    pass
+```
+tests:
+```python
+r = Rect(3.0, 4.0)
+assert r.area() == 12.0
+s = r.scaled(2)
+assert (s.width, s.height) == (6.0, 8.0)
+assert (r.width, r.height) == (3.0, 4.0)
+assert Rect(1.0, 2.0) == Rect(1.0, 2.0)
+assert raises(ValueError, Rect, -1.0, 2.0)
+assert raises(ValueError, Rect, 1.0, -2.0)
+assert Rect(0.0, 5.0).area() == 0.0
+```
+model:
+```python
+from dataclasses import dataclass
+
+
+@dataclass
+class Rect:
+    width: float
+    height: float
+
+    def __post_init__(self) -> None:
+        if self.width < 0 or self.height < 0:
+            raise ValueError("sides must not be negative")
+
+    def area(self) -> float:
+        return self.width * self.height
+
+    def scaled(self, factor: float) -> "Rect":
+        return Rect(self.width * factor, self.height * factor)
+```
+hint: A dataclass generates `__init__` and `__eq__` from the annotated fields; validation goes in `__post_init__`.
+hint: `scaled` must return a new `Rect`, not change `self`.
+solution: Declare the two typed fields, validate them in `__post_init__`, compute the area from the fields and return a new `Rect` from `scaled`. The return annotation `"Rect"` is quoted for older Python versions; on Python 3.14 it works unquoted.
+
+@quiz mc
+prompt: A checker reports `Item "None" of "str | None" has no attribute "strip"` for the line `return name.strip()` in a function whose parameter is `name: str | None`. What is the best fix?
+choice: Add `# type: ignore` to the line.
+choice: Change the annotation to `Any`.
+choice*: Check `if name is None` and return or raise before calling `strip()`, so the type is narrowed to `str`.
+choice: Wrap the call in `try`/`except AttributeError` and return `""`.
+hint: The checker is telling you that a `None` value is possible there.
+solution: Narrowing with an explicit `None` check handles the case the checker found and documents the decision. Ignoring the error, widening to `Any`, or swallowing `AttributeError` all hide the real problem instead of handling it.

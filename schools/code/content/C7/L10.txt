@@ -1,0 +1,255 @@
+@lesson
+title: Files and I/O in C
+summary: Read and write text and binary files with the C standard library, format and parse text with printf and sscanf, and handle errors and end of file correctly.
+objective: Open, read, write and close files with `fopen`, `fgets`, `fprintf`, `fread`, `fwrite` and `fclose`, checking every result.
+objective: Use `printf` format specifiers and understand the return values of `snprintf` and `sscanf`.
+objective: Detect end of file and errors correctly, and explain buffering.
+objective: Write a small filter program that processes a text file line by line.
+reading: Beej's Guide to C Programming, the chapter on file input and output (look up "File I/O", `fopen`, `fgets`, `fread` and `fseek`; also "Formatted Output" for `printf`).
+@article
+The C library models a file as a **stream**, accessed through a `FILE *` handle declared in `<stdio.h>`. Three streams are open when a program starts: `stdin` (input), `stdout` (output) and `stderr` (error messages, unbuffered). `printf(...)` is `fprintf(stdout, ...)`.
+
+### Opening and closing
+
+```c
+FILE *f = fopen("data.txt", "r");
+if (f == NULL) {
+    perror("data.txt");        /* prints a message based on errno */
+    return 1;
+}
+/* ... use f ... */
+fclose(f);
+```
+
+The mode is `"r"` (read; the file must exist), `"w"` (write; creates or **truncates**), `"a"` (append at the end), and `"r+"` or `"w+"` for both; add `b` for binary (`"rb"`, `"wb"`), which only matters on systems that translate line endings. Always check for `NULL`: files go missing, permissions fail, disks fill up. `fclose` flushes buffered output; check its return value for files you wrote, since the final write may fail there.
+
+### Reading text
+
+`fgets(buf, size, f)` reads at most `size - 1` characters, stops after a newline (which it keeps), terminates the buffer, and returns `buf` or `NULL` at end of file or on error:
+
+```c
+char line[256];
+int lines = 0;
+while (fgets(line, sizeof line, f) != NULL) {
+    lines++;
+}
+```
+
+A line longer than the buffer arrives in several pieces. `fgetc(f)` and `getchar()` return an **`int`** (a character or `EOF`), never store the result in a `char`. Do not control a loop with `feof(f)`: it becomes true only *after* a read has failed, so the loop body runs once more on stale data. Loop on the **return value** of the read instead, and use `feof`/`ferror` afterwards to find out why it stopped. Avoid `fscanf("%s")` without a width, which can overflow the buffer; prefer `fgets` followed by `sscanf` or manual parsing.
+
+### Formatted output
+
+`printf` conversions: `%d` int, `%u` unsigned, `%ld` long, `%zu` `size_t`, `%f` double, `%c` char, `%s` string, `%x` hexadecimal, `%p` pointer, `%%` a percent sign. Flags and sizes go between `%` and the letter: a **width** pads (`%5d` right-aligns in 5 columns), `-` left-aligns (`%-5d`), `0` pads with zeros (`%05d`), and a **precision** gives decimals for floating types (`%.2f`) or maximum characters for strings (`%.3s`). `snprintf(buf, size, fmt, ...)` writes into a buffer, never more than `size` bytes including the terminator, and returns the length the **full** output would have had (negative on an encoding error).
+
+### Parsing
+
+`sscanf(str, fmt, ...)` reads from a string and returns the **number of conversions that succeeded** (or `EOF` if the input ended first). Always compare it with the number you expect:
+
+```c
+int a, b;
+if (sscanf(line, "%d %d", &a, &b) != 2) {
+    /* malformed line */
+}
+```
+
+Arguments are **addresses** (`&a`). Whitespace in the format matches any amount of whitespace, and conversions stop at the first mismatch. To convert numbers with error detection, `strtol` is preferred, since it reports where parsing stopped and whether the value was out of range.
+
+### Binary I/O and positioning
+
+`fwrite(ptr, size, count, f)` and `fread(ptr, size, count, f)` transfer `count` items of `size` bytes and return the number of **complete items** transferred; a result smaller than `count` means end of file or an error. Writing a struct with `fwrite` stores padding and the machine's byte order, so such files are not portable between systems; define a file format and write each field. `fseek(f, offset, SEEK_SET)` moves the position (`SEEK_CUR`, `SEEK_END` are the others) and `ftell(f)` reports it (for a text file, only values from `ftell` are portable arguments to `fseek`); `rewind(f)` goes back to the start.
+
+### Buffering
+
+Streams are buffered: output to a file or pipe is **fully buffered** (written in large blocks), output to a terminal is usually **line buffered**, and `stderr` is unbuffered. A crash can lose buffered output; `fflush(f)` forces it out. Buffering also matters when you call `fork` (week 11): flush before forking, or both processes will emit the same buffered text.
+
+@example
+title: Counting the lines in a file
+problem: Outline a program that reads the file named in `argv[1]` and prints its number of lines.
+step: Check the argument count: `if (argc != 2) { fprintf(stderr, "usage: %s file\n", argv[0]); return 2; }`.
+step: Open the file and check the result: `FILE *f = fopen(argv[1], "r"); if (f == NULL) { perror(argv[1]); return 1; }`.
+step: Read with `fgets` into a buffer. A line longer than the buffer comes in pieces, so count a line only when the chunk ends with a newline (and one more for a final line with no newline):
+
+```c
+char buf[256];
+long lines = 0;
+int pending = 0;                  /* a partial line is waiting */
+while (fgets(buf, sizeof buf, f) != NULL) {
+    size_t n = strlen(buf);
+    pending = (n > 0 && buf[n - 1] != '\n');
+    if (!pending) {
+        lines++;
+    }
+}
+if (pending) {
+    lines++;
+}
+```
+step: Close and report: `fclose(f); printf("%ld\n", lines); return 0;`.
+
+@example
+title: What does sscanf return?
+problem: What are `n`, `a` and `b` after `int a = -1, b = -1; int n = sscanf("12 apple", "%d %d", &a, &b);`?
+step: The first conversion `%d` reads `12`, so `a` becomes `12`.
+step: The whitespace in the format matches the space. The second `%d` meets `a`, which cannot start an integer, so conversion stops there and `b` is untouched.
+step: `sscanf` returns the number of successful conversions: `n` is `1`, `a` is `12`, `b` stays `-1`.
+
+@mistakes
+- Not checking whether `fopen` returned `NULL` (a crash on the first use).
+- Looping with `while (!feof(f))`, which processes the last read twice.
+- Storing the result of `fgetc` in a `char`, so `EOF` cannot be told apart from a valid byte.
+- Ignoring the return value of `sscanf`, or forgetting `&` on its arguments.
+- Opening with `"w"` when you meant `"a"`: `"w"` empties an existing file immediately.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    printf("[%5d][%-5d][%05d][%.2f][%x]\n", 42, 42, 42, 3.14159, 255);
+    return 0;
+}
+```
+answer: [ 42][42 ][00042][3.14][ff]
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    printf("[%5d][%-5d][%05d][%.2f][%x]\\n", 42, 42, 42, 3.14159, 255);\n    return 0;\n}\n')
+hint: Width 5 pads with spaces on the left; a `-` flag pads on the right; the `0` flag pads with zeros.
+solution: `%5d` gives three spaces and `42`, `%-5d` gives `42` and three spaces, `%05d` gives `00042`, `%.2f` rounds to `3.14`, and `%x` prints 255 in hexadecimal as `ff`. (The answer check treats runs of spaces as one.)
+
+@practice code
+prompt: Write `fgets_chunks(text, size)` that returns the list of strings that repeated calls `fgets(buf, size, f)` would produce when reading a stream containing `text` until end of file (`size >= 2`). Each call reads at most `size - 1` characters and stops after the first newline, which is included in the chunk.
+starter:
+```python
+def fgets_chunks(text, size):
+    pass
+```
+tests:
+```python
+assert fgets_chunks("ab\ncd\n", 10) == ["ab\n", "cd\n"]
+assert fgets_chunks("abcdef", 4) == ["abc", "def"]
+assert fgets_chunks("abcdefg\n", 4) == ["abc", "def", "g\n"]
+assert fgets_chunks("", 5) == []
+assert fgets_chunks("a\n\nb", 3) == ["a\n", "\n", "b"]
+assert fgets_chunks("abcd\n", 5) == ["abcd", "\n"]
+```
+model:
+```python
+def fgets_chunks(text, size):
+    chunks = []
+    pos = 0
+    while pos < len(text):
+        end = pos
+        while end < len(text) and end - pos < size - 1:
+            end += 1
+            if text[end - 1] == "\n":
+                break
+        chunks.append(text[pos:end])
+        pos = end
+    return chunks
+```
+hint: Each chunk ends at the earlier of: a newline (included), `size - 1` characters, or the end of the text.
+hint: Walk a pointer `end` forward from the chunk's start, one character at a time; stop after adding a newline or when the chunk has `size - 1` characters.
+solution: This mirrors the contract of `fgets`: it never stores more than `size - 1` characters because one byte is reserved for the terminator, and it returns `NULL` (here: the loop ends) only when there is nothing left to read. In the last test the buffer fills before the newline is reached, so the newline arrives in the next call.
+
+@practice mc
+prompt: What is wrong with this loop?
+
+```c
+char line[128];
+while (!feof(f)) {
+    fgets(line, sizeof line, f);
+    process(line);
+}
+```
+choice: `feof` returns true while data remains, so the loop never runs.
+choice*: `feof` becomes true only after a read has hit the end, so after the last line the body runs once more with a failed `fgets` and stale or unset data in `line`.
+choice: `fgets` cannot be used in a loop.
+choice: `sizeof line` is the size of a pointer, so lines are cut to 8 characters.
+hint: When exactly does `feof` start returning true?
+solution: The end-of-file indicator is set by a read that fails for lack of data. The robust loop is `while (fgets(line, sizeof line, f) != NULL) { process(line); }`. Here `line` is a true array, so `sizeof line` is 128.
+
+@practice code
+prompt: Write `fread_result(file_size, pos, item_size, count)` that models `fread(buf, item_size, count, f)` on a binary file of `file_size` bytes whose position is `pos` (`0 <= pos <= file_size`). The call reads as many bytes as are available, up to `item_size * count`, and advances the position by the bytes read. Return a tuple `(items, new_pos)` where `items` is the return value of `fread`, the number of **complete** items read.
+starter:
+```python
+def fread_result(file_size, pos, item_size, count):
+    pass
+```
+tests:
+```python
+assert fread_result(100, 0, 4, 10) == (10, 40)
+assert fread_result(100, 90, 4, 10) == (2, 100)
+assert fread_result(100, 100, 4, 10) == (0, 100)
+assert fread_result(10, 0, 3, 4) == (3, 10)
+assert fread_result(100, 50, 1, 50) == (50, 100)
+```
+model:
+```python
+def fread_result(file_size, pos, item_size, count):
+    wanted = item_size * count
+    got = min(wanted, file_size - pos)
+    return got // item_size, pos + got
+```
+hint: The bytes actually read are the smaller of the bytes requested and the bytes remaining.
+hint: The number of complete items is the bytes read divided (with `//`) by the item size; the position advances by all the bytes read.
+solution: With 10 bytes and 3-byte items, a request for 4 items wants 12 bytes but only 10 exist, so 10 are read and 3 complete items are returned. A return value smaller than `count` means end of file or an error; `feof` and `ferror` tell which.
+
+@practice text
+prompt: What does this program print? Type the output exactly (four numbers separated by single spaces).
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a = -1, b = -1, c = -1;
+    int n = sscanf("10 20 x", "%d %d %d", &a, &b, &c);
+    printf("%d %d %d %d\n", n, a, b, c);
+    return 0;
+}
+```
+answer: 2 10 20 -1
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    int a = -1, b = -1, c = -1;\n    int n = sscanf("10 20 x", "%d %d %d", &a, &b, &c);\n    printf("%d %d %d %d\\n", n, a, b, c);\n    return 0;\n}\n')
+hint: `sscanf` stops at the first conversion that fails and returns how many succeeded.
+solution: The first two `%d` conversions match `10` and `20`, but the third cannot parse `x`, so `c` is not assigned and the return value is `2`.
+
+@quiz code
+prompt: Write `wc(text)` that behaves like the Unix `wc` utility on a string: return the tuple `(lines, words, chars)`, where `lines` is the number of newline characters, `words` is the number of maximal runs of non-whitespace characters, and `chars` is the length of `text`.
+starter:
+```python
+def wc(text):
+    pass
+```
+tests:
+```python
+assert wc("hello world\n") == (1, 2, 12)
+assert wc("") == (0, 0, 0)
+assert wc("a b\nc") == (1, 3, 5)
+assert wc("  \n \n") == (2, 0, 5)
+assert wc("one\ntwo\nthree\n") == (3, 3, 14)
+```
+model:
+```python
+def wc(text):
+    return text.count("\n"), len(text.split()), len(text)
+```
+hint: Newlines can be counted with `str.count`, and characters with `len`.
+hint: `str.split()` with no argument splits on runs of whitespace, so the number of words is the length of the result.
+solution: The line count is the number of `"\n"` characters, so a last line without a newline is not counted, exactly as `wc -l` behaves. `text.split()` ignores leading, trailing and repeated whitespace. In C you would do the same with one pass over `fgetc` results and a flag recording whether you are inside a word.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    char buf[8];
+    int n = snprintf(buf, sizeof buf, "%05.1f|%s", 3.14159, "ab");
+    printf("%d [%s]\n", n, buf);
+    return 0;
+}
+```
+answer: 8 [003.1|a]
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    char buf[8];\n    int n = snprintf(buf, sizeof buf, "%05.1f|%s", 3.14159, "ab");\n    printf("%d [%s]\\n", n, buf);\n    return 0;\n}\n')
+hint: First work out the full output, then keep only `sizeof buf - 1` characters.
+solution: `%05.1f` formats 3.14159 as `003.1` (width 5, zero padded), so the full output is `003.1|ab`, 8 characters, which is what `snprintf` returns. The buffer holds 8 bytes, so only 7 characters plus the terminator are stored: `003.1|a`.

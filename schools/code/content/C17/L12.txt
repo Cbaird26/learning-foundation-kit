@@ -1,0 +1,241 @@
+@lesson
+title: Secure development, disclosure, ethics and law
+summary: Describe a secure development lifecycle, rate and report vulnerabilities responsibly, and explain the legal and ethical limits of security work.
+objective: Apply secure development practices: threat modeling, code review, testing, dependency management, secrets handling, logging and failing closed.
+objective: Rate a vulnerability with CVSS severity bands and write a coordinated-disclosure report.
+objective: Explain authorization as the line between security research and unlawful access, and describe the main ethical and legal frameworks without treating them as legal advice.
+reading: UC Berkeley CS 161 textbook, the chapters on secure software development and on ethics and law in security (look up "responsible disclosure", "CVSS" and "least privilege").
+@article
+Security work ends in practice: shipping software that stays secure, handling the bugs that remain, and acting lawfully and ethically.
+
+### Secure development
+
+A **secure development lifecycle** builds security into every phase.
+
+- **Design**: threat-model new features (Lesson 1) and choose safe defaults. OWASP **A06 Insecure Design** reminds us that flaws in the design cannot be fixed by perfect code.
+- **Code**: follow a secure-coding standard, use memory-safe languages where possible, parameterize queries, encode output, and review every change. Peer review is one of the best-proven defenses.
+- **Test**: unit tests for security rules (a regression test for every fixed vulnerability); **static analysis (SAST)** on source; **dynamic testing (DAST)** against a running system; **fuzzing** to feed unexpected inputs to parsers; and periodic independent penetration tests within agreed scope.
+- **Dependencies**: **A03 Software Supply Chain Failures** covers compromised or vulnerable libraries, build tools and update channels. Pin versions with lockfiles, verify hashes and signatures, scan for known vulnerabilities (software composition analysis), keep a **software bill of materials (SBOM)** listing components, and give CI jobs only the access they need.
+- **Secrets**: never commit passwords, API keys or private keys to source control; use a secrets manager, rotate secrets, and scan repositories for leaked ones. A leaked secret must be considered compromised even after the commit is deleted.
+- **Configuration**: **A02 Security Misconfiguration**: no default passwords, no debug pages in production, minimal exposed services, repeatable hardened builds.
+- **Failure handling**: **A10 Mishandling of Exceptional Conditions** is about errors that cause insecure behavior, such as a check that throws and is treated as "allowed". Code must **fail closed**, report errors without leaking internals, and release resources.
+- **Logging and monitoring**: **A09 Security Logging and Alerting Failures**: log authentication events, access denials and administrative actions with enough context to investigate, protect the logs, never log passwords or tokens, and alert on suspicious patterns.
+- **Operate**: patch quickly, have an incident-response plan, and practice it.
+
+### Vulnerability handling
+
+Each publicly known vulnerability can get a **CVE** identifier. **CVSS** (Common Vulnerability Scoring System, current version 4.0) rates technical severity from 0.0 to 10.0, with bands: None 0.0, Low 0.1 to 3.9, Medium 4.0 to 6.9, High 7.0 to 8.9 and Critical 9.0 to 10.0. Severity is not risk: a High vulnerability in an unreachable component may matter less than a Medium one on your internet-facing login.
+
+In **coordinated (responsible) disclosure**, a finder reports a vulnerability privately to the vendor, gives time to fix it, and publishes details afterward. Many organizations publish a security contact (a `security.txt` file, RFC 9116), and some run **bug bounty** programs with a written scope and **safe harbor** terms. A good report is factual and reproducible without being an attack guide:
+
+- affected product and version, and the component;
+- a clear description of the impact and who is affected;
+- minimal reproduction steps on a system you own or have permission to test, using test accounts and test data;
+- a suggested fix or mitigation and a proposed timeline (90 days is a common convention, with flexibility if the vendor is working on it);
+- how the finder can be contacted.
+
+Stop as soon as you have shown the bug exists: do not read, copy or change other people's data, and do not demand payment as a condition of silence. Perspectives differ on how long vendors should be given and on whether immediate **full disclosure** can pressure slow vendors; most professional norms favor coordinated disclosure.
+
+### Ethics and law
+
+Everything in this course may be practiced **only with authorization**: on your own systems, in a lab, or under written permission with a defined scope. In the United States the **Computer Fraud and Abuse Act** criminalizes accessing a computer without authorization or exceeding authorized access, and other countries have comparable laws, such as the UK Computer Misuse Act 1990. Circumventing technical protections can raise further issues, and privacy laws such as the EU General Data Protection Regulation impose duties on organizations to protect personal data and to report personal-data breaches to the supervisory authority without undue delay and, where feasible, within 72 hours of becoming aware of them (unless the breach is unlikely to risk individuals). Laws differ by country and change, and **this is not legal advice**: ask a qualified lawyer before testing anything you do not own.
+
+Professional codes, such as the ACM Code of Ethics, tell computing professionals to avoid harm, respect privacy, be honest about risks and report problems. Security knowledge is **dual-use**, which is why defenders must think about how what they build, publish or teach will be used.
+
+@example
+title: Rating and ordering vulnerabilities
+problem: Three findings have CVSS base scores 9.1, 5.3 and 7.5. Name their severity bands. If the 5.3 finding is on the login page of an internet-facing system and the 9.1 finding is in a tool used only on an isolated lab network, how would you prioritize?
+step: Bands: 9.1 is Critical (9.0 to 10.0), 7.5 is High (7.0 to 8.9), 5.3 is Medium (4.0 to 6.9).
+step: CVSS describes technical severity; risk also depends on exposure, the value of the asset and existing controls.
+step: The login page is reachable by everyone, so its exposure is high. The isolated tool has low exposure.
+step: A sensible plan fixes the internet-facing Medium issue promptly, alongside the High one if it is also exposed, and schedules the lab Critical issue soon but after those.
+answer: Critical, Medium, High; prioritize by exposure as well as score
+@example
+title: Failing closed
+problem: This check allows access when the permission service is down. Explain the bug and the fix.
+
+```python
+def can_view(user, doc):
+    try:
+        return permission_service.check(user, doc)
+    except Exception:
+        return True      # BUG: errors grant access
+```
+step: When the service raises an error (timeout, outage, malformed reply), the `except` branch returns `True`, so an attacker who can cause errors gets access. This is the A10 pattern.
+step: The fix returns `False` in the error branch, so the default is deny.
+step: Log the error with context so operators notice, but do not show internal details to the user.
+step: Add a test that makes the service fail and asserts access is denied.
+answer: Return False on any error (fail closed) and log it
+@mistakes
+- Treating a CVSS score as the same thing as risk, without considering exposure and impact on your system.
+- Writing exception handlers that grant access or skip a check when something goes wrong.
+- Committing a secret to a repository and believing deleting the file fixes it; the secret must be rotated.
+- Testing a system without written authorization because "the intent was good", or demanding payment for silence.
+@practice code
+prompt: Write `severity(score)` returning the CVSS severity band for a base score: `"None"` for 0.0, `"Low"` for 0.1 to 3.9, `"Medium"` for 4.0 to 6.9, `"High"` for 7.0 to 8.9 and `"Critical"` for 9.0 to 10.0. Raise `ValueError` if the score is below 0 or above 10.
+starter:
+```python
+def severity(score):
+    pass
+```
+tests:
+```python
+assert severity(0.0) == "None"
+assert severity(0.1) == "Low"
+assert severity(3.9) == "Low"
+assert severity(4.0) == "Medium"
+assert severity(6.9) == "Medium"
+assert severity(7.0) == "High"
+assert severity(8.9) == "High"
+assert severity(9.0) == "Critical"
+assert severity(10.0) == "Critical"
+assert raises(ValueError, severity, 10.1)
+assert raises(ValueError, severity, -0.5)
+```
+model:
+```python
+def severity(score):
+    if score < 0 or score > 10:
+        raise ValueError("score out of range")
+    if score == 0:
+        return "None"
+    if score < 4.0:
+        return "Low"
+    if score < 7.0:
+        return "Medium"
+    if score < 9.0:
+        return "High"
+    return "Critical"
+```
+hint: Check the range first, then test the boundaries from the lowest band upward.
+solution: Validate the range, then compare against the lower bounds 4.0, 7.0 and 9.0 in order; exactly 0 is "None". Boundaries such as 3.9 and 4.0 fall into different bands.
+@practice code
+prompt: Write `find_secrets(text)` that scans the text line by line and returns the list of 1-based line numbers that look like a hard-coded secret. A line matches if, ignoring case, it contains one of the words `password`, `passwd`, `secret`, `api_key`, `apikey`, `api-key` or `token`, followed by optional spaces, then `=` or `:`, then optional spaces, then at least one non-space character. Use `re`.
+starter:
+```python
+import re
+
+
+def find_secrets(text):
+    pass
+```
+tests:
+```python
+src = "\n".join([
+    "import os",
+    'password = "hunter2"',
+    "API_KEY: abc123",
+    "token=",
+    'print("password")',
+    "# set the secret later",
+    "DB_PASSWORD=s3cr3t",
+])
+assert find_secrets(src) == [2, 3, 7]
+assert find_secrets("") == []
+assert find_secrets("x = 1") == []
+assert find_secrets("Token : zzz") == [1]
+```
+model:
+```python
+import re
+
+PATTERN = re.compile(
+    r"(password|passwd|secret|api[_-]?key|token)\s*[=:]\s*\S",
+    re.IGNORECASE,
+)
+
+
+def find_secrets(text):
+    return [
+        number
+        for number, line in enumerate(text.splitlines(), 1)
+        if PATTERN.search(line)
+    ]
+```
+hint: A regular expression can match the word, optional spaces, a separator and one non-space character.
+hint: `enumerate(text.splitlines(), 1)` gives 1-based line numbers; compile the pattern with `re.IGNORECASE`.
+solution: Search each line with a case-insensitive pattern and collect the line numbers. Simple scanners like this have false positives and negatives; real secret scanners also use known key formats and entropy checks.
+@practice code
+prompt: Write `safe_check(func, *args)` that fails closed. Call `func(*args)`. Return `True` only if the call returns exactly `True`. If it returns anything else (`False`, `None`, a string, ...) or raises any exception, return `False`.
+starter:
+```python
+def safe_check(func, *args):
+    pass
+```
+tests:
+```python
+assert safe_check(lambda x: x > 1, 5) is True
+assert safe_check(lambda x: x > 1, 0) is False
+assert safe_check(lambda x: 1 / x == 1, 0) is False
+assert safe_check(lambda: "yes") is False
+assert safe_check(lambda: None) is False
+assert safe_check(lambda: True) is True
+```
+model:
+```python
+def safe_check(func, *args):
+    try:
+        return func(*args) is True
+    except Exception:
+        return False
+```
+hint: Wrap the call in `try`/`except Exception`.
+hint: Compare the result with `is True`, so a truthy string such as `"yes"` does not count.
+solution: Any exception or non-`True` result means deny. Treating only an explicit `True` as success is the fail-safe default: unexpected values never grant access.
+@practice mc
+prompt: A researcher finds a flaw in a company's public web application and wants to report it. Which action best follows coordinated-disclosure norms?
+choice*: Send a private report to the company's security contact with reproduction steps on test data, and agree on a timeline before publishing.
+choice: Post the details publicly first so the company is forced to react.
+choice: Download a sample of customer records to prove the flaw is real, then report it.
+choice: Offer to keep quiet in exchange for payment.
+hint: Think about who learns of the bug first, and how much data is touched.
+solution: Coordinated disclosure means reporting privately, proving the flaw with minimal access (not by copying other people's data), and giving the vendor time to fix it. Posting first puts users at risk, taking records is unauthorized access, and demanding payment for silence is extortion.
+@practice self
+prompt: Write a responsible-disclosure report for this supplied bug. "NoteKeeper" is a fictional hosted notes application, version 3.2. On a trial installation with two test accounts you created, you found that `GET /api/notes/<id>` returns the note with that numeric id to any logged-in user, including notes owned by the other account. Ids are sequential. You did not access any other customer's data. Include: title, affected version, summary, impact with a severity band and reasoning, safe reproduction steps, suggested fix, timeline proposal, and your contact details.
+solution: Title: Missing authorization check on GET /api/notes/<id> in NoteKeeper 3.2 (insecure direct object reference). Affected: NoteKeeper 3.2, the notes API. Summary: the endpoint returns a note to any authenticated user without checking that the user owns or has been granted access to it. Impact: any logged-in user can read any other user's private notes, and because ids are sequential they can be enumerated; confidentiality of all notes is lost. Severity: I assess it as high priority, because it needs only a low-privilege account and no user interaction and it exposes every user's private notes; the CVSS v4.0 base vector is AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N, so you can confirm the score and band with the official calculator. Reproduction (on my own trial install, with two accounts I created): log in as account A and create a note; log in as account B and request /api/notes/ followed by A's id; B receives A's note. I accessed no other customer's data and stopped here. Fix: on every request, load the note and verify it belongs to the authenticated user (or that the user has an explicit share), returning the same not-found response otherwise; add a regression test with two users; consider non-sequential identifiers as defense in depth; review other endpoints for the same pattern. Timeline: I will keep the details private and propose a 90-day window from your acknowledgement, with a CVE request coordinated with you and an extension if you are making progress. Contact: name, email address and, if wanted, an encrypted-mail key; I am happy to retest a fix.
+hint: Write for the vendor's engineers: concise, factual, reproducible, and limited to what you did on your own test accounts.
+rubric: States the vulnerability class, affected version and endpoint precisely, with a clear impact statement and a justified severity band.
+rubric: Reproduction steps use only the researcher's own test accounts and avoid any exploit beyond showing the bug exists.
+rubric: Gives a concrete fix (server-side ownership check, regression test) and a disclosure timeline, and offers contact details and retesting.
+@quiz code
+prompt: Write `redact(line)` that replaces the value after a secret key name in a log line. Using `re` and ignoring case, for each occurrence of `password`, `passwd`, `secret`, `api_key`, `apikey`, `api-key` or `token`, followed by optional spaces, `=` or `:`, and optional spaces, replace the following run of non-space characters with `[REDACTED]`, keeping the key name and separator unchanged.
+starter:
+```python
+import re
+
+
+def redact(line):
+    pass
+```
+tests:
+```python
+assert redact("user=bob password=hunter2 ok") == "user=bob password=[REDACTED] ok"
+assert redact("Token: abc") == "Token: [REDACTED]"
+assert redact("api_key=1 token=2") == "api_key=[REDACTED] token=[REDACTED]"
+assert redact("no secrets here") == "no secrets here"
+assert redact("secret = x9") == "secret = [REDACTED]"
+```
+model:
+```python
+import re
+
+PATTERN = re.compile(
+    r"((?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*)\S+",
+    re.IGNORECASE,
+)
+
+
+def redact(line):
+    return PATTERN.sub(r"\1[REDACTED]", line)
+```
+hint: Capture the key name and separator in a group so you can keep them in the replacement.
+hint: Use `re.sub` with the replacement `r"\1[REDACTED]"` and the `re.IGNORECASE` flag.
+solution: The group `(...)` holds everything to keep; `\S+` is the value. `re.sub` replaces only the value, so key names stay readable for investigators while the secret never reaches the log.
+@quiz mc
+prompt: An authorization helper calls a remote permission service. Which error-handling behavior follows secure-design practice?
+choice*: If the service call fails, deny the request, log the failure, and return a generic error.
+choice: If the service call fails, allow the request so users are not blocked.
+choice: If the service call fails, retry forever and never return.
+choice: If the service call fails, show the full stack trace to the user.
+hint: What should the default be when the system cannot decide?
+solution: Failing closed (deny by default) preserves security when something unexpected happens; logging lets operators notice, and a generic message avoids leaking internals. Failing open is OWASP A10 behavior, and showing stack traces leaks implementation details.

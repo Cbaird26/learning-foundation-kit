@@ -1,0 +1,179 @@
+@lesson
+title: Fault tolerance and the CAP theorem
+summary: Explain fault, error and failure, size replica groups for crash and Byzantine faults, state the CAP theorem precisely, and trace a Raft election and log replication.
+objective: Distinguish fault, error and failure, and compute the group size needed to tolerate crash and Byzantine faults.
+objective: State the CAP theorem and the PACELC refinement correctly, and classify the behavior of a store during a partition.
+objective: Trace a Raft leader election and log replication through a leader crash.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 8 "Fault tolerance" (introduction to fault tolerance, process resilience, recovery).
+
+@article
+A **fault** is the cause of a problem (a bad disk, a bug, a cut cable); a fault can produce an **error** in the system state; an error can lead to a **failure**, a deviation from the service's specification that users see. **Fault tolerance** means preventing faults from becoming failures, mainly through **redundancy**: extra hardware, extra copies of data, extra computation, or extra time (retrying).
+
+### Dependability
+
+A dependable system has four attributes: **availability** (ready to serve now), **reliability** (continues to run without failure over a period), **safety** (failures do not cause catastrophe) and **maintainability** (ease of repair). Availability is often given in nines; a 365-day year has 525600 minutes, so 99.99% ("four nines") allows $0.0001 \times 525600 = 52.56$ minutes of downtime.
+
+### Group size
+
+For a service that must keep working while up to $f$ members are faulty:
+
+- **Crash faults** with consensus or quorums: $N \ge 2f + 1$ servers, so a majority of $f+1$ survives.
+- **Byzantine faults** (arbitrary behavior): $N \ge 3f + 1$ servers, with agreement protocols that use quorums of $2f+1$. Byzantine tolerance costs more nodes, more messages and more complexity, so it is used where servers are not mutually trusted, such as some blockchains or critical control systems.
+
+```python
+def max_faults(n, model):
+    return (n - 1) // 2 if model == "crash" else (n - 1) // 3
+```
+
+### Recovery
+
+**Backward recovery** returns to an earlier correct state: periodic **checkpoints** plus a **write-ahead log** of operations since the checkpoint. After a crash, load the checkpoint and replay the log. **Forward recovery** moves to a new correct state, as with error-correcting codes. **Idempotent** replay and fencing (stale leaders are rejected by a monotonically increasing term or token) prevent recovered or partitioned nodes from corrupting state.
+
+### The CAP theorem
+
+In a distributed data store, define **consistency** (C) as linearizability, **availability** (A) as every request received by a non-failed node eventually gets a non-error response, and **partition tolerance** (P) as continued operation despite arbitrary message loss between nodes. The **CAP theorem** (proved formally in 2002) states that **a system cannot be both consistent and available in the presence of a network partition**.
+
+Partitions happen in real networks, so P is not really optional. The real choice arises *during a partition*:
+
+- **CP:** refuse some requests (typically on the minority side) to stay consistent.
+- **AP:** keep answering on both sides and reconcile later, accepting stale reads and conflicts.
+
+Misreadings to avoid: CAP does not say that you must give up one of three properties at all times; when there is no partition, a system can offer both C and A. It also says nothing about latency. The **PACELC** formulation adds that **E**lse (when there is no partition), a system still trades **L**atency against **C**onsistency, which is why many stores offer weaker consistency even when the network is healthy.
+
+@example
+title: Raft election and replication with a leader crash
+problem: Three servers S1, S2, S3 start as followers in term 0 with empty logs. S1's election timeout fires first. S1 becomes leader, a client sends `set x=5`, and S1 replicates it to S2 only (S3 is down). S1 then crashes. S3 recovers and S2's election timeout fires. Trace what happens.
+step: S1 becomes a candidate in term 1, votes for itself and sends RequestVote to S2 and S3. S2 grants its vote (empty logs are equally up to date). S1 has 2 of 3 votes, a majority, and becomes leader of term 1.
+step: The client command is appended at index 1, term 1. S1 sends AppendEntries(prevLogIndex 0) to S2; S2 appends and replies success. Entry 1 is on S1 and S2, a majority, so S1 commits it (it is a current-term entry) and applies `x=5`.
+step: S1 crashes. S3 recovers with an empty log. S2's election timeout fires: it becomes a candidate in term 2 and asks S3 for a vote.
+step: S3's log is empty, S2's last entry is (index 1, term 1), so S2 is more up to date; S3 grants the vote. S2 becomes leader of term 2 and sends AppendEntries(prevLogIndex 0), so S3 receives entry 1. The committed `x=5` survives.
+step: Had S3 asked S2 for its vote, S2 would have denied it: S3's log (empty) is less up to date. The rule guarantees the new leader has all committed entries.
+answer: S2 wins term 2 and the committed entry is preserved
+
+@example
+title: CP versus AP during a partition
+problem: A five-node store is partitioned into a group of 3 nodes and a group of 2 nodes. A client writes to a node in the group of 2. What happens in a CP design and in an AP design?
+step: CP design (majority quorums): the group of 2 is a minority, cannot form a quorum, and rejects or times out the write. The group of 3 can serve reads and writes. Consistency is kept, availability is lost on the minority side.
+step: AP design: the node in the group of 2 accepts the write locally. Clients of the two groups may see different values, and the divergent updates are reconciled after the partition heals (for example by last-write-wins or by merging).
+step: This is the CAP trade-off made concrete: during the partition, a client cannot get both a guaranteed-latest answer and an answer from every node.
+
+@mistakes
+- Saying "CAP means pick any two of three" and treating partition tolerance as optional; partitions cannot be ruled out, so the choice is between C and A during a partition.
+- Using "consistency" in CAP to mean the "C" of ACID transactions; CAP's C is linearizability.
+- Sizing a crash-tolerant group as $f+1$ instead of $2f+1$ when agreement is required, or Byzantine groups as $2f+1$ instead of $3f+1$.
+- Assuming a store is CP or AP in all conditions; many are configurable per request and behave differently without a partition (the PACELC trade-off).
+
+@practice mc
+prompt: A network partition splits a replicated store. The minority side keeps accepting writes, and later the two sides disagree about a value. According to the CAP theorem, what was the trade-off?
+choice: It gave up partition tolerance to keep consistency
+choice*: It chose availability over consistency during the partition
+choice: It chose consistency over availability during the partition
+choice: It had no trade-off because the partition was short
+hint: Which property did the minority side preserve by answering writes?
+solution: Answering writes on the minority side kept the system available but let the two sides diverge, so linearizability (CAP's C) was given up during the partition. It is an AP behavior.
+
+@practice num
+prompt: A service promises 99.99% availability over a 365-day year (525600 minutes). How many minutes of downtime per year does that allow? Give the number of minutes.
+answer: 52.56
+check: 525600 * (1 - 0.9999)
+tol: 0.01
+hint: Downtime is the unavailable fraction of the year.
+solution: The unavailable fraction is $1 - 0.9999 = 0.0001$, and $0.0001 \times 525600 = 52.56$ minutes, about 53 minutes.
+
+@practice code
+prompt: Write `max_faults(n, model)` returning the largest number of faulty servers `f` a group of `n` servers can tolerate for agreement. `model` is `"crash"` (needs `n >= 2f + 1`) or `"byzantine"` (needs `n >= 3f + 1`). Return an integer.
+starter:
+```python
+def max_faults(n, model):
+    pass
+```
+tests:
+```python
+assert max_faults(5, "crash") == 2
+assert max_faults(4, "byzantine") == 1
+assert max_faults(3, "crash") == 1
+assert max_faults(7, "byzantine") == 2
+assert max_faults(1, "crash") == 0
+assert max_faults(3, "byzantine") == 0
+assert max_faults(6, "crash") == 2
+```
+model:
+```python
+def max_faults(n, model):
+    if model == "crash":
+        return (n - 1) // 2
+    return (n - 1) // 3
+```
+hint: Solve $n \ge 2f + 1$ (or $3f + 1$) for the largest integer $f$.
+hint: $f \le (n-1)/2$ for crash and $f \le (n-1)/3$ for Byzantine; use integer division.
+solution: The conditions rearrange to $f \le (n-1)/2$ and $f \le (n-1)/3$; floor division gives the largest integer. Six servers tolerate only 2 crashes, no better than five.
+
+@practice code
+prompt: Write `accepts_write(mode, reachable, n)` modelling one node of an `n`-node store during a partition. `reachable` is the number of nodes this node can currently communicate with, **including itself**. In mode `"CP"` the node accepts the write only if it can reach a strict majority of the `n` nodes. In mode `"AP"` it accepts the write whenever `reachable >= 1`. Return `True` or `False`.
+starter:
+```python
+def accepts_write(mode, reachable, n):
+    pass
+```
+tests:
+```python
+assert accepts_write("CP", 3, 5) is True
+assert accepts_write("CP", 2, 5) is False
+assert accepts_write("CP", 2, 4) is False
+assert accepts_write("CP", 3, 4) is True
+assert accepts_write("AP", 1, 5) is True
+assert accepts_write("AP", 2, 5) is True
+assert accepts_write("AP", 0, 5) is False
+```
+model:
+```python
+def accepts_write(mode, reachable, n):
+    if mode == "CP":
+        return reachable > n // 2
+    return reachable >= 1
+```
+hint: A strict majority of `n` is more than `n // 2`.
+hint: For `"CP"` return `reachable > n // 2`; for `"AP"` return `reachable >= 1`.
+solution: A CP node needs a majority so that two partitions can never both accept writes; an even split (2 of 4) therefore stops both sides. An AP node accepts whenever it is alive, at the cost of divergent copies.
+
+@practice self
+prompt: Block deliverable (Raft trace). A cluster has five servers S1 to S5, all followers in term 1 with identical empty logs after S1 was elected leader of term 1. A client sends `set a=1` and S1 appends it at index 1, term 1. S1 replicates it to S2 and S3 (so three of five servers hold it), then S1 crashes before telling anyone it was committed. S4 and S5 never received the entry. (a) Was the entry committed from S1's point of view when it was stored on S1, S2 and S3? (b) S4's election timeout fires first. Trace its election in term 2: whose votes can it get, and who wins eventually? (c) What does the final leader do with the entry?
+solution: (a) Yes: it is stored on a majority (3 of 5) and is from the leader's current term, so S1 may treat it as committed and even apply it, although followers have not yet learned the commit index. (b) S4 becomes a candidate in term 2, votes for itself and sends RequestVote. S5 has an empty log like S4 and grants its vote. S2 and S3 have a last entry (index 1, term 1) and S4's log is empty, so S4 is less up to date: they deny. S4 gets 2 votes of 5, not a majority, so it does not win. A server holding the entry, S2 or S3, will time out and run for term 3 (or a later term): S2 gets votes from itself, S3 (equal logs), and S4 and S5 (their logs are less up to date than S2's), so it wins with a majority. (c) The new leader appends nothing at first (or a no-op entry of its own term), replicates entry 1 to S4 and S5 by AppendEntries, backing up from prevLogIndex 0, and once its current-term entry is stored on a majority it commits it and entry 1 together. The entry is never lost because any majority that elects a leader must include a server holding it.
+hint: Use the voting rule: a server denies a candidate whose last log entry is older.
+rubric: States that the entry is committed because it is on a majority in the leader's own term.
+rubric: Shows that S4 cannot win because S2 and S3 deny it (its log is less up to date), and that only a server holding the entry can win.
+rubric: Explains that the new leader replicates the entry to the other servers and commits it with a current-term entry.
+rubric: Uses terms correctly (an election increments the term; one vote per server per term).
+
+@quiz code
+prompt: Write `downtime_minutes(nines)` returning, as a float, the downtime in minutes per 365-day year allowed by availability with the given number of nines (`nines = 3` means 99.9%). A year has 525600 minutes. Compute it as `525600 / 10 ** nines`.
+starter:
+```python
+def downtime_minutes(nines):
+    pass
+```
+tests:
+```python
+assert abs(downtime_minutes(1) - 52560.0) < 1e-6
+assert abs(downtime_minutes(2) - 5256.0) < 1e-6
+assert abs(downtime_minutes(3) - 525.6) < 1e-6
+assert abs(downtime_minutes(4) - 52.56) < 1e-6
+assert abs(downtime_minutes(5) - 5.256) < 1e-6
+```
+model:
+```python
+def downtime_minutes(nines):
+    return 525600 / 10 ** nines
+```
+hint: Each extra nine divides the allowed downtime by 10.
+hint: With `nines` nines, the unavailable fraction is $10^{-\text{nines}}$.
+solution: The unavailable fraction for $k$ nines is $10^{-k}$, so the downtime is $525600 / 10^k$ minutes. Five nines leave about five minutes a year.
+
+@quiz mc
+prompt: A system needs to keep agreeing on a value while up to 2 of its servers behave in arbitrary, possibly malicious ways. What is the minimum number of servers in a typical Byzantine fault tolerant protocol?
+choice: 5
+choice: 6
+choice*: 7
+choice: 9
+hint: Use $N \ge 3f + 1$.
+solution: With $f = 2$ Byzantine servers the bound is $N \ge 3 \times 2 + 1 = 7$. Five servers would suffice only for two crash faults ($2f + 1$).

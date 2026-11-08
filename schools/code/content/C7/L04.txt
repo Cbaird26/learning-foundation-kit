@@ -1,0 +1,309 @@
+@lesson
+title: Arrays and pointer arithmetic
+summary: Use C arrays and pointer arithmetic correctly, including how arrays decay to pointers, why functions need a length, and how multidimensional arrays are laid out.
+objective: Explain the relationship `a[i]` equals `*(a + i)` and compute element addresses.
+objective: Write loops over arrays using both indexing and pointer ranges.
+objective: Explain array-to-pointer decay and why array parameters need an explicit length.
+objective: Compute the row-major offset of an element of a multidimensional array.
+reading: Beej's Guide to C Programming, the chapters on arrays and on pointers II (look up "Arrays", "Pointer Arithmetic" and "Multidimensional Arrays").
+@article
+An **array** is a fixed number of objects of the same type stored contiguously. `int a[5];` reserves room for five `int`s with indices 0 to 4; there is no stored length and no bounds checking. Initializers fill it in: `int a[] = {2, 4, 6, 8, 10};` lets the compiler count the elements. Missing initializers become zero (`int z[100] = {0};` zeroes everything). Arrays cannot be assigned with `=`, and `==` on two arrays compares their addresses, not their contents; copy with a loop or `memcpy`, and compare with a loop or `memcmp`.
+
+### sizeof and the element count
+
+For a true array, `sizeof(a)` is the total size in bytes, so the number of elements is
+
+```c
+size_t n = sizeof(a) / sizeof(a[0]);
+```
+
+This only works where `a` is declared as an array, not for a pointer or an array parameter.
+
+### Arrays decay to pointers
+
+In most expressions the name `a` is converted to a pointer to its first element (`&a[0]`). This is **array-to-pointer decay**; the exceptions are `sizeof` and unary `&`. The subscript operator is defined through pointer arithmetic: `a[i]` means exactly `*(a + i)`.
+
+### Pointer arithmetic
+
+If `p` has type `T *`, then `p + 1` points to the next `T`, that is `sizeof(T)` bytes further on. The compiler scales for you: with `int *p = a;` (4-byte `int`), `p + 3` is the address of `a[3]`, 12 bytes after `a`. In general
+
+$$\text{address of } p[i] = \text{address}(p) + i \cdot \texttt{sizeof}(T).$$
+
+Subtracting two pointers into the same array gives the number of *elements* between them, of type `ptrdiff_t`. Pointer arithmetic is defined only inside one array object, plus the **one-past-the-end** position: you may form `a + n` (and compare with it) but must not dereference it. Anything further, or a pointer before `a`, is undefined behavior even if you never dereference it. Subtracting pointers to different arrays, or comparing them with `<` or `>`, is also undefined.
+
+That makes the pointer-range loop idiom legal:
+
+```c
+int sum = 0;
+for (const int *p = a; p != a + n; p++) {
+    sum += *p;
+}
+```
+
+### Arrays as function parameters
+
+A parameter written `int arr[]` or `int arr[10]` is really `int *arr`: the function receives only the address of the first element. Inside the function `sizeof(arr)` is the size of a pointer, not of the array, so a function working on an array must be passed the length too:
+
+```c
+int sum_array(const int *arr, size_t n);
+```
+
+Because the function receives the address, it can modify the caller's array; `const` documents and enforces that it will not.
+
+### Out of bounds
+
+Reading or writing `a[5]` in a 5-element array is undefined behavior. It might crash, corrupt a neighboring variable or appear to work; it is a leading cause of security vulnerabilities (week 12). No error message will warn you, so guard every index yourself, and use tools such as AddressSanitizer and Valgrind (week 8).
+
+### Multidimensional arrays
+
+`int m[2][3];` is an array of 2 elements, each an array of 3 `int`s. Storage is **row-major**: `m[0][0], m[0][1], m[0][2], m[1][0], ...`. The element `m[i][j]` of an array with `C` columns is at linear position $i \cdot C + j$. For three dimensions with sizes $D_0, D_1, D_2$, element `[i][j][k]` is at $(i \cdot D_1 + j) \cdot D_2 + k$. When passing such an array to a function, every dimension except the first must appear in the parameter: `void f(int m[][3], size_t rows)`.
+
+@example
+title: Walking with pointers
+problem: What does this program print?
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a[] = {10, 20, 30, 40, 50};
+    int *p = a + 1;
+    printf("%d %d %d\n", *p, p[2], *(p - 1));
+    p += 2;
+    printf("%d %ld\n", *p, (long)(p - a));
+    return 0;
+}
+```
+step: `p = a + 1` points at `a[1]`, which is `20`.
+step: `*p` is `20`; `p[2]` is `*(p + 2)`, that is `a[3]`, which is `40`; `*(p - 1)` is `a[0]`, which is `10`. The first line is `20 40 10`.
+step: `p += 2` moves `p` to `a + 3`, which holds `40`.
+step: `p - a` counts elements between the pointers: `3`. The second line is `40 3`.
+answer: `20 40 10` then `40 3`
+
+@example
+title: Writing a function over an array
+problem: Write `int count_neg(const int *a, size_t n)` that returns how many elements of `a[0..n-1]` are negative.
+step: The function cannot know the array's length, so `n` is a parameter. `const` promises not to modify the array.
+step: Use a counter starting at 0 and visit each index from `0` to `n - 1`. Using `size_t` for the index matches the type of `n`.
+step: Count the negatives and return:
+
+```c
+int count_neg(const int *a, size_t n) {
+    int count = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] < 0) {
+            count++;
+        }
+    }
+    return count;
+}
+```
+step: For `n == 0` the loop does not run and the answer is `0`, so empty arrays need no special case. The time is $O(n)$.
+
+@mistakes
+- Using `sizeof(arr)` on an array parameter, which measures a pointer, not the array.
+- Off-by-one errors: the valid indices of `int a[5]` are 0 to 4; `a[5]` is out of bounds and `i <= n` in a loop is the usual cause.
+- Dereferencing the one-past-the-end pointer `a + n`, or forming pointers further than that.
+- Expecting `p + 1` to add one byte: it adds `sizeof` of the pointed-to type.
+- Trying to assign one array to another with `=`, or comparing two arrays with `==` (which compares addresses).
+
+@practice text
+prompt: What does this program print? Type the output exactly (two lines).
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a[5] = {2, 4, 6, 8, 10};
+    int *p = a;
+    p++;
+    *p = 99;
+    printf("%d %d %d\n", a[0], a[1], *(a + 4));
+    printf("%zu\n", sizeof(a) / sizeof(a[0]));
+    return 0;
+}
+```
+answer:
+```
+2 99 10
+5
+```
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    int a[5] = {2, 4, 6, 8, 10};\n    int *p = a;\n    p++;\n    *p = 99;\n    printf("%d %d %d\\n", a[0], a[1], *(a + 4));\n    printf("%zu\\n", sizeof(a) / sizeof(a[0]));\n    return 0;\n}\n')
+hint: After `p++`, `p` points at `a[1]`.
+solution: `p++` moves to `a[1]` and `*p = 99` overwrites it, so the array is `{2, 99, 6, 8, 10}`. The first line prints `a[0]`, `a[1]` and `a[4]`. `sizeof(a)` is the whole array's size, so dividing by the element size gives `5`.
+
+@practice code
+prompt: Write two helper functions that mirror C pointer arithmetic on addresses given as integers. `elem_address(base, i, size)` returns the address of element `i` of an array that starts at address `base` and has elements of `size` bytes. `ptr_diff(p, q, size)` returns how many elements lie between addresses `p` and `q` (that is, `(p - q) / size` as C computes it for `T *`); it may be negative, and you must raise `ValueError` if `p - q` is not a multiple of `size`.
+starter:
+```python
+def elem_address(base, i, size):
+    pass
+
+
+def ptr_diff(p, q, size):
+    pass
+```
+tests:
+```python
+assert elem_address(1000, 3, 4) == 1012
+assert elem_address(1000, 0, 8) == 1000
+assert ptr_diff(1012, 1000, 4) == 3
+assert ptr_diff(1000, 1012, 4) == -3
+assert ptr_diff(2000, 2000, 8) == 0
+assert raises(ValueError, ptr_diff, 1010, 1000, 4)
+```
+model:
+```python
+def elem_address(base, i, size):
+    return base + i * size
+
+
+def ptr_diff(p, q, size):
+    d = p - q
+    if d % size != 0:
+        raise ValueError("not a whole number of elements")
+    return d // size
+```
+hint: The address of element `i` is the base plus `i` times the element size.
+hint: For the difference, subtract the addresses first, check divisibility with `%`, then divide with `//` (which is exact once you know it divides evenly, even for negative numbers).
+solution: `base + i * size` is the scaling the compiler does for `p + i`. Dividing the byte difference by `size` is how `p - q` counts elements. A byte difference that is not a multiple of `size` could not arise from two pointers to elements of the same array.
+
+@practice mc
+prompt: What is wrong with this function, which is meant to return the number of elements of the array passed to it?
+
+```c
+size_t length(int arr[]) {
+    return sizeof(arr) / sizeof(arr[0]);
+}
+```
+choice: Nothing: `sizeof` always gives the number of elements of an array.
+choice*: The parameter `arr` is really an `int *`, so `sizeof(arr)` is the size of a pointer and the result is not the array's length.
+choice: It does not compile, because `size_t` cannot be returned from a function.
+choice: It returns `0` for every array, because `arr` is not initialized.
+hint: What type does the parameter `int arr[]` have inside the function?
+solution: Array parameters are adjusted to pointers, so the function sees only an address. The length must be passed as a separate parameter (or computed by the caller, where the true array is visible).
+
+@practice code
+prompt: Write `reverse_in_place(a)` for a Python list `a`. Reverse it in place using two indices that start at the two ends and move toward each other, swapping items, as a C programmer would with two pointers. Do not use slicing, `reversed`, `list.reverse` or `sorted`. Return `None`.
+starter:
+```python
+def reverse_in_place(a):
+    pass
+```
+tests:
+```python
+a = [1, 2, 3, 4]
+assert reverse_in_place(a) is None
+assert a == [4, 3, 2, 1]
+b = [1, 2, 3]
+reverse_in_place(b)
+assert b == [3, 2, 1]
+c = []
+reverse_in_place(c)
+assert c == []
+d = ["x"]
+reverse_in_place(d)
+assert d == ["x"]
+```
+model:
+```python
+def reverse_in_place(a):
+    lo = 0
+    hi = len(a) - 1
+    while lo < hi:
+        a[lo], a[hi] = a[hi], a[lo]
+        lo += 1
+        hi -= 1
+```
+hint: Keep `lo` at the first index and `hi` at the last index.
+hint: Swap `a[lo]` and `a[hi]`, move both toward the middle, and stop when `lo >= hi` (which also handles empty and one-item lists).
+solution: Each swap fixes two positions, and the loop stops when the indices meet or cross, so the middle item of an odd-length list stays put. It makes $\lfloor n/2 \rfloor$ swaps, so it runs in $O(n)$ time and $O(1)$ extra space.
+
+@practice text
+prompt: What does this program print? Type the output exactly (three numbers separated by single spaces).
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int m[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    printf("%d %d %d\n", m[1][0], *(m[1] + 1), *(*(m + 1) + 2));
+    return 0;
+}
+```
+answer: 4 5 6
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    int m[2][3] = {{1, 2, 3}, {4, 5, 6}};\n    printf("%d %d %d\\n", m[1][0], *(m[1] + 1), *(*(m + 1) + 2));\n    return 0;\n}\n')
+hint: `m[1]` is the second row, an array of three `int`s that decays to a pointer to its first element.
+solution: `m[1][0]` is `4`. `m[1] + 1` points at the second element of row 1, so `*(m[1] + 1)` is `5`. `*(m + 1)` is row 1 again, and adding `2` before dereferencing gives `6`.
+
+@practice num
+prompt: How many times does `count++` run in this program?
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a[6] = {1, 2, 3, 4, 5, 6};
+    const int *end = a + 6;
+    int count = 0;
+    for (const int *p = a; p != end; p += 2) {
+        count++;
+    }
+    printf("%d\n", count);
+    return 0;
+}
+```
+answer: 3
+check: int(run_c('#include <stdio.h>\n\nint main(void) {\n    int a[6] = {1, 2, 3, 4, 5, 6};\n    const int *end = a + 6;\n    int count = 0;\n    for (const int *p = a; p != end; p += 2) {\n        count++;\n    }\n    printf("%d\\n", count);\n    return 0;\n}\n'))
+hint: List the values of `p - a` at the start of each iteration.
+solution: `p - a` is `0`, `2` and `4` in the three iterations; after the third, `p` equals `a + 6`, which equals `end`, so the loop stops. (With a step of 4 it would jump past `end` and never match, which is undefined behavior.)
+
+@quiz code
+prompt: Write `offset(dims, idx)` that returns the row-major linear position of the element with indices `idx` in a multidimensional array whose dimension sizes are `dims`. Both are tuples of the same length (at least 1). Example: for `dims = (2, 3)` and `idx = (1, 2)` the result is `1 * 3 + 2 = 5`. Raise `IndexError` if any index is negative or not less than its dimension.
+starter:
+```python
+def offset(dims, idx):
+    pass
+```
+tests:
+```python
+assert offset((2, 3), (1, 2)) == 5
+assert offset((2, 3), (0, 0)) == 0
+assert offset((2, 3, 4), (1, 2, 3)) == 23
+assert offset((5,), (4,)) == 4
+assert offset((3, 3), (2, 0)) == 6
+assert raises(IndexError, offset, (2, 3), (2, 0))
+assert raises(IndexError, offset, (2, 3), (0, -1))
+```
+model:
+```python
+def offset(dims, idx):
+    pos = 0
+    for size, i in zip(dims, idx):
+        if i < 0 or i >= size:
+            raise IndexError(i)
+        pos = pos * size + i
+    return pos
+```
+hint: For two dimensions the formula is `i * cols + j`; think of it as `(0 * rows + i) * cols + j`.
+hint: Process the dimensions left to right: multiply the running position by the current dimension size, then add the current index (Horner's rule).
+solution: The loop computes `pos = (...((i0) * D1 + i1) * D2 + i2 ...)`, which is the row-major formula for any number of dimensions. For `(2, 3, 4)` and `(1, 2, 3)`: `1`, then `1 * 3 + 2 = 5`, then `5 * 4 + 3 = 23`.
+
+@quiz text
+prompt: What does this program print? Type the output exactly (two numbers separated by one space).
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a[] = {5, 10, 15, 20};
+    int *p = a + 3;
+    int *q = a;
+    printf("%ld %d\n", (long)(p - q), *(p - 2));
+    return 0;
+}
+```
+answer: 3 10
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    int a[] = {5, 10, 15, 20};\n    int *p = a + 3;\n    int *q = a;\n    printf("%ld %d\\n", (long)(p - q), *(p - 2));\n    return 0;\n}\n')
+hint: Pointer subtraction counts elements, not bytes.
+solution: `p` points at `a[3]` and `q` at `a[0]`, so `p - q` is `3`. `p - 2` points at `a[1]`, which holds `10`.

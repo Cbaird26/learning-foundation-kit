@@ -1,0 +1,337 @@
+@lesson
+title: Creational and structural design patterns
+summary: Recognize and apply the factory, builder, adapter, decorator and facade patterns, and explain when a Singleton is the wrong choice.
+objective: Use a factory to hide which concrete class is created, and a builder to assemble objects with many options.
+objective: Use an adapter, a decorator and a facade to fit components together without changing them.
+objective: Describe each pattern's intent, structure and cost in a design review.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 13 for composition-root style wiring; also look up the Gang of Four categories "creational" and "structural" patterns.
+@article
+A **design pattern** is a named, reusable solution to a recurring design problem, described by its intent, its structure and its trade-offs. Patterns are vocabulary: "put an adapter around it" saves five minutes of whiteboard. They are not recipes to apply everywhere, and in Python several (Strategy, Iterator, Singleton) shrink to functions, generators or modules. This week covers **creational** patterns (how objects get made) and **structural** patterns (how objects are fitted together).
+
+### Factory
+
+**Problem:** the caller should not need to know which concrete class to instantiate, or construction has logic. **Solution:** a function or method that decides and returns an object.
+
+```python
+FORMATTERS = {
+    "upper": str.upper,
+    "lower": str.lower,
+}
+
+def make_formatter(kind):
+    try:
+        return FORMATTERS[kind]
+    except KeyError:
+        raise ValueError(f"unknown formatter: {kind}") from None
+```
+
+The registry dictionary keeps the factory closed for modification: adding a kind is adding an entry. Use a factory when creation depends on configuration or input (a file extension chooses the parser). The cost is one more indirection, so do not add one for a class that is only ever built one way. **Abstract Factory** extends this to families of related objects (a UI toolkit's button and checkbox for one theme), and is rare in application code.
+
+### Builder
+
+**Problem:** an object has many optional parts, and a constructor with twelve parameters is unreadable. **Solution:** a builder collects the options step by step, then produces the object at the end.
+
+```python
+query = QueryBuilder().table("users").where("age > 18").limit(5).build()
+```
+
+Each method returns `self` (a **fluent interface**) and `build()` validates and assembles the result. Python's keyword arguments and `dataclasses` handle many cases the builder used to; reach for a builder when assembly has ordering, validation or several stages (SQL, HTTP requests, test data).
+
+### Singleton, and why to be wary
+
+A **Singleton** guarantees one instance, reachable globally. It is global state in disguise: hidden coupling, order-dependent tests, trouble with parallel code. Prefer creating one object at startup and **passing it in**. In Python a module-level instance already gives you "one of these" without the global access being a design feature.
+
+### Adapter
+
+**Problem:** you have a component with the wrong interface and cannot (or should not) change it: a third-party library or legacy class. **Solution:** a small class that wraps it and presents the interface your code wants.
+
+```python
+class LegacyThermometer:
+    def get_fahrenheit(self):
+        return 212.0
+
+class CelsiusAdapter:
+    def __init__(self, legacy):
+        self._legacy = legacy
+
+    def celsius(self):
+        return (self._legacy.get_fahrenheit() - 32) * 5 / 9
+```
+
+Your code depends on `celsius()`; only the adapter knows about the legacy shape. When a vendor changes, you edit one class. This is how you keep a third-party SDK from leaking into the whole codebase.
+
+### Decorator
+
+**Problem:** add behavior to individual objects, flexibly, without a subclass for every combination. **Solution:** a wrapper with the same interface as the object it wraps, which adds behavior before or after delegating.
+
+```python
+class Coffee:
+    def cost(self):
+        return 3
+
+class WithMilk:
+    def __init__(self, inner):
+        self._inner = inner
+
+    def cost(self):
+        return self._inner.cost() + 1
+```
+
+`WithMilk(WithMilk(Coffee()))` costs 5. Layers stack in any order. Do not confuse this with Python's `@decorator` syntax for functions, which is the same idea (wrap a callable) applied to functions. Logging, caching, retry and authorization wrappers are everyday uses.
+
+### Facade
+
+**Problem:** a subsystem has many classes and a complicated protocol, and most callers need one simple workflow. **Solution:** a class with a few high-level methods that coordinates the subsystem.
+
+```python
+class CheckoutFacade:
+    def __init__(self, inventory, payments, shipping):
+        self._inventory = inventory
+        self._payments = payments
+        self._shipping = shipping
+
+    def place_order(self, cart, card):
+        self._inventory.reserve(cart)
+        self._payments.charge(card, cart.total())
+        return self._shipping.schedule(cart)
+```
+
+A facade hides complexity from callers while leaving the subsystem available to the code that needs it. Two related ideas: a **Proxy** has the same interface as the real object but controls access (lazy loading, access checks, remote calls), and **Composite** treats a tree of objects, a folder of files, through one interface.
+
+### Choosing
+
+Ask which problem you have. Wrong interface: adapter. Behavior layered on objects: decorator. Complex subsystem, simple use: facade. Many optional parts: builder. Creation decided by data: factory. If you cannot name the problem, you do not need the pattern.
+
+@example
+title: Adapting a legacy class
+problem: Your new code expects `sensor.celsius()`. A legacy class offers only `get_fahrenheit()`, and you may not edit it. Write the adapter and check it.
+step: Name the interface your code wants: one method, `celsius()`, returning a number.
+step: Write a class that holds the legacy object and implements that method by delegating:
+
+```python
+class CelsiusAdapter:
+    def __init__(self, legacy):
+        self._legacy = legacy
+
+    def celsius(self):
+        return (self._legacy.get_fahrenheit() - 32) * 5 / 9
+```
+step: Convert with the formula $C = (F - 32) \cdot 5/9$. For the legacy reading `212.0`, `(212.0 - 32) * 5 / 9` is `100.0`.
+step: Callers depend only on `celsius()`. If the vendor renames `get_fahrenheit`, only the adapter changes.
+answer: A wrapper class that exposes `celsius()` and delegates to the legacy object.
+
+@example
+title: Stacking decorators
+problem: With the `Coffee` and wrapper classes below, what does `Sugar(Milk(Milk(Coffee()))).cost()` return?
+
+```python
+class Coffee:
+    def cost(self):
+        return 3
+
+class Milk:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def cost(self):
+        return self.inner.cost() + 1
+
+class Sugar:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def cost(self):
+        return self.inner.cost() + 0.5
+```
+step: Evaluate from the outside in: `Sugar.cost` asks the `Milk` it wraps and adds `0.5`.
+step: That `Milk` asks the next `Milk` and adds `1`; the inner `Milk` asks `Coffee` and adds `1`.
+step: `Coffee.cost()` is `3`, so the inner `Milk` gives `4` and the outer `Milk` gives `5`.
+step: `Sugar` adds `0.5`, so the result is `5.5`. Every wrapper has the same `cost()` interface, so callers cannot tell how many layers there are.
+answer: `5.5`
+
+@mistakes
+- Applying a pattern to a problem you do not have: a factory for one class, a builder for a three-argument constructor.
+- Treating the Singleton as acceptable because it is easy. Pass a single shared object in instead of reaching for a global.
+- Writing an adapter that exposes the vendor's types and exceptions anyway, so the SDK still leaks into callers.
+- Confusing decorator, adapter and proxy. All wrap an object: an adapter changes the interface, a decorator keeps it and adds behavior, a proxy keeps it and controls access.
+
+@practice mc
+prompt: Your code expects `payments.charge(cents)`, but the vendor SDK you must use offers only `submit_transaction(amount_dollars, currency)`. You cannot edit the SDK. Which pattern fits best?
+choice: Singleton, so that only one SDK client exists
+choice*: Adapter, wrapping the SDK in a class that offers `charge(cents)`
+choice: Builder, so that the transaction is built step by step
+choice: Composite, so that payments form a tree
+hint: The problem is a mismatch between the interface you have and the one you want.
+solution: An adapter translates between interfaces and keeps the SDK's shape out of the rest of your code. A singleton controls instance count, a builder assembles objects with many parts and a composite models trees.
+
+@practice code
+prompt: Write `make_formatter(kind)`, a factory that returns a function for the kind: `"upper"` returns a function that upper-cases a string, `"title"` one that title-cases it, and `"snake"` one that lower-cases the text and replaces spaces with underscores. Any other kind raises `ValueError`. Use a dictionary so adding a kind needs no new `if`.
+starter:
+```python
+def make_formatter(kind):
+    pass
+```
+tests:
+```python
+assert make_formatter("upper")("hello") == "HELLO"
+assert make_formatter("title")("hello big world") == "Hello Big World"
+assert make_formatter("snake")("Hello Big World") == "hello_big_world"
+assert raises(ValueError, make_formatter, "kebab")
+assert make_formatter("upper")("") == ""
+```
+model:
+```python
+FORMATTERS = {
+    "upper": str.upper,
+    "title": str.title,
+    "snake": lambda s: s.lower().replace(" ", "_"),
+}
+
+def make_formatter(kind):
+    if kind not in FORMATTERS:
+        raise ValueError(f"unknown formatter: {kind}")
+    return FORMATTERS[kind]
+```
+hint: A dictionary from the kind string to a function is the registry.
+solution: The factory looks the kind up in a registry and raises `ValueError` for an unknown key. Adding a new formatter is one more dictionary entry, so the factory stays closed for modification.
+
+@practice text
+prompt: What does this program print? Type the number.
+
+```python
+class Coffee:
+    def cost(self):
+        return 3
+
+class Milk:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def cost(self):
+        return self.inner.cost() + 1
+
+class Sugar:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def cost(self):
+        return self.inner.cost() + 0.5
+
+order = Sugar(Milk(Milk(Coffee())))
+print(order.cost())
+```
+answer: 5.5
+check: run("class Coffee:\n    def cost(self):\n        return 3\n\nclass Milk:\n    def __init__(self, inner):\n        self.inner = inner\n\n    def cost(self):\n        return self.inner.cost() + 1\n\nclass Sugar:\n    def __init__(self, inner):\n        self.inner = inner\n\n    def cost(self):\n        return self.inner.cost() + 0.5\n\norder = Sugar(Milk(Milk(Coffee())))\nprint(order.cost())\n")
+hint: Each wrapper adds its own amount to whatever the object inside returns.
+solution: The base coffee is 3, each `Milk` adds 1 (two of them give 5) and `Sugar` adds 0.5, for 5.5.
+
+@practice code
+prompt: A legacy class has `get_fahrenheit()`. Write `CelsiusAdapter(legacy)` with a method `celsius()` that returns the temperature in degrees Celsius using `(F - 32) * 5 / 9`. The adapter must call the legacy object each time, so it reflects changes in the reading.
+starter:
+```python
+class CelsiusAdapter:
+    pass
+```
+tests:
+```python
+class Legacy:
+    def __init__(self, f):
+        self.f = f
+
+    def get_fahrenheit(self):
+        return self.f
+
+old = Legacy(212)
+a = CelsiusAdapter(old)
+assert a.celsius() == 100.0
+old.f = 32
+assert a.celsius() == 0.0
+assert CelsiusAdapter(Legacy(50)).celsius() == 10.0
+assert CelsiusAdapter(Legacy(-40)).celsius() == -40.0
+```
+model:
+```python
+class CelsiusAdapter:
+    def __init__(self, legacy):
+        self._legacy = legacy
+
+    def celsius(self):
+        return (self._legacy.get_fahrenheit() - 32) * 5 / 9
+```
+hint: Keep the legacy object and convert its value inside `celsius`, not in the constructor.
+solution: The adapter stores the legacy object and converts on each call, so a later change to the reading is visible. Only this class knows the legacy method name.
+
+@practice self
+prompt: Design a facade for this checkout workflow. Today every controller repeats these steps and error handling. Write the facade's class and method signatures, the order of calls, what happens if the payment fails after stock is reserved, and one reason NOT to make the facade a Singleton.
+
+```python
+inventory.reserve(cart)
+receipt = payments.charge(card, cart.total())
+label = shipping.schedule(cart.address, cart.items)
+emails.send_receipt(cart.customer, receipt, label)
+```
+hint: Think about which steps must be undone if a later step fails, and how the facade gets its collaborators.
+solution: `class CheckoutFacade: def __init__(self, inventory, payments, shipping, emails)` and `def place_order(self, cart, card) -> OrderResult`. Controllers call `facade.place_order(cart, card)` and nothing else. Inside: reserve stock, charge the card, schedule shipping, send the receipt. If `charge` raises, the facade releases the reservation (`inventory.release(cart)`) in a `try`/`except` and re-raises a single `PaymentFailed` error, so controllers handle one error instead of knowing the subsystem. If shipping fails after payment, it refunds or queues a retry and records the problem. A facade is not a Singleton because it should receive its collaborators in the constructor: tests pass fakes, and a global instance would hide that dependency and let state leak between tests. Construct one instance at startup and pass it to the controllers.
+rubric: Gives a facade class with injected collaborators and a single high-level method, with the call order stated.
+rubric: Handles failure explicitly, for example releasing the reservation when payment fails and exposing one clear error to callers.
+rubric: Gives a valid reason against a Singleton, such as hidden global state, harder testing or no way to substitute fakes.
+
+@quiz code
+prompt: Write a fluent `QueryBuilder`. `table(name)`, `where(condition)` (may be called several times) and `limit(n)` each return the builder. `build()` returns a string: `SELECT * FROM <table>`, followed by ` WHERE ` and the conditions joined by ` AND ` if any, followed by ` LIMIT <n>` if a limit was set. `build()` raises `ValueError` if no table was given.
+starter:
+```python
+class QueryBuilder:
+    pass
+```
+tests:
+```python
+q = QueryBuilder().table("users")
+assert q.build() == "SELECT * FROM users"
+q.where("age > 18").where("active = 1").limit(5)
+assert q.build() == "SELECT * FROM users WHERE age > 18 AND active = 1 LIMIT 5"
+assert QueryBuilder().table("t").limit(1).build() == "SELECT * FROM t LIMIT 1"
+assert raises(ValueError, QueryBuilder().where("x = 1").build)
+b = QueryBuilder()
+assert b.table("a") is b
+```
+model:
+```python
+class QueryBuilder:
+    def __init__(self):
+        self._table = None
+        self._wheres = []
+        self._limit = None
+
+    def table(self, name):
+        self._table = name
+        return self
+
+    def where(self, condition):
+        self._wheres.append(condition)
+        return self
+
+    def limit(self, n):
+        self._limit = n
+        return self
+
+    def build(self):
+        if self._table is None:
+            raise ValueError("table is required")
+        sql = f"SELECT * FROM {self._table}"
+        if self._wheres:
+            sql += " WHERE " + " AND ".join(self._wheres)
+        if self._limit is not None:
+            sql += f" LIMIT {self._limit}"
+        return sql
+```
+hint: Each setter stores its option and returns `self`; `build` assembles the string and validates.
+solution: The builder collects options one at a time, returning `self` so calls chain, and only `build` validates (a table is required) and produces the result. Note `limit(0)` still works because the check is `is not None`.
+
+@quiz mc
+prompt: A team wraps a database client in a class with the same methods, which logs each query and its duration and then calls the real client. Which pattern is this?
+choice: Adapter, because it translates between two interfaces
+choice*: Decorator, because it keeps the interface and adds behavior around each call
+choice: Builder, because it assembles the query step by step
+choice: Facade, because it simplifies a subsystem
+hint: Compare the wrapper's interface with the wrapped object's interface.
+solution: The wrapper has the same interface as the object it wraps and adds logging around delegation, which defines a decorator. An adapter would change the interface, a facade would simplify a whole subsystem, and a builder assembles an object.

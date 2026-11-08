@@ -1,0 +1,193 @@
+@lesson
+title: Public-key cryptography and key exchange
+summary: Explain how Diffie-Hellman and RSA work with small numbers, why key exchange needs authentication, and what quantum computers change.
+objective: Perform a Diffie-Hellman exchange and toy RSA encryption and decryption with modular arithmetic.
+objective: Explain why textbook RSA is insecure as written and what padding, key size and ephemeral keys add.
+objective: Describe man-in-the-middle attacks on unauthenticated key exchange and the effect of quantum computers on public-key cryptography.
+reading: UC Berkeley CS 161 textbook, the chapters on key exchange, Diffie-Hellman and RSA (look up "discrete logarithm", "forward secrecy" and "RSA encryption").
+@article
+Symmetric encryption has a distribution problem: Alice and Bob must already share a key. With $n$ parties each needing a private channel to every other, that is $n(n-1)/2$ keys. **Public-key (asymmetric) cryptography** removes the need for a prior secret. Each party has a **public key**, which can be published, and a matching **private key**, which stays secret.
+
+In practice public-key operations are slow, so protocols use them to **establish** or **protect** a symmetric key and then encrypt data symmetrically: **hybrid encryption**.
+
+### Diffie-Hellman key exchange
+
+Public parameters: a prime $p$ and a generator $g$. Alice picks a secret $a$ and sends $A = g^a \bmod p$; Bob picks $b$ and sends $B = g^b \bmod p$. Each computes the same value:
+
+$$B^a \bmod p = g^{ab} \bmod p = A^b \bmod p.$$
+
+An eavesdropper sees $g, p, A, B$, and must solve the **discrete logarithm problem** or the Diffie-Hellman problem to recover the secret, which is believed hard for large groups. In Python, `pow(g, a, p)` computes modular exponentiation efficiently. Real deployments use 2048-bit or larger primes or, more commonly, elliptic curves (for example X25519).
+
+```python
+p, g = 23, 5          # toy numbers; real primes have thousands of bits
+a, b = 6, 15
+A, B = pow(g, a, p), pow(g, b, p)
+print(A, B, pow(B, a, p), pow(A, b, p))   # 8 19 2 2
+```
+
+If each session uses fresh (**ephemeral**) values that are deleted afterwards, an attacker who later steals long-term keys still cannot decrypt recorded traffic: **forward secrecy**.
+
+Plain DH is **not authenticated**. A **man-in-the-middle** who can modify traffic runs one exchange with Alice and another with Bob, and relays and reads everything. Defense: authenticate the exchanged values, with signatures verified against certificates (next lesson) or a password-based protocol.
+
+### RSA
+
+Choose primes $p, q$; let $n = pq$ and $\varphi(n) = (p-1)(q-1)$. Choose $e$ with $\gcd(e, \varphi(n)) = 1$ and compute $d$ with $ed \equiv 1 \pmod{\varphi(n)}$. The public key is $(n, e)$ and the private key is $d$.
+
+$$c = m^e \bmod n, \qquad m = c^d \bmod n.$$
+
+Correctness follows from Euler's theorem. Security rests on the difficulty of factoring $n$. Two facts about practice:
+
+- **Textbook RSA** (as above) is deterministic and malleable: equal messages give equal ciphertexts, and an attacker can multiply ciphertexts to change plaintexts. Real systems use randomized padding (**OAEP**) for encryption and a padding scheme such as **PSS** for signatures.
+- Use **at least 2048-bit** moduli (3072 bits for longer-term protection). The primes must come from a cryptographically secure random generator: a poor generator has produced keys that share a prime and can be factored.
+
+Elliptic-curve schemes give similar security with much smaller keys: a 256-bit curve key is roughly comparable to a 3072-bit RSA modulus.
+
+### Quantum computers
+
+**Shor's algorithm**, on a large fault-tolerant quantum computer, would solve factoring and discrete logarithms efficiently, breaking RSA, finite-field Diffie-Hellman and elliptic-curve cryptography. Symmetric ciphers and hashes are affected much less: Grover's algorithm speeds up key search quadratically, so 256-bit keys remain comfortable. Because recorded traffic can be stored now and decrypted later (**harvest now, decrypt later**), key exchange is migrating first. In August 2024 NIST published its first post-quantum standards: **FIPS 203 (ML-KEM)** for key establishment, **FIPS 204 (ML-DSA)** and **FIPS 205 (SLH-DSA)** for signatures. Deployments often run a **hybrid**: a classical exchange and ML-KEM together, so security holds if either is secure.
+
+@example
+title: A Diffie-Hellman exchange with small numbers
+problem: With $p = 23$, $g = 5$, Alice's secret $a = 6$ and Bob's secret $b = 15$, find the public values and the shared key.
+step: Alice's public value is $A = 5^6 \bmod 23$. $5^6 = 15625 = 23 \times 679 + 8$, so $A = 8$.
+step: Bob's public value is $B = 5^{15} \bmod 23 = 19$.
+step: Alice computes $B^a = 19^6 \bmod 23 = 2$.
+step: Bob computes $A^b = 8^{15} \bmod 23 = 2$. Both obtain the shared key $2$.
+answer: A = 8, B = 19, shared key 2
+@example
+title: Toy RSA
+problem: Use $p = 61$, $q = 53$, $e = 17$ to compute the keys and encrypt $m = 65$.
+step: $n = 61 \times 53 = 3233$ and $\varphi(n) = 60 \times 52 = 3120$.
+step: $d$ is the inverse of 17 modulo 3120. $17 \times 2753 = 46801 = 15 \times 3120 + 1$, so $d = 2753$.
+step: Encrypt: $c = 65^{17} \bmod 3233 = 2790$.
+step: Decrypt: $2790^{2753} \bmod 3233 = 65$, recovering the message.
+answer: n = 3233, d = 2753, c = 2790
+@mistakes
+- Treating plain Diffie-Hellman as authenticated; without signatures or certificates a man-in-the-middle can sit in the exchange.
+- Encrypting with textbook RSA (no padding), which is deterministic and malleable.
+- Using small or reused primes, keys from a weak random generator, or a modulus shorter than 2048 bits.
+- Thinking "post-quantum" means symmetric encryption is broken; the main threat is to public-key exchange and signatures.
+@practice code
+prompt: Write `dh_public(g, secret, p)` returning $g^{secret} \bmod p$, and `dh_shared(their_public, secret, p)` returning $their\_public^{secret} \bmod p$. Use three-argument `pow`.
+starter:
+```python
+def dh_public(g, secret, p):
+    pass
+
+
+def dh_shared(their_public, secret, p):
+    pass
+```
+tests:
+```python
+assert dh_public(5, 6, 23) == 8
+assert dh_public(5, 15, 23) == 19
+assert dh_shared(19, 6, 23) == 2
+assert dh_shared(8, 15, 23) == 2
+A = dh_public(2, 97, 1019)
+B = dh_public(2, 311, 1019)
+assert dh_shared(B, 97, 1019) == dh_shared(A, 311, 1019)
+```
+model:
+```python
+def dh_public(g, secret, p):
+    return pow(g, secret, p)
+
+
+def dh_shared(their_public, secret, p):
+    return pow(their_public, secret, p)
+```
+hint: `pow(base, exponent, modulus)` computes modular exponentiation.
+solution: Both functions are one modular exponentiation. Because $(g^a)^b = (g^b)^a$, the two sides compute the same shared value.
+@practice code
+prompt: Write `rsa_keys(p, q, e)` for toy primes. Return the tuple `(n, d)` where `n = p * q` and `d` is the inverse of `e` modulo `(p - 1) * (q - 1)`. If `e` is not coprime to `(p - 1) * (q - 1)`, raise `ValueError`.
+starter:
+```python
+import math
+
+
+def rsa_keys(p, q, e):
+    pass
+```
+tests:
+```python
+assert rsa_keys(61, 53, 17) == (3233, 2753)
+assert rsa_keys(5, 11, 3) == (55, 27)
+n, d = rsa_keys(11, 13, 7)
+assert n == 143
+assert pow(pow(42, 7, n), d, n) == 42
+assert raises(ValueError, rsa_keys, 7, 13, 3)
+```
+model:
+```python
+import math
+
+
+def rsa_keys(p, q, e):
+    phi = (p - 1) * (q - 1)
+    if math.gcd(e, phi) != 1:
+        raise ValueError("e must be coprime to phi(n)")
+    return p * q, pow(e, -1, phi)
+```
+hint: Compute $\varphi = (p-1)(q-1)$ and check `math.gcd(e, phi)` first.
+hint: In Python 3.8 and later, `pow(e, -1, phi)` computes the modular inverse.
+solution: Reject an `e` that shares a factor with $\varphi(n)$, since it has no inverse; otherwise return `n` and the modular inverse of `e`.
+@practice num
+prompt: With the toy RSA public key $(n, e) = (3233, 17)$, what is the ciphertext for the message $m = 65$? Give the integer $65^{17} \bmod 3233$.
+answer: 2790
+check: pow(65, 17, 3233)
+hint: Use repeated squaring, or write $17 = 16 + 1$ and reduce modulo 3233 after each squaring.
+solution: $65^{17} \bmod 3233 = 2790$.
+@practice mc
+prompt: Alice and Bob run an unauthenticated Diffie-Hellman exchange over a network where an attacker can modify messages. What can the attacker do?
+choice*: Run separate exchanges with each side and relay (and read or change) all traffic, so neither side knows.
+choice: Nothing, because discrete logarithms are hard.
+choice: Recover Alice's secret exponent from the public values.
+choice: Only prevent the exchange from completing.
+hint: Hardness of the discrete logarithm protects against eavesdroppers, not against a modified message.
+solution: Without authentication, the attacker substitutes their own public values toward each side and ends up with a key shared with each of them. Signatures or certificates over the exchanged values defend against this.
+@practice ms
+prompt: Which statements are true? Select all that apply.
+choice*: Textbook RSA without padding is deterministic, so equal plaintexts give equal ciphertexts.
+choice*: Fresh ephemeral Diffie-Hellman values for each session give forward secrecy.
+choice*: A large quantum computer running Shor's algorithm would break RSA and elliptic-curve Diffie-Hellman.
+choice: Diffie-Hellman by itself proves who the other party is.
+choice: AES-256 is broken in practice by Shor's algorithm.
+hint: Shor's algorithm targets factoring and discrete logarithms, not block ciphers.
+solution: The three true statements describe textbook RSA, ephemeral keys and Shor's algorithm. Diffie-Hellman gives no authentication, and symmetric ciphers such as AES-256 are only modestly affected by quantum search.
+@quiz code
+prompt: Write `mod_pow(base, exp, mod)` computing $base^{exp} \bmod mod$ by square-and-multiply, without using three-argument `pow` or `**`. `exp` is a non-negative integer and `mod` is at least 1; `mod_pow(x, 0, m)` is `1 % m`.
+starter:
+```python
+def mod_pow(base, exp, mod):
+    pass
+```
+tests:
+```python
+assert mod_pow(4, 13, 497) == 445
+assert mod_pow(5, 6, 23) == 8
+assert mod_pow(2, 0, 7) == 1
+assert mod_pow(9, 5, 1) == 0
+assert mod_pow(3, 200, 1000003) == pow(3, 200, 1000003)
+```
+model:
+```python
+def mod_pow(base, exp, mod):
+    result = 1 % mod
+    base %= mod
+    while exp > 0:
+        if exp & 1:
+            result = result * base % mod
+        base = base * base % mod
+        exp >>= 1
+    return result
+```
+hint: Look at the bits of the exponent: square the base each step and multiply the result in when the bit is 1.
+hint: Use `exp & 1` to test the low bit and `exp >>= 1` to move to the next one, reducing modulo `mod` each time.
+solution: Keep `result` and a running square `base`. When the current exponent bit is set, multiply it into the result; always square the base and shift the exponent. This takes about $\log_2(exp)$ steps instead of `exp` multiplications.
+@quiz num
+prompt: A company of 50 employees wants every pair to be able to communicate privately using symmetric keys shared pairwise. How many distinct keys are needed? (With public-key cryptography each employee needs only one key pair.)
+answer: 1225
+check: comb(50, 2)
+hint: Count the unordered pairs of employees.
+solution: $\binom{50}{2} = 50 \cdot 49 / 2 = 1225$ keys, growing quadratically; public-key cryptography needs only 50 key pairs.

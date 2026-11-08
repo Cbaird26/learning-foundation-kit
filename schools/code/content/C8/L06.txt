@@ -1,0 +1,230 @@
+@lesson
+title: Condition variables and semaphores
+summary: Use condition variables and semaphores to make threads wait for events, explain Mesa semantics, and fix common race conditions.
+objective: Use wait and signal on a condition variable correctly, always re-checking the condition in a loop.
+objective: Use a semaphore as a lock, as a signal for ordering, and as a counter of available resources.
+objective: Find and fix check-then-act, lost-update and lazy-initialization races.
+reading: Operating Systems: Three Easy Pieces, the chapters "Condition Variables" and "Semaphores".
+
+@article
+Locks give mutual exclusion, but threads also need to **wait for something to happen**: a parent waiting for a child, a consumer waiting for data. Spinning on a variable wastes CPU. Two primitives let a thread sleep until an event.
+
+### Condition variables
+
+A **condition variable** is a queue of sleeping threads, always used together with a mutex that protects the shared state the condition is about. It has two operations.
+
+- `wait(cond, mutex)` **atomically** releases the mutex and puts the caller to sleep; when the caller is woken, `wait` re-acquires the mutex before returning.
+- `signal(cond)` wakes one waiting thread (if any); `broadcast` wakes all.
+
+A parent waiting for a child, in POSIX threads:
+
+```c
+int done = 0;
+pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+
+void thr_exit(void) {
+    pthread_mutex_lock(&m);
+    done = 1;
+    pthread_cond_signal(&c);
+    pthread_mutex_unlock(&m);
+}
+
+void thr_join(void) {
+    pthread_mutex_lock(&m);
+    while (done == 0)
+        pthread_cond_wait(&c, &m);
+    pthread_mutex_unlock(&m);
+}
+```
+
+Three details matter. The state variable `done` is needed: a signal with no sleeping thread is lost, so the waiter must be able to see that the event already happened. The mutex must be held around the check and the wait, otherwise the signal could arrive between the check and the sleep. And the **`while`** is essential: most systems use **Mesa semantics**, in which a signal is only a hint that the condition may now be true. By the time the woken thread runs, another thread may have changed the state, and a wait can also wake spuriously. Re-checking in a loop is always safe; an `if` is a bug.
+
+### Semaphores
+
+A **semaphore** (Dijkstra) is an integer with two operations. `sem_wait` (also P) decrements the value if it is positive, otherwise blocks the caller until another thread posts. `sem_post` (also V) increments the value or, if threads are blocked, lets one of them proceed. The initial value determines the use.
+
+- **Initial value 1: a lock** (binary semaphore). `sem_wait` before the critical section, `sem_post` after.
+- **Initial value 0: ordering.** The parent calls `sem_wait`, which blocks; the child calls `sem_post` when it is done. The parent proceeds only after the event, whichever order they run in, because the post is remembered in the value.
+- **Initial value N: a counted resource**, such as N buffer slots or N connections. At most N threads can pass `sem_wait` at once.
+
+Unlike a condition variable, a semaphore remembers posts, so it needs no separate state variable. A condition variable plus a mutex is more flexible; a semaphore is more compact. Either can implement the other.
+
+### Race conditions and their fixes
+
+Most races follow a handful of patterns.
+
+- **Lost update:** a read-modify-write such as `counter++`. Fix: hold a lock around the whole sequence, or use an atomic operation.
+- **Check-then-act:** `if (balance >= amount) balance -= amount;` The condition can change between the check and the action. Fix: hold the lock across both.
+- **Lazy initialization:** `if (p == NULL) p = make();` Two threads can both see NULL and both create. Fix: lock around the check and the creation, or use a one-time initialization facility such as `pthread_once`.
+
+The cure is the same each time: make the check and the update one atomic critical section that every access to that data uses.
+
+@example
+title: Why the wait must be in a loop
+problem: Two consumers wait on a condition variable for "the queue is not empty". A producer adds one item and signals once. Explain why `if (queue_empty) wait` is wrong.
+step: Both consumers sleep in `wait`. The producer adds one item and signals, waking consumer 1.
+step: Before consumer 1 reacquires the mutex, consumer 2 (which was not asleep) takes the mutex, finds the item and removes it. The queue is empty again.
+step: Consumer 1 now returns from `wait`. With an `if`, it proceeds as though an item were there and reads an empty queue: a bug.
+step: With `while (queue_empty) wait`, consumer 1 re-checks, sees the queue is empty, and goes back to sleep. Correct.
+
+@example
+title: Semaphore initial values
+problem: Five threads each call `sem_wait` once on a semaphore with initial value 3 and nobody posts. How many proceed and how many block?
+step: Each `sem_wait` decrements the value if it is positive: the first, second and third calls take the value from 3 to 2, 1, then 0.
+step: The fourth and fifth find the value 0, so they block.
+step: Three proceed and two block. A later `sem_post` lets one of the two blocked threads continue.
+answer: 3 proceed, 2 block
+
+@mistakes
+- Using `if` instead of `while` around `wait`, which breaks with Mesa semantics and spurious wakeups.
+- Calling `wait` without holding the mutex, or signaling without ever changing the state variable that the waiter tests.
+- Initializing a lock-style semaphore to 0 (a deadlock: nobody can enter) or a signaling semaphore to 1 (the waiter may not wait at all).
+- Assuming a signal is stored: a condition-variable signal with no sleeper is lost, while a semaphore post is remembered.
+
+@practice mc
+prompt: A thread waits for a shared queue to become non-empty using a condition variable. Which pattern is correct under Mesa semantics?
+choice*: Hold the mutex, then loop: `while (queue is empty) wait(cond, mutex)`
+choice: Hold the mutex, then `if (queue is empty) wait(cond, mutex)` and assume the queue is non-empty afterward
+choice: Without holding any mutex, call `wait(cond)` and then read the queue
+choice: Spin on `while (queue is empty) ;` while holding the mutex
+hint: After waking, the condition may be false again.
+solution: The loop re-tests the condition every time the thread wakes, which handles other threads changing the state first and spurious wakeups. The `if` form trusts a hint; spinning while holding the mutex prevents anyone from adding to the queue.
+
+@practice code
+prompt: Write a class `Semaphore` that models a counting semaphore in a single thread without real blocking. `Semaphore(value)` stores `self.value` and an empty FIFO list of waiters. `wait(name)`: if `value > 0`, decrement it and return `True`; otherwise append `name` to the waiters and return `False` (the caller blocks). `post()`: if there are waiters, remove the oldest and return its name (it proceeds, and `value` stays the same); otherwise increment `value` and return `None`.
+starter:
+```python
+class Semaphore:
+    pass
+```
+tests:
+```python
+s = Semaphore(1)
+assert s.wait("A") is True and s.value == 0
+assert s.wait("B") is False
+assert s.wait("C") is False
+assert s.post() == "B" and s.value == 0
+assert s.post() == "C"
+assert s.post() is None and s.value == 1
+z = Semaphore(0)
+assert z.wait("P") is False
+assert z.post() == "P"
+```
+model:
+```python
+class Semaphore:
+    def __init__(self, value):
+        self.value = value
+        self.waiters = []
+
+    def wait(self, name):
+        if self.value > 0:
+            self.value -= 1
+            return True
+        self.waiters.append(name)
+        return False
+
+    def post(self):
+        if self.waiters:
+            return self.waiters.pop(0)
+        self.value += 1
+        return None
+```
+hint: A post either wakes the oldest waiter or adds one to the stored value, never both.
+solution: `wait` consumes a unit or queues the caller. `post` hands its unit directly to the oldest waiter if there is one (so `value` is unchanged), and otherwise stores it by incrementing `value`. FIFO order wakes `B` before `C`.
+
+@practice num
+prompt: A pool allows at most 4 database connections at a time and is guarded by a counting semaphore. Ten threads each call `sem_wait` once at the same moment, none has yet called `sem_post`. What initial semaphore value gives the intended limit, and how many of the ten threads are blocked? Give the number of blocked threads.
+answer: 6
+check: 10 - 4
+hint: The initial value is the number of available connections.
+solution: The semaphore starts at 4, so four threads pass and the other $10 - 4 = 6$ block until connections are returned with `sem_post`.
+
+@practice code
+prompt: Write a class `Barrier` that models a reusable barrier for `n` threads. `Barrier(n)` is created with the thread count. `arrive(name)` records that thread `name` has reached the barrier. It returns an empty list `[]` while fewer than `n` threads have arrived since the last release. When the `n`-th thread arrives, it returns the list of the names of all `n` threads in arrival order and the barrier resets for the next round.
+starter:
+```python
+class Barrier:
+    pass
+```
+tests:
+```python
+b = Barrier(3)
+assert b.arrive("a") == []
+assert b.arrive("b") == []
+assert b.arrive("c") == ["a", "b", "c"]
+assert b.arrive("c") == []
+assert b.arrive("a") == []
+assert b.arrive("b") == ["c", "a", "b"]
+one = Barrier(1)
+assert one.arrive("x") == ["x"]
+```
+model:
+```python
+class Barrier:
+    def __init__(self, n):
+        self.n = n
+        self.waiting = []
+
+    def arrive(self, name):
+        self.waiting.append(name)
+        if len(self.waiting) < self.n:
+            return []
+        released = self.waiting
+        self.waiting = []
+        return released
+```
+hint: Keep a list of the threads that have arrived in the current round.
+solution: Append each arrival. While the list is shorter than `n` return `[]`; at the `n`-th arrival, return the whole list and start a new empty list, which makes the barrier reusable.
+
+@practice self
+prompt: Each of the three fragments below is shared by several threads. For each, name the kind of race, show an interleaving that goes wrong, and write the fix using a mutex `m` (or `pthread_once`).
+
+```c
+/* 1 */ counter = counter + 1;
+/* 2 */ if (balance >= amount) balance = balance - amount;
+/* 3 */ if (config == NULL) config = load_config();
+```
+solution: (1) A lost update: two threads both load the same old `counter` value, add 1, and store, so one increment disappears. Fix: `pthread_mutex_lock(&m); counter = counter + 1; pthread_mutex_unlock(&m);`. (2) Check-then-act: with `balance` 100 and two withdrawals of 80, both threads pass the check before either subtracts, and the balance goes to minus 60. Fix: hold `m` across both the check and the subtraction. (3) Lazy initialization: two threads both see `config == NULL` and both call `load_config`, leaking one result or using two different objects. Fix: lock `m` around the check and the assignment, or call `pthread_once` with the loader. In all three cases every access to the shared variable must use the same lock.
+hint: Ask what could change between the instructions of one thread when another thread runs.
+hint: In each fix the lock must cover both the read or check and the write that depends on it.
+rubric: Names the pattern for each fragment (lost update, check-then-act, lazy initialization or double initialization).
+rubric: Gives a concrete interleaving that produces a wrong result for each fragment.
+rubric: Fixes each by holding one lock across the entire read-check-modify sequence, or by using one-time initialization.
+
+@quiz text
+prompt: This CPython program uses a semaphore for ordering. Type exactly what it prints.
+
+```python
+import threading
+
+sem = threading.Semaphore(0)
+
+def worker():
+    print("child")
+    sem.release()
+
+t = threading.Thread(target=worker)
+t.start()
+sem.acquire()
+print("parent")
+t.join()
+```
+answer:
+```
+child
+parent
+```
+check: run("import threading\n\nsem = threading.Semaphore(0)\n\ndef worker():\n    print(\"child\")\n    sem.release()\n\nt = threading.Thread(target=worker)\nt.start()\nsem.acquire()\nprint(\"parent\")\nt.join()\n")
+hint: With initial value 0, `acquire` blocks until someone releases.
+solution: The main thread blocks in `acquire` until the worker has printed `child` and called `release`, so `parent` always comes second, whichever thread the scheduler runs first.
+
+@quiz mc
+prompt: A semaphore must act as a mutual-exclusion lock for a critical section. What should its initial value be, and how is it used?
+choice*: 1: call `sem_wait` before the critical section and `sem_post` after it
+choice: 0: call `sem_post` before the critical section and `sem_wait` after it
+choice: 2: so that one thread can be inside while another is waiting to enter
+choice: 0: call `sem_wait` before and after the critical section
+hint: At most one thread may pass `sem_wait` at a time.
+solution: Starting at 1 lets exactly one thread through `sem_wait`; the next blocks until the holder's `sem_post`. Starting at 0 would block every thread, and starting at 2 would allow two threads inside at once.

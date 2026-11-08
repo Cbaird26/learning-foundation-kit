@@ -1,0 +1,207 @@
+@lesson
+title: Code review in practice
+summary: Review a pull request for correctness, tests, design and readability, write comments that are specific and kind, and prepare your own changes so they are easy to review.
+objective: Review a change with a checklist covering correctness, tests, readability, design and security.
+objective: Write review comments that are specific, actionable and clearly labeled as blocking or optional.
+objective: Prepare small, well-described pull requests and respond to feedback professionally.
+reading: Test-Driven Development with Python has no chapter on review, so look up a published engineering code review guide (for example Google's "Engineering Practices" documentation on how to do a code review and the CL author's guide) and the documentation of your hosting platform's pull request reviews.
+@article
+Code review is where a team's quality standards actually get applied. A second person reads the change before it merges, to catch defects, spread knowledge, keep the design coherent and keep the code readable by someone other than its author. For a new hire it is also the fastest way to learn the codebase, both as author and as reviewer. Done well it is a conversation; done badly it is a bottleneck or a source of resentment.
+
+### As the author: make the change easy to review
+
+- **Keep it small.** Review quality collapses as size grows: a 50-line change gets careful reading, a 2,000-line change gets "looks good to me". Split work into steps that each make sense alone (a refactoring commit, then the feature).
+- **Write a description.** Say *what* changed, *why*, how you tested it, and what you want the reviewer to look at. Link the ticket. Add a screenshot or sample output when behavior is visible.
+- **Review your own diff first.** You will find leftover debug prints, unrelated edits and missing tests before anyone else has to.
+- **Let automation do the mechanical work.** Formatter, linter, type checker and tests run in CI, and must be green before a human looks. Reviewers should spend attention on things only people can judge.
+
+### As the reviewer: what to look for
+
+Work through a checklist rather than reading randomly:
+
+1. **Purpose and design.** Does the change solve the stated problem? Is it in the right place, and does it fit the existing design? Would a simpler approach do?
+2. **Correctness.** Walk through the logic. Boundaries and off-by-one errors, `None` and empty input, error handling (a bare `except:` that swallows everything is a red flag), concurrency and resource cleanup (files and connections closed with `with`), mutable default arguments.
+3. **Tests.** Are there tests for the new behavior *and* the edge cases? Do they fail if the code is wrong (look for tests with no assertions)? Is a bug fix accompanied by a regression test?
+4. **Readability.** Names, function size, comments that explain *why*, no dead code, no magic numbers.
+5. **Security and data.** Untrusted input reaching a query, a shell command or a file path; secrets in code; logging of personal data; authorization checks on the new endpoint.
+6. **Performance** where it matters: queries inside loops, loading everything into memory.
+7. **Compatibility and operations.** Database migrations, public API changes, configuration, logging and monitoring for new failure modes, documentation.
+
+### Writing good comments
+
+Comment on the **code**, never on the person. Be specific and give a reason; propose an alternative when you can; ask a question when you are unsure rather than asserting.
+
+- Weak: "This is confusing." Better: "I had to read this twice to see that `t` is the total. Could we name it `order_total`?"
+- Weak: "Bad approach." Better: "This opens a database query per item, so 500 items means 500 queries. Could we fetch all the prices in one query and look them up in a dictionary?"
+
+Label the weight of each comment so the author knows what blocks merging. Common prefixes are **Blocking:** (must fix), **Suggestion:** (consider it), **Nit:** (minor style, optional) and **Question:** (I want to understand). Also say what is good: a short "nice use of a fixture here" costs nothing and teaches. Review the same day if you can; a change waiting for days stalls the author and grows merge conflicts.
+
+### Receiving feedback
+
+Assume good intent and read comments as being about the code. If you disagree, explain your reasoning once, concisely, and ask for theirs; if you still disagree, involve a third person or follow the team's guideline rather than arguing in circles. If a comment is right, fix it and say so. If you decide not to act on a suggestion, say why. When feedback reveals a pattern (for example repeated naming issues), consider whether a linter rule or a team convention would remove the discussion.
+
+### Approving
+
+Approve when the change **improves the overall health of the code** and has no blocking problems, even if it is not how you would have written it. Do not demand perfection, and do not approve something you do not understand: say so and ask. Leave the final correctness check to the tests, and ask for them when they are missing.
+
+### A note on automated suggestions
+
+Tools, including AI-based assistants, can propose review comments or fixes. Treat their output as input to your judgment: they can state wrong things confidently and miss the context of your system, and you are still the one accountable for what merges. Verify claims by running the code and the tests, and never paste secrets or private code into a tool your organization has not approved.
+
+@example
+title: Reviewing a small pull request
+problem: Review this diff for a function that returns the last `n` log lines. Write the comments you would leave.
+
+```python
+def last_lines(lines, n, result=[]):
+    for line in lines[-n:]:
+        result.append(line)
+    return result
+```
+step: Read for correctness. The default `result=[]` is created once and shared by every call, so a second call returns the first call's lines plus its own. This is a real bug: **Blocking:** use `result=None` and create a new list, or simply return `lines[-n:]`.
+step: Check the boundary. For `n = 0`, `lines[-0:]` is `lines[0:]`, the whole list, not an empty one. **Blocking:** handle `n == 0` (and decide what a negative `n` should do).
+step: Look at the tests: the PR has none. **Blocking:** add tests for normal, `n` larger than the list, `n = 0`, an empty list, and two calls in a row (this catches the shared default).
+step: Add the lighter comments: **Nit:** `lines` and `n` could be `log_lines` and `count`; **Suggestion:** a docstring that says what happens for negative `n`. Finish with a positive remark if there is one, and a clear verdict: request changes.
+answer: Three blocking comments (mutable default, `n = 0`, missing tests) and two optional ones, each with a reason.
+
+@example
+title: Responding to a review comment
+problem: A reviewer writes: "Why not just use a dictionary here instead of the if-chain?" How do you respond?
+step: Read it as a real question, not an attack; consider whether the suggestion is better.
+step: If it is: change the code and reply "Good call, done in the latest commit; the table also made the new case a one-line change."
+step: If you have a reason against it: explain it once with specifics ("The branches call different functions with different arguments, so a dictionary of values would need a dictionary of lambdas, which I found harder to read"), and ask whether they still prefer the table.
+step: Either way, reply to every comment, and mark threads resolved only when the issue is handled or agreed.
+answer: Respond to the substance, change the code if the suggestion is better, and explain your reasoning briefly if not.
+
+@mistakes
+- Opening a very large pull request and expecting a careful review; reviewers skim what they cannot hold in their heads.
+- Writing comments that judge the author ("sloppy") or give no reason or alternative ("rewrite this").
+- Spending review time on formatting and naming style that a formatter and a linter could have enforced automatically.
+- Approving a change you did not understand, or leaving every comment unlabeled so the author cannot tell what blocks the merge.
+
+@practice mc
+prompt: A reviewer wants to comment on a function with a very long and confusing body. Which comment is the most useful?
+choice: "This is bad code."
+choice: "Rewrite this."
+choice*: "This function does validation, pricing and saving. Could we split it into three functions so each can be tested alone? Suggestion, not blocking."
+choice: "I would never write it this way."
+hint: A good comment is specific, gives a reason and offers a direction.
+solution: The third comment names the issue, explains why it matters (testability), proposes a concrete change and says how strongly it is meant. The others judge without explaining or helping.
+
+@practice text
+prompt: A reviewer points at a mutable default argument. What does this program print? Type the output exactly, one line per print.
+
+```python
+def add_tag(tag, tags=[]):
+    tags.append(tag)
+    return tags
+
+
+print(add_tag("a"))
+print(add_tag("b"))
+```
+answer:
+```
+['a']
+['a', 'b']
+```
+check: run("def add_tag(tag, tags=[]):\n    tags.append(tag)\n    return tags\n\n\nprint(add_tag('a'))\nprint(add_tag('b'))\n")
+hint: The default list is created once, when the function is defined, not on every call.
+solution: Both calls use the same default list. The first call appends `'a'` and returns `['a']`. The second call appends `'b'` to the same list, so it returns `['a', 'b']`. The fix is a `None` default that creates a new list inside the function.
+
+@practice code
+prompt: A reviewer left this comment on your pull request: "Blocking: `add_tag` shares one list between calls. Calling it twice without a list returns the first tag again." Fix `add_tag(tag, tags=None)`: if `tags` is `None` start with a new empty list, append `tag`, and return the list. If a list is passed in, append to that list and return it.
+starter:
+```python
+def add_tag(tag, tags=[]):
+    tags.append(tag)
+    return tags
+```
+tests:
+```python
+assert add_tag("a") == ["a"]
+assert add_tag("b") == ["b"]
+mine = ["x"]
+result = add_tag("y", mine)
+assert result == ["x", "y"]
+assert result is mine
+assert add_tag("c") == ["c"]
+```
+model:
+```python
+def add_tag(tag, tags=None):
+    if tags is None:
+        tags = []
+    tags.append(tag)
+    return tags
+```
+hint: Use `None` as the default and create the list inside the function body.
+hint: Test `if tags is None:`, not `if not tags:`, because an empty list passed by the caller must still be the one that gets appended to.
+solution: Replace the shared default with `None`, create a fresh list per call when none is given, and append to the caller's list otherwise. The `result is mine` check makes sure the caller's list is still modified in place, as before.
+
+@practice ms
+prompt: Which practices make code review more effective?
+choice*: Keeping pull requests small and writing a description that says what changed and why.
+choice*: Labeling comments as blocking, suggestion or nit.
+choice: Using review to catch formatting problems that a formatter could fix automatically.
+choice*: Checking that new behavior and edge cases have tests that would fail if the code were wrong.
+choice: Approving quickly without running or fully reading large changes, to keep things moving.
+hint: Use human attention for judgment, and automation for mechanical checks.
+solution: Small, well-described changes, clearly weighted comments and a check of the tests make review effective. Formatting belongs to the formatter, and approving what you have not read defeats the purpose of review.
+
+@practice self
+prompt: You are asked to review the following diff, which adds a function that returns a customer's stored discount as a percentage. Write at least five review comments. Label each as Blocking, Suggestion, Nit or Question, give a reason, and end with your overall verdict.
+
+```python
++def get_user_discount(user, db):
++    try:
++        sql = "SELECT discount FROM users WHERE id = " + str(user.id)
++        row = db.execute(sql).fetchone()
++    except:
++        return 0
++    return row[0] * 100
+```
+hint: Look at how the query is built, what the `except` hides, what happens when no row is found, and what `* 100` means.
+solution: 1. Blocking: the SQL is built by string concatenation. Use a parameterized query (`db.execute("SELECT discount FROM users WHERE id = ?", (user.id,))`, with the placeholder style your driver uses) so values are never part of the SQL text; this is how injection bugs start, even if `user.id` is trusted today. 2. Blocking: the bare `except:` swallows every error, including a broken connection or a typo, and returns 0, so a database outage silently gives customers no discount. Catch the specific exception you can handle, or let it propagate and log it. 3. Blocking: if no row is found, `fetchone()` returns `None` and `row[0]` raises `TypeError`. Decide the contract (return 0, or raise a clear `LookupError`) and handle it. 4. Question: is `discount` stored as a fraction (0.15) or as a percentage? `* 100` suggests a fraction, but the name does not say so. Name the unit (`discount_percent`) and put the conversion in a named constant or a comment explaining why. 5. Blocking: there are no tests. Please add tests with a fake `db` for a user with a discount, a user with none, and a missing user, plus one for a database error. 6. Nit: `get_user_discount` could be `discount_percent_for`, and a short docstring would state the return type and the missing-user behavior. Verdict: request changes; the design is simple and fine, but the three blocking correctness problems and the missing tests must be fixed first.
+rubric: Flags the string-built SQL as a security problem and recommends a parameterized query.
+rubric: Flags the bare `except` that hides errors, and the unhandled missing-row case.
+rubric: Notes the missing tests and the unclear unit of `* 100`, labeling comments by weight (Blocking, Suggestion, Nit or Question).
+rubric: Ends with a clear verdict and keeps comments about the code, with a reason for each.
+
+@quiz code
+prompt: A reviewer wrote: "Blocking: `last_n([1, 2, 3], 0)` returns the whole list because `items[-0:]` is the same as `items[0:]`." Fix `last_n(items, n)` so it returns a new list with the last `n` items. `n = 0` gives `[]`; `n` larger than the length gives all the items; a negative `n` raises `ValueError`.
+starter:
+```python
+def last_n(items, n):
+    return items[-n:]
+```
+tests:
+```python
+assert last_n([1, 2, 3], 2) == [2, 3]
+assert last_n([1, 2, 3], 0) == []
+assert last_n([1, 2, 3], 5) == [1, 2, 3]
+assert last_n([], 3) == []
+assert last_n([1, 2, 3], 3) == [1, 2, 3]
+assert raises(ValueError, last_n, [1, 2, 3], -1)
+```
+model:
+```python
+def last_n(items, n):
+    if n < 0:
+        raise ValueError("n must not be negative")
+    if n == 0:
+        return []
+    return items[-n:]
+```
+hint: Handle the invalid and zero cases before slicing.
+hint: Once `n` is at least 1, `items[-n:]` already returns everything when `n` exceeds the length.
+solution: Raise for a negative `n`, return an empty list for `0` (the case where `-0` breaks the slice), and slice from the end otherwise. The reviewer's comment became two tests: the one for `0` and one for `n` larger than the list.
+
+@quiz mc
+prompt: A reviewer asks you to rename a helper function and you think the current name is clearer. What is the best response?
+choice: Ignore the comment, since it is only a name.
+choice: Rename it immediately without comment, to avoid conflict.
+choice*: Reply with your reasoning briefly and ask whether the reviewer still prefers the change; rename it if their reason is stronger or the team convention says so.
+choice: Ask a different reviewer to approve instead.
+hint: Review is a conversation about the code, and every comment deserves a reply.
+solution: A short, reasoned reply keeps the discussion about the code, and a team convention or a stronger argument can settle it. Ignoring the comment, silently giving in or shopping for another approver avoids the conversation and builds resentment.

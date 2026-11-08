@@ -1,0 +1,286 @@
+@lesson
+title: Domain modeling
+summary: Model a business domain with entities, value objects and aggregates that enforce their own rules, in the language the business uses.
+objective: Distinguish entities (identity) from value objects (value) and implement each in Python.
+objective: Define an aggregate and place invariants inside its boundary.
+objective: Build a domain model for a described problem, using the business's vocabulary.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 1 "Domain Modeling" and the opening of Chapter 7 on aggregates.
+@article
+The most expensive bugs in business software are not typos: they are misunderstandings of the business. **Domain modeling** is the practice of writing code whose structure mirrors how the business thinks, so that rules live in one recognizable place and a domain expert can read the names and say "yes, that's how it works". It sits at the center of everything in the architecture weeks to come.
+
+### Start with the language
+
+The **domain** is the subject area your software serves: room booking, insurance claims, inventory. Talk to the people who know it and write down their words. A **ubiquitous language** is a shared vocabulary used identically in conversation, tickets, documentation and code. If the business says "a shipment is *dispatched*", your method is `dispatch()`, not `set_status(3)`. When code and conversation use different words, bugs hide in the translation.
+
+### Entities and value objects
+
+An **entity** is defined by **identity** and continuity over time. A customer who changes name or address is still the same customer. Two entities are equal when their identifiers match, whatever their other attributes say.
+
+A **value object** is defined entirely by its attributes, has no identity and should be **immutable**. Two `Money(500, "EUR")` objects are interchangeable, just as two 5-euro notes are for spending. Examples: money, a date range, an email address, a coordinate, a quantity with a unit. Python's frozen dataclasses fit well:
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Money:
+    cents: int
+    currency: str
+
+    def add(self, other):
+        if self.currency != other.currency:
+            raise ValueError("currency mismatch")
+        return Money(self.cents + other.cents, self.currency)
+```
+
+Equality and hashing come from the fields, assignment to a field raises an error, and `add` returns a *new* value. Wrapping a primitive in a value object prevents a whole family of bugs: you cannot add euros to dollars, or pass a customer id where an order id belongs, if each has its own type. It also gives validation one home: a value object can refuse to exist in an invalid state.
+
+An entity, by contrast, defines equality by identity:
+
+```python
+class Customer:
+    def __init__(self, customer_id, name):
+        self.id = customer_id
+        self.name = name
+
+    def __eq__(self, other):
+        return isinstance(other, Customer) and self.id == other.id
+
+    def __hash__(self):
+        return hash(self.id)
+```
+
+### Behavior belongs in the model
+
+A common failure is the **anemic domain model**: classes that hold data with getters and setters, while all rules sit in service functions that manipulate them. The rules become scattered and the objects can be put into invalid states. Instead give the objects the behavior and the invariants: `room.book(hour, who)` checks for conflicts; nothing else may edit the booking list.
+
+### Aggregates
+
+An **aggregate** is a cluster of objects treated as one unit for the purpose of changing data, with one entity as its **root**. Outside code holds a reference to the root only and goes through it. The aggregate's **invariants**, rules that must hold after every operation, are enforced inside the boundary.
+
+Take a meeting-room system. A `Room` is the root; its bookings are inside. The invariant "no two bookings overlap" can only be guaranteed if every booking goes through `Room.book`. If any code could add a booking directly, two requests could create a conflict. Design rules of thumb:
+
+- Keep aggregates small. A giant aggregate means every change locks and loads everything.
+- Reference other aggregates by identifier (`room_id`), not by object.
+- One transaction changes one aggregate. Consistency across aggregates is eventual (week 10).
+- Choose the boundary by the invariants that must be immediately consistent.
+
+### Domain services and events
+
+Some rules do not belong to a single entity: "transfer money between two accounts", "allocate an order line to the best batch". A **domain service** is a stateless function or class in domain language that coordinates entities. Use them sparingly; first ask whether the behavior fits an entity or value object. A **domain event** records that something meaningful happened (`BookingConfirmed`); it is named in the past tense in the ubiquitous language.
+
+### In practice
+
+Modeling is iterative. Start with the three or four sentences the expert says most often, find the nouns (candidates for entities and values) and the rules ("never", "at most", "must"). Write the rules as tests against plain Python objects with no database or web framework: that is the point of keeping the domain free of infrastructure, which is the topic of week 8.
+
+@example
+title: Entity or value object?
+problem: In a hotel system, classify `Guest`, `DateRange` (check-in and check-out), `RoomNumber` and `Reservation`, and say how equality works for each.
+step: Ask: if two objects have identical attributes, are they the same thing? Two guests named "Ana Silva" are different people, so `Guest` is an **entity** with an id.
+step: A `DateRange` of 1 to 4 March is the same wherever it appears, with no life of its own: a **value object**, frozen, equal by its two dates.
+step: `RoomNumber` has no behavior of its own beyond validation and is defined by its value: a small value object (or just a validated string).
+step: A `Reservation` is created, changed and cancelled over time, and the hotel refers to it by confirmation number: an **entity**, with the number as its identity.
+step: Equality: by id for `Guest` and `Reservation`, by fields for `DateRange` and `RoomNumber`.
+answer: Entities: `Guest`, `Reservation`. Value objects: `DateRange`, `RoomNumber`.
+
+@example
+title: Putting an invariant inside an aggregate
+problem: A `Room` must never be booked twice for the same hour. Show how the aggregate enforces this.
+step: The booking data must change only through the root, so store it privately: `self._bookings = {}` mapping the hour to the person.
+step: Give the root a method that states the rule:
+
+```python
+class BookingConflict(Exception):
+    pass
+
+class Room:
+    def __init__(self, name):
+        self.name = name
+        self._bookings = {}
+
+    def book(self, hour, who):
+        if hour in self._bookings:
+            raise BookingConflict(f"{self.name} taken at {hour}")
+        self._bookings[hour] = who
+```
+step: Callers cannot create a conflict: every path goes through `book`, so the invariant holds after every operation.
+step: Test the rule without any database or web server: book hour 9 twice and expect `BookingConflict`.
+step: A separate `book_room(...)` service that edited a plain dict could not give this guarantee. That is the anemic-model failure.
+answer: `Room.book` rejects a second booking for the same hour with `BookingConflict`.
+
+@mistakes
+- Modeling the database tables instead of the business: classes named after tables, with a getter and setter per column, and all the rules in services.
+- Making money, quantities and ids plain `int` or `str`, so that nothing stops adding euros to dollars or passing an order id as a customer id.
+- Using a mutable object as a value object: someone changes it while it is a dictionary key, or shared between two owners.
+- Making aggregates huge ("the Customer aggregate holds all orders, all addresses and all invoices"), so unrelated changes conflict.
+
+@practice mc
+prompt: Which of these is best modeled as a value object?
+choice: A `Customer` who can change their address and still be the same customer
+choice*: A `DateRange` of check-in and check-out dates
+choice: An `Order` that moves from pending to shipped
+choice: A `Warehouse` whose stock changes daily
+hint: Ask whether two objects with identical attributes are interchangeable.
+solution: Two identical date ranges are interchangeable and have no life of their own, so a `DateRange` is a value object. A customer, an order and a warehouse have identity that persists while their attributes change, so they are entities.
+
+@practice code
+prompt: Write an immutable `Money` value object (use `@dataclass(frozen=True)`) with fields `cents` (int) and `currency` (str). Give it a method `add(other)` that returns a new `Money`, raising `ValueError` if the currencies differ. Two `Money` objects with the same fields must be equal, and assigning to a field must raise `AttributeError`.
+starter:
+```python
+from dataclasses import dataclass
+
+class Money:
+    pass
+```
+tests:
+```python
+a = Money(500, "EUR")
+b = Money(250, "EUR")
+c = a.add(b)
+assert c == Money(750, "EUR")
+assert a == Money(500, "EUR")
+assert a is not Money(500, "EUR")
+assert raises(ValueError, a.add, Money(1, "USD"))
+assert raises(AttributeError, setattr, a, "cents", 1)
+assert len({Money(5, "EUR"), Money(5, "EUR")}) == 1
+```
+model:
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Money:
+    cents: int
+    currency: str
+
+    def add(self, other):
+        if self.currency != other.currency:
+            raise ValueError("currency mismatch")
+        return Money(self.cents + other.cents, self.currency)
+```
+hint: A frozen dataclass gives you value equality, hashing and immutability.
+solution: `frozen=True` generates `__eq__` and `__hash__` from the fields and blocks assignment, and `add` returns a new object instead of changing `self`. The currency check puts the rule "never mix currencies" in the one place that creates sums.
+
+@practice text
+prompt: What does this program print? Type the output exactly (one line, three values separated by spaces).
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Point:
+    x: int
+    y: int
+
+p = Point(1, 2)
+q = Point(1, 2)
+print(p == q, p is q, len({p, q}))
+```
+answer: True False 1
+check: run("from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Point:\n    x: int\n    y: int\n\np = Point(1, 2)\nq = Point(1, 2)\nprint(p == q, p is q, len({p, q}))\n")
+hint: A frozen dataclass compares and hashes by its fields, but `is` compares object identity.
+solution: The two points are equal by value (`True`) but are different objects (`False`), and since they hash and compare equal the set keeps one (`1`). That is exactly what value objects should do.
+
+@practice code
+prompt: Write the exception class `BookingConflict` and the class `Room(name)`. `book(hour, who)` accepts hours 8 to 17 inclusive (anything else raises `ValueError`) and raises `BookingConflict` if that hour is already taken. `cancel(hour)` frees an hour (cancelling a free hour does nothing). `booked_by(hour)` returns who has the hour, or `None`. Callers must not be able to change bookings except through these methods.
+starter:
+```python
+class BookingConflict(Exception):
+    pass
+
+class Room:
+    pass
+```
+tests:
+```python
+r = Room("Blue")
+r.book(9, "ana")
+assert r.booked_by(9) == "ana"
+assert r.booked_by(10) is None
+assert raises(BookingConflict, r.book, 9, "bo")
+assert r.booked_by(9) == "ana"
+r.cancel(9)
+r.book(9, "bo")
+assert r.booked_by(9) == "bo"
+r.cancel(12)
+assert raises(ValueError, r.book, 7, "ana")
+assert raises(ValueError, r.book, 18, "ana")
+r.book(17, "cy")
+assert r.booked_by(17) == "cy"
+```
+model:
+```python
+class BookingConflict(Exception):
+    pass
+
+class Room:
+    def __init__(self, name):
+        self.name = name
+        self._bookings = {}
+
+    def book(self, hour, who):
+        if not 8 <= hour <= 17:
+            raise ValueError("hour must be between 8 and 17")
+        if hour in self._bookings:
+            raise BookingConflict(f"{self.name} is taken at {hour}")
+        self._bookings[hour] = who
+
+    def cancel(self, hour):
+        self._bookings.pop(hour, None)
+
+    def booked_by(self, hour):
+        return self._bookings.get(hour)
+```
+hint: Store bookings in a private dictionary from hour to person.
+solution: `book` validates the hour, then checks the invariant (no double booking) before it changes anything, so the aggregate is never in a conflicting state. `pop(hour, None)` makes cancelling a free hour a no-op.
+
+@practice self
+prompt: A gym offers classes with a capacity (for example 12 spots). Members book a spot, can cancel up to 2 hours before the start, and when a class is full the member joins a waiting list; when someone cancels, the first person on the waiting list is promoted. Produce a domain model: the ubiquitous-language terms, entities, value objects, the aggregate with its root and invariants, one domain event, and the Python signatures of the root's main methods.
+hint: Start with the nouns and the "never" or "at most" rules in the description.
+solution: Language: member, class session, booking, spot, capacity, waiting list, promote, cancel. Entities: `Member` (id) and `ClassSession` (id), the aggregate root. Value objects: `TimeSlot(start, end)`, `Capacity(n)` (must be at least 1) and `MemberId`. Aggregate: `ClassSession` contains its booked member ids and its waiting list. Invariants: the number of bookings never exceeds the capacity; a member appears at most once across bookings and waiting list; the waiting list is first-in first-out; cancellation is allowed only before `start - 2 hours`. Members are referenced by id, not by object. Signatures: `ClassSession.__init__(self, session_id, slot, capacity)`; `book(self, member_id) -> str` returning `"booked"` or `"waitlisted"` and raising `ValueError` for a duplicate; `cancel(self, member_id, now) -> list[MemberId]` raising `CancellationTooLate` after the deadline, and promoting the first waiting member when a booked member cancels. Domain event: `MemberPromoted(session_id, member_id)`, in the past tense, raised by `cancel` and handled outside the domain (for example by sending an email). A domain service is not needed because every rule fits inside `ClassSession`.
+rubric: Uses the business's words as names and separates entities, value objects and one clearly identified aggregate root.
+rubric: States concrete invariants (capacity limit, no duplicates, first-in first-out promotion, cancellation deadline) and places them inside the aggregate.
+rubric: Gives root method signatures that enforce the rules, references other aggregates by id, and names one past-tense domain event.
+
+@quiz code
+prompt: Write an entity class `Customer(customer_id, name)` whose equality and hashing depend only on `customer_id`, so renaming a customer does not make them a different customer. A `Customer` must never equal a non-`Customer` object.
+starter:
+```python
+class Customer:
+    pass
+```
+tests:
+```python
+a = Customer(1, "Ana")
+b = Customer(1, "Ana Silva")
+assert a == b
+assert a != Customer(2, "Ana")
+assert len({a, b}) == 1
+assert a != 1
+assert a != "Ana"
+a.name = "Anna"
+assert a == b
+```
+model:
+```python
+class Customer:
+    def __init__(self, customer_id, name):
+        self.id = customer_id
+        self.name = name
+
+    def __eq__(self, other):
+        return isinstance(other, Customer) and self.id == other.id
+
+    def __hash__(self):
+        return hash(self.id)
+```
+hint: Implement `__eq__` and `__hash__` using only the identifier.
+solution: Entity equality is identity equality: compare `id` and ignore everything else. Defining `__eq__` removes the default `__hash__`, so you must define `__hash__` too; hash only the id, which never changes.
+
+@quiz mc
+prompt: An `Order` aggregate holds its lines, and a separate part of the system wants to add a line directly to the list of lines, bypassing `Order.add_line`, "to save a method call". What is the main problem?
+choice: It makes the order lines mutable, which Python forbids
+choice*: The invariants that `add_line` enforces (such as a maximum total or no duplicate products) can no longer be guaranteed
+choice: Value objects cannot be stored in lists
+choice: It would require a domain service
+hint: What does the root exist to protect?
+solution: The aggregate root exists to enforce invariants for the whole cluster; bypassing it lets any code create an invalid order. Lists are mutable in Python, value objects can be stored in lists, and a domain service is not involved.

@@ -1,0 +1,176 @@
+@lesson
+title: Address spaces and paging
+summary: Explain virtual address spaces, split a virtual address into page number and offset, translate it with a page table (linear or two-level), and compute page table sizes.
+objective: Describe an address space (code, heap, stack) and why the OS gives every process a private virtual one.
+objective: Translate a virtual address to a physical address using a linear page table and a two-level page table.
+objective: Compute the number of page table entries, page table size and internal fragmentation for given page and address sizes.
+reading: Operating Systems: Three Easy Pieces, the chapters "The Abstraction: Address Spaces", "Paging: Introduction" and "Paging: Smaller Tables".
+
+@article
+Early systems loaded one program into memory at a time. Sharing memory between programs safely needs an abstraction: the **address space**, the program's private view of memory. Inside it live the program's **code**, its **heap** (dynamically allocated data, growing toward higher addresses) and its **stack** (function frames, growing toward lower addresses). The addresses the program uses are **virtual addresses**; the OS and hardware translate them to **physical addresses** in RAM on every memory reference. This gives three goals: **transparency** (the program thinks it has the whole machine), **efficiency** and **protection** (a process cannot touch another's memory or the kernel's).
+
+### From base and bounds to paging
+
+The simplest scheme gives each process a **base** register and a **bounds** register: physical address = virtual address + base, and any address beyond the bounds raises an exception. It wastes the space between heap and stack and requires the whole address space to be contiguous in RAM. **Segmentation** uses one base and bounds per segment (code, heap, stack), but still suffers from **external fragmentation**: free memory splits into pieces too small to use.
+
+**Paging** removes this problem by dividing the virtual address space into fixed-size **pages** and physical memory into **frames** of the same size. Any page can go into any frame, so a free frame is always usable. A per-process **page table** records where each page lives.
+
+### Translating an address
+
+Let the page size be $2^k$ bytes (commonly 4 KB, so $k = 12$). A virtual address splits into two parts:
+
+- the **virtual page number (VPN)**: the high bits, `vaddr >> k`;
+- the **offset**: the low $k$ bits, `vaddr & (2**k - 1)`.
+
+The page table maps the VPN to a **page frame number (PFN)**. The physical address is the PFN followed by the unchanged offset: `paddr = (pfn << k) | offset`. A **page table entry (PTE)** holds the PFN and control bits: **valid** (is this page mapped at all), **present** (is it in RAM or swapped out), **protection** bits (read, write, execute), a **user/supervisor** bit, a **dirty** bit (modified since loaded) and a **reference/accessed** bit (used recently). Accessing an invalid page or violating protection traps to the OS, which typically kills the process with a segmentation fault.
+
+For a 32-bit virtual address and 4 KB pages, the VPN has $32 - 12 = 20$ bits, so a **linear** page table has $2^{20}$ entries. With 4-byte PTEs that is $2^{20} \times 4 = 4$ MB **per process**, mostly for pages the process never uses.
+
+### Multi-level page tables
+
+A **multi-level page table** pages the page table itself: the VPN is split into a **page directory index** and a **page table index**. Only the second-level tables that contain valid entries are allocated; entries in the directory for unused regions are marked invalid. With 4 KB pages and 4-byte PTEs, one page holds $4096/4 = 1024$ entries, so a 32-bit address splits as 10 bits (directory), 10 bits (page table) and 12 bits (offset). The cost is an extra memory access during translation, which the TLB (next week) hides. 64-bit x86 uses four levels with 8-byte entries: each 4 KB table holds 512 entries, so each level indexes with 9 bits, and with the 12-bit offset the usable virtual address is 48 bits; a fifth level extends it to 57 bits.
+
+### Fragmentation
+
+Paging has no external fragmentation, but a process rarely fills its last page. This **internal fragmentation** averages half a page per region. A 10,000-byte region with 4,096-byte pages needs 3 pages (12,288 bytes), wasting $12288 - 10000 = 2288$ bytes. Larger pages mean smaller tables and fewer TLB misses but more internal fragmentation.
+
+@example
+title: Translating one address
+problem: 4 KB pages. The page table maps VPN 3 to PFN 0x1F. Translate the virtual address 0x00003A7C.
+step: The offset is the low 12 bits (three hex digits): 0xA7C. The rest is the VPN: 0x00003A7C >> 12 = 3.
+step: Look up VPN 3: the PFN is 0x1F.
+step: Physical address = (0x1F << 12) | 0xA7C. Shifting by 12 bits adds three hex zeros, giving 0x1F000, and OR-ing the offset gives 0x1FA7C.
+answer: 0x1FA7C
+
+@example
+title: A two-level walk
+problem: 32-bit addresses, 4 KB pages, 10-bit directory index, 10-bit table index. Split the virtual address 0x00403123.
+step: Offset: the low 12 bits of 0x00403123 are 0x123.
+step: Shift right by 12: 0x00403. The table index is its low 10 bits: 0x403 AND 0x3FF = 0x003 = 3.
+step: The directory index is the remaining high bits: 0x403 >> 10 = 1.
+step: The hardware reads directory entry 1, finds the second-level table, reads its entry 3 for the PFN, and appends the offset 0x123. If either entry is invalid, the access faults.
+answer: directory 1, table 3, offset 0x123
+
+@mistakes
+- Adding the offset to the page number instead of concatenating it: the offset passes through unchanged.
+- Forgetting that the page table is per process and that the size of a linear table depends on the whole virtual address space, not on how much memory the process uses.
+- Mixing up pages (virtual) and frames (physical).
+- Saying paging eliminates all fragmentation: it removes external fragmentation but causes internal fragmentation.
+
+@practice mc
+prompt: Why does paging avoid external fragmentation?
+choice*: Every page and frame has the same size, so any free frame can hold any page
+choice: Pages are small, so the free gaps between them are too small to matter
+choice: Page tables are always stored in contiguous physical memory
+choice: The TLB caches free frames so none are wasted
+hint: External fragmentation means free memory exists but not in a usable shape.
+solution: With equal-size units, any free frame fits any page, so no free frame is too small or the wrong shape. Paging still wastes space inside the last page of each region (internal fragmentation).
+
+@practice num
+prompt: A system has 32-bit virtual addresses and 4 KB pages. How many bits does the virtual page number have?
+answer: 20
+check: 32 - int(log2(4096))
+hint: The offset needs enough bits to address every byte within a page.
+solution: 4 KB is $2^{12}$ bytes, so the offset takes 12 bits and the VPN has $32 - 12 = 20$ bits.
+
+@practice code
+prompt: Write `translate(vaddr, page_table, page_size)`. `page_size` is a power of two. `page_table` is a list indexed by virtual page number; each entry is a frame number, or `None` if the page is invalid. Return the physical address. Raise `ValueError` if the page is invalid or the VPN is beyond the end of the table.
+starter:
+```python
+def translate(vaddr, page_table, page_size):
+    pass
+```
+tests:
+```python
+table = [5, None, 2]
+assert translate(0, table, 4096) == 5 * 4096
+assert translate(100, table, 4096) == 5 * 4096 + 100
+assert translate(2 * 4096 + 10, table, 4096) == 2 * 4096 + 10
+assert translate(4095, table, 4096) == 5 * 4096 + 4095
+assert translate(1024 + 7, [9, 3], 1024) == 3 * 1024 + 7
+assert raises(ValueError, translate, 4096 + 1, table, 4096)
+assert raises(ValueError, translate, 3 * 4096, table, 4096)
+```
+model:
+```python
+def translate(vaddr, page_table, page_size):
+    vpn = vaddr // page_size
+    offset = vaddr % page_size
+    if vpn >= len(page_table) or page_table[vpn] is None:
+        raise ValueError("page fault")
+    return page_table[vpn] * page_size + offset
+```
+hint: `vaddr // page_size` is the page number and `vaddr % page_size` is the offset.
+hint: Check the VPN against the table length before indexing, and check for `None`.
+solution: Split the address into VPN and offset with division and remainder, validate the entry, then compute `frame * page_size + offset`. With power-of-two sizes this is the same as shifting and masking.
+
+@practice code
+prompt: Write `translate2(vaddr, directory)` for a 32-bit address space with 4 KB pages, a 10-bit page directory index, a 10-bit page table index and a 12-bit offset. `directory` is a dictionary mapping a directory index to a second-level table, itself a dictionary mapping a table index to a frame number. Return the physical address. Raise `ValueError` if either level has no entry for the address.
+starter:
+```python
+def translate2(vaddr, directory):
+    pass
+```
+tests:
+```python
+d = {1: {3: 7, 5: 8}, 0: {0: 2}}
+assert translate2((1 << 22) | (3 << 12) | 0x123, d) == 0x7123
+assert translate2((1 << 22) | (5 << 12), d) == 0x8000
+assert translate2(0x0FFF, d) == 0x2FFF
+assert raises(ValueError, translate2, (1 << 22) | (4 << 12), d)
+assert raises(ValueError, translate2, 2 << 22, d)
+```
+model:
+```python
+def translate2(vaddr, directory):
+    offset = vaddr & 0xFFF
+    table_index = (vaddr >> 12) & 0x3FF
+    dir_index = (vaddr >> 22) & 0x3FF
+    table = directory.get(dir_index)
+    if table is None or table_index not in table:
+        raise ValueError("page fault")
+    return (table[table_index] << 12) | offset
+```
+hint: Mask and shift: offset is the low 12 bits, the table index the next 10, the directory index the top 10.
+solution: Extract the three fields with shifts and masks, look up the second-level table in the directory, then the frame in that table, and finally append the 12-bit offset. A missing entry at either level is a fault.
+
+@practice self
+prompt: Explain why a two-level page table usually uses much less memory than a linear one for a typical process, and give the memory a linear table needs for a 32-bit address space with 4 KB pages and 4-byte entries. State one cost of the two-level scheme.
+solution: A linear table must have an entry for every virtual page, here $2^{20}$ entries of 4 bytes, which is 4 MB for every process, even though a typical process uses only a small part of its address space (code and data near the bottom, stack near the top, and a huge unused gap between them). In a two-level table, the directory has 1024 entries, and a second-level table (one 4 KB page of 1024 entries) is allocated only for directory entries whose region contains valid pages; the unused gap needs no second-level tables. A small process may need just the directory plus two or three tables: a few tens of KB. The cost is that translation needs an additional memory access (one per level), which is why the TLB matters.
+hint: Ask which parts of the address space need table entries in each scheme.
+rubric: Computes the linear table size: $2^{20} \times 4$ bytes = 4 MB.
+rubric: Explains that second-level tables are allocated only for regions in use, so the unused gap costs almost nothing.
+rubric: States a cost, such as extra memory accesses per translation (mitigated by the TLB).
+
+@quiz code
+prompt: Write `split_address(vaddr, offset_bits)` that returns the tuple `(vpn, offset)` for a page size of `2 ** offset_bits` bytes, using shifts and masks.
+starter:
+```python
+def split_address(vaddr, offset_bits):
+    pass
+```
+tests:
+```python
+assert split_address(0x3A7C, 12) == (3, 0xA7C)
+assert split_address(4095, 12) == (0, 4095)
+assert split_address(4096, 12) == (1, 0)
+assert split_address(100, 6) == (1, 36)
+assert split_address(0, 10) == (0, 0)
+```
+model:
+```python
+def split_address(vaddr, offset_bits):
+    vpn = vaddr >> offset_bits
+    offset = vaddr & ((1 << offset_bits) - 1)
+    return (vpn, offset)
+```
+hint: The mask for the low `k` bits is `(1 << k) - 1`.
+solution: Shift right by `offset_bits` to drop the offset and get the VPN; mask with `(1 << offset_bits) - 1` to keep only the offset.
+
+@quiz num
+prompt: A system has 32-bit virtual addresses, 16 KB pages and 4-byte page table entries, and uses a single linear page table. How large is the page table of one process, in KB?
+answer: 1024
+check: (2 ** 32 // (16 * 1024)) * 4 // 1024
+unit: KB
+hint: First find the number of pages in the address space, then multiply by the entry size.
+solution: 16 KB is $2^{14}$ bytes, so there are $2^{32}/2^{14} = 2^{18}$ pages. At 4 bytes each, the table is $2^{20}$ bytes = 1024 KB.

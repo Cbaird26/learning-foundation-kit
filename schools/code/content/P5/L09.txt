@@ -1,0 +1,227 @@
+@lesson
+title: Logging, monitoring and alerts
+summary: Add structured logs, a few meaningful metrics and symptom-based alerts so you can tell that your application is healthy and find out quickly when it is not.
+objective: Distinguish logs, metrics and traces, and write structured logs that are safe and useful.
+objective: Choose the four golden signals and turn them into service level objectives and alerts.
+objective: Compute error rates and percentiles from raw data and decide when an alert should fire.
+reading: The Twelve-Factor App, the "Logs" factor (XI) and the "Admin processes" factor (XII).
+
+@article
+Once your application is deployed, you stop being able to attach a debugger. **Observability** is the ability to understand what a running system is doing from the outside. Without it, your first sign of trouble is a user message. The three classic sources are:
+
+- **Logs:** timestamped records of discrete events ("reservation 42 rejected: overlap").
+- **Metrics:** numbers sampled over time (requests per second, error rate, memory use). Cheap to store and ideal for dashboards and alerts.
+- **Traces:** the path of one request through several services, with timing for each step. Valuable once you have more than one service; skip them for a single-process capstone unless you want the practice.
+
+### Logging well
+
+Twelve-factor apps treat logs as an **event stream**: write to standard output, one event per line, and let the platform collect and route them. Do not manage log files in the application.
+
+Use **structured logs** (one JSON object per line) so tools can filter by field instead of searching text:
+
+```python
+import json
+import logging
+import sys
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        })
+
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+log = logging.getLogger("toolshare")
+log.info("reservation created")
+```
+
+Choose levels deliberately: `DEBUG` for development detail, `INFO` for normal business events, `WARNING` for something odd that was handled, `ERROR` for a failed operation, `CRITICAL` for the service is at risk. Add a **request ID** to every line of a request so one problem can be followed end to end.
+
+**Never log secrets or personal data:** passwords, tokens, full card numbers, authorization headers, and (with care) email addresses and other personal details. Logs are copied, searched and kept, often with weaker access control than the database. This is also an OWASP Top 10:2025 concern (A09, Security Logging and Alerting Failures), whose other half is the opposite mistake: not logging security-relevant events, such as failed logins and access denials, or logging them and never looking.
+
+### What to measure: the four golden signals
+
+For a service, start with four metrics:
+
+1. **Latency:** how long requests take. Look at percentiles, not averages (below).
+2. **Traffic:** how much demand: requests per second.
+3. **Errors:** the share of requests that fail (HTTP 5xx, exceptions).
+4. **Saturation:** how full the resources are: CPU, memory, database connections, queue depth.
+
+### Percentiles
+
+An average hides pain: nine requests of 20 ms and one of 2,000 ms average 218 ms, which describes none of them. The **95th percentile (p95)** is the value below which 95 percent of requests fall; it tells you how bad the slow tail is. One common definition, **nearest rank**, sorts the values and takes the one at rank `ceil(p/100 * n)`, counting from 1.
+
+### SLIs, SLOs and alerts
+
+A **service level indicator (SLI)** is a measurement ("the fraction of requests answered with a non-5xx status"). A **service level objective (SLO)** is the target for it ("99.5 percent over 30 days"). The gap between 100 percent and the SLO is your **error budget**, the amount of failure you can afford, which helps you decide between shipping features and fixing reliability.
+
+Alert on **symptoms users feel** (error rate high, latency high, site down), not on every cause (CPU is 80 percent). Every alert should be **actionable**: it should tell a human what is wrong and what to look at, and if it fires with nothing to do, delete or fix it, because alert fatigue makes people ignore the one that matters. Require the condition to hold for a few consecutive checks so a single blip does not page anyone. For a capstone, a free uptime check on the health URL plus an alert on the error rate is plenty.
+
+@example
+title: Computing p95 by nearest rank
+problem: Ten response times in milliseconds: 12, 15, 11, 90, 14, 13, 16, 12, 400, 15. What is the p95, and why is the average misleading?
+step: Sort: 11, 12, 12, 13, 14, 15, 15, 16, 90, 400.
+step: The rank for p95 with n = 10 is `ceil(0.95 * 10) = ceil(9.5) = 10`, so take the 10th value: 400 ms.
+step: The average is (11 + 12 + 12 + 13 + 14 + 15 + 15 + 16 + 90 + 400) / 10 = 59.8 ms, which no typical request experienced.
+step: Report the median (rank 5, which is 14 ms) together with the p95 (400 ms) to describe both the typical case and the slow tail.
+answer: p95 = 400 ms; the average of 59.8 ms hides the slow tail.
+
+@example
+title: Deciding what to alert on
+problem: Your dashboard shows CPU at 85 percent, one failed health check out of the last 30, and an error rate of 4 percent for ten minutes. Which should page you?
+step: CPU at 85 percent is a cause or a warning, not a symptom. Users may not be affected, so record it on a dashboard, do not page.
+step: One failed health check out of 30 is a blip. Alert only after several consecutive failures.
+step: A 4 percent error rate for ten minutes is a user-visible symptom that breaks a typical SLO, so this should alert.
+step: Write the alert text so it is actionable: "Error rate above 2 percent for 5 minutes. Check the latest deploy and the error logs; roll back if it started after a release."
+answer: Page on the sustained error rate; the others are dashboard items.
+
+@mistakes
+- Logging unstructured text strings that cannot be searched by field, or logging passwords, tokens and personal data.
+- Reporting only the average latency, which hides the slow requests users actually complain about.
+- Alerting on every cause (CPU, memory) with no link to user impact, until the team ignores the pager.
+- Having logs and metrics but never checking that an alert would actually fire, by testing it once.
+
+@practice mc
+prompt: Which alert is the best one to page an engineer at night?
+choice: CPU usage above 70 percent for one minute.
+choice: A single failed health check.
+choice*: More than 5 percent of requests have failed for the last five minutes.
+choice: The disk is 50 percent full.
+hint: Choose the symptom that users feel and that lasts long enough to be real.
+solution: A sustained high error rate means users are affected now. The other conditions are causes, blips or slow trends that belong on a dashboard or a daytime ticket.
+
+@practice code
+prompt: Each line of an access log has the form `METHOD PATH STATUS MILLISECONDS`, for example `GET /tools 200 35`. Write `error_rate(lines)` that returns the fraction of lines whose status is 500 or higher, as a float. An empty list gives `0.0`.
+starter:
+```python
+def error_rate(lines):
+    pass
+```
+tests:
+```python
+lines = ["GET /tools 200 35", "POST /reservations 500 120",
+         "GET /tools 404 8", "GET /health 503 4"]
+assert error_rate(lines) == 0.5
+assert error_rate([]) == 0.0
+assert error_rate(["GET / 200 5", "GET / 200 6"]) == 0.0
+assert error_rate(["GET / 404 5"]) == 0.0
+assert error_rate(["GET / 500 5"]) == 1.0
+```
+model:
+```python
+def error_rate(lines):
+    if not lines:
+        return 0.0
+    errors = 0
+    for line in lines:
+        status = int(line.split()[2])
+        if status >= 500:
+            errors += 1
+    return errors / len(lines)
+```
+hint: `line.split()` gives four fields; the status is the third.
+hint: A 404 is a client error and is not counted; only 500 and above are.
+solution: Split each line, convert field 2 to an integer, count those that are at least 500, and divide by the number of lines, returning `0.0` first when there are none.
+
+@practice code
+prompt: Write `percentile(values, p)` using the nearest-rank method: sort the values and return the one at 1-based rank `ceil(p * n / 100)`, where `n` is the number of values and `0 < p <= 100`. Raise `ValueError` for an empty list or if `p` is not in that range. Do not change the input list.
+starter:
+```python
+def percentile(values, p):
+    pass
+```
+tests:
+```python
+data = [15, 20, 35, 40, 50]
+assert percentile(data, 50) == 35
+assert percentile(data, 95) == 50
+assert percentile(data, 20) == 15
+assert percentile(data, 40) == 20
+assert percentile(data, 100) == 50
+assert percentile([7], 99) == 7
+assert percentile([400, 11, 12, 90], 50) == 12
+assert data == [15, 20, 35, 40, 50]
+assert raises(ValueError, percentile, [], 50)
+assert raises(ValueError, percentile, [1, 2], 0)
+assert raises(ValueError, percentile, [1, 2], 101)
+```
+model:
+```python
+import math
+
+
+def percentile(values, p):
+    if not values or not 0 < p <= 100:
+        raise ValueError("need values and 0 < p <= 100")
+    ordered = sorted(values)
+    rank = math.ceil(p * len(ordered) / 100)
+    return ordered[rank - 1]
+```
+hint: `sorted(values)` makes a sorted copy and leaves the input alone.
+hint: Compute `rank = ceil(p * n / 100)`, then index with `rank - 1` because ranks start at 1.
+solution: Validate the inputs, sort a copy, compute the 1-based rank with `math.ceil(p * n / 100)` and return the element at index `rank - 1`. For five values and p = 50, the rank is `ceil(2.5) = 3`, so the third value is returned.
+
+@practice ms
+prompt: Which of these must never be written to application logs? Select all that apply.
+choice*: Passwords and password reset tokens.
+choice*: Full `Authorization` headers and API keys.
+choice: The HTTP status code and path of a request.
+choice*: Full payment card numbers.
+choice: A request ID that ties log lines together.
+hint: Logs are widely copied and often weakly protected.
+solution: Credentials, tokens and card numbers must never appear in logs. Status codes, paths and request IDs are what make logs useful and are not sensitive by themselves.
+
+@practice self
+prompt: Define the monitoring for your capstone. Write two SLIs with SLO targets, list the log events you will record (with levels and the fields each has), and write three alerts, each with its condition, why it matches user impact, and the first thing the responder should do.
+hint: Pick SLIs from the golden signals: errors and latency are the easiest to start with.
+solution: SLI 1: the fraction of requests answered with a status below 500; SLO 99.5 percent over 30 days. SLI 2: the 95th percentile of request latency on the reservation endpoint; SLO under 500 ms for 95 percent of five-minute windows. Log events (JSON to standard output with timestamp, level, request ID): `INFO` reservation created, with reservation ID and tool ID; `INFO` request completed, with method, path, status and duration; `WARNING` validation failed, with the field name but not the value; `WARNING` login failed, with a pseudonymous account ID and no password; `ERROR` unhandled exception, with the stack trace and request ID. Alerts: (1) Error rate above 2 percent for five minutes: users are seeing failures; first look at the last deploy and the error logs and roll back if it started after a release. (2) The health check fails three times in a row: the service is probably down; check the platform status and restart or roll back. (3) p95 latency above 1 second for ten minutes: users are waiting; check the database connection count and slow queries. Each alert goes to one channel and links to the runbook.
+rubric: SLIs are measurable and tied to user experience, with explicit numeric targets and a time window.
+rubric: Log events have sensible levels and fields, include a request ID, and exclude secrets and personal data.
+rubric: Each alert has a condition with a duration, a reason that links to user impact, and a concrete first action.
+rubric: Alerts are on symptoms rather than causes, and the number of alerts is small enough to stay actionable.
+
+@quiz code
+prompt: Write `should_alert(error_rates, threshold, consecutive)`. `error_rates` is a list of error rates, oldest first, one per minute. Return `True` only if there are at least `consecutive` values and the **last** `consecutive` values are all strictly greater than `threshold`.
+starter:
+```python
+def should_alert(error_rates, threshold, consecutive):
+    pass
+```
+tests:
+```python
+assert should_alert([0.0, 0.03, 0.04, 0.05], 0.02, 3) is True
+assert should_alert([0.05, 0.05, 0.01, 0.05], 0.02, 3) is False
+assert should_alert([0.05, 0.05], 0.02, 3) is False
+assert should_alert([0.02, 0.02, 0.02], 0.02, 3) is False
+assert should_alert([0.0, 0.5], 0.02, 1) is True
+assert should_alert([], 0.02, 1) is False
+```
+model:
+```python
+def should_alert(error_rates, threshold, consecutive):
+    if len(error_rates) < consecutive:
+        return False
+    recent = error_rates[-consecutive:]
+    return all(rate > threshold for rate in recent)
+```
+hint: A slice with a negative start, `error_rates[-n:]`, gives the last `n` items.
+hint: Check there are enough values before slicing.
+solution: Return `False` when there are fewer than `consecutive` values; otherwise look at the last `consecutive` values and require that all of them are strictly above the threshold. Equal to the threshold does not count.
+
+@quiz mc
+prompt: A request fails with a 500 error. Which log line is the most useful and also safe?
+choice: `error`
+choice: `Login failed for alice@example.test with password hunter2`
+choice*: `{"level": "ERROR", "request_id": "r-8f2", "path": "/reservations", "status": 500, "message": "unhandled exception"}` followed by the stack trace
+choice: The full request including the Authorization header
+hint: You want searchable fields and no credentials.
+solution: The structured line has a level, request ID, path and status, so it can be searched and correlated, and it contains no secrets. The others are useless or log a password or a credential.

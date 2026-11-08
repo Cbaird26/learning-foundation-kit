@@ -1,0 +1,301 @@
+@lesson
+title: Maintenance, refactoring and technical debt
+summary: Classify maintenance work, recognize common code smells, refactor safely in small behavior-preserving steps under test, and reason about technical debt as a trade-off.
+objective: Distinguish corrective, adaptive, perfective and preventive maintenance.
+objective: Recognize common code smells and name a refactoring that addresses each.
+objective: Refactor safely: protect behavior with tests, change structure in small steps, and run the tests after each step.
+objective: Explain technical debt, its "interest", and when taking on debt is reasonable.
+reading: Software Engineering at Google, Chapter 15 "Deprecation" and the discussion of technical debt and large-scale changes (look up "refactoring" in Chapters 12 and 22); for a catalog of refactorings, look up "code smells" and "refactoring catalog" in any text on the subject.
+
+@article
+Software is never finished while it is used. **Maintenance** is everything done to software after its first delivery, and it usually consumes most of the lifetime cost. It comes in four kinds:
+
+- **Corrective**: fixing defects found in use.
+- **Adaptive**: changing software because its environment changed (a new operating system, a new tax law, an API that is retired).
+- **Perfective**: adding features or improving performance and usability.
+- **Preventive**: improving structure so that future changes are cheaper, which is where refactoring belongs.
+
+Code is read far more often than it is written, so maintainability is a design goal from the start.
+
+### Code smells
+
+A **code smell** is a surface sign that the design may have a deeper problem. A smell is not a bug, since the code works, but it makes change risky. Common smells and their usual remedies:
+
+| Smell | Symptom | Typical refactoring |
+|---|---|---|
+| Long function | does several things; needs comments to separate sections | Extract function |
+| Duplicated code | the same logic copied in several places | Extract function, then reuse |
+| Large class | many fields and responsibilities | Extract class |
+| Long parameter list | five or more related parameters | Introduce parameter object |
+| Magic number | unexplained literal such as `0.0825` | Replace with a named constant |
+| Deep nesting | many levels of `if` | Guard clauses (early return) |
+| Feature envy | a method uses another object's data more than its own | Move method |
+| Primitive obsession | strings or ints stand for rich concepts | Introduce a small type |
+
+### Refactoring
+
+**Refactoring** is changing the internal structure of code *without changing its observable behavior*. It is not rewriting, and it is not adding features (do those in separate steps, ideally in separate commits). The discipline that makes it safe:
+
+1. **Have tests** that pin down current behavior. If none exist, write **characterization tests**: call the code with a range of inputs, record what it does now (even if odd) and assert that. They protect you while you restructure.
+2. Make **one small change** (rename, extract, move), run the tests, and commit. If the tests fail, undo the step instead of debugging a large change.
+3. Keep the **interface** the same for callers during the step, or update all callers in the same change.
+4. Stop when the code is clear enough for the change you came to make.
+
+A deeply nested function and its guard-clause form show a typical refactoring:
+
+```python
+# before
+def label(n):
+    if n is not None:
+        if n >= 0:
+            return "ok"
+        else:
+            return "negative"
+    else:
+        return "missing"
+
+# after: same behavior, guard clauses
+def label(n):
+    if n is None:
+        return "missing"
+    if n < 0:
+        return "negative"
+    return "ok"
+```
+
+### Technical debt
+
+**Technical debt** is a metaphor: a shortcut that speeds delivery now (a quick hack, a skipped test, outdated documentation) is like a loan. You may repay the **principal** later by fixing it, but until then you pay **interest**: every change in that area is slower and riskier. Debt can be *deliberate and prudent* ("ship the prototype, clean up before launch"), or *inadvertent* (we did not know better then). Debt is acceptable when taken knowingly, recorded (in the backlog, with a link to the code) and repaid before the interest outgrows the benefit. Unrecorded debt compounds silently until each feature takes many times as long as it should.
+
+Ways to manage it: reserve a share of each sprint for cleanup; follow the **boy scout rule** (leave code a little cleaner than you found it); refactor in the area you are about to change, not everywhere at once; track smells with static analysis and review comments; and for replacing a whole legacy system, migrate gradually (route one feature at a time to the new code) rather than rewriting everything in one risky release.
+
+@example
+title: Refactoring nested conditionals with guard clauses
+problem: Refactor `access` so it behaves identically but is easier to read.
+
+```python
+def access(user):
+    if user is not None:
+        if user["active"]:
+            if user["admin"]:
+                return "admin"
+            else:
+                return "user"
+        else:
+            return "suspended"
+    else:
+        return "anonymous"
+```
+step: Pin down behavior with characterization tests: `None` gives `"anonymous"`; an inactive user gives `"suspended"` (even if admin); an active admin gives `"admin"`; an active non-admin gives `"user"`.
+step: Handle the first exceptional case with a guard: `if user is None: return "anonymous"`. Run the tests.
+step: Add the next guard: `if not user["active"]: return "suspended"`. Run the tests.
+step: What remains is the normal path, and the `if user["admin"]` check becomes the last two lines:
+
+```python
+def access(user):
+    if user is None:
+        return "anonymous"
+    if not user["active"]:
+        return "suspended"
+    return "admin" if user["admin"] else "user"
+```
+step: Re-run the tests, commit with a message such as "Refactor access() with guard clauses; no behavior change".
+answer: Three guards and a final conditional expression with identical behavior.
+
+@example
+title: Extracting a duplicated block
+problem: Two functions both format money as `"$12.50"` from cents with copied code. Remove the duplication.
+step: Identify the duplicated logic: dividing by 100 and formatting two decimals with a dollar sign.
+step: Write one function `format_price(cents)` that returns `f"${cents // 100}.{cents % 100:02d}"` for non-negative amounts.
+step: Replace both copies with calls to `format_price`, keeping their results the same.
+step: Run the tests for both original functions; they still pass, and a future change to formatting (for example thousands separators) now happens in one place.
+answer: One `format_price` function used by both callers.
+
+@mistakes
+- Mixing refactoring with feature work in one change, so a failing test cannot be traced to its cause.
+- Refactoring without tests, which makes it impossible to know whether behavior changed.
+- Making a huge refactoring in one step instead of many small, tested steps.
+- Treating all technical debt as bad, or never recording the debt deliberately taken, so no one repays it.
+
+@practice mc
+prompt: Which is the best description of refactoring?
+choice: Rewriting a program from scratch in a better language
+choice*: Changing the internal structure of code without changing its externally observable behavior
+choice: Adding new features while cleaning up the code
+choice: Fixing bugs found by users
+hint: The definition contains a promise about behavior.
+solution: Refactoring restructures code while preserving behavior. Adding features and fixing bugs change behavior, and a rewrite replaces the code rather than improving it step by step.
+
+@practice ms
+prompt: Which of these are behavior-preserving refactorings (assuming no one depends on the old names)? Select all that apply.
+choice*: Renaming a variable from `x` to `unit_price` throughout a function
+choice*: Extracting a block into a new function and calling it
+choice: Changing a function to return `None` instead of raising an error
+choice*: Replacing a magic number with a named constant of the same value
+choice: Adding a new discount rule
+hint: Ask whether any caller could see a different result.
+solution: Renaming, extracting a function and naming a constant leave behavior unchanged. Changing error behavior and adding a rule both change what callers observe.
+
+@practice code
+prompt: The legacy function below is correct but hard to extend (this is its entire specification; `years` is never negative):
+
+```python
+def discount_rate(kind, years):
+    if kind == "regular":
+        if years >= 5:
+            return 10
+        else:
+            if years >= 2:
+                return 5
+            else:
+                return 0
+    elif kind == "premium":
+        if years >= 5:
+            return 20
+        else:
+            return 15
+    else:
+        return 0
+```
+Refactor it: write `discount_rate(kind, years)` with identical behavior but without nested `if` statements, for example with a dictionary mapping each kind to a list of `(minimum_years, rate)` tiers checked from highest to lowest. Unknown kinds give `0`.
+starter:
+```python
+def discount_rate(kind, years):
+    pass
+```
+tests:
+```python
+assert discount_rate("regular", 0) == 0
+assert discount_rate("regular", 1) == 0
+assert discount_rate("regular", 2) == 5
+assert discount_rate("regular", 4) == 5
+assert discount_rate("regular", 5) == 10
+assert discount_rate("premium", 0) == 15
+assert discount_rate("premium", 4) == 15
+assert discount_rate("premium", 5) == 20
+assert discount_rate("guest", 10) == 0
+```
+model:
+```python
+TIERS = {
+    "regular": [(5, 10), (2, 5), (0, 0)],
+    "premium": [(5, 20), (0, 15)],
+}
+
+
+def discount_rate(kind, years):
+    for minimum, rate in TIERS.get(kind, []):
+        if years >= minimum:
+            return rate
+    return 0
+```
+hint: Put the thresholds in data, listed from the highest minimum to the lowest, and return the first tier that fits.
+solution: Move the rules into the `TIERS` table and loop through a kind's tiers in descending order of minimum years. Unknown kinds have no tiers and fall through to `0`. The tests cover every branch of the legacy code, acting as characterization tests.
+
+@practice code
+prompt: Extract the duplicated formatting logic into one function `format_price(cents)` that takes an integer number of cents and returns a string with a dollar sign, the whole dollars and exactly two digits of cents: `format_price(1250)` is `"$12.50"` and `format_price(5)` is `"$0.05"`. For a negative amount put the minus sign first: `format_price(-105)` is `"-$1.05"`.
+starter:
+```python
+def format_price(cents):
+    pass
+```
+tests:
+```python
+assert format_price(1250) == "$12.50"
+assert format_price(5) == "$0.05"
+assert format_price(0) == "$0.00"
+assert format_price(100000) == "$1000.00"
+assert format_price(-105) == "-$1.05"
+assert format_price(-5) == "-$0.05"
+assert format_price(99) == "$0.99"
+```
+model:
+```python
+def format_price(cents):
+    sign = "-" if cents < 0 else ""
+    dollars, rest = divmod(abs(cents), 100)
+    return f"{sign}${dollars}.{rest:02d}"
+```
+hint: Work with `abs(cents)` and `divmod(..., 100)` to get dollars and leftover cents.
+hint: Format the cents with `:02d` so that 5 becomes `05`, and add the sign separately.
+solution: Take the sign aside, split `abs(cents)` into dollars and cents with `divmod`, and format cents with two digits. Handling the sign separately avoids the surprising floor behavior of `//` and `%` on negative numbers.
+
+@practice self
+prompt: Refactor a code smell and document the change. The function below has several smells. Name at least three, rewrite it with a clearer structure (without changing behavior), and write the commit message and a short note for the changelog that a teammate could read.
+
+```python
+def process(o):
+    t = 0
+    for i in o["items"]:
+        t = t + i["price"] * i["qty"]
+    if o["country"] == "US":
+        t = t + t * 0.0825
+    elif o["country"] == "DE":
+        t = t + t * 0.19
+    return round(t, 2)
+```
+solution: Smells: unclear names (`process`, `o`, `t`, `i`), magic numbers (0.0825, 0.19), a mixed responsibility (subtotal and tax in one function) and a growing if-chain for countries. Refactoring (behavior unchanged): constants `TAX_RATES = {"US": 0.0825, "DE": 0.19}`; `def subtotal(order): return sum(i["price"] * i["qty"] for i in order["items"])`; `def order_total(order): rate = TAX_RATES.get(order["country"], 0); sub = subtotal(order); return round(sub + sub * rate, 2)`. Characterization tests first: US, DE, another country, an empty cart. Commit message: "Refactor order total: name tax rates, extract subtotal; no behavior change". Changelog note: "Internal: order total calculation restructured (tax rates in a table). No change to results." The table also makes a new country a one-line change.
+rubric: Names at least three genuine smells (for example naming, magic numbers, mixed responsibilities, if-chain).
+rubric: The rewritten code keeps behavior, including the default of no tax for unknown countries, and mentions characterization tests before refactoring.
+rubric: The commit message states what changed and says that behavior is unchanged.
+rubric: The changelog note is understandable to a teammate and does not overstate the change.
+hint: Write down what each name means and each literal means before restructuring.
+
+@quiz mc
+prompt: A team knowingly ships a quick workaround to meet a launch date and records it in the backlog with a planned fix for the next sprint. This is best described as:
+choice*: Deliberate, recorded technical debt that the team intends to repay
+choice: Inadvertent technical debt that no one knows about
+choice: Refactoring, because the structure was improved
+choice: Adaptive maintenance
+hint: The team took the shortcut knowingly and wrote it down.
+solution: A conscious shortcut with a recorded plan to repay it is deliberate technical debt. It is not inadvertent (the team knows), and it is not refactoring or adaptive maintenance.
+
+@quiz code
+prompt: The legacy function below is correct (it is the full specification). Refactor it into `can_checkout(user)` with identical results, using guard clauses instead of nested `if` statements.
+
+```python
+def can_checkout(user):
+    if user is not None:
+        if user["active"]:
+            if user["verified"]:
+                if len(user["cart"]) > 0:
+                    return "ok"
+                else:
+                    return "empty cart"
+            else:
+                return "unverified"
+        else:
+            return "inactive"
+    else:
+        return "no user"
+```
+starter:
+```python
+def can_checkout(user):
+    pass
+```
+tests:
+```python
+good = {"active": True, "verified": True, "cart": ["book"]}
+assert can_checkout(good) == "ok"
+assert can_checkout(None) == "no user"
+assert can_checkout({"active": False, "verified": True, "cart": [1]}) == "inactive"
+assert can_checkout({"active": True, "verified": False, "cart": [1]}) == "unverified"
+assert can_checkout({"active": True, "verified": True, "cart": []}) == "empty cart"
+assert can_checkout({"active": False, "verified": False, "cart": []}) == "inactive"
+```
+model:
+```python
+def can_checkout(user):
+    if user is None:
+        return "no user"
+    if not user["active"]:
+        return "inactive"
+    if not user["verified"]:
+        return "unverified"
+    if not user["cart"]:
+        return "empty cart"
+    return "ok"
+```
+hint: Check the outermost condition first and return early; keep the same order as the nesting.
+solution: Each nesting level becomes a guard that returns its failure message immediately, in the same outer-to-inner order, so a user who is both inactive and unverified still gets `"inactive"`. The normal case falls through to `"ok"`.

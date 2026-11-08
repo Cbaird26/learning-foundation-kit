@@ -1,0 +1,199 @@
+@lesson
+title: Flow control and congestion control
+summary: Distinguish flow control from congestion control, compute the window a TCP sender may use, and simulate slow start, congestion avoidance and AIMD.
+objective: Explain how the receive window protects the receiver and how the effective window limits the sender.
+objective: Describe slow start, congestion avoidance, fast retransmit and the timeout reaction of TCP Reno.
+objective: Simulate the congestion window over round-trip times for a given sequence of events.
+objective: Estimate TCP throughput from window size, RTT and loss rate.
+reading: Computer Networks: A Systems Approach, Chapter 6 "Congestion Control and Resource Allocation", the sections on TCP congestion control (additive increase and multiplicative decrease, slow start, fast retransmit and fast recovery).
+
+@article
+A TCP sender must respect two different limits. **Flow control** protects the **receiver**: the sender must not send faster than the receiving application can read. **Congestion control** protects the **network**: the sender must not send faster than the routers on the path can forward. Both are enforced by limiting the amount of unacknowledged data in flight.
+
+### Flow control
+
+The receiver has a buffer of size `RcvBuffer`. It advertises the free space in the **receive window** field of every segment it sends:
+
+$$\text{rwnd} = \text{RcvBuffer} - (\text{LastByteRcvd} - \text{LastByteRead}).$$
+
+The sender keeps $\text{LastByteSent} - \text{LastByteAcked} \le \text{rwnd}$. If the application stops reading, rwnd shrinks to 0 and the sender stops, probing occasionally with tiny segments (**window probes**) so that it learns when space reappears. The 16-bit field limits the window to 65 535 bytes unless both sides use the **window scale** option (RFC 7323), which allows windows up to about 1 GiB.
+
+### Congestion control
+
+There is no explicit message from the network saying "slow down" in classic TCP (the **end-to-end** approach); the sender infers congestion from **loss**: a timeout or three duplicate ACKs. It keeps a **congestion window** `cwnd` (in bytes, often counted in MSS) and may have at most
+
+$$\min(\text{cwnd},\ \text{rwnd})$$
+
+bytes unacknowledged, the **effective window**. Roughly, the sending rate is $\text{cwnd}/\text{RTT}$. The classic algorithm, **TCP Reno** (RFC 5681), works in phases:
+
+- **Slow start:** `cwnd` starts at a small value (in modern TCP 10 MSS, but in this lesson 1 MSS) and grows by 1 MSS for every ACK, which **doubles `cwnd` every RTT**. It is "slow" only compared to sending a full window at once. It continues until `cwnd` reaches the slow-start threshold `ssthresh`.
+- **Congestion avoidance:** above `ssthresh`, `cwnd` grows by about 1 MSS per RTT: **additive increase**.
+- **Triple duplicate ACK:** a mild sign of congestion (later packets are still getting through). Set `ssthresh = cwnd / 2` and `cwnd = ssthresh` after fast retransmit and fast recovery: **multiplicative decrease**.
+- **Timeout:** a stronger sign. Set `ssthresh = cwnd / 2` and `cwnd = 1 MSS`, and restart slow start.
+
+The pattern of additive increase and multiplicative decrease, **AIMD**, makes `cwnd` follow a sawtooth. AIMD is stable and converges to a **fair** share when flows compete for a bottleneck link: if the window oscillates between $W/2$ and $W$, the average window is $0.75\,W$ and the average throughput is about $0.75\,W \cdot \text{MSS}/\text{RTT}$.
+
+For a long flow with loss probability $p$ per packet, a well-known approximation (the Mathis formula) is
+
+$$\text{throughput} \approx \frac{\text{MSS}}{\text{RTT}} \cdot \frac{1.22}{\sqrt{p}}.$$
+
+Halving the loss rate does not double the throughput; throughput scales with $1/\sqrt{p}$ and falls as RTT grows.
+
+### Modern variants
+
+Linux uses **CUBIC** by default: it grows the window as a cubic function of time since the last loss, which suits high-bandwidth, long-delay paths. **BBR** estimates the bottleneck bandwidth and minimum RTT instead of treating loss as the signal. Routers can also mark packets with **ECN** (explicit congestion notification, RFC 3168) so that the sender can slow down without losses. QUIC implements the same ideas in user space.
+
+In this lesson's simulations we use a simplified Reno model counted once per RTT in whole MSS: slow start doubles `cwnd` (but never beyond `ssthresh`), congestion avoidance adds 1, a triple duplicate ACK sets `ssthresh = max(cwnd // 2, 2)` and `cwnd = ssthresh`, and a timeout sets `ssthresh = max(cwnd // 2, 2)` and `cwnd = 1`.
+
+@example
+title: The effective window
+problem: The receiver advertises `rwnd = 12 000` bytes. The sender has `cwnd = 9000` bytes, `LastByteSent = 30 000` and `LastByteAcked = 26 000`. How many more bytes may it send now?
+step: The window limit is $\min(\text{cwnd}, \text{rwnd}) = \min(9000, 12\,000) = 9000$ bytes.
+step: Bytes in flight: $30\,000 - 26\,000 = 4000$.
+step: Usable: $9000 - 4000 = 5000$ bytes. Here congestion control, not flow control, is the limit.
+answer: 5000 bytes
+
+@example
+title: A congestion window trace
+problem: Start with `cwnd = 1`, `ssthresh = 16`. Five RTTs succeed, then one RTT ends with a triple duplicate ACK, then one succeeds, then a timeout occurs. Give `cwnd` after each RTT.
+step: Slow start: 1 becomes 2, 4, 8, 16 after four RTTs. At 16 it equals `ssthresh`, so growth is now additive.
+step: Fifth RTT: `cwnd` becomes 17.
+step: Triple duplicate ACK: `ssthresh = 17 // 2 = 8` and `cwnd = 8`.
+step: Next RTT succeeds: `cwnd = 9` (additive, since 8 is not below `ssthresh = 8`).
+step: Timeout: `ssthresh = 9 // 2 = 4` and `cwnd = 1`.
+answer: 2, 4, 8, 16, 17, 8, 9, 1
+
+@mistakes
+- Confusing the two windows: rwnd comes from the receiver and protects its buffer, cwnd is computed by the sender to protect the network.
+- Thinking that slow start is slow in the long run. It is exponential; "slow" refers to the small starting window.
+- Applying the timeout reaction (cwnd to 1) to a triple duplicate ACK. A duplicate-ACK loss is treated more mildly.
+- Expecting throughput to double when the loss rate is halved. Throughput varies as $1/\sqrt{p}$.
+
+@practice mc
+prompt: Which problem does TCP flow control solve?
+choice: The sender overloading the routers on the path
+choice*: The sender overflowing the receiver's buffer
+choice: Packets arriving out of order
+choice: Corrupted bits in a segment
+hint: Flow control is about the two end hosts, not the network between them.
+solution: The advertised receive window keeps the sender from sending more than the receiver can buffer. Router overload is the job of congestion control, reordering is handled with sequence numbers, and corruption with checksums.
+
+@practice num
+prompt: A TCP receiver has `RcvBuffer = 65536` bytes. It has received 50 000 bytes in total (`LastByteRcvd = 50 000`) and its application has read 20 000 bytes (`LastByteRead = 20 000`). What receive window does it advertise, in bytes?
+answer: 35536
+check: 65536 - (50000 - 20000)
+unit: bytes
+hint: The window is the free buffer space: the buffer minus the data received but not yet read.
+solution: $65\,536 - (50\,000 - 20\,000) = 35\,536$ bytes.
+
+@practice code
+prompt: Write `effective_window(cwnd, rwnd, last_sent, last_acked)` that returns how many more bytes a TCP sender may send now: the smaller of `cwnd` and `rwnd` minus the bytes in flight (`last_sent - last_acked`), but never less than 0.
+starter:
+```python
+def effective_window(cwnd, rwnd, last_sent, last_acked):
+    pass
+```
+tests:
+```python
+assert effective_window(10000, 8000, 5000, 3000) == 6000
+assert effective_window(9000, 12000, 30000, 26000) == 5000
+assert effective_window(4000, 8000, 5000, 1000) == 0
+assert effective_window(3000, 8000, 5000, 1000) == 0
+assert effective_window(5000, 5000, 100, 100) == 5000
+```
+model:
+```python
+def effective_window(cwnd, rwnd, last_sent, last_acked):
+    in_flight = last_sent - last_acked
+    return max(0, min(cwnd, rwnd) - in_flight)
+```
+hint: Compute the amount in flight first.
+hint: Subtract it from `min(cwnd, rwnd)` and clamp the result at 0 with `max`.
+solution: The sender may have `min(cwnd, rwnd)` bytes outstanding and already has `last_sent - last_acked` outstanding, so the room left is the difference, clamped at 0 because the window can shrink below the data already in flight.
+
+@practice num
+prompt: Using the Mathis approximation $\text{throughput} \approx \frac{\text{MSS}}{\text{RTT}} \cdot \frac{1.22}{\sqrt{p}}$, a TCP flow has MSS = 1460 bytes, RTT = 100 ms and packet loss probability $p = 10^{-4}$. What is its throughput in megabits per second? (1 Mb = $10^6$ bits.)
+answer: 14.25
+check: 1.22 * 1460 * 8 / (0.1 * sqrt(1e-4)) / 1e6
+tol: 1%
+unit: Mb/s
+hint: Convert the MSS to bits and note that $\sqrt{10^{-4}} = 0.01$.
+solution: $\text{MSS} = 11\,680$ bits; $11\,680/0.1 = 116\,800$ bits/s; times $1.22/0.01 = 122$ gives $14.25 \times 10^6$ bits/s, about 14.25 Mb/s.
+
+@practice code
+prompt: Write `reno_cwnd(events, ssthresh)` that simulates a simplified TCP Reno once per RTT. `cwnd` starts at 1 (in MSS) and `ssthresh` is given. `events` lists what happens in each RTT: `"ok"`, `"dup"` (triple duplicate ACK) or `"timeout"`. For `"ok"`: if `cwnd < ssthresh` then `cwnd = min(2 * cwnd, ssthresh)`, otherwise `cwnd += 1`. For `"dup"`: `ssthresh = max(cwnd // 2, 2)` then `cwnd = ssthresh`. For `"timeout"`: `ssthresh = max(cwnd // 2, 2)` then `cwnd = 1`. Return the list of `cwnd` values after each RTT.
+starter:
+```python
+def reno_cwnd(events, ssthresh):
+    pass
+```
+tests:
+```python
+assert reno_cwnd(["ok"] * 5, 8) == [2, 4, 8, 9, 10]
+assert reno_cwnd(["ok"] * 5 + ["dup", "ok"], 8) == [2, 4, 8, 9, 10, 5, 6]
+assert reno_cwnd(["ok"] * 5 + ["dup", "ok", "timeout", "ok", "ok", "ok"], 8) == [
+    2, 4, 8, 9, 10, 5, 6, 1, 2, 3, 4]
+assert reno_cwnd(["timeout", "ok", "ok"], 64) == [1, 2, 3]
+assert reno_cwnd([], 8) == []
+```
+model:
+```python
+def reno_cwnd(events, ssthresh):
+    cwnd = 1
+    history = []
+    for event in events:
+        if event == "ok":
+            if cwnd < ssthresh:
+                cwnd = min(2 * cwnd, ssthresh)
+            else:
+                cwnd += 1
+        elif event == "dup":
+            ssthresh = max(cwnd // 2, 2)
+            cwnd = ssthresh
+        elif event == "timeout":
+            ssthresh = max(cwnd // 2, 2)
+            cwnd = 1
+        history.append(cwnd)
+    return history
+```
+hint: Keep `cwnd` and `ssthresh` as variables that persist across the loop.
+hint: Handle the three event kinds in an `if`/`elif` chain and append `cwnd` after each one.
+solution: Loop over the events, updating `cwnd` and `ssthresh` by the rules and appending `cwnd` after each RTT. In the second test `cwnd` is 10 when the duplicate-ACK event happens, so `ssthresh` and `cwnd` both become 5, and the next good RTT gives 6.
+
+@quiz code
+prompt: Write `slow_start_rtts(target)` that returns the number of RTTs slow start needs to bring `cwnd`, starting at 1 MSS and doubling every RTT with no `ssthresh`, to at least `target` MSS (`target >= 1`). For example `slow_start_rtts(1)` is 0 and `slow_start_rtts(100)` is 7.
+starter:
+```python
+def slow_start_rtts(target):
+    pass
+```
+tests:
+```python
+assert slow_start_rtts(1) == 0
+assert slow_start_rtts(2) == 1
+assert slow_start_rtts(3) == 2
+assert slow_start_rtts(64) == 6
+assert slow_start_rtts(100) == 7
+```
+model:
+```python
+def slow_start_rtts(target):
+    cwnd = 1
+    rtts = 0
+    while cwnd < target:
+        cwnd *= 2
+        rtts += 1
+    return rtts
+```
+hint: Double the window and count each doubling until it reaches the target.
+hint: The loop condition is `cwnd < target`.
+solution: Count how many doublings of 1 are needed to reach `target`: this is the ceiling of $\log_2$ of the target, found with a simple loop.
+
+@quiz num
+prompt: A TCP flow in AIMD steady state has a congestion window that oscillates between $W/2$ and $W$ with $W = 40$ segments. MSS = 1500 bytes and RTT = 100 ms. Using an average window of $0.75\,W$, what is the average throughput in megabits per second? (1 Mb = $10^6$ bits.)
+answer: 3.6
+check: 0.75 * 40 * 1500 * 8 / 0.1 / 1e6
+tol: 1%
+unit: Mb/s
+hint: Throughput is the average window in bits divided by the RTT.
+solution: Average window $= 0.75 \times 40 = 30$ segments $= 30 \times 12\,000 = 360\,000$ bits; divided by 0.1 s that is $3.6 \times 10^6$ bits/s.

@@ -1,0 +1,283 @@
+@lesson
+title: Adversarial search: minimax and alpha–beta pruning
+summary: Compute minimax values for two-player zero-sum games, prune with alpha–beta, and write minimax for tic-tac-toe.
+objective: Define the minimax value of a game state and compute it on a game tree.
+objective: Run alpha–beta pruning, state when it prunes, and explain why it never changes the minimax value.
+objective: Explain cutoffs with evaluation functions, move ordering and the effect on complexity.
+reading: Poole and Mackworth, the chapter "Multiagent Systems", the part on games with perfect information (minimax and pruning).
+
+@article
+In a **game** two or more agents act in turn and their goals conflict. The simplest case is a **two-player, zero-sum game with perfect information and deterministic moves**, such as tic-tac-toe, chess or checkers: whatever one player gains the other loses, both see the full state, and there is no chance. The two players are called **MAX** (who maximizes the value) and **MIN** (who minimizes it).
+
+A game is defined like a search problem: an initial state, the player to move, the actions, the transition model, a **terminal test**, and a **utility** for each terminal state (for example $+1$ win, $0$ draw, $-1$ loss, from MAX's point of view).
+
+### The minimax value
+
+The **minimax value** of a state is the utility MAX can guarantee against best play by MIN:
+
+$$
+\text{MINIMAX}(s) =
+\begin{cases}
+\text{UTILITY}(s) & \text{if } s \text{ is terminal},\\
+\max_{a} \text{MINIMAX}(\text{result}(s, a)) & \text{if MAX is to move},\\
+\min_{a} \text{MINIMAX}(\text{result}(s, a)) & \text{if MIN is to move}.
+\end{cases}
+$$
+
+The **minimax algorithm** computes this by a depth-first traversal of the game tree. It is complete for finite trees, optimal against an optimal opponent, takes $O(b^m)$ time and only $O(bm)$ space (for $m$ the maximum depth and $b$ the number of legal moves).
+
+```python
+def minimax(tree, maximizing):
+    if isinstance(tree, int):          # a leaf holds its utility
+        return tree
+    values = [minimax(child, not maximizing) for child in tree]
+    return max(values) if maximizing else min(values)
+```
+
+Here a game tree is a nested list: an integer is a terminal utility and a list holds the children.
+
+### Alpha–beta pruning
+
+Many subtrees cannot affect the decision at the root. Alpha–beta pruning carries two bounds along a path: $\alpha$, the best value MAX can already guarantee, and $\beta$, the best (lowest) value MIN can already guarantee. At a MAX node, update $\alpha = \max(\alpha, v)$; at a MIN node, update $\beta = \min(\beta, v)$. As soon as $\alpha \ge \beta$ the remaining children can be skipped, because the player above would never allow this position.
+
+```python
+def alphabeta(tree, maximizing, alpha=float("-inf"), beta=float("inf")):
+    if isinstance(tree, int):
+        return tree
+    if maximizing:
+        value = float("-inf")
+        for child in tree:
+            value = max(value, alphabeta(child, False, alpha, beta))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    value = float("inf")
+    for child in tree:
+        value = min(value, alphabeta(child, True, alpha, beta))
+        beta = min(beta, value)
+        if alpha >= beta:
+            break
+    return value
+```
+
+Alpha–beta returns **exactly the same root value** as minimax; it only skips work. The savings depend on **move ordering**. With the best ordering it examines about $O(b^{m/2})$ nodes, so it can search twice as deep in the same time; with the worst ordering it prunes nothing and costs $O(b^m)$. Practical programs order moves with heuristics (captures first, the best move from a shallower search first, as in iterative deepening) and store results in a **transposition table** so that a state reached by different move orders is evaluated once.
+
+### Cutoffs and evaluation functions
+
+Real games are too deep to search to the end. Search stops at a **cutoff** (a depth limit, or when time runs out) and applies an **evaluation function** $\text{EVAL}(s)$ that estimates the utility of a nonterminal state, for example as a weighted sum of features such as material. The quality of play depends on the quality of EVAL and the depth reached. Games with chance use **expectimax**, which averages over chance outcomes weighted by probability; games with hidden information need other methods.
+
+@example
+title: Minimax on a three-level tree
+problem: MAX moves at the root, then MIN, then MAX, and the leaves hold utilities. The tree is `[[[2, 7], [5, 1]], [[6, 3], [4, 8]]]`. Find the minimax value.
+step: The lowest internal nodes are MAX nodes over leaves: `[2, 7]` has value 7, `[5, 1]` has 5, `[6, 3]` has 6 and `[4, 8]` has 8.
+step: The next level are MIN nodes: the left one takes `min(7, 5) = 5` and the right one takes `min(6, 8) = 6`.
+step: The root is a MAX node: `max(5, 6) = 6`.
+answer: The minimax value is 6, reached by moving to the right child.
+
+@example
+title: Alpha–beta pruning trace
+problem: MAX at the root, three MIN children, leaves `[[3, 5], [2, 9], [8, 4]]`. Run alpha–beta and count the leaves examined.
+step: Start with $\alpha = -\infty$, $\beta = +\infty$. The first MIN node examines 3 and then 5; its value is 3, so the root sets $\alpha = 3$. Two leaves examined.
+step: The second MIN node (with $\alpha = 3$) examines 2 first, so $\beta = 2$ and $\alpha \ge \beta$ holds (3 is at least 2). Its value is at most 2, which can never beat 3, so the leaf 9 is pruned. One leaf examined.
+step: The third MIN node examines 8 ($\beta = 8$, no cut) and then 4 ($\beta = 4$, still above $\alpha = 3$). Its value is 4. Two leaves examined.
+step: The root value is $\max(3, 2, 4) = 4$ (the bound 2 stands for a value that is at most 2), and 5 of the 6 leaves were examined.
+answer: Value 4 with 5 leaves examined; the leaf 9 was pruned.
+
+@mistakes
+- Using alpha–beta with the claim that it can change the chosen move: with exact evaluation it returns the same value as minimax.
+- Updating $\alpha$ at MIN nodes or $\beta$ at MAX nodes; MAX raises $\alpha$ and MIN lowers $\beta$.
+- Expecting savings from alpha–beta regardless of move order: if the best moves are examined last, nothing is pruned.
+- Evaluating the minimax value from the wrong player's perspective after a cutoff; EVAL must always be from MAX's side.
+
+@practice mc
+prompt: In a zero-sum game, what does the minimax value of a state at which MAX is to move represent?
+choice: The average utility over all possible plays
+choice*: The best utility MAX can guarantee against a perfectly playing MIN
+choice: The utility of the terminal state MIN prefers least
+choice: The utility MAX reaches if MIN plays randomly
+hint: Think about what MAX can be sure of, whatever MIN does.
+solution: The minimax value is the guaranteed result under optimal play by both sides: MAX takes the best of the worst cases that MIN can force.
+
+@practice num
+prompt: MAX moves at the root and the tree is `[[5, 1], [4, 9], [6, 7]]`: each inner list is a MIN node over leaf utilities. What is the minimax value of the root?
+answer: 6
+check: max(min(x) for x in [[5, 1], [4, 9], [6, 7]])
+hint: Take the minimum inside each list first.
+solution: The MIN nodes have values 1, 4 and 6, and MAX picks the largest, which is 6.
+
+@practice code
+prompt: Write `minimax(tree, maximizing)` for a game tree given as a nested list: an `int` is a terminal utility and a `list` holds the children of a node. `maximizing` is `True` when MAX moves at that node, and the player alternates at each level. Return the minimax value.
+starter:
+```python
+def minimax(tree, maximizing):
+    pass
+```
+tests:
+```python
+assert minimax(7, True) == 7
+assert minimax([5, 1, 3], True) == 5
+assert minimax([5, 1, 3], False) == 1
+assert minimax([[4, 6, 2], [3, 8, 9], [7, 1, 5]], True) == 3
+assert minimax([[[3, 5], [6, 9]], [[1, 2], [0, -1]]], True) == 5
+assert minimax([[-3], [-8, -2]], True) == -3
+```
+model:
+```python
+def minimax(tree, maximizing):
+    if isinstance(tree, int):
+        return tree
+    values = [minimax(child, not maximizing) for child in tree]
+    return max(values) if maximizing else min(values)
+```
+hint: A leaf is an `int`; return it unchanged.
+hint: For a list, evaluate each child with the opposite `maximizing` flag, then take `max` or `min` of the results.
+solution: The recursion mirrors the definition: terminal states return their utility, MAX nodes take the maximum of their children and MIN nodes take the minimum, with the player flipping at each level.
+
+@practice code
+prompt: Write `alphabeta(tree, maximizing)` that evaluates a nested-list game tree (an `int` is a leaf utility, a `list` holds the children) with alpha–beta pruning and returns the tuple `(value, leaves_examined)`. Examine children left to right, and stop examining a node's children as soon as `alpha >= beta`. At the root `alpha` is negative infinity and `beta` is positive infinity.
+starter:
+```python
+def alphabeta(tree, maximizing):
+    pass
+```
+tests:
+```python
+assert alphabeta(7, True) == (7, 1)
+assert alphabeta([5, 1, 3], False) == (1, 3)
+assert alphabeta([[4, 6, 2], [3, 8, 9], [7, 1, 5]], True) == (3, 8)
+assert alphabeta([[[3, 5], [6, 9]], [[1, 2], [0, -1]]], True) == (5, 5)
+assert alphabeta([[9, 8, 7], [6, 5, 4], [3, 2, 1]], True) == (7, 5)
+assert alphabeta([[2, 9], [1, 8], [7, 3]], True) == (3, 5)
+```
+model:
+```python
+def alphabeta(tree, maximizing):
+    leaves = 0
+
+    def search(node, is_max, alpha, beta):
+        nonlocal leaves
+        if isinstance(node, int):
+            leaves += 1
+            return node
+        if is_max:
+            value = float("-inf")
+            for child in node:
+                value = max(value, search(child, False, alpha, beta))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        value = float("inf")
+        for child in node:
+            value = min(value, search(child, True, alpha, beta))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+    result = search(tree, maximizing, float("-inf"), float("inf"))
+    return result, leaves
+```
+hint: Write an inner recursive function that carries `alpha` and `beta`, and count leaves in a variable shared with `nonlocal`.
+hint: At a MAX node update `alpha` after each child, at a MIN node update `beta`, and `break` as soon as `alpha >= beta`.
+solution: The search is the standard alpha–beta recursion with a leaf counter. In `[[9, 8, 7], [6, 5, 4], [3, 2, 1]]` the first MIN node fixes `alpha = 7`; the next two MIN nodes see a first leaf of 6 and 3, which are at most 7, so each is cut after one leaf, giving 3 + 1 + 1 = 5 leaves.
+
+@practice code
+prompt: Write minimax for tic-tac-toe. `ttt_value(board, player)` takes a 9-character string (rows read left to right, top to bottom) of `"X"`, `"O"` and `"."` (empty) and the player whose turn it is (`"X"` or `"O"`). Return `1` if `X` wins with best play by both sides, `-1` if `O` wins and `0` for a draw. `X` maximizes and `O` minimizes. If a player already has three in a row, return `1` for `X` or `-1` for `O`; if there is no winner and the board is full, return `0`. The tests use boards with at most six empty squares.
+starter:
+```python
+LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6),
+         (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
+
+
+def ttt_value(board, player):
+    pass
+```
+tests:
+```python
+assert ttt_value("XXXOO....", "O") == 1
+assert ttt_value("XX.OO....", "X") == 1
+assert ttt_value("XOXOXO...", "X") == 1
+assert ttt_value("XO.OXX..O", "X") == 0
+assert ttt_value("XOXXOOOXX", "X") == 0
+assert ttt_value("XXOO.X...", "O") == 0
+```
+model:
+```python
+LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6),
+         (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
+
+
+def ttt_value(board, player):
+    for a, b, c in LINES:
+        if board[a] != "." and board[a] == board[b] == board[c]:
+            return 1 if board[a] == "X" else -1
+    if "." not in board:
+        return 0
+    other = "O" if player == "X" else "X"
+    values = []
+    for i, cell in enumerate(board):
+        if cell == ".":
+            values.append(ttt_value(board[:i] + player + board[i + 1:], other))
+    return max(values) if player == "X" else min(values)
+```
+hint: First check for a winner, then for a full board; those are the terminal states.
+hint: For every empty square, play the move, recurse with the other player, then take the max of the values if `X` is to move or the min if `O` is.
+solution: Terminal test first (a completed line or a full board), then the minimax recursion over every empty square. With `"XXOO.X..."` and `"O"` to move, neither side can force a win, so every line of best play ends in a draw and the value is 0.
+
+@quiz code
+prompt: Write `best_move(board, player)` for tic-tac-toe. The board is a 9-character string of `"X"`, `"O"` and `"."` (rows left to right, top to bottom), and `player` (`"X"` or `"O"`) is to move; the game is not over and the board has at most five empty squares. Return the index (0 to 8) of a move with the best minimax outcome for `player` (`X` wants the highest value, `O` the lowest, with win `+1` for `X` and `-1` for `O`). If several moves are equally good, return the lowest index.
+starter:
+```python
+def best_move(board, player):
+    pass
+```
+tests:
+```python
+assert best_move("XOX.O....", "X") == 7
+assert best_move("XO.XO....", "X") == 6
+assert best_move("X.O.X.O..", "X") == 1
+assert best_move("OO.XX.X..", "O") == 2
+```
+model:
+```python
+LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6),
+         (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
+
+
+def value(board, player):
+    for a, b, c in LINES:
+        if board[a] != "." and board[a] == board[b] == board[c]:
+            return 1 if board[a] == "X" else -1
+    if "." not in board:
+        return 0
+    other = "O" if player == "X" else "X"
+    vals = [value(board[:i] + player + board[i + 1:], other)
+            for i, cell in enumerate(board) if cell == "."]
+    return max(vals) if player == "X" else min(vals)
+
+
+def best_move(board, player):
+    other = "O" if player == "X" else "X"
+    best_i, best_v = None, None
+    for i, cell in enumerate(board):
+        if cell != ".":
+            continue
+        v = value(board[:i] + player + board[i + 1:], other)
+        if best_v is None or (v > best_v if player == "X" else v < best_v):
+            best_i, best_v = i, v
+    return best_i
+```
+hint: Evaluate each legal move with a minimax helper called on the board after the move, with the opponent to move.
+hint: Keep the first move that achieves a strictly better value, so ties go to the lowest index.
+solution: Score every empty square with minimax and keep the first best one. In `"X.O.X.O.."`, X wins by playing index 8 at once, but index 1 also creates two winning threats and has the same value, so the lowest index, 1, is returned.
+
+@quiz mc
+prompt: Alpha–beta pruning is applied to a game tree. Which statement is correct?
+choice: It may return a different root value from minimax because some subtrees are never examined
+choice: It always examines at most half of the leaves
+choice*: With the best possible move ordering it examines roughly $O(b^{m/2})$ nodes; with the worst ordering it can examine all $O(b^m)$
+choice: It requires an evaluation function that is admissible
+hint: Pruning is safe, but how much it saves depends on the order of the moves.
+solution: Pruned subtrees provably cannot change the root value, so the value is always identical to minimax. The saving depends on move ordering: best ordering gives about the square root of the minimax node count, worst ordering prunes nothing. Admissibility is a property used by A*, not by alpha–beta.

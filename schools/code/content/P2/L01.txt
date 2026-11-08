@@ -1,0 +1,277 @@
+@lesson
+title: Complexity, coupling and cohesion
+summary: Recognize the main kinds of coupling and cohesion in real code and explain why they decide how expensive a change will be.
+objective: Define complexity as the cost of understanding and changing a system, and name its symptoms.
+objective: Distinguish data, stamp, control, global and content coupling, and rank them from loosest to tightest.
+objective: Judge the cohesion of a function or class and split it when it does more than one job.
+reading: Architecture Patterns with Python ("Cosmic Python"), the Introduction and Chapter 1 on domain modeling (read the opening argument about managing complexity).
+@article
+On your first week you will be handed a ticket like "add a discount code at checkout" and a repository you have never seen. Whether that ticket takes an hour or three days depends less on how clever the code is than on how **complex** it is. In design, complexity is not "lots of code". It is anything about the structure of a system that makes it hard to understand and hard to change safely.
+
+### Three symptoms to watch for
+
+- **Change amplification.** A small change forces edits in many places. Adding a discount code means touching the cart, the invoice template, the email text and two database queries.
+- **Cognitive load.** You must hold a lot in your head to make a change. To edit one function you have to know the state of three global variables and the order in which other modules ran.
+- **Unknown unknowns.** It is not obvious what you must change or what you might break. This is the worst symptom, because careful people still ship bugs.
+
+Two forces drive these symptoms: **dependencies** (code that cannot be understood or changed alone) and **obscurity** (important information that is not visible). This week is about dependencies, which designers call coupling and cohesion.
+
+### Coupling: how much one part must know about another
+
+**Coupling** measures how strongly one module depends on the details of another. Loose coupling means a change in one module rarely forces a change in the other. From loosest to tightest:
+
+| Kind | What is shared | Example |
+|---|---|---|
+| Data | Plain values passed as parameters | `tax(amount, rate)` |
+| Stamp | A whole structure, though only part is used | passing a whole `User` to a function that needs only `user.email` |
+| Control | A flag that tells the callee what to do | `render(page, mode="admin")` |
+| Global (common) | Shared mutable state | a module-level `CONFIG` dict that many functions modify |
+| Content | One module reaches into another's internals | code that edits another class's private attributes |
+
+Data coupling is the goal. Control coupling is a hint that the caller knows how the callee works inside; often two functions are hiding in one. Global and content coupling are the ones that create unknown unknowns, because any code anywhere may be the one that changed the state.
+
+The **Law of Demeter** ("talk to friends, not strangers") is a practical rule against content coupling through chains. Code such as `order.customer.address.city` knows the whole shape of three classes. If `Address` changes, every caller breaks. Prefer asking the nearest object: `order.shipping_city()`.
+
+### Cohesion: how well the parts of one module belong together
+
+**Cohesion** measures how strongly the things inside one module relate to a single purpose. High cohesion means a reader can state what the module does in one sentence without the word "and". Low-cohesion warning signs are names like `utils`, `helpers` or `Manager`, and functions that compute something, format it, print it and save it.
+
+The two ideas pull together: you want **high cohesion inside** modules and **low coupling between** them. When a module has one purpose, other code needs to know less about it.
+
+### A quick example
+
+```python
+def process(orders, mode):
+    total = 0
+    for o in orders:
+        total += o["qty"] * o["price"]
+    if mode == "print":
+        print(f"Total: {total}")
+    elif mode == "save":
+        with open("total.txt", "w") as f:
+            f.write(str(total))
+```
+
+`process` has low cohesion (it sums, prints and saves) and control coupling (the `mode` flag). Split it into `order_total(orders)`, which returns a number, and separate functions that print or save a number. The caller picks which to call, the total can be tested without touching files, and adding a third output no longer edits the calculation.
+
+### How to use this at work
+
+You will rarely rewrite a system to reduce coupling. You will use these words in code review: "this reaches through two objects", "this flag means two functions", "this global makes the test order-dependent". Naming the problem precisely is half of fixing it.
+
+@example
+title: Finding the coupling in a function
+problem: A reviewer asks what is wrong, in terms of coupling and cohesion, with this function.
+
+```python
+DISCOUNT = 0.1
+
+def checkout(user, cart, verbose):
+    total = sum(i.price for i in cart.items)
+    if user.profile.membership.active:
+        total = total * (1 - DISCOUNT)
+    if verbose:
+        print("Total:", total)
+    user.profile.last_total = total
+    return total
+```
+step: Look at what it reads. `DISCOUNT` is a module-level value that other code can change: **global coupling**.
+step: Look at `user.profile.membership.active`. The function knows the shape of three nested objects: a **Law of Demeter** violation, a form of content coupling to the structure of `User`.
+step: The `verbose` parameter chooses between printing and not printing: **control coupling**, and a sign the function does more than one job.
+step: The function calculates a total, applies a policy, prints, and writes `last_total` into the user: **low cohesion**, and a hidden side effect that callers cannot see from the name.
+step: A better shape has `total_for(cart, discount_rate)` returning a number, with `user.is_member()` asked of the nearest object. Printing and storing `last_total` happen in the caller.
+answer: Global coupling (`DISCOUNT`), a Demeter chain, control coupling (`verbose`), and low cohesion with a hidden side effect.
+
+@example
+title: Removing a global with a parameter
+problem: Make this function easy to test without changing a module-level variable.
+
+```python
+RATE = 0.2
+
+def with_tax(price):
+    return price * (1 + RATE)
+```
+step: The function's result depends on `RATE`, which is not in its signature. A test must change global state first, and a parallel test could see the wrong value.
+step: Turn the hidden input into an explicit one: `def with_tax(price, rate):`.
+step: The function now uses only its parameters, which is **data coupling**:
+
+```python
+def with_tax(price, rate):
+    return price * (1 + rate)
+```
+step: Callers that always use the standard rate can pass `RATE` themselves, so the default lives at the edge, not in the middle of the calculation.
+answer: Pass `rate` as a parameter.
+
+@mistakes
+- Calling any shared code "coupling" and trying to remove it all. Some dependencies are necessary; the aim is to make them few, explicit and stable.
+- Fixing a control-coupled function by adding more flags instead of splitting it into functions that each do one thing.
+- Hiding a global behind a getter and calling it decoupled: callers still depend on shared mutable state.
+- Judging cohesion by length. A long function can be cohesive, and a three-line function that formats, logs and saves is not.
+
+@practice mc
+prompt: Which situation is an example of global (common) coupling?
+choice: Two functions that both receive the same list as a parameter and never modify it
+choice*: Two functions that both read and update the same module-level dictionary
+choice: A function that takes a whole `User` object but uses only its email address
+choice: A function that takes a `mode` string that selects its behavior
+hint: Ask which dependency is invisible in the function signatures.
+solution: Shared mutable module-level state is global coupling, because neither function's signature shows the dependency. Passing a list around is data coupling, passing a whole object for one field is stamp coupling, and a mode string is control coupling.
+
+@practice code
+prompt: This function depends on a hidden global rate. Write `price_with_tax(price, rate)` that returns `price * (1 + rate)` using only its parameters. Example: `price_with_tax(100, 0.25)` returns `125.0`.
+starter:
+```python
+def price_with_tax(price, rate):
+    pass
+```
+tests:
+```python
+assert price_with_tax(100, 0.25) == 125.0
+assert price_with_tax(50, 0) == 50
+assert price_with_tax(10, 0.5) == 15.0
+assert price_with_tax(0, 0.2) == 0
+```
+model:
+```python
+def price_with_tax(price, rate):
+    return price * (1 + rate)
+```
+hint: The rate must arrive through the parameter list, not from a variable outside the function.
+solution: Compute `price * (1 + rate)` from the parameters only. The function is now data coupled, so a test can call it with any rate without touching global state.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+count = 0
+
+def visit():
+    global count
+    count += 1
+    return count
+
+a = visit()
+b = visit()
+print(a, b, count)
+```
+answer: 1 2 2
+check: run("count = 0\n\ndef visit():\n    global count\n    count += 1\n    return count\n\na = visit()\nb = visit()\nprint(a, b, count)\n")
+hint: Each call to `visit` changes the shared variable `count` and returns its new value.
+solution: The first call sets `count` to 1 and returns 1, the second sets it to 2 and returns 2, and the global ends at 2. Its result depends on how many times the function ran before: the cost of global coupling.
+
+@practice code
+prompt: This function sums, formats and decides what to show in one place. Split the job. Write `average(nums)` that returns the mean of a list, or `None` for an empty list, and `format_report(nums)` that returns a string such as `"n=3 avg=2.0"` (average with one decimal place), or `"n=0 avg=n/a"` for an empty list. Neither function prints.
+starter:
+```python
+def average(nums):
+    pass
+
+def format_report(nums):
+    pass
+```
+tests:
+```python
+assert average([1, 2, 3]) == 2.0
+assert average([1, 2]) == 1.5
+assert average([]) is None
+assert format_report([1, 2, 3]) == "n=3 avg=2.0"
+assert format_report([]) == "n=0 avg=n/a"
+assert format_report([1, 2]) == "n=2 avg=1.5"
+```
+model:
+```python
+def average(nums):
+    if not nums:
+        return None
+    return sum(nums) / len(nums)
+
+def format_report(nums):
+    avg = average(nums)
+    text = "n/a" if avg is None else f"{avg:.1f}"
+    return f"n={len(nums)} avg={text}"
+```
+hint: One function calculates, the other presents; the presenter calls the calculator.
+hint: `format_report` must handle the `None` that `average` returns for an empty list.
+solution: `average` has one job and returns data; `format_report` asks it for the number and only decides how to display it. Each can now change independently, and both are testable without capturing printed output.
+
+@practice self
+prompt: Review this function as you would in a pull request. List at least three distinct coupling or cohesion problems, name the kind of each, and say how you would fix it.
+
+```python
+SETTINGS = {"currency": "EUR"}
+
+def send_invoice(order, email_mode):
+    total = 0
+    for line in order.lines:
+        total += line.product.price * line.qty
+    SETTINGS["last_total"] = total
+    text = f"Total: {total} {SETTINGS['currency']}"
+    if email_mode == "html":
+        body = "<p>" + text + "</p>"
+    else:
+        body = text
+    order.customer.account.mailbox.send(body)
+```
+hint: Look at what it reads, what it writes, what it takes as a flag and how many objects it reaches through.
+solution: (1) Global coupling: it writes `SETTINGS["last_total"]` and reads the currency from a shared dict. Fix: pass the currency in, and return the total instead of storing it in shared state. (2) Control coupling: `email_mode` selects the format, which means the function does two things. Fix: have separate `render_text` and `render_html` functions, and let the caller choose. (3) A Demeter chain: `order.customer.account.mailbox.send` knows three classes' structure. Fix: ask a nearby object, such as `order.notify_customer(body)`. (4) Low cohesion: it totals, formats and sends. Fix: split into `order_total`, a renderer and a sender, so the calculation can be tested without email.
+rubric: Identifies at least three genuine problems among global state, the flag, the chain and mixed responsibilities.
+rubric: Names the kind of coupling or cohesion problem for each one correctly.
+rubric: Gives a concrete fix for each problem that reduces the dependency instead of just moving it.
+
+@quiz code
+prompt: Callers currently write `order.customer.address.city`. Add a method `city()` to `Customer` that returns its address's city, and a method `shipping_city()` to `Order` that returns its customer's city, so callers never reach through two objects.
+starter:
+```python
+class Address:
+    def __init__(self, city):
+        self.city = city
+
+class Customer:
+    def __init__(self, name, address):
+        self.name = name
+        self.address = address
+
+class Order:
+    def __init__(self, customer):
+        self.customer = customer
+```
+tests:
+```python
+c = Customer("Bo", Address("Rome"))
+assert c.city() == "Rome"
+o = Order(Customer("Ann", Address("Oslo")))
+assert o.shipping_city() == "Oslo"
+assert Order(c).shipping_city() == "Rome"
+```
+model:
+```python
+class Address:
+    def __init__(self, city):
+        self.city = city
+
+class Customer:
+    def __init__(self, name, address):
+        self.name = name
+        self.address = address
+
+    def city(self):
+        return self.address.city
+
+class Order:
+    def __init__(self, customer):
+        self.customer = customer
+
+    def shipping_city(self):
+        return self.customer.city()
+```
+hint: Each class should talk only to the object it directly holds.
+solution: `Customer.city` delegates to its `address`, and `Order.shipping_city` delegates to its `customer`. If `Address` later stores a structured location, only `Customer.city` changes.
+
+@quiz mc
+prompt: A function `export(data, fmt)` contains `if fmt == "csv": ... elif fmt == "json": ...` and every caller must know which strings are valid. What is the best description of the problem?
+choice*: Control coupling: the flag exposes how the function works inside, and it likely does several jobs
+choice: Content coupling: the function edits private attributes of another class
+choice: Data coupling: the function takes plain values, which is the tightest kind
+choice: Low cohesion is impossible here because the function has a single name
+hint: Who decides what the function does, the caller or the function?
+solution: The caller steers the callee's internal behavior with a flag, which is control coupling, and the branches usually mean two functions (such as `export_csv` and `export_json`) have been merged. Plain values are data coupling, the loosest kind, and a single name does not guarantee a single purpose.

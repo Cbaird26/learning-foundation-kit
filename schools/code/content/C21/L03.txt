@@ -1,0 +1,226 @@
+@lesson
+title: Time, clocks and ordering: Lamport and vector clocks
+summary: Order events in a distributed system using the happened-before relation, and compute Lamport and vector timestamps for a trace.
+objective: Define the happened-before relation and concurrent events.
+objective: Apply the Lamport clock rules and state exactly what Lamport timestamps do and do not guarantee.
+objective: Apply the vector clock rules and use them to decide whether two events are causally ordered or concurrent.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 5 "Coordination" (the sections on clock synchronization, logical clocks and Lamport and vector clocks).
+
+@article
+Physical clocks on different machines drift and can be synchronized only to within some error (protocols such as NTP achieve milliseconds on a good network). So we cannot reliably order events on different machines by wall-clock time. What we can observe is **causality**: a message must be sent before it is received.
+
+### Happened-before
+
+The **happened-before** relation $a \to b$ is the smallest relation such that:
+
+1. If $a$ and $b$ are events in the same process and $a$ occurs before $b$, then $a \to b$.
+2. If $a$ is the sending of a message and $b$ is its receipt, then $a \to b$.
+3. If $a \to b$ and $b \to c$, then $a \to c$ (transitivity).
+
+Two events with neither $a \to b$ nor $b \to a$ are **concurrent**, written $a \parallel b$. Concurrent does not mean simultaneous; it means no chain of messages connects them, so neither could have influenced the other.
+
+### Lamport clocks
+
+Each process keeps an integer counter $C$, initially 0.
+
+- **Local event or send:** $C \leftarrow C + 1$. A send carries the new value as the message's timestamp $t$.
+- **Receive** a message with timestamp $t$: $C \leftarrow \max(C, t) + 1$.
+
+The event's timestamp is the value of $C$ right after the event.
+
+**Guarantee (clock condition):** if $a \to b$ then $L(a) < L(b)$. **The converse is false**: $L(a) < L(b)$ does not imply $a \to b$. Two concurrent events can get any ordering of timestamps, and can even be equal. To break ties and get a *total* order consistent with causality, order by the pair $(L, \text{process id})$. This total order is the basis of Lamport's mutual exclusion algorithm and of replicated logs.
+
+```python
+class LamportClock:
+    def __init__(self):
+        self.time = 0
+
+    def tick(self):                  # local event or send
+        self.time += 1
+        return self.time
+
+    def receive(self, ts):
+        self.time = max(self.time, ts) + 1
+        return self.time
+```
+
+### Vector clocks
+
+To *detect* concurrency we need more information. In a system of $n$ processes, each process $i$ keeps a vector $V$ of $n$ counters, initially all 0.
+
+- **Local event or send:** $V[i] \leftarrow V[i] + 1$ (a send carries a copy of $V$).
+- **Receive** a message carrying $W$: first $V[k] \leftarrow \max(V[k], W[k])$ for every $k$, then $V[i] \leftarrow V[i] + 1$.
+
+Compare vectors componentwise: $V \le W$ if $V[k] \le W[k]$ for all $k$, and $V < W$ if $V \le W$ and $V \ne W$. Then:
+
+$$a \to b \iff V(a) < V(b), \qquad a \parallel b \iff V(a) \not< V(b) \text{ and } V(b) \not< V(a).$$
+
+Vector clocks therefore characterize causality exactly, at the cost of $n$ integers per message. Systems use them (or close relatives such as version vectors) to detect conflicting concurrent updates to a replicated object.
+
+@example
+title: Lamport timestamps for a trace
+problem: P1 does a local event a, sends message m to P2 (event b), then does a local event c. P2 does a local event d, receives m (event e), then sends message n to P1 (event f). P1 then receives n (event g). Give every Lamport timestamp.
+step: P1: a gets 1, the send b gets 2 (and carries timestamp 2), c gets 3.
+step: P2: d gets 1. The receive e of m (timestamp 2) gets $\max(1, 2) + 1 = 3$.
+step: The send f gets 4 and carries 4.
+step: P1 receives n at event g: $\max(3, 4) + 1 = 5$.
+step: Result: a=1, b=2, c=3, d=1, e=3, f=4, g=5. Note d=1 and a=1 are equal even though a and d are concurrent.
+answer: a=1, b=2, c=3, d=1, e=3, f=4, g=5
+
+@example
+title: Vector clocks and concurrency
+problem: Three processes P0, P1, P2 use vectors $[v_0, v_1, v_2]$. P0 does a local event x, then sends a message to P1 (event y). P1 receives it (event z). Meanwhile P2 does a local event w. Compare x with z and w with z.
+step: P0: x is $[1,0,0]$; the send y is $[2,0,0]$ and carries that vector.
+step: P1 starts at $[0,0,0]$. At the receive z: componentwise max with $[2,0,0]$ gives $[2,0,0]$, then increment its own entry: $[2,1,0]$.
+step: P2: w is $[0,0,1]$.
+step: $x = [1,0,0] < z = [2,1,0]$ componentwise, so $x \to z$.
+step: $w = [0,0,1]$ and $z = [2,1,0]$: $w[2] = 1 > 0$ but $w[0] = 0 < 2$, so neither is smaller and $w \parallel z$.
+
+@mistakes
+- Concluding $a \to b$ from $L(a) < L(b)$; Lamport timestamps only guarantee the opposite direction.
+- Forgetting to take the maximum before incrementing on a receive, or incrementing only when sending.
+- Treating "concurrent" as "at the same physical time"; it means causally unrelated.
+- In a vector clock, comparing only one component instead of all of them.
+
+@practice mc
+prompt: Events a and b on different processes have Lamport timestamps $L(a) = 4$ and $L(b) = 7$. What can you conclude?
+choice: $a \to b$, because 4 < 7
+choice: $b \to a$, because 7 > 4
+choice*: Either $a \to b$ or $a$ and $b$ are concurrent; $b \to a$ is impossible
+choice: $a$ and $b$ must be concurrent
+hint: The clock condition says $a \to b$ implies $L(a) < L(b)$. Use its contrapositive.
+solution: If $b \to a$, then $L(b) < L(a)$, which is false, so $b \to a$ is impossible. But $L(a) < L(b)$ is also what many concurrent pairs have, so you cannot conclude $a \to b$.
+
+@practice num
+prompt: P1 does a local event a and sends m1 to P2 (event b). P2 does a local event c, receives m1 (event d), then sends m2 to P3 (event e). P3 does two local events f and g, then receives m2 (event h). Using Lamport clocks starting at 0, what is the timestamp of event h?
+answer: 5
+check: max(2, max(1, 2) + 1 + 1) + 1
+hint: P1 gives b the timestamp 2. P2: c is 1, then d is $\max(1, 2) + 1$.
+hint: e is one more than d. P3 has reached 2 after f and g, so h is $\max(2, t_e) + 1$.
+solution: a=1 and b=2; c=1, d=$\max(1,2)+1=3$, e=4; f=1, g=2, h=$\max(2,4)+1=5$.
+
+@practice code
+prompt: Write a class `LamportClock` with attribute `time` starting at 0 and three methods: `tick()` for a local event, `send()` for a message send, and `receive(ts)`. `tick` and `send` add 1 to `time`; `receive` sets `time` to `max(time, ts) + 1`. Each method returns the new value of `time`.
+starter:
+```python
+class LamportClock:
+    pass
+```
+tests:
+```python
+c = LamportClock()
+assert c.time == 0
+assert c.tick() == 1
+assert c.send() == 2
+assert c.receive(10) == 11
+assert c.receive(3) == 12
+assert c.time == 12
+d = LamportClock()
+assert d.receive(0) == 1
+```
+model:
+```python
+class LamportClock:
+    def __init__(self):
+        self.time = 0
+
+    def tick(self):
+        self.time += 1
+        return self.time
+
+    def send(self):
+        return self.tick()
+
+    def receive(self, ts):
+        self.time = max(self.time, ts) + 1
+        return self.time
+```
+hint: Store the counter in `self.time` in `__init__`.
+hint: A send is just a local tick whose result becomes the message timestamp. For `receive`, take the max first, then add 1; note that `receive(3)` after the clock is at 11 still moves forward.
+solution: `tick` and `send` increment; `receive` assigns `max(self.time, ts) + 1`, so the clock never goes backward even when the incoming timestamp is old.
+
+@practice code
+prompt: Write `compare(a, b)` for two vector clocks given as equal-length lists of integers. Return `"equal"` if they are identical, `"before"` if `a` happened before `b` (every entry of `a` is at most the matching entry of `b`, and they are not equal), `"after"` if `b` happened before `a`, and `"concurrent"` otherwise.
+starter:
+```python
+def compare(a, b):
+    pass
+```
+tests:
+```python
+assert compare([1, 0, 0], [2, 1, 0]) == "before"
+assert compare([2, 1, 0], [1, 0, 0]) == "after"
+assert compare([1, 2], [1, 2]) == "equal"
+assert compare([0, 0, 1], [2, 1, 0]) == "concurrent"
+assert compare([3, 0], [2, 3]) == "concurrent"
+assert compare([0, 0], [0, 1]) == "before"
+```
+model:
+```python
+def compare(a, b):
+    if a == b:
+        return "equal"
+    if all(x <= y for x, y in zip(a, b)):
+        return "before"
+    if all(x >= y for x, y in zip(a, b)):
+        return "after"
+    return "concurrent"
+```
+hint: Handle equality first, then test "every entry less than or equal".
+hint: Use `all(x <= y for x, y in zip(a, b))` for "before", the mirror test for "after", and call everything else concurrent.
+solution: After excluding equal vectors, `a` is before `b` exactly when all entries of `a` are at most those of `b`; the mirror condition gives "after"; if neither holds, some entry is larger on each side, so the events are concurrent.
+
+@practice text
+prompt: Two processes A and B each keep a Lamport counter. This program replays a trace. Type the output exactly.
+
+```python
+a = b = 0
+a += 1
+a += 1
+ts = a
+b += 1
+b = max(b, ts) + 1
+print(a, b)
+```
+answer: 2 3
+check: run("a = b = 0\na += 1\na += 1\nts = a\nb += 1\nb = max(b, ts) + 1\nprint(a, b)\n")
+hint: `ts` is A's counter after its two events. B has its own local event first.
+solution: A reaches 2 and sends timestamp 2. B ticks to 1 for its local event, then the receive sets $b = \max(1, 2) + 1 = 3$. The program prints `2 3`.
+
+@quiz code
+prompt: Write `vc_receive(local, msg, i)` for vector clocks. `local` is the receiving process's vector (a list), `msg` is the vector carried by the message, and `i` is the receiver's own index. Return a **new** list: the componentwise maximum of `local` and `msg`, with entry `i` then increased by 1. Do not modify the arguments.
+starter:
+```python
+def vc_receive(local, msg, i):
+    pass
+```
+tests:
+```python
+assert vc_receive([0, 1, 0], [2, 0, 0], 1) == [2, 2, 0]
+assert vc_receive([3, 0], [1, 5], 0) == [4, 5]
+a = [1, 1]
+b = [0, 0]
+assert vc_receive(a, b, 1) == [1, 2]
+assert a == [1, 1] and b == [0, 0]
+assert vc_receive([0, 0, 0], [0, 0, 0], 2) == [0, 0, 1]
+```
+model:
+```python
+def vc_receive(local, msg, i):
+    merged = [max(x, y) for x, y in zip(local, msg)]
+    merged[i] += 1
+    return merged
+```
+hint: First merge by taking the maximum of each pair of entries.
+hint: Build the merged list with a comprehension, then add 1 to the entry at index `i`; building a new list leaves the arguments unchanged.
+solution: The merged vector records everything either side knew; incrementing the receiver's own entry then counts the receive as a new event of that process.
+
+@quiz ms
+prompt: Which statements about logical clocks are true?
+choice*: If $a \to b$, then the Lamport timestamp of $a$ is smaller than that of $b$.
+choice: If the Lamport timestamp of $a$ is smaller than that of $b$, then $a \to b$.
+choice*: Vector clocks can tell whether two events are concurrent.
+choice*: Ordering by the pair (Lamport timestamp, process id) gives a total order consistent with causality.
+choice: Two concurrent events can never have equal Lamport timestamps.
+hint: Recall the clock condition and which direction holds.
+solution: Lamport timestamps respect causality in one direction only, so a smaller timestamp does not imply happened-before, and concurrent events may have equal timestamps. Vector clocks characterize causality exactly, and the pair order breaks ties into a total order that still respects causality.

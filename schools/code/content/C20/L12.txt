@@ -1,0 +1,372 @@
+@lesson
+title: Testing and deploying web applications
+summary: Test a web application at several levels, fix a security bug with a regression test, and deploy with configuration from the environment, a production server and HTTPS.
+objective: Write unit and integration tests for a Flask application using its test client, and use a failing test to drive a security fix.
+objective: Separate configuration from code with environment variables and add a health check.
+objective: Describe a production deployment: WSGI server, reverse proxy, TLS, containers and a pre-launch checklist.
+reading: MDN Web Docs: Learn web development, "Cross browser testing" and "Deploying websites" in the Tools and testing material, together with the Flask documentation chapters "Testing Flask Applications" and "Deploying to Production".
+@article
+A web application is only finished when you can show that it works and can run it for other people. This week covers both: **testing** (how you know) and **deployment** (how you ship).
+
+### Levels of testing
+
+- **Unit tests** check one function in isolation (a validator, a price calculation). They are fast and numerous.
+- **Integration tests** exercise several parts together, for instance an HTTP request through routing, the view and a real (temporary) database.
+- **End-to-end tests** drive a real browser through whole user journeys (sign in, add a book, see it listed). They are the most realistic, slowest and most fragile, so keep few.
+
+The usual advice (the "test pyramid") is many unit tests, fewer integration tests and a handful of end-to-end tests. Tests must be **independent** (each starts from a clean state, so a failing test never depends on another) and **deterministic** (no dependence on the clock, random numbers or the network). To test code that calls something external, **inject the dependency** (pass the function as a parameter) and give the test a fake one; Python's `unittest.mock` can also replace objects temporarily.
+
+### Testing Flask
+
+Flask provides a test client that sends requests to the app in-process, with no server and no network:
+
+```python
+import pytest
+from app import create_app
+
+
+@pytest.fixture
+def client(tmp_path):
+    app = create_app({"TESTING": True, "DATABASE": str(tmp_path / "test.db")})
+    with app.test_client() as client:
+        yield client
+
+
+def test_create_book_requires_title(client):
+    response = client.post("/api/books", json={"title": ""})
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_create_then_list(client):
+    client.post("/api/books", json={"title": "Dune"})
+    titles = [b["title"] for b in client.get("/api/books").get_json()]
+    assert titles == ["Dune"]
+```
+
+A **fixture** builds a fresh app and a temporary database for every test. (`pytest` is the most popular test runner; the standard library's `unittest` does the same job with classes.) Test the unhappy paths as much as the happy ones: invalid input, missing authentication, someone else's data. Measure **coverage** to find untested code, but remember that coverage shows what code ran, not that it was checked, and that a passing suite does not prove the absence of bugs. Run the tests automatically on every push with **continuous integration** (CI).
+
+### Fixing a security bug with a test
+
+A bug report says: after sign-in, `/login?next=...` sends users to any address, so a phishing link such as `/login?next=https://evil.example/` makes your real login page redirect to another site (an **open redirect**). The disciplined way to fix it:
+
+1. Write a test that reproduces the problem and **fails**.
+2. Fix the code until the test passes.
+3. Keep the test as a **regression test** so the bug cannot return.
+
+```python
+# VULNERABLE: redirects to whatever the query string says
+return redirect(request.args.get("next", "/"))
+
+# FIXED: only a path on this site is allowed
+target = request.args.get("next", "")
+return redirect(target if is_safe_redirect(target) else url_for("home"))
+```
+
+The check accepts only a string that starts with a single `/` (not `//`, which means "another host", and not `/\`, which browsers treat the same way) and contains no control characters (browsers silently strip tabs and newlines in URLs). Test accessibility too: automated checkers find only a fraction of problems, so also tab through the page with the keyboard, zoom to 200% and try a screen reader.
+
+### Configuration
+
+Code is the same everywhere; **configuration** (secret keys, database URL, debug flag, port) differs between laptop, test and production, and secrets must never be committed to version control. Read them from **environment variables** at startup, give safe defaults for non-secrets, and **fail fast** if a required one is missing. Add a **health check** route (`/healthz`) that returns `200` when the app and its database work and `503` otherwise, so load balancers and orchestrators know when to restart or stop sending traffic.
+
+### Deploying
+
+A typical production setup:
+
+1. **Dependencies** are pinned in `requirements.txt` and installed in a clean environment (or image).
+2. A **WSGI server** such as Gunicorn runs the app with several worker processes: `gunicorn --bind 0.0.0.0:8000 app:app`.
+3. A **reverse proxy** (nginx, Caddy or a cloud load balancer) accepts public traffic, terminates **TLS** with a certificate (obtained automatically through the ACME protocol, for instance), serves static files and forwards requests to Gunicorn. Redirect HTTP to HTTPS and send `Strict-Transport-Security`.
+4. A **database server** (such as PostgreSQL) replaces a local SQLite file when several machines or heavy writes are involved; schema changes are applied by versioned **migrations**, and backups are tested by restoring them.
+5. Logs go to standard output, where the platform collects them; log events, not secrets or passwords.
+
+A **container** packages the app and its dependencies:
+
+```dockerfile
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN useradd --create-home appuser
+USER appuser
+EXPOSE 8000
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app"]
+```
+
+Before launch, run the checklist: debug off, a strong `SECRET_KEY` from the environment, HTTPS only, secure cookies, passwords hashed, dependencies up to date, tests green, errors that show users a plain message while logging details privately, and a way to roll back.
+
+@example
+title: Test first, then fix
+problem: Show how to fix the open redirect in a login view with a regression test.
+step: Write the test: `client.post("/login?next=https://evil.example/", data=VALID)` must answer `303` with a `Location` header that does not start with `https://evil.example`.
+step: Run it: it fails, which proves that the test really detects the bug.
+step: Add `is_safe_redirect(target)` and use it in the view, falling back to the home page when it returns `False`.
+step: Run the whole suite. The new test passes, and it stays in the suite, so a later refactoring cannot silently bring the bug back.
+
+@example
+title: Reading configuration from the environment
+problem: Load `DEBUG` and `PORT` from environment variables, with safe defaults.
+step: `DEBUG` is dangerous when wrongly on, so the default is off, and only clear "yes" values turn it on: `os.environ.get("DEBUG", "").lower() in {"1", "true", "yes", "on"}`.
+step: `PORT` needs conversion and a range check: `port = int(os.environ.get("PORT", "8000"))`; `int` raises `ValueError` for text, and you add a check that `1 <= port <= 65535`.
+step: A required secret has no default: `os.environ["SECRET_KEY"]` raises `KeyError` at startup if it is missing, so the app refuses to start without it.
+step: The same code now runs on a laptop and in production, with only the environment changing.
+
+@mistakes
+- Writing tests that depend on each other's data, the clock or the network, so that they fail randomly.
+- Fixing a bug without a test that fails first, so that nobody knows the fix works or that it stays fixed.
+- Committing secrets or `.env` files with real keys to the repository, or leaving debug mode on in production.
+- Exposing Flask's development server directly to the internet, with no TLS.
+
+@practice mc
+prompt: Which of these belongs in an environment variable rather than in source code?
+choice: The list of routes of the application
+choice: The HTML templates
+choice*: The `SECRET_KEY` and the production database password
+choice: The names of the view functions
+hint: Ask which values differ between environments or must not be shared with everyone who can read the repository.
+solution: Secrets and per-environment settings are configuration: they change between environments, and they must not be committed to a repository. Routes, templates and function names are code.
+
+@practice code
+prompt: Write `load_config(env)` for an application, where `env` is a dictionary of environment variables (strings). It returns a dictionary with four keys. `"SECRET_KEY"` is `env["SECRET_KEY"]`; if it is missing or shorter than 32 characters, raise `RuntimeError`. `"DEBUG"` is `True` only if the value of `env.get("DEBUG", "")`, stripped of spaces and lower-cased, is one of `"1"`, `"true"`, `"yes"`, `"on"`, otherwise `False`. `"PORT"` is `int(env.get("PORT", "8000"))`; a value that is not an integer, or is outside 1 to 65535, raises `ValueError`. `"DATABASE_URL"` is `env.get("DATABASE_URL", "sqlite:///app.db")`.
+starter:
+```python
+def load_config(env):
+    pass
+```
+tests:
+```python
+key = "k" * 32
+cfg = load_config({"SECRET_KEY": key})
+assert cfg == {"SECRET_KEY": key, "DEBUG": False, "PORT": 8000,
+               "DATABASE_URL": "sqlite:///app.db"}
+assert load_config({"SECRET_KEY": key, "DEBUG": "  Yes "})["DEBUG"] is True
+assert load_config({"SECRET_KEY": key, "DEBUG": "TRUE"})["DEBUG"] is True
+assert load_config({"SECRET_KEY": key, "DEBUG": "0"})["DEBUG"] is False
+assert load_config({"SECRET_KEY": key, "DEBUG": "no"})["DEBUG"] is False
+assert load_config({"SECRET_KEY": key, "PORT": "8080"})["PORT"] == 8080
+url = "postgresql://db/app"
+assert load_config({"SECRET_KEY": key, "DATABASE_URL": url})[
+    "DATABASE_URL"] == url
+assert raises(ValueError, load_config, {"SECRET_KEY": key, "PORT": "0"})
+assert raises(ValueError, load_config, {"SECRET_KEY": key, "PORT": "70000"})
+assert raises(ValueError, load_config, {"SECRET_KEY": key, "PORT": "abc"})
+assert raises(RuntimeError, load_config, {})
+assert raises(RuntimeError, load_config, {"SECRET_KEY": "short"})
+```
+model:
+```python
+def load_config(env):
+    secret = env.get("SECRET_KEY", "")
+    if len(secret) < 32:
+        raise RuntimeError("SECRET_KEY must be set and at least 32 characters")
+    debug = env.get("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    port = int(env.get("PORT", "8000"))
+    if not 1 <= port <= 65535:
+        raise ValueError(f"PORT out of range: {port}")
+    return {
+        "SECRET_KEY": secret,
+        "DEBUG": debug,
+        "PORT": port,
+        "DATABASE_URL": env.get("DATABASE_URL", "sqlite:///app.db"),
+    }
+```
+hint: Treat a missing secret like an empty one, with `env.get("SECRET_KEY", "")`, and check the length.
+hint: `int(...)` already raises `ValueError` for text such as `"abc"`; add your own check for the range.
+solution: Validate the required secret first (fail fast), turn the debug text into a boolean through a set of accepted spellings, convert and range-check the port, and fill defaults for non-secret settings.
+
+@practice code
+prompt: Write `health(checks)` for a health-check endpoint. `checks` is a dictionary mapping a name to a function with no arguments. A check passes if it returns a true value without raising an exception; it fails if it returns a false value or raises any `Exception`. Return a tuple `(status, payload)`: if all checks pass, `(200, {"status": "ok", "checks": {...}})`, otherwise `(503, {"status": "unavailable", "checks": {...}})`, where the `"checks"` dictionary maps each name to `"ok"` or `"fail"`. The payload must not contain exception messages. No checks at all counts as healthy.
+starter:
+```python
+def health(checks):
+    pass
+```
+tests:
+```python
+def db_ok():
+    return True
+
+
+def db_down():
+    raise ConnectionError("password for db is hunter2")
+
+
+assert health({"db": db_ok}) == (
+    200, {"status": "ok", "checks": {"db": "ok"}})
+status, payload = health({"db": db_down, "cache": lambda: True})
+assert status == 503
+assert payload == {"status": "unavailable",
+                   "checks": {"db": "fail", "cache": "ok"}}
+assert "hunter2" not in str(payload)
+assert health({"x": lambda: 0})[0] == 503
+assert health({}) == (200, {"status": "ok", "checks": {}})
+assert health({"a": db_ok, "b": lambda: "yes"})[0] == 200
+```
+model:
+```python
+def health(checks):
+    results = {}
+    for name, check in checks.items():
+        try:
+            passed = bool(check())
+        except Exception:
+            passed = False
+        results[name] = "ok" if passed else "fail"
+    healthy = all(value == "ok" for value in results.values())
+    if healthy:
+        return 200, {"status": "ok", "checks": results}
+    return 503, {"status": "unavailable", "checks": results}
+```
+hint: Run every check inside `try`/`except Exception`, so one failure cannot stop the others from running.
+hint: Build the `"checks"` dictionary first, then decide the status from it with `all(...)`.
+solution: For each check record `"ok"` or `"fail"` (an exception counts as a failure and its message is deliberately dropped), then return 200 only when every entry is `"ok"`. `all([])` is `True`, which gives the required result for no checks.
+
+@practice code
+prompt: A login view redirects to the address in the `next` query parameter. Fix the open-redirect bug by writing `is_safe_redirect(target)`, which returns `True` only for a path on the same site: the string must start with `"/"`, its second character (if any) must not be `"/"` or `"\\"` (a backslash), it must contain no control characters (any character with a code below 32, such as a tab or a newline), and `urllib.parse.urlsplit(target)` must have an empty scheme and an empty network location. Anything else, including the empty string, returns `False`.
+starter:
+```python
+from urllib.parse import urlsplit
+
+
+def is_safe_redirect(target):
+    pass
+```
+tests:
+```python
+assert is_safe_redirect("/dashboard") is True
+assert is_safe_redirect("/") is True
+assert is_safe_redirect("/books?page=2") is True
+assert is_safe_redirect("https://evil.example/") is False
+assert is_safe_redirect("//evil.example/x") is False
+assert is_safe_redirect("/\\evil.example") is False
+assert is_safe_redirect("/\t/evil.example") is False
+assert is_safe_redirect("/ok\nSet-Cookie: x=1") is False
+assert is_safe_redirect("dashboard") is False
+assert is_safe_redirect("") is False
+assert is_safe_redirect("javascript:alert(1)") is False
+```
+model:
+```python
+from urllib.parse import urlsplit
+
+
+def is_safe_redirect(target):
+    if not target.startswith("/"):
+        return False
+    if len(target) > 1 and target[1] in "/\\":
+        return False
+    if any(ord(ch) < 32 for ch in target):
+        return False
+    parts = urlsplit(target)
+    return parts.scheme == "" and parts.netloc == ""
+```
+hint: Reject early: first the strings that do not begin with `/`, then those whose second character is `/` or a backslash.
+hint: `any(ord(ch) < 32 for ch in target)` detects tabs, newlines and other control characters.
+solution: A site-relative path begins with a single slash. A second slash or backslash makes the browser read it as another host, control characters can be stripped by browsers to produce one, and `urlsplit` provides a final check that no scheme or host is present. Anything that fails a check falls back to a safe default page.
+
+@practice self
+prompt: Write a `pytest` test module for the book API of your Flask application using the test client. Include a fixture that creates a fresh app and temporary database for each test, a test that creating a book without a title gives `400`, a test that a created book appears in the list, and a **regression test** for broken access control: one signed-in user must not be able to read or delete another user's book (expect `404`). Then list five items of a pre-deployment checklist.
+hint: Use two test clients (two users, each with their own cookies) and let the first create a book whose id the second then requests.
+solution: A model answer:
+
+```python
+import pytest
+from app import create_app
+
+
+@pytest.fixture
+def app(tmp_path):
+    return create_app({"TESTING": True, "DATABASE": str(tmp_path / "t.db")})
+
+
+def sign_in(app, name):
+    client = app.test_client()
+    client.post("/register", data={"username": name,
+                                   "password": "correct horse battery staple"})
+    client.post("/login", data={"username": name,
+                                "password": "correct horse battery staple"})
+    return client
+
+
+def test_title_required(app):
+    client = sign_in(app, "ana")
+    response = client.post("/api/books", json={"title": ""})
+    assert response.status_code == 400
+
+
+def test_created_book_is_listed(app):
+    client = sign_in(app, "ana")
+    client.post("/api/books", json={"title": "Dune"})
+    titles = [b["title"] for b in client.get("/api/books").get_json()]
+    assert titles == ["Dune"]
+
+
+def test_other_user_cannot_access_book(app):
+    ana = sign_in(app, "ana")
+    bo = sign_in(app, "bo")
+    book_id = ana.post("/api/books", json={"title": "Dune"}).get_json()["id"]
+    assert bo.get(f"/api/books/{book_id}").status_code == 404
+    assert bo.delete(f"/api/books/{book_id}").status_code == 404
+    assert ana.get(f"/api/books/{book_id}").status_code == 200
+```
+Checklist: debug mode off; `SECRET_KEY` and database credentials from the environment; HTTPS only with secure cookies; dependencies pinned and updated; tests passing in CI; a health check, logging and a tested backup and rollback plan.
+rubric: A fixture builds a fresh application and temporary database per test, so tests are independent.
+rubric: Tests the validation error (`400`) and the happy path through the API, using the test client.
+rubric: The access-control test uses two separate signed-in clients and asserts that the second cannot read or delete the first one's book.
+rubric: The checklist has five sensible items (debug off, secrets in environment, HTTPS, dependency updates, tests, logging or backups).
+
+@quiz code
+prompt: To make code testable, pass its dependencies in as parameters. Write `load_name(fetch, user_id)`, which calls `fetch(path)` exactly once with the path `"/api/users/<user_id>"` (for example `"/api/users/7"`). `fetch` returns a pair `(status, data)`, where `data` is a dictionary. If the status is `200`, return `data["name"]`; if it is `404`, return `None`; for any other status raise `RuntimeError`.
+starter:
+```python
+def load_name(fetch, user_id):
+    pass
+```
+tests:
+```python
+calls = []
+
+
+def fake_ok(path):
+    calls.append(path)
+    return 200, {"id": 7, "name": "Ada"}
+
+
+def fake_missing(path):
+    calls.append(path)
+    return 404, {"error": "not found"}
+
+
+def fake_broken(path):
+    return 500, {}
+
+
+assert load_name(fake_ok, 7) == "Ada"
+assert calls == ["/api/users/7"]
+assert load_name(fake_missing, 12) is None
+assert calls == ["/api/users/7", "/api/users/12"]
+assert raises(RuntimeError, load_name, fake_broken, 1)
+```
+model:
+```python
+def load_name(fetch, user_id):
+    status, data = fetch(f"/api/users/{user_id}")
+    if status == 200:
+        return data["name"]
+    if status == 404:
+        return None
+    raise RuntimeError(f"unexpected status {status}")
+```
+hint: Call `fetch` once, store both parts of the result, then branch on the status.
+hint: Build the path with an f-string: `f"/api/users/{user_id}"`.
+solution: One call to `fetch` gives `(status, data)`; return the name for 200, `None` for 404 and raise for everything else. Because `fetch` is a parameter, a test can pass a fake that records its calls instead of making a real HTTP request.
+
+@quiz ms
+prompt: Which statements about testing and deploying a web application are true?
+choice*: Each test should start from a clean state, for example a fresh temporary database, so that tests do not depend on each other.
+choice*: Secrets such as `SECRET_KEY` should be supplied through the environment, not committed to the repository.
+choice*: Automated accessibility checkers find only some problems, so keyboard and screen-reader testing are still needed.
+choice: A test suite that passes proves that the application contains no bugs.
+choice: Flask's development server, run directly on port 80, is a suitable production setup.
+hint: Think about independence, secrets, and what each tool can and cannot prove.
+solution: Independent tests, configuration from the environment and manual accessibility checks are all standard practice. Passing tests show only that the tested behavior works, and the development server is not designed for production traffic or TLS (use Gunicorn behind a reverse proxy).

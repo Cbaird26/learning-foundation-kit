@@ -1,0 +1,190 @@
+@lesson
+title: Designing chat and notification systems
+summary: Design a real-time chat service and a notification pipeline, covering persistent connections, ordering, delivery guarantees, fan-out, retries and user protections, and write a complete design document.
+objective: Design the connection layer, message flow, storage and ordering of a chat system.
+objective: Design a notification pipeline with preferences, deduplication, rate limiting, retries and per-channel workers.
+objective: Write a full design for one system, from requirements to failure analysis, in a form a reviewer can critique.
+reading: The System Design Primer, the section "Design a system that scales to millions of users" and the "Asynchronism" and "Communication" (HTTP, TCP, UDP, RPC) sections.
+@article
+Chat and notifications look like cousins (both move small messages to people) but stress different parts of a system. Chat is about **persistent connections, ordering and per-conversation state**. Notifications are about **fan-out, third-party providers, retries and not annoying people**.
+
+### Designing chat
+
+**Requirements.** One-to-one and group conversations (up to 500 members), text with attachments, delivery and read receipts, online presence, message history across devices, delivery to offline users when they return. Non-functional: message latency under 200 ms at p99 for online recipients; no acknowledged message is ever lost (durability); messages appear in the same order for everyone in a conversation; availability 99.95%.
+
+**Connections.** Polling wastes requests, so clients keep a **WebSocket** (a long-lived, bidirectional connection over TCP, established by an HTTP upgrade) to a **gateway** server. Gateways are stateful (they hold connections), so a **connection registry** (user and device mapped to gateway id, kept in a fast shared store with expiry) tells the system where to deliver. One tuned server can hold on the order of 100,000 idle connections, so millions of concurrent users means tens to hundreds of gateways (5 million connections need about 50 to 60 at full load; plan for spare capacity). Clients reconnect with exponential backoff and jitter, because a gateway crash makes 100,000 clients reconnect at once.
+
+**Message flow.** (1) Sender's client sends the message with a client-generated unique id over the WebSocket. (2) The gateway forwards it to the **chat service**, which assigns a **per-conversation sequence number**, persists the message, and acknowledges the sender ("sent"). (3) The service looks up the members' gateways in the registry and pushes the message to online devices. (4) For offline members it stores the message (already persisted) and triggers a push notification. (5) Recipients' clients acknowledge ("delivered"), and later "read".
+
+**Ordering.** Client clocks disagree, so do not order by client timestamps. Assign a monotonically increasing sequence number per conversation on the server (one writer per conversation, for example by hashing `conversation_id` to a chat-service shard). Clients display by sequence number, buffer gaps, and fetch missing messages.
+
+**Duplicates.** Networks retry. The client id makes sends idempotent: the server drops a second message with an id it has already stored for that conversation. Clients also ignore a sequence number they have already shown.
+
+**Storage.** Messages are append-heavy and read by conversation, newest first: a partitioned wide-column or key-value store with partition key `(conversation_id, time bucket)` and clustering by sequence number descending. Membership and user data go to a relational store. Attachments go to object storage behind a CDN, referenced by id.
+
+**Groups.** For small groups, fan out at send time to each member's gateway. For very large groups, members pull on read, or you cap size. **Presence** uses heartbeats with a time-to-live (online if a heartbeat arrived in the last 30 seconds); do not broadcast every change to every contact, because it multiplies load: fetch presence on demand or only for visible contacts.
+
+### Designing notifications
+
+**Requirements.** Services trigger notifications (a payment, a comment, a security alert) to users over push, email and SMS. Requirements: reliable delivery of important messages, no duplicates, respect user preferences and quiet hours, and protection against flooding a user or a provider.
+
+**Pipeline.**
+
+1. **Notification API** accepts a request `(user, type, data, idempotency key)`, validates it, and publishes it to a queue.
+2. **Preference and policy step**: looks up the user's channels and opt-outs, applies rate limits per user and type, deduplicates by idempotency key, and picks a template and language.
+3. **Per-channel queues** (push, email, SMS) with **priorities**, so a security code is never stuck behind a marketing batch.
+4. **Workers** per channel call external providers (platform push services, email and SMS gateways), with timeouts.
+5. **Retries**: exponential backoff with jitter for transient errors; no retry for permanent ones (invalid token); then a dead-letter queue.
+6. **Status tracking** records sent, delivered and failed, and feeds metrics and the audit trail.
+
+Providers can be slow or down, so workers use circuit breakers and may fail over to a second provider. Batch campaigns are throttled so a promotion does not delay transactional messages. Because the pipeline is at-least-once, the provider call should carry the idempotency key where supported.
+
+### Writing the full design
+
+A design you hand to a reviewer should contain: scope and non-goals, requirements with numbers, estimates, an API sketch, a data model, a diagram described in text (components and arrows), the main flows step by step, the scaling plan, failure modes with mitigations, and open questions with trade-offs you consciously made. Short, specific and numeric beats long and vague.
+
+@example
+title: Delivering a group message with an offline member
+problem: Ana sends a message to a group of three: Bo (online), Cy (offline) and herself. Trace the flow and say what Cy sees later.
+step: Ana's client sends `{client_id: "u7", conversation: 55, text: "hi"}` over her WebSocket to gateway G1, which forwards it to the chat service shard that owns conversation 55.
+step: The shard checks that `u7` is new, assigns sequence number 412, stores the message durably, and replies to Ana's client: sent, sequence 412.
+step: It looks up the registry: Bo is on gateway G2, so it pushes the message there; Bo's client acknowledges delivery, and the service records it. Ana's other devices get the message through the same path.
+step: The registry has no entry for Cy, so the service enqueues a push notification ("New message in Study group") with an idempotency key built from the conversation and the sequence number.
+step: Later Cy opens the app, connects to G3, and sends the last sequence number she saw (409). The service returns messages 410 to 412 from storage in order.
+answer: Persist with a sequence number first, push to online members, notify offline members, and let them catch up by sequence number on reconnect.
+
+@example
+title: Retry schedule with exponential backoff
+problem: A notification worker retries a failing provider call. The first delay is 1 second, each delay doubles, and no delay may exceed 60 seconds. List the delays before attempts 2 to 9 and say why jitter is added.
+step: The delays double from 1 second: 1, 2, 4, 8, 16, 32, then the next doubling is 64, which exceeds the cap, so it becomes 60.
+step: The eighth delay is also capped at 60. The schedule is 1, 2, 4, 8, 16, 32, 60, 60 seconds.
+step: Without jitter, a thousand workers that failed at the same moment all retry at exactly the same moments and hit the recovering provider in synchronized waves.
+step: Jitter means each worker picks a random delay between 0 and the scheduled value (or the value plus or minus a random fraction), which spreads retries out.
+step: Add a maximum number of attempts and a dead-letter queue so retries cannot continue forever.
+answer: 1, 2, 4, 8, 16, 32, 60, 60 seconds, with random jitter to avoid synchronized retries.
+
+@mistakes
+- Ordering chat messages by client timestamps, which differ between devices and can be wrong or forged.
+- Broadcasting every presence change to every contact, which multiplies traffic by the contact count.
+- Retrying notifications without backoff, jitter or an idempotency key, which hammers providers and sends duplicates.
+- Putting urgent and bulk messages in the same queue, so a marketing campaign delays a login code.
+
+@practice mc
+prompt: Why do chat clients usually keep a WebSocket open to a gateway instead of polling an HTTP endpoint every second?
+choice: WebSockets guarantee that messages arrive in order without any server-side sequencing.
+choice*: The server can push a message the moment it arrives, avoiding constant empty requests and the delay of the polling interval.
+choice: WebSockets remove the need to store messages on the server.
+choice: A WebSocket server can serve unlimited connections because they use no resources.
+hint: Think about who starts communication in polling and in a persistent connection.
+solution: A persistent bidirectional connection lets the server deliver immediately and avoids millions of mostly empty polling requests. It does not provide ordering or storage by itself, and each connection still costs memory and file descriptors.
+
+@practice code
+prompt: Write `retry_delays(base, factor, cap, attempts)` that returns a list of `attempts` delays for exponential backoff: delay number `i` (counting from 0) is `base * factor ** i`, but never more than `cap`. Do not add jitter. Example: `retry_delays(1, 2, 60, 8)` returns `[1, 2, 4, 8, 16, 32, 60, 60]`.
+starter:
+```python
+def retry_delays(base, factor, cap, attempts):
+    pass
+```
+tests:
+```python
+assert retry_delays(1, 2, 60, 8) == [1, 2, 4, 8, 16, 32, 60, 60]
+assert retry_delays(0.5, 3, 10, 4) == [0.5, 1.5, 4.5, 10]
+assert retry_delays(2, 2, 100, 0) == []
+assert retry_delays(5, 1, 100, 3) == [5, 5, 5]
+```
+model:
+```python
+def retry_delays(base, factor, cap, attempts):
+    return [min(cap, base * factor ** i) for i in range(attempts)]
+```
+hint: A list comprehension over `range(attempts)` with `min(cap, ...)` does it in one line.
+solution: Compute `base * factor ** i` for each attempt and clamp it with `min(cap, ...)`. In production you would then apply jitter, for example picking a random value between 0 and the delay ("full jitter").
+
+@practice code
+prompt: Write a class `Inbox` that shows chat messages in server sequence order. Sequence numbers start at 1. `receive(seq, message)` is called whenever a message arrives, possibly out of order or duplicated. It returns the list of messages that can now be shown, in order: it keeps the message in a buffer until every smaller sequence number has been shown, and it ignores a sequence number that has already been shown or buffered. When the next expected number arrives, it returns that message followed by any consecutive buffered ones.
+starter:
+```python
+class Inbox:
+    def __init__(self):
+        pass
+
+    def receive(self, seq, message):
+        pass
+```
+tests:
+```python
+box = Inbox()
+assert box.receive(2, "b") == []
+assert box.receive(1, "a") == ["a", "b"]
+assert box.receive(1, "a") == []
+assert box.receive(4, "d") == []
+assert box.receive(4, "D") == []
+assert box.receive(3, "c") == ["c", "d"]
+assert box.receive(2, "b") == []
+assert box.receive(5, "e") == ["e"]
+```
+model:
+```python
+class Inbox:
+    def __init__(self):
+        self.next_seq = 1
+        self.buffer = {}
+
+    def receive(self, seq, message):
+        if seq >= self.next_seq and seq not in self.buffer:
+            self.buffer[seq] = message
+        shown = []
+        while self.next_seq in self.buffer:
+            shown.append(self.buffer.pop(self.next_seq))
+            self.next_seq += 1
+        return shown
+```
+hint: Keep the next expected sequence number and a dictionary of messages that arrived early.
+hint: After storing a message, loop while the next expected number is in the buffer, removing and returning those messages.
+solution: The buffer holds early arrivals; a loop releases the longest consecutive run starting at the expected number. A sequence number below `next_seq` has been shown already, and one already in the buffer is a duplicate; both are ignored, which is exactly the client behavior described above (the message `"D"` does not replace `"d"`).
+
+@practice num
+prompt: A chat service expects 20 million concurrent connections at peak. Each gateway server can hold 100,000 connections but is operated at no more than 80 percent of that. How many gateway servers are needed (no spare capacity beyond the 80 percent rule)?
+answer: 250
+check: ceil(20_000_000/(100_000*0.8))
+hint: Usable connections per server are 80 percent of 100,000.
+solution: Each server is used for at most $0.8 \times 100{,}000 = 80{,}000$ connections. $20{,}000{,}000 / 80{,}000 = 250$ servers. Add spares so that losing a gateway does not push the others over the limit.
+
+@practice self
+prompt: Write a full design for a chat service for 20 million daily active users, with 5 million concurrent connections at peak. Users send 40 messages a day on average, messages are 100 bytes, history is kept for 2 years, groups have up to 500 members. Include: requirements with numbers and non-goals, estimates, API sketch, data model and storage choice, the high-level components described in words, the message flow for an online and an offline recipient, ordering and duplicate handling, scaling, and three failure modes with mitigations.
+hint: Do the estimates first: messages per second and storage decide the storage design.
+hint: Describe the diagram as a list of components and arrows, then walk through one message.
+solution: A model answer:
+
+- Requirements: one-to-one and group chat (up to 500 members), receipts, presence, multi-device history. Non-goals: voice and video, end-to-end encryption design, message search in v1. Targets: p99 delivery under 200 ms to online users, no acknowledged message lost, same order for everyone in a conversation, 99.95% availability.
+- Estimates: 20,000,000 x 40 = 800,000,000 messages per day, about 9,260 per second on average and about 28,000 at peak (3 times). Storage is 80 GB per day, about 58 TB over 730 days before replication, about 175 TB with 3 replicas. At 100,000 connections per gateway and 80 percent target use, 5,000,000 connections need ceil(5,000,000 / 80,000) = 63 gateways, about 70 with spares. Outbound deliveries are higher than sends because of groups; assume an average fan-out of 3, so about 85,000 deliveries per second at peak.
+- API: over the WebSocket: `send {conversation_id, client_msg_id, body}`, `ack {conversation_id, seq}`, `sync {conversation_id, after_seq}`. HTTP: `POST /v1/conversations`, `GET /v1/conversations/{id}/messages?before_seq=&limit=`, and attachment upload via signed URLs.
+- Data model: messages in a partitioned store with partition key `(conversation_id, month)`, clustering key `seq` descending, columns `sender_id, client_msg_id, body, created_at`; membership and users in a relational database; a per-user conversation list; attachments in object storage; the connection registry in a replicated in-memory store with a short TTL.
+- Components: clients, a layer 4 load balancer, gateways (WebSocket), the chat service (sharded by hash of conversation id so one owner sequences each conversation), the message store, the registry, a queue for push notifications and for async work (receipts, search indexing later), a presence service and a push-notification worker.
+- Flow, online: client to gateway to the owning chat shard; shard dedupes by `client_msg_id`, assigns `seq`, writes to the store (replicated before acknowledging), acknowledges the sender, looks up recipients in the registry, and pushes to their gateways. Offline: no registry entry, so the message is already stored and a push notification is queued; on reconnect the client sends `sync` with its last `seq` and receives the gap.
+- Ordering and duplicates: server sequence per conversation; the client shows by `seq` and buffers gaps; `client_msg_id` makes sends idempotent; recipients ignore a `seq` already shown.
+- Scaling: add gateways for connections, shard chat service by conversation, add store partitions as data grows; large groups switch from push to pull above a threshold; presence is subscribed per visible contact only.
+- Failures: (1) A gateway dies and 80,000 clients reconnect at once: clients use backoff with jitter, gateways have spare capacity, and the registry entries expire. (2) A chat shard owner fails: ownership moves to a replica through a lease; the new owner reads the last sequence number from the store before accepting writes, and clients retry with their `client_msg_id`. (3) The store is slow: messages are acknowledged only after the write, so senders see delay rather than loss; a bounded buffer and backpressure protect the service, and an alert fires on write latency.
+rubric: Requirements contain numbers and non-goals, and the estimates are consistent with the stated assumptions (about 9,260 messages per second average, about 58 TB, about 63 or more gateways).
+rubric: The design describes the connection layer, a durable store, and a per-conversation server-assigned sequence for ordering, plus idempotent sends.
+rubric: Both the online and offline delivery paths are traced step by step, including catch-up after reconnect.
+rubric: At least three failure modes are given with concrete mitigations, and scaling of connections, storage and large groups is addressed.
+
+@quiz mc
+prompt: In a group chat, Ana's phone clock is 3 minutes behind Bo's. They both send messages at nearly the same time and different members see them in different orders. What is the best fix?
+choice: Ask users to synchronize their phone clocks.
+choice: Sort messages by the timestamp the sender's device attached and resolve ties alphabetically.
+choice*: Have the server assign a per-conversation sequence number when it stores each message, and have every client display by that number.
+choice: Deliver messages in the order the recipients' devices receive them.
+hint: You need one authority that decides a single order for the conversation.
+solution: A server-assigned sequence per conversation gives every member the same order regardless of client clocks or network timing. Device timestamps can be wrong or forged, and arrival order differs between recipients.
+
+@quiz ms
+prompt: Which measures belong in a notification pipeline? Select all that apply.
+choice*: Separate priority queues, so that security codes are not delayed by marketing campaigns.
+choice*: Exponential backoff with jitter for transient provider failures, and a dead-letter queue.
+choice*: An idempotency key so that a redelivered request does not send the user a second notification.
+choice: Retrying immediately and indefinitely when a provider returns an error, so no notification is lost.
+choice: Sending every notification on every channel, so the user is sure to see it.
+hint: Consider what protects both the provider and the user.
+solution: Priorities protect urgent messages, backoff with jitter plus a dead-letter queue handle failures without overload, and idempotency prevents duplicates. Immediate infinite retries overload a recovering provider, and blasting every channel ignores user preferences and annoys users.

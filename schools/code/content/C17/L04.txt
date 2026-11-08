@@ -1,0 +1,239 @@
+@lesson
+title: Hashes, MACs and authenticated encryption
+summary: Choose between hash functions, MACs and authenticated encryption, and implement HMAC and constant-time tag comparison in Python.
+objective: State the security properties of a cryptographic hash and what a collision bound of $2^{n/2}$ means.
+objective: Explain why a MAC needs a key and why `H(key || message)` is not a MAC, and implement HMAC-SHA-256.
+objective: Explain authenticated encryption (AEAD) and nonce rules, and choose the right primitive for a scenario.
+reading: UC Berkeley CS 161 textbook, the chapters on cryptographic hash functions, message authentication codes and authenticated encryption (look up "HMAC" and "encrypt-then-MAC").
+@article
+Encryption hides data but does not stop modification. To detect tampering we need integrity primitives.
+
+### Cryptographic hash functions
+
+A **hash function** $H$ maps arbitrary-length input to a fixed-length digest. SHA-256 gives 256 bits (32 bytes, 64 hex characters); SHA-3 is a separate family. A cryptographic hash should have three properties:
+
+- **Preimage resistance**: given $h$, it is infeasible to find $m$ with $H(m) = h$.
+- **Second-preimage resistance**: given $m_1$, it is infeasible to find $m_2 \ne m_1$ with $H(m_2) = H(m_1)$.
+- **Collision resistance**: it is infeasible to find any two different inputs with the same digest.
+
+By the **birthday bound**, a collision in an $n$-bit hash is expected after about $2^{n/2}$ hashed values, so collision resistance is at most $n/2$ bits. MD5 and SHA-1 have practical collision attacks and must not be used where collisions matter (signatures, certificates); SHA-256 and SHA-3 are current choices. A hash has no key, so anyone can compute it: it detects accidental change only if the digest itself arrives over a trusted channel.
+
+```python
+import hashlib
+
+print(hashlib.sha256(b"abc").hexdigest()[:8])   # ba7816bf
+```
+
+### Message authentication codes
+
+A **MAC** takes a secret key and a message and outputs a **tag**. Without the key, an attacker cannot produce a valid tag for a new message. The receiver recomputes the tag and compares. A MAC provides integrity and authenticity between parties who share a key, but not non-repudiation, since either party could have made the tag.
+
+The tempting construction $H(k \,\|\, m)$ is **broken for Merkle-Damgård hashes** such as SHA-256: given the tag of $m$, an attacker can compute a valid tag for $m$ followed by extra data without knowing $k$ (a length-extension weakness). **HMAC** avoids this:
+
+$$\mathrm{HMAC}(K, m) = H\big((K' \oplus \text{opad}) \,\|\, H((K' \oplus \text{ipad}) \,\|\, m)\big)$$
+
+where $K'$ is the key padded with zero bytes to the hash's block size (64 bytes for SHA-256; longer keys are hashed first), `ipad` is the byte `0x36` repeated and `opad` is `0x5c` repeated. In Python, the standard library provides `hmac`; use it in production. Implementing it once shows there is no magic.
+
+### Comparing tags
+
+Compare tags in **constant time**: a naive `==` on bytes may return at the first differing byte, and the running time can leak how many leading bytes matched. Python's `hmac.compare_digest` does this correctly. The idea is to accumulate differences over every byte and decide only at the end.
+
+### Authenticated encryption
+
+Use one primitive that gives confidentiality and integrity together: **AEAD** (authenticated encryption with associated data), such as AES-GCM or ChaCha20-Poly1305. Encryption takes a key, a **nonce** that must be unique per message under one key, the plaintext and optional **associated data** (headers that are authenticated but not encrypted). Decryption returns the plaintext or fails; it never releases data from a message that did not verify. If you must combine primitives yourself, **encrypt-then-MAC** (MAC the ciphertext, verify before decrypting, with independent keys) is the safe order. Reusing a nonce under GCM is catastrophic: it breaks both confidentiality and the authentication key.
+
+### Choosing a primitive
+
+| Need | Use |
+|---|---|
+| Integrity of a file against corruption, digest obtained securely | Hash (SHA-256) |
+| Integrity and authenticity between parties with a shared key | HMAC |
+| Confidentiality and integrity of messages | AEAD (AES-GCM, ChaCha20-Poly1305) |
+| Storing passwords | Slow, salted password hash (Lesson 7) |
+| Proof of origin anyone can verify | Digital signature (Lesson 6) |
+
+@example
+title: Why the naive tag fails
+problem: A server authenticates requests with tag $= \mathrm{SHA256}(k \,\|\, m)$ where $k$ is secret. Explain the weakness and the fix.
+step: SHA-256 processes input block by block, and its final digest is its internal state after the last block.
+step: An attacker who knows the tag for $m$ (and the length of $k \,\|\, m$) can resume that state and hash more data, producing a valid tag for $m$ plus padding plus extra data, without knowing $k$.
+step: The fix is HMAC, whose outer hash hides the inner state, or a modern MAC. Never design your own keyed hash.
+answer: The tag can be extended without the key; use HMAC-SHA-256.
+@example
+title: Choosing a primitive for two scenarios
+problem: (a) A mobile app downloads an update and must be sure it was not corrupted; the expected SHA-256 digest is published on a page served securely. (b) Two services exchange messages that must be secret and tamper-proof.
+step: Scenario (a): integrity against corruption with a trusted digest needs only a hash. Compare `sha256(file)` with the published value.
+step: Scenario (b) needs confidentiality and integrity, so choose an AEAD such as AES-GCM with a unique nonce per message under each key.
+step: A bare hash would not work in (b) because anyone can recompute it after modifying a message, and plain encryption would allow undetected modification.
+answer: (a) SHA-256 digest comparison; (b) AEAD
+@mistakes
+- Using a plain hash as a MAC (`sha256(key + message)`), which allows length extension and offers no real authenticity.
+- Comparing tags with `==` when an attacker can measure response time; use a constant-time comparison.
+- Repeating a nonce under the same key in GCM or ChaCha20-Poly1305.
+- Using MD5 or SHA-1 for new security work because "it still produces a digest".
+@practice text
+prompt: What does this Python program print? Type the output exactly.
+
+```python
+import hashlib
+print(hashlib.sha256(b"abc").hexdigest()[:8])
+```
+answer: ba7816bf
+check: run("import hashlib\nprint(hashlib.sha256(b'abc').hexdigest()[:8])\n")
+hint: This is the well-known first characters of the SHA-256 digest of the three bytes `abc`.
+solution: SHA-256 of `abc` begins `ba7816bf`; the program prints its first 8 hex characters.
+@practice mc
+prompt: Why is `SHA256(key + message)` not a safe MAC?
+choice*: An attacker who sees one tag can extend the message and compute a valid tag without the key (length extension).
+choice: SHA-256 is too slow for authentication.
+choice: SHA-256 digests are too short to be unique.
+choice: The key would be revealed by the digest.
+hint: SHA-256's output is its internal state after processing the input.
+solution: Because the digest is the hash's internal state, it can be continued with more data. HMAC's nested structure prevents this.
+@practice code
+prompt: Implement `hmac_sha256(key, msg)` with only `hashlib`. Both arguments are `bytes`. Return the 64-character lowercase hex tag. Hash a key longer than 64 bytes first with SHA-256; pad a shorter key with zero bytes to 64; XOR with `0x36` (inner) and `0x5c` (outer) as in the definition: `H((K' xor opad) + H((K' xor ipad) + msg))`.
+starter:
+```python
+import hashlib
+
+
+def hmac_sha256(key, msg):
+    pass
+```
+tests:
+```python
+assert hmac_sha256(b"Jefe", b"what do ya want for nothing?") == (
+    "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+)
+assert hmac_sha256(b"key", b"") == (
+    "5d5d139563c95b5967b9bd9a8c9b233a9dedb45072794cd232dc1b74832607d0"
+)
+assert hmac_sha256(b"k" * 100, b"hello") == (
+    "3fd578d761a4f6703009e92d2e8a0aea22ab9ab50d4ad250dc95d8c369dec3f5"
+)
+```
+model:
+```python
+import hashlib
+
+
+def hmac_sha256(key, msg):
+    block = 64
+    if len(key) > block:
+        key = hashlib.sha256(key).digest()
+    key = key.ljust(block, b"\x00")
+    ipad = bytes(b ^ 0x36 for b in key)
+    opad = bytes(b ^ 0x5C for b in key)
+    inner = hashlib.sha256(ipad + msg).digest()
+    return hashlib.sha256(opad + inner).hexdigest()
+```
+hint: Build the padded key with `ljust(64, b"\x00")` after hashing keys that are too long.
+hint: Compute the inner digest as bytes with `.digest()`, then hash `opad + inner` and return `.hexdigest()`.
+solution: Normalize the key to 64 bytes, XOR it with the two constant pads, hash the inner message, then hash the outer pad concatenated with the inner digest.
+@practice code
+prompt: Write `constant_time_equal(a, b)` for two `bytes` objects. Return `False` if the lengths differ. Otherwise OR together the XORs of every pair of bytes (no early exit inside the loop) and return `True` only if the accumulated value is 0.
+starter:
+```python
+def constant_time_equal(a, b):
+    pass
+```
+tests:
+```python
+assert constant_time_equal(b"secret", b"secret") is True
+assert constant_time_equal(b"secret", b"secreT") is False
+assert constant_time_equal(b"", b"") is True
+assert constant_time_equal(b"abc", b"abcd") is False
+assert constant_time_equal(b"\x00\x01", b"\x01\x00") is False
+```
+model:
+```python
+def constant_time_equal(a, b):
+    if len(a) != len(b):
+        return False
+    diff = 0
+    for x, y in zip(a, b):
+        diff |= x ^ y
+    return diff == 0
+```
+hint: XOR of two equal bytes is 0, and OR keeps any nonzero bit.
+hint: Do not `return` inside the loop; finish the loop, then compare `diff` with 0.
+solution: Accumulate `diff |= x ^ y` over all positions and decide once at the end. The loop always runs the same number of iterations for a given length.
+@practice ms
+prompt: Which properties does an AEAD scheme such as AES-GCM provide when used correctly with a unique nonce for each message? Select all that apply.
+choice*: Confidentiality of the plaintext
+choice*: Integrity and authenticity of the ciphertext and the associated data
+choice*: Decryption fails rather than returning altered data
+choice: Non-repudiation, since only the sender could have produced the ciphertext
+choice: Safety even if nonces are reused
+hint: The key is shared, so who could have created a message?
+solution: AEAD gives confidentiality and integrity, and a failed tag check means no plaintext is released. Both parties share the key, so there is no non-repudiation, and nonce reuse breaks the scheme.
+@quiz code
+prompt: Write `verify(key, msg, tag_hex)` that returns `True` only if `tag_hex` equals the HMAC-SHA-256 of `msg` under `key` (64 lowercase hex characters), comparing in constant time with no early exit. The helper `hmac_sha256` and a constant-time `ct_equal` are given in the starter.
+starter:
+```python
+import hashlib
+
+
+def hmac_sha256(key, msg):
+    k = hashlib.sha256(key).digest() if len(key) > 64 else key
+    k = k.ljust(64, b"\x00")
+    inner = hashlib.sha256(bytes(b ^ 0x36 for b in k) + msg).digest()
+    outer = bytes(b ^ 0x5C for b in k) + inner
+    return hashlib.sha256(outer).hexdigest()
+
+
+def ct_equal(a, b):
+    if len(a) != len(b):
+        return False
+    diff = 0
+    for x, y in zip(a, b):
+        diff |= x ^ y
+    return diff == 0
+
+
+def verify(key, msg, tag_hex):
+    pass
+```
+tests:
+```python
+tag = "5c94248370a571e6248f90581827397ffe0922533b9ba508fe82bbaf3e6ce314"
+assert verify(b"secret", b"amount=10", tag) is True
+assert verify(b"secret", b"amount=99", tag) is False
+assert verify(b"other", b"amount=10", tag) is False
+assert verify(b"secret", b"amount=10", tag[:-1]) is False
+assert verify(b"secret", b"amount=10", "") is False
+```
+model:
+```python
+import hashlib
+
+
+def hmac_sha256(key, msg):
+    k = hashlib.sha256(key).digest() if len(key) > 64 else key
+    k = k.ljust(64, b"\x00")
+    inner = hashlib.sha256(bytes(b ^ 0x36 for b in k) + msg).digest()
+    outer = bytes(b ^ 0x5C for b in k) + inner
+    return hashlib.sha256(outer).hexdigest()
+
+
+def ct_equal(a, b):
+    if len(a) != len(b):
+        return False
+    diff = 0
+    for x, y in zip(a, b):
+        diff |= x ^ y
+    return diff == 0
+
+
+def verify(key, msg, tag_hex):
+    expected = hmac_sha256(key, msg)
+    return ct_equal(expected.encode(), tag_hex.encode())
+```
+hint: Compute the expected tag yourself, then compare it with the one supplied.
+solution: Recompute `hmac_sha256(key, msg)` and compare the two hex strings (as bytes) with `ct_equal`. Never compare tags with `==`.
+@quiz num
+prompt: A hash function is truncated to a 32-bit output. By the birthday bound, about how many hashed values are needed before a collision becomes likely? Give the value $2^{n/2}$ for $n = 32$ as an integer.
+answer: 65536
+check: 2 ** (32 // 2)
+hint: The birthday bound for an $n$-bit output is about $2^{n/2}$.
+solution: $2^{32/2} = 2^{16} = 65536$. This is why short digests are unsuitable when collisions matter.

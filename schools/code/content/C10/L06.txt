@@ -1,0 +1,203 @@
+@lesson
+title: SQL: changing data, constraints and views
+summary: Modify data with INSERT, UPDATE and DELETE, declare tables with constraints, and define views.
+objective: Write INSERT, UPDATE and DELETE statements, and explain why a WHERE clause matters on the last two.
+objective: Declare PRIMARY KEY, NOT NULL, UNIQUE, CHECK and FOREIGN KEY constraints and predict which statements they reject.
+objective: Create views and explain how they differ from stored tables.
+reading: CMU 15-445/645 Database Systems, the SQL lecture (data definition, constraints, views); also the SQLite documentation on CREATE TABLE, foreign keys and CREATE VIEW.
+@article
+Queries read data; **data manipulation** statements change it, and **data definition** statements (DDL) create the structures that hold it.
+
+### INSERT, UPDATE and DELETE
+
+```sql
+INSERT INTO emp (id, name, salary) VALUES (7, 'Eve', 90), (8, 'Fay', 85);
+INSERT INTO emp_archive SELECT * FROM emp WHERE active = 0;
+UPDATE emp SET salary = salary * 1.05 WHERE dept = 'Eng';
+DELETE FROM emp WHERE active = 0;
+```
+
+Always list columns in `INSERT`, so the statement survives a later column addition. `INSERT ... SELECT` copies the rows a query returns. `UPDATE` evaluates every right-hand side using the old row, then writes. **A missing `WHERE` clause updates or deletes every row**, a classic disaster; run the `WHERE` as a `SELECT` first. `CASE` expressions allow conditional updates: `SET price = CASE WHEN price < 10 THEN price * 2 ELSE price END`.
+
+### Defining tables and constraints
+
+A **constraint** is a rule the database enforces on every change, rejecting a statement that would break it. Constraints keep the data valid no matter which program writes to it.
+
+```sql
+CREATE TABLE dept (
+    id   INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE emp (
+    id      INTEGER PRIMARY KEY,
+    email   TEXT NOT NULL UNIQUE,
+    salary  INTEGER CHECK (salary >= 0),
+    dept_id INTEGER REFERENCES dept(id) ON DELETE SET NULL
+);
+```
+
+- `PRIMARY KEY`: unique and (in standard SQL) not NULL; identifies a row. A table has one. SQLite, because of an early bug kept for compatibility, allows NULL in most primary key columns, so declare them `NOT NULL` as well there.
+- `NOT NULL`: the column must have a value.
+- `UNIQUE`: no two rows share the value; NULLs are allowed and do not conflict with each other in most systems, because NULL = NULL is unknown.
+- `CHECK (condition)`: the condition must not be **false**. A row where it evaluates to unknown passes, so `CHECK (salary >= 0)` still accepts a NULL salary unless the column is also `NOT NULL`.
+- `FOREIGN KEY` / `REFERENCES`: a non-NULL value must exist in the referenced key (referential integrity, lesson 1).
+- `DEFAULT value`: the value used when an insert omits the column.
+
+A foreign key also says what happens when the referenced row is deleted: `ON DELETE RESTRICT` (or `NO ACTION`) rejects the delete, `CASCADE` deletes the referencing rows too, and `SET NULL` sets the foreign key to NULL. `ON UPDATE` works the same way for changes to the key.
+
+**SQLite note:** foreign-key enforcement is off by default in each connection. Turn it on with `PRAGMA foreign_keys = ON;`. SQLite also uses flexible typing, so a column's declared type is only an affinity unless the table is declared `STRICT` (available since version 3.37). Other systems enforce types strictly.
+
+`ALTER TABLE emp ADD COLUMN phone TEXT` adds a column; `DROP TABLE emp` removes the table and its data.
+
+### Views
+
+A **view** is a named query: `CREATE VIEW rich AS SELECT name, salary FROM emp WHERE salary > 60;`. It stores no data. Each time you query `rich` the database substitutes the defining query, so the view always reflects current data. Views give a simpler or safer picture of the data: you can expose only some columns or rows, hide a complex join, and keep applications working when tables are reorganized (logical data independence). A view that is a simple filter or projection of one table can usually be updated through; views with joins, grouping or `DISTINCT` usually cannot. A **materialized view** stores its result and must be refreshed; SQLite has none, but PostgreSQL and others do.
+
+### Changing a design safely
+
+Constraints are the database's last line of defense: application checks can be bypassed by a bug or by another program. Prefer declaring a rule once as a constraint over repeating it in every program. In week 11 you will see how a group of statements can be made all-or-nothing with a **transaction**.
+
+@example
+title: Which inserts does the schema reject?
+problem: Given `CREATE TABLE p (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, age INTEGER CHECK (age >= 0))` containing the row (1, 'a@x', 20), decide for `INSERT INTO p VALUES (2, 'b@x', NULL)`, `(1, 'c@x', 30)` and `(3, 'a@x', 25)`.
+step: `(2, 'b@x', NULL)`: id and email are new, and `age >= 0` with NULL is unknown, which `CHECK` accepts. The insert succeeds.
+step: `(1, 'c@x', 30)`: id 1 already exists, so the primary key is violated and the insert is rejected.
+step: `(3, 'a@x', 25)`: email `a@x` is already present, so `UNIQUE` is violated and the insert is rejected.
+answer: Only the first insert succeeds.
+
+@example
+title: UPDATE and DELETE with conditions
+problem: `acct(id, bal)` holds (1, 100), (2, 50), (3, 0). What is the table after `UPDATE acct SET bal = bal + 10 WHERE bal > 0; DELETE FROM acct WHERE bal = 0;`?
+step: The `UPDATE` touches rows with `bal > 0`: row 1 becomes 110 and row 2 becomes 60. Row 3 stays 0.
+step: The `DELETE` then removes rows with `bal = 0`, which is only row 3.
+step: Remaining rows: (1, 110) and (2, 60).
+answer: (1, 110) and (2, 60).
+
+@mistakes
+- Running `UPDATE` or `DELETE` without a `WHERE` clause and changing every row.
+- Believing `CHECK (x >= 0)` rejects NULL; unknown passes, so add `NOT NULL` when a value is mandatory.
+- Forgetting `PRAGMA foreign_keys = ON` in SQLite and wondering why bad foreign keys are accepted.
+- Thinking a view stores a copy of the data; it is re-evaluated on every use.
+
+@practice code
+prompt: Simulate key enforcement. Write `insert_unique(table, row, key_cols)`. `table` is a list of dictionaries and `row` a dictionary. If any value of `row` in `key_cols` is `None`, raise `ValueError`. If another row of `table` has the same values on all `key_cols`, raise `ValueError`. Otherwise append a **copy** of `row` to `table` and return `None`.
+starter:
+```python
+def insert_unique(table, row, key_cols):
+    pass
+```
+tests:
+```python
+t = []
+insert_unique(t, {"id": 1, "n": "a"}, ["id"])
+assert len(t) == 1
+assert raises(ValueError, insert_unique, t, {"id": 1, "n": "b"}, ["id"])
+assert raises(ValueError, insert_unique, t, {"id": None, "n": "c"}, ["id"])
+assert len(t) == 1
+insert_unique(t, {"id": 1, "n": "b"}, ["id", "n"])
+assert len(t) == 2
+r = {"id": 5, "n": "z"}
+insert_unique(t, r, ["id"])
+r["n"] = "changed"
+assert t[-1]["n"] == "z"
+```
+model:
+```python
+def insert_unique(table, row, key_cols):
+    key = tuple(row[c] for c in key_cols)
+    if any(v is None for v in key):
+        raise ValueError("key column is NULL")
+    for existing in table:
+        if tuple(existing[c] for c in key_cols) == key:
+            raise ValueError("duplicate key")
+    table.append(dict(row))
+```
+hint: Build the key tuple for the new row first and check it for `None`.
+hint: Compare it with the key tuple of every existing row, and use `dict(row)` to store a copy.
+solution: Form the key tuple, reject NULL parts, scan for an equal key among the existing rows, and only then append `dict(row)`. A copy prevents later changes to the caller's dictionary from altering stored data.
+
+@practice num
+prompt: Run these statements and then compute `SELECT SUM(bal) FROM acct`. What is the result?
+
+```sql
+CREATE TABLE acct(id INT, bal INT);
+INSERT INTO acct VALUES (1, 100), (2, 50), (3, 0), (4, 30);
+UPDATE acct SET bal = bal + 10 WHERE bal > 0;
+DELETE FROM acct WHERE bal = 0;
+```
+answer: 210
+check: sql("CREATE TABLE acct(id INT, bal INT); INSERT INTO acct VALUES (1,100),(2,50),(3,0),(4,30); UPDATE acct SET bal = bal + 10 WHERE bal > 0; DELETE FROM acct WHERE bal = 0;", "SELECT SUM(bal) FROM acct")[0][0]
+hint: Apply the `UPDATE` to rows with positive balance, then remove the zero-balance rows.
+solution: The update gives 110, 60, 0 and 40. The delete removes the 0 row, leaving 110 + 60 + 40 = 210.
+
+@practice num
+prompt: Run these statements and compute how many rows `SELECT * FROM rich` returns.
+
+```sql
+CREATE TABLE emp(name TEXT, salary INT);
+INSERT INTO emp VALUES ('Ann', 50), ('Bo', 70), ('Cy', 65);
+CREATE VIEW rich AS SELECT name, salary FROM emp WHERE salary > 60;
+INSERT INTO emp VALUES ('Eve', 90);
+UPDATE emp SET salary = 55 WHERE name = 'Bo';
+```
+answer: 2
+check: len(sql("CREATE TABLE emp(name TEXT, salary INT); INSERT INTO emp VALUES ('Ann',50),('Bo',70),('Cy',65); CREATE VIEW rich AS SELECT name, salary FROM emp WHERE salary > 60; INSERT INTO emp VALUES ('Eve',90); UPDATE emp SET salary = 55 WHERE name = 'Bo';", "SELECT * FROM rich"))
+hint: A view is evaluated when it is queried, so use the table's final contents.
+solution: After the changes the table holds Ann 50, Bo 55, Cy 65 and Eve 90. Only Cy and Eve have a salary above 60, so the view returns two rows.
+
+@practice ms
+prompt: Table `p` is declared `CREATE TABLE p (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, age INTEGER CHECK (age >= 0))` and holds the row (1, 'a@x', 20). Foreign keys play no role. Which statements are rejected by the database?
+choice*: `INSERT INTO p VALUES (2, 'b@x', -1)`
+choice*: `INSERT INTO p VALUES (1, 'c@x', 30)`
+choice*: `INSERT INTO p VALUES (3, 'a@x', 25)`
+choice*: `INSERT INTO p VALUES (5, NULL, 22)`
+choice: `INSERT INTO p VALUES (4, 'd@x', NULL)`
+hint: Check each statement against each constraint in turn; remember what `CHECK` does with an unknown result.
+solution: A negative age fails the `CHECK`, a repeated id fails the primary key, a repeated email fails `UNIQUE`, and a NULL email fails `NOT NULL`. A NULL age makes the `CHECK` condition unknown, which is accepted, so the last insert succeeds.
+
+@practice mc
+prompt: `emp.dept_id` is declared `REFERENCES dept(id) ON DELETE CASCADE`. What happens when you execute `DELETE FROM dept WHERE id = 3` (with foreign-key enforcement on)?
+choice*: The department row is deleted and every employee whose `dept_id` is 3 is deleted as well.
+choice: The delete is rejected while employees still refer to department 3.
+choice: The department is deleted and the employees' `dept_id` is set to NULL.
+choice: Only the department row is deleted and the employees keep a dangling `dept_id` of 3.
+hint: The action named in the declaration is applied to the referencing rows.
+solution: `CASCADE` propagates the delete to referencing rows. Rejection is `RESTRICT` or `NO ACTION`, setting to NULL is `SET NULL`, and a dangling reference is exactly what a foreign key with enforcement prevents.
+
+@quiz code
+prompt: Simulate `ON DELETE CASCADE`. Write `cascade_delete(parents, children, pk, fk, value)`. `parents` and `children` are lists of dictionaries. Remove **in place** every parent whose `pk` equals `value` and every child whose `fk` equals `value`. Return the tuple `(parents_removed, children_removed)` of counts.
+starter:
+```python
+def cascade_delete(parents, children, pk, fk, value):
+    pass
+```
+tests:
+```python
+parents = [{"id": 1}, {"id": 2}, {"id": 3}]
+kids = [{"dept": 1}, {"dept": 2}, {"dept": 2}, {"dept": 3}]
+assert cascade_delete(parents, kids, "id", "dept", 2) == (1, 2)
+assert parents == [{"id": 1}, {"id": 3}]
+assert kids == [{"dept": 1}, {"dept": 3}]
+assert cascade_delete(parents, kids, "id", "dept", 9) == (0, 0)
+assert len(parents) == 2
+```
+model:
+```python
+def cascade_delete(parents, children, pk, fk, value):
+    keep_p = [p for p in parents if p[pk] != value]
+    keep_c = [c for c in children if c[fk] != value]
+    removed = (len(parents) - len(keep_p), len(children) - len(keep_c))
+    parents[:] = keep_p
+    children[:] = keep_c
+    return removed
+```
+hint: Build the lists of rows to keep, and compare lengths to count the removed rows.
+hint: Assign with `parents[:] = ...` so the caller's list object is modified in place.
+solution: Filter both lists, compute the counts from the length difference, and write the filtered rows back with slice assignment, which changes the original list rather than rebinding a local name.
+
+@quiz num
+prompt: Table `p(price)` holds 4, 10, 6 and 20. After `UPDATE p SET price = CASE WHEN price < 10 THEN price * 2 ELSE price END`, what is `SELECT SUM(price) FROM p`?
+answer: 50
+check: sql("CREATE TABLE p(price INT); INSERT INTO p VALUES (4),(10),(6),(20); UPDATE p SET price = CASE WHEN price < 10 THEN price * 2 ELSE price END;", "SELECT SUM(price) FROM p")[0][0]
+hint: Apply the `CASE` to each row independently, using that row's old price.
+solution: The prices 4 and 6 are below 10 and double to 8 and 12. The prices 10 and 20 are unchanged. The sum is 8 + 10 + 12 + 20 = 50.

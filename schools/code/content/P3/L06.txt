@@ -1,0 +1,193 @@
+@lesson
+title: SQL versus NoSQL, and data modeling
+summary: Choose a data store from the access patterns and consistency needs, and model data for those patterns, including when to normalize and when to denormalize.
+objective: Compare relational, document, key-value, wide-column and graph stores by what they are good at.
+objective: Model data starting from the queries you must serve, and decide where to denormalize.
+objective: Design a sharding scheme for a concrete workload, with a shard key, secondary views and a resharding plan.
+reading: The System Design Primer, the sections "SQL or NoSQL", "Relational database management system (RDBMS)", "Key-value store", "Document store", "Wide column store" and "Graph database".
+@article
+New engineers often ask "SQL or NoSQL?" as if it were a matter of taste. The professional answer starts one step earlier: **what are the queries, and what must stay correct?** A data store is a bundle of choices (data model, query power, consistency, scaling approach), and you pick the bundle whose strengths match your access patterns.
+
+### The families
+
+- **Relational (SQL)** databases store tables with a fixed schema, enforce constraints (primary keys, foreign keys, uniqueness), support joins and ad hoc queries, and offer **ACID** transactions (atomicity, consistency, isolation, durability). They are the right default: flexible queries, strong guarantees, mature tooling. Scaling writes beyond one leader needs sharding you design yourself (or a distributed SQL system).
+- **Key-value** stores map a key to an opaque value. Lookup by key is extremely fast and scales by hashing the key across nodes. There are no joins or secondary queries unless you build them. Typical uses: sessions, caches, feature flags, counters.
+- **Document** stores keep self-describing records (usually JSON) and can index fields inside them. The schema is flexible, and related data can be nested in one document, so one read fetches a whole aggregate such as an order with its line items. Cross-document relationships are weaker.
+- **Wide-column** stores (partitioned row stores) spread rows by a **partition key** and keep rows in sorted order within a partition by a **clustering key**. They scale writes very well and handle time-series and message data, but queries must follow the key design.
+- **Graph** databases store nodes and relationships and make multi-hop traversals ("friends of friends who like X") cheap, where SQL would need recursive joins.
+
+NoSQL does not mean "no schema" or "no consistency": the schema just moves from the database into your application, and the consistency options vary widely by system. Most products can do more than their category label suggests, so read what a specific product guarantees.
+
+### Model from the queries
+
+In a relational design you model the **data** first (entities and relationships), normalize it to remove duplication, and let the query planner handle the questions you did not predict. In a wide-column or key-value design you model the **queries** first: list every access pattern ("get the last 50 messages in a conversation"), then design one table or key layout per pattern, duplicating data as needed. Adding a new query later can mean a new table and a backfill.
+
+### Normalization and denormalization
+
+**Normalization** stores each fact once, so an update changes one row and the data cannot disagree with itself. **Denormalization** copies data to avoid joins at read time, trading write cost and consistency risk for read speed. For example, storing the author's display name inside each post document makes the feed a single read, but a name change must be propagated (or you accept stale names). Denormalize deliberately, for a read path you measured or estimated to be hot, and write down how copies are kept in sync (a synchronous update, an event-driven update, or a periodic rebuild).
+
+### Indexes
+
+An **index** (usually a B-tree) turns a full scan into a logarithmic lookup. Index the columns you filter and join on; a composite index on `(user_id, created_at)` serves "this user's latest items". Indexes cost storage and slow writes, so do not index everything. Before reaching for sharding or a different database, check that your slow queries are using the right indexes.
+
+### Choosing in practice
+
+| Need | Likely fit |
+|---|---|
+| Money, inventory, anything with multi-row invariants | Relational with transactions |
+| Very high write volume keyed by one id, simple lookups | Key-value or wide-column |
+| Nested, evolving records read as a unit | Document |
+| Deep relationship queries | Graph |
+| Full-text search, analytics | A specialized search or analytical store fed from the primary data |
+
+Real systems use **polyglot persistence**: a relational database as the system of record, a cache in front, a search index and an analytics store fed through events. Each extra store must be kept in sync, so add one only for a clear reason.
+
+### Sharding schemes in practice
+
+When you do shard, write the scheme as a design: the shard key and why; how the other important queries are served (secondary tables or indexes sharded by a different key, kept in sync by events); how rows get unique ids; how hot keys are handled; and how you add capacity (many **logical shards** mapped onto fewer physical machines, so growth means moving whole logical shards).
+
+@example
+title: Model messages by access pattern
+problem: A chat service must show the latest 50 messages of a conversation, load older pages on scroll, and handle 100,000 message writes per second. Design the table for a partitioned wide-column store.
+step: The only hot query is "latest messages in conversation C, newest first, paged". Design for exactly that.
+step: Partition key: `conversation_id`, so all messages of a conversation live together and one query reads one partition.
+step: Clustering key: `message_id` sorted descending, where ids are time-ordered, so the newest 50 are the first 50 rows read.
+step: Row: `(conversation_id, message_id, sender_id, body, sent_at)`. Paging uses "messages with id below the last one seen".
+step: Risk: a huge group conversation could create one oversized partition. Mitigate by adding a time bucket to the partition key, `(conversation_id, month)`, so partitions stay bounded.
+answer: Partition by conversation (plus a time bucket), cluster by time-ordered message id descending.
+
+@example
+title: When denormalizing pays off
+problem: A feed page shows 20 posts with the author's name and avatar. Normalized tables need a join of posts to users per page. When should you copy the name and avatar into each post row?
+step: Estimate the read rate: if the feed is the most visited page at 20,000 requests per second, the join runs 20,000 times a second, each fetching 20 author rows.
+step: Writes to author names are rare (a few per user per year), so keeping copies in sync is cheap.
+step: Denormalize: store `author_name` and `author_avatar` in the post document, and on a profile change publish an event that updates that author's recent posts in the background.
+step: Accept that a name change may appear a few seconds late in old posts; the product agrees that this is fine.
+step: If the data were instead something that changes often or must be exact (an account balance), you would not copy it.
+answer: Denormalize when reads are hot, the copied data rarely changes, and brief staleness is acceptable.
+
+@mistakes
+- Choosing a database by popularity instead of by the access patterns and consistency needs.
+- Using a key-value or wide-column store for data that needs ad hoc queries or multi-row transactions, then rebuilding joins in application code.
+- Denormalizing without a plan for keeping the copies in sync, so they silently drift apart.
+- Missing the cheap fix: a missing index, not a new database, is the cause of many "we need to scale" panics.
+
+@practice mc
+prompt: Which workload is the best fit for a relational database with ACID transactions?
+choice: Caching rendered web pages by URL.
+choice*: Transferring funds between two accounts, where the debit and the credit must succeed or fail together.
+choice: Storing a very high volume of unordered sensor readings that are only read by device id.
+choice: Storing a social graph and finding friends of friends of friends.
+hint: Which workload has an invariant spanning more than one row?
+solution: A transfer needs an atomic multi-row update with isolation, which relational transactions provide. Page caches suit key-value stores, sensor readings by device suit wide-column or time-series stores, and multi-hop traversal suits a graph database.
+
+@practice num
+prompt: Given this data, how many rows does the query return?
+
+```sql
+CREATE TABLE users(id INT PRIMARY KEY, name TEXT);
+CREATE TABLE orders(id INT PRIMARY KEY, user_id INT, total INT);
+INSERT INTO users VALUES (1, 'ana'), (2, 'bo'), (3, 'cy');
+INSERT INTO orders VALUES (10, 1, 50), (11, 1, 20), (12, 3, 70);
+
+SELECT u.name, o.total
+FROM users u LEFT JOIN orders o ON o.user_id = u.id;
+```
+answer: 4
+check: len(sql("CREATE TABLE users(id INT PRIMARY KEY, name TEXT); CREATE TABLE orders(id INT PRIMARY KEY, user_id INT, total INT); INSERT INTO users VALUES (1, 'ana'), (2, 'bo'), (3, 'cy'); INSERT INTO orders VALUES (10, 1, 50), (11, 1, 20), (12, 3, 70);", "SELECT u.name, o.total FROM users u LEFT JOIN orders o ON o.user_id = u.id"))
+hint: A left join keeps every user, even one with no orders.
+solution: User `ana` has 2 orders (2 rows), `bo` has none (1 row with a NULL total) and `cy` has 1 order (1 row): 2 + 1 + 1 = 4 rows.
+
+@practice code
+prompt: A feed service stores users and posts normalized. Write `build_feed(users, posts)` that denormalizes them for reading. `users` is a dictionary mapping user id to display name. `posts` is a list of dictionaries with the keys `"id"`, `"author_id"` and `"text"`. Return a list with one dictionary per post, in the same order, with the keys `"id"`, `"author"` (the display name) and `"text"`. If the author id is not in `users`, use the author name `"unknown"`.
+starter:
+```python
+def build_feed(users, posts):
+    pass
+```
+tests:
+```python
+users = {1: "Ana", 2: "Bo"}
+posts = [
+    {"id": 10, "author_id": 2, "text": "hi"},
+    {"id": 11, "author_id": 1, "text": "yo"},
+    {"id": 12, "author_id": 9, "text": "who?"},
+]
+assert build_feed(users, posts) == [
+    {"id": 10, "author": "Bo", "text": "hi"},
+    {"id": 11, "author": "Ana", "text": "yo"},
+    {"id": 12, "author": "unknown", "text": "who?"},
+]
+assert build_feed(users, []) == []
+assert build_feed({}, posts[:1]) == [
+    {"id": 10, "author": "unknown", "text": "hi"}
+]
+```
+model:
+```python
+def build_feed(users, posts):
+    feed = []
+    for post in posts:
+        feed.append({
+            "id": post["id"],
+            "author": users.get(post["author_id"], "unknown"),
+            "text": post["text"],
+        })
+    return feed
+```
+hint: `dict.get(key, default)` returns the default when the key is missing.
+solution: Look each author up with `users.get(author_id, "unknown")` and copy the needed fields into a new dictionary. This is the application-level version of a join: the stored feed row now carries the author name, so reads need no lookup, and a rename must be pushed to these copies.
+
+@practice ms
+prompt: Which are reasonable reasons to denormalize data? Select all that apply.
+choice*: A read path is very hot and the join across tables is the measured bottleneck.
+choice*: The copied values change rarely, so keeping the copies in sync is cheap.
+choice*: The data lives in a store that has no joins, so each access pattern needs its own layout.
+choice: It guarantees that the copies can never disagree with each other.
+choice: It reduces the storage used by the system.
+hint: Denormalization trades write cost and consistency risk for read speed.
+solution: Hot reads, rarely changing copies and join-less stores are good reasons. Denormalization makes disagreement between copies possible (it does not prevent it), and it uses more storage, not less.
+
+@practice self
+prompt: Design a sharding scheme. A food-delivery company stores one row per order, about 1 KB each. It creates 30 million orders per day, keeps them for 5 years (365 days each), and runs a replicated relational database. The main queries are: (1) fetch an order by id, (2) a customer's order history, newest first, (3) a restaurant's orders for today, (4) the driver app's current order. Peak write rate is about 3 times the average. A shard machine holds at most 2 TB and you want it at most 70 percent full. Give the data size, the number of shards, the shard key, how queries 2 to 4 are served, how ids are generated, how you handle a very large restaurant chain, and how you add capacity later.
+hint: Compute the total size first to see whether sharding is needed at all.
+hint: The shard key should serve the most important query; serve the others with secondary tables.
+solution: A model answer:
+
+- Size: 30,000,000 x 1 KB = 30 GB per day; over 1,825 days that is about 54.75 TB. At 1.4 TB usable per shard machine that needs ceil(54.75 / 1.4) = 40 shards. Writes are about 347 per second on average and about 1,040 at peak, which one leader could take, so storage is the driver. Indexes add maybe 30 percent, so plan for about 50 shards.
+- Shard key: `customer_id` (hashed). The customer's history (query 2) and order creation are the most frequent and then touch one shard, and customers spread evenly, so there are no hot shards.
+- Order by id (query 1): generate ids that embed the shard, for example a 64-bit time-ordered id whose low bits hold the logical shard number, so the owner can be computed without a lookup.
+- Restaurant orders today (query 3): this is a different key, so keep a secondary table `restaurant_orders` keyed by `(restaurant_id, day)`, written asynchronously from the order-created event. It is eventually consistent by a second or two, which restaurants accept.
+- Driver's current order (query 4): a key-value record keyed by `driver_id`, updated as part of the order lifecycle events.
+- Large chain: because the key includes the day, one chain's orders spread across days; if one chain still becomes hot within a day, add a bucket number `(restaurant_id, day, bucket)` and query all buckets.
+- Adding capacity: use 1,024 logical shards mapped to physical machines through a small directory. Growing means copying whole logical shards to new machines and updating the directory, with no rehashing.
+rubric: The data size and shard count are computed from the given numbers (about 55 TB and about 40 shards before overhead).
+rubric: The shard key is justified by the main access pattern and by even spread, and hot-spot risk is discussed.
+rubric: Queries that do not use the shard key are served by a specific mechanism (secondary table sharded by a different key, or a separate store), with the consistency trade-off stated.
+rubric: Id generation and a resharding approach (logical shards or equivalent) are described.
+
+@quiz num
+prompt: Given this data, how many rows does the query return?
+
+```sql
+CREATE TABLE orders(id INT PRIMARY KEY, user_id INT);
+INSERT INTO orders VALUES (1, 1), (2, 2), (3, 1), (4, 3), (5, 1), (6, 2);
+
+SELECT user_id
+FROM orders
+GROUP BY user_id
+HAVING COUNT(*) > 1;
+```
+answer: 2
+check: len(sql("CREATE TABLE orders(id INT PRIMARY KEY, user_id INT); INSERT INTO orders VALUES (1, 1), (2, 2), (3, 1), (4, 3), (5, 1), (6, 2);", "SELECT user_id FROM orders GROUP BY user_id HAVING COUNT(*) > 1"))
+hint: Count the orders per user first, then keep the groups with more than one.
+solution: User 1 has 3 orders, user 2 has 2 and user 3 has 1. `HAVING COUNT(*) > 1` keeps users 1 and 2, so 2 rows are returned.
+
+@quiz mc
+prompt: A query `SELECT * FROM accounts WHERE email = ?` takes seconds on a table of 100 million rows, and the database CPU is high. There is no index on `email`. What is the best first step?
+choice: Shard the table by `email` across eight servers.
+choice: Migrate the table to a document database.
+choice*: Add an index on the `email` column (unique, if emails are unique).
+choice: Add a cache in front of the database and keep the query unchanged.
+hint: Look at why the query is slow before changing the architecture.
+solution: Without an index the database scans every row; a B-tree index makes the lookup logarithmic. Sharding, a new database or a cache would be far more work and still leave an unindexed scan on every miss.

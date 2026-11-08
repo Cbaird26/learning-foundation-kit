@@ -1,0 +1,296 @@
+@project
+title: Build an interpreter for the Mini language
+overview: You will build a complete tree-walking interpreter in Python for a small functional language called Mini, with integers, booleans, variables, if expressions, and functions with closures and recursion. You will test it with a suite of 30 programs and document the language in a written reference.
+goal: Implement every stage of the pipeline yourself: tokenizer, recursive-descent parser producing an AST, and an evaluator with environments and closures.
+goal: Make the language's semantics precise and test them, including its error cases.
+goal: Document the language so that someone else could write programs in it without reading your code.
+step: Create a folder `mini/` with `tokens.py`, `parser.py`, `interp.py` and `test_programs.py`, and set up Git with a first commit. Read the language specification in the first material block and decide your AST node shapes (tuples or small classes).
+step: Write the tokenizer. It must produce tokens for numbers, identifiers, keywords, operators and punctuation, skip whitespace and `#` comments, and raise `LangError` with a line number for a bad character. Test it on at least ten strings, including `<=`, `==`, `!=` and `->` (use maximal munch).
+step: Write the parser, one function per grammar rule, so that precedence and left associativity match the grammar. Raise `LangError` with a helpful message for a missing `)`, a missing `then` or `else`, and leftover tokens. Test the parser by printing ASTs for the expressions in the sample table.
+step: Write the evaluator with `Env` objects (a dictionary and a parent link). Implement numbers, booleans, variables, arithmetic, comparison, `and`/`or` with short-circuiting, `not`, `if`, and `let`.
+step: Add functions. A `fun` expression evaluates to a closure that captures the current environment; a call evaluates the function and arguments, then runs the body in a new environment whose parent is the closure's environment. Add `let rec` so that functions can call themselves. Check arity and that the callee is a function.
+step: Enforce the type rules at run time (see the specification): arithmetic needs integers, conditions need booleans, `==` needs two integers or two booleans. Report each violation as a `LangError`, never as a raw Python exception.
+step: Write `test_programs.py` with a list of at least 30 `(source, expected)` pairs, where `expected` is a value or an error marker, and a loop that runs them all. Include at least 5 programs that must fail with an error, and these programs: factorial, Fibonacci, a function returning a function, and a function taking a function.
+step: Write `REFERENCE.md`, the language reference: lexical rules, the grammar, the meaning of each construct with an example, the type rules, scope rules, and a list of all errors. Test your reference by running every example in it through your interpreter.
+material: ### The Mini language specification
+
+A Mini program is one expression. Its value is an integer, a boolean or a function.
+
+```text
+expr     -> "let" ["rec"] IDENT "=" expr "in" expr
+          | "if" expr "then" expr "else" expr
+          | "fun" "(" [IDENT ("," IDENT)*] ")" "->" expr
+          | or_expr
+or_expr  -> and_expr ("or" and_expr)*
+and_expr -> cmp ("and" cmp)*
+cmp      -> sum [("<" | "<=" | ">" | ">=" | "==" | "!=") sum]
+sum      -> product (("+" | "-") product)*
+product  -> unary (("*" | "/" | "%") unary)*
+unary    -> ("-" | "not") unary | call
+call     -> atom ("(" [expr ("," expr)*] ")")*
+atom     -> NUMBER | "true" | "false" | IDENT | "(" expr ")"
+```
+
+Lexical rules: a NUMBER is one or more decimal digits; an IDENT starts with a letter or `_` and continues with letters, digits and `_`; the keywords are `let rec in if then else fun and or not true false`; `#` starts a comment that runs to the end of the line; whitespace separates tokens.
+
+Semantics:
+- `/` is floor division on integers and `%` is the matching remainder (as in Python's `//` and `%`); dividing or taking a remainder by zero is an error.
+- `and` and `or` evaluate their right operand only if needed and require booleans; `not` requires a boolean. Because `not` is a unary operator in this grammar, it binds more tightly than comparisons (unlike Python): `not 1 < 2` means `(not 1) < 2`, which is an error, so write `not (1 < 2)`.
+- `if` requires a boolean condition and evaluates only the chosen branch.
+- `let x = e1 in e2` evaluates `e1` in the current environment and `e2` in a new environment that also binds `x`. `let rec f = fun ... in e2` makes `f` visible inside the function body as well.
+- A `fun` expression creates a closure over the current environment. Scope is lexical. Calling a closure with the wrong number of arguments is an error.
+- The result is printed as a decimal integer, `true`, `false`, or `<function>`.
+- Every error (bad character, syntax error, unbound variable, type error, wrong arity, division by zero) is reported as a `LangError` with a message.
+material: ### Sample programs and their results
+
+| Program | Result |
+|---|---|
+| `1 + 2 * 3` | `7` |
+| `(1 + 2) * 3` | `9` |
+| `10 - 4 - 3` | `3` |
+| `7 / 2` | `3` |
+| `-7 / 2` | `-4` |
+| `let x = 5 in x * x` | `25` |
+| `let x = 1 in let x = x + 1 in x * 10` | `20` |
+| `if 3 < 2 then 10 else 20` | `20` |
+| `1 < 2 and 2 < 3` | `true` |
+| `let add = fun (a, b) -> a + b in add(3, 4)` | `7` |
+| `let make = fun (n) -> fun (x) -> x + n in let n = 100 in make(1)(1)` | `2` |
+| `let rec fact = fun (n) -> if n < 2 then 1 else n * fact(n - 1) in fact(5)` | `120` |
+| `let rec fib = fun (n) -> if n < 2 then n else fib(n - 1) + fib(n - 2) in fib(10)` | `55` |
+| `1 + true` | error: arithmetic needs integers |
+| `if 1 then 2 else 3` | error: condition must be a boolean |
+| `let f = fun (x) -> x in f(1, 2)` | error: wrong number of arguments |
+| `y + 1` | error: unbound variable `y` |
+| `1 / 0` | error: division by zero |
+
+The program `make(1)(1)` returning `2`, although `n` is `100` where it is called, is the test of lexical scope.
+material: ### A test-suite skeleton
+
+```python
+from interp import run, LangError
+
+# (source, expected). An expected value of "ERROR" means a LangError.
+PROGRAMS = [
+    ("1 + 2 * 3", 7),
+    ("10 - 4 - 3", 3),
+    ("1 + true", "ERROR"),
+    ("let x = 5 in x * x", 25),
+    # ... at least 30 in total ...
+]
+
+
+def check(source, expected):
+    try:
+        result = run(source)
+    except LangError:
+        return expected == "ERROR"
+    return type(result) is type(expected) and result == expected
+
+
+if __name__ == "__main__":
+    failures = [s for s, e in PROGRAMS if not check(s, e)]
+    for s in failures:
+        print("FAILED:", s)
+    print(f"{len(PROGRAMS) - len(failures)} of {len(PROGRAMS)} passed")
+```
+
+Here `run(source)` returns the Python value (an `int`, a `bool`, or a closure object).
+deliverable: The Git repository (or folder) containing `tokens.py`, `parser.py`, `interp.py` and `test_programs.py`, with all 30 or more programs passing.
+deliverable: The written language reference `REFERENCE.md`, with examples that you have run.
+deliverable: A short `NOTES.md` of up to one page: your AST design, one design decision you changed during the project, and one limitation of your interpreter (for example, deep recursion hits Python's recursion limit).
+rubric: Correctness: the tokenizer, parser and evaluator give the right results for all sample programs, including precedence, left associativity, short-circuiting and lexical scope.
+rubric: Errors: every error case in the specification raises `LangError` with a clear message, and no raw Python exception escapes `run`.
+rubric: Closures and recursion: functions capture their defining environment, `let rec` works, and there is a test of a function returning a function and of a function taking a function.
+rubric: Tests: the suite has at least 30 programs, includes at least 5 error programs, and covers every construct in the grammar.
+rubric: Documentation and code quality: the reference is accurate and precise and the code is organized by stage, with short functions and docstrings.
+tutor: My parser handles `1 - 2 - 3` incorrectly. How can I check whether my loop in the parser builds the tree to the left?
+tutor: How should I implement `let rec` so that the closure can see its own name without creating a different environment for every call?
+tutor: How can I turn Python exceptions such as `ZeroDivisionError` and `RecursionError` into clear `LangError` messages without hiding bugs in my own code?
+
+@review
+## Week-by-week review
+
+**Week 1: language design and paradigms.** A language is syntax, semantics and an implementation. Paradigms (imperative, object-oriented, functional, declarative) are styles, and most languages are multi-paradigm. The pipeline is source, tokens, AST, analysis, execution.
+
+**Week 2: tokens and grammars.** A scanner groups characters into tokens using maximal munch; a context-free grammar in BNF describes how tokens combine and encodes precedence by layering.
+
+**Week 3: ASTs and recursive descent.** One function per grammar rule, loops for left-associative operators, recursion for parentheses and unary operators. Left-recursive rules must be rewritten as loops.
+
+**Week 4: evaluation.** A tree-walking evaluator is structural recursion; it runs in $O(n)$ time for $n$ nodes. A stack machine evaluates postfix. Never use `eval` on untrusted input.
+
+**Week 5: environments and scope.** An environment is a chain of dictionaries. Lexical scope looks names up where the code was written; shadowing hides outer bindings; `let` evaluates its value in the outer environment.
+
+**Week 6: closures.** A closure is code plus its creation environment. A call's environment is a child of the closure's environment. Closures capture variables, not values (late binding).
+
+**Week 7: functional style.** `map`, `filter` and `reduce` replace loops; recursion needs a base case; CPython does not eliminate tail calls and limits the recursion depth.
+
+**Week 8: purity and immutability.** Pure functions depend only on their arguments and have no side effects, so they can be memoized. Immutability is shallow; update by copying.
+
+**Week 9: types.** Static versus dynamic is when types are checked; strong versus weak is how strictly. Python is dynamic and strong; type hints are not enforced at run time.
+
+**Week 10: type checking and inference.** Typing rules become a recursive function over the AST with a type environment. Inference uses type variables and unification with an occurs check.
+
+**Week 11: objects.** Dynamic dispatch picks the method from the receiver's actual class; method lookup follows the class chain or the MRO; `super()` means the next class in the MRO.
+
+**Week 12: memory.** Manual management, reference counting (cycles leak), and tracing collection (mark reachable objects from the roots, sweep the rest).
+
+## Self-check
+
+- Can you write the grammar and a recursive-descent parser for expressions from memory?
+- Can you explain, with a trace, why `make(1)(1)` is `2` under lexical scope?
+- Can you say which of a function's behaviors make it impure?
+- Can you classify Python, C, JavaScript and Java on both type axes?
+- Can you run mark-and-sweep and reference counting by hand on a heap with a cycle?
+
+## Common errors
+
+- Making `+` and `*` the same precedence, or recursing on the right and getting right-associative subtraction.
+- Evaluating a `let` value in the new environment, or making a call's environment a child of the caller's.
+- Forgetting `nonlocal`, or expecting a closure to copy a variable's value.
+- Mixing up static/dynamic with strong/weak.
+- Forgetting the occurs check, or the visited set in a graph traversal over cyclic references.
+
+@exam code
+prompt: Write `evaluate(node, env)` for a small functional language. Nodes: `("num", n)`, `("bool", b)`, `("var", name)`, `("bin", op, left, right)` with `op` in `+ - * < ==`, `("if", cond, then, other)`, `("let", name, value, body)`, `("letrec", name, fun_node, body)` (where `fun_node` is a `("fun", params, body)` node and `name` is visible inside it), `("fun", params, body)` and `("call", fn, args)`. `env` is a dictionary; never modify the caller's dictionary (copy it). Functions evaluate to closures with lexical scope. Raise `NameError` for an unbound variable and `TypeError` for: arithmetic or `<` on anything but integers (a boolean is not an integer here), `==` on operands that are not both integers or both booleans, a non-boolean `if` condition, calling a non-function, and a wrong number of arguments.
+starter:
+```python
+def evaluate(node, env):
+    pass
+```
+tests:
+```python
+n = lambda k: ("num", k)
+v = lambda s: ("var", s)
+fact_fun = ("fun", ["n"],
+            ("if", ("bin", "<", v("n"), n(2)),
+             n(1),
+             ("bin", "*", v("n"),
+              ("call", v("fact"), [("bin", "-", v("n"), n(1))]))))
+fact = ("letrec", "fact", fact_fun, ("call", v("fact"), [n(5)]))
+assert evaluate(fact, {}) == 120
+fib_fun = ("fun", ["n"],
+           ("if", ("bin", "<", v("n"), n(2)),
+            v("n"),
+            ("bin", "+",
+             ("call", v("fib"), [("bin", "-", v("n"), n(1))]),
+             ("call", v("fib"), [("bin", "-", v("n"), n(2))]))))
+fib = ("letrec", "fib", fib_fun, ("call", v("fib"), [n(8)]))
+assert evaluate(fib, {}) == 21
+make = ("fun", ["n"], ("fun", ["x"], ("bin", "+", v("x"), v("n"))))
+scope = ("let", "make", make,
+         ("let", "n", n(100),
+          ("call", ("call", v("make"), [n(1)]), [n(1)])))
+assert evaluate(scope, {}) == 2
+assert evaluate(("if", ("bool", False), n(1), n(2)), {}) == 2
+assert evaluate(("bin", "==", ("bool", True), ("bool", True)), {}) is True
+assert evaluate(("bin", "<", n(1), n(2)), {}) is True
+env = {"k": 7}
+assert evaluate(("let", "k", n(1), v("k")), env) == 1
+assert env == {"k": 7}
+assert raises(NameError, evaluate, v("nope"), {})
+assert raises(TypeError, evaluate, ("bin", "+", ("bool", True), n(1)), {})
+assert raises(TypeError, evaluate, ("bin", "==", n(1), ("bool", True)), {})
+assert raises(TypeError, evaluate, ("if", n(1), n(2), n(3)), {})
+assert raises(TypeError, evaluate, ("call", n(3), []), {})
+ident = ("fun", ["x"], v("x"))
+assert raises(TypeError, evaluate, ("call", ident, []), {})
+```
+model:
+```python
+class Closure:
+    def __init__(self, params, body, env):
+        self.params = params
+        self.body = body
+        self.env = env
+
+
+def evaluate(node, env):
+    kind = node[0]
+    if kind in ("num", "bool"):
+        return node[1]
+    if kind == "var":
+        if node[1] not in env:
+            raise NameError(f"unbound variable {node[1]!r}")
+        return env[node[1]]
+    if kind == "fun":
+        return Closure(node[1], node[2], env)
+    if kind == "let":
+        value = evaluate(node[2], env)
+        inner = dict(env)
+        inner[node[1]] = value
+        return evaluate(node[3], inner)
+    if kind == "letrec":
+        inner = dict(env)
+        fun = node[2]
+        inner[node[1]] = Closure(fun[1], fun[2], inner)
+        return evaluate(node[3], inner)
+    if kind == "if":
+        cond = evaluate(node[1], env)
+        if type(cond) is not bool:
+            raise TypeError("condition must be a boolean")
+        return evaluate(node[2] if cond else node[3], env)
+    if kind == "call":
+        f = evaluate(node[1], env)
+        if not isinstance(f, Closure):
+            raise TypeError("not a function")
+        args = [evaluate(a, env) for a in node[2]]
+        if len(args) != len(f.params):
+            raise TypeError("wrong number of arguments")
+        inner = dict(f.env)
+        inner.update(zip(f.params, args))
+        return evaluate(f.body, inner)
+    if kind == "bin":
+        op = node[1]
+        left = evaluate(node[2], env)
+        right = evaluate(node[3], env)
+        if op == "==":
+            if type(left) is not type(right) or type(left) not in (int, bool):
+                raise TypeError("== needs two ints or two bools")
+            return left == right
+        if type(left) is not int or type(right) is not int:
+            raise TypeError(f"{op} needs integers")
+        if op == "+":
+            return left + right
+        if op == "-":
+            return left - right
+        if op == "*":
+            return left * right
+        if op == "<":
+            return left < right
+    raise ValueError(f"unknown node {node!r}")
+```
+hint: Start from an evaluator with closures like the one you wrote in week 6 and add `letrec`, `if` and the type checks.
+hint: For `letrec`, create the child environment first, then create the closure over that environment and add the closure to it under `name`, so the function can see itself.
+solution: Closures capture the environment in which they were created, and a call evaluates the body in a copy of that environment plus the parameters. `letrec` builds the closure over a new environment that already contains the closure's own name. Test types with `type(x) is int` so that booleans, which are a subclass of `int` in Python, are rejected as the specification requires.
+
+@exam text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def make(n):
+    items = []
+    def push(x):
+        items.append(x * n)
+        return len(items)
+    return push, items
+
+push, items = make(3)
+push(1)
+push(2)
+print(items, push(0))
+```
+answer: [3, 6, 0] 3
+check: run("def make(n):\n    items = []\n    def push(x):\n        items.append(x * n)\n        return len(items)\n    return push, items\n\npush, items = make(3)\npush(1)\npush(2)\nprint(items, push(0))\n")
+hint: `print` evaluates both of its arguments before it prints anything.
+hint: The first argument is the list object itself, not a copy, and the second argument is a call that appends to it.
+solution: The closure `push` captures `items` and `n`, so `push(1)` and `push(2)` append `3` and `6`. In the `print` call, the name `items` refers to the list object, then `push(0)` appends `0` and returns `3`, and only then is the (now three-item) list printed, giving `[3, 6, 0] 3`.
+
+@exam self
+prompt: You have a tree-walking interpreter and a type checker for a language with integers and booleans (week 10). You now add first-class functions with a parameter type annotation, `fun (x: int) -> body`, and calls `f(arg)`. (a) Give the new type form and the typing rules for a function expression and for a call. (b) Say what the checker must do about a variable that holds a function of type `int -> bool` when it appears in `f(true)`. (c) Explain one thing that static checking will not catch, and one reason a sound checker may reject a program that would run correctly.
+hint: A typing rule has premises (what you check about the parts) and a conclusion (the type of the whole expression).
+solution: (a) Add the function type `T1 -> T2`. Rule for functions: if `body` has type `T2` in the environment extended with `x : T1`, then `fun (x: T1) -> body` has type `T1 -> T2`. Rule for calls: if `f` has type `T1 -> T2` and the argument has type `T1`, then `f(arg)` has type `T2`; if `f` is not a function type or the argument type differs from `T1`, report a type error. (b) The environment maps `f` to `int -> bool`, so the call `f(true)` is checked against the parameter type `int`; the argument has type `bool`, which differs, so the checker reports a type error before the program runs. (c) Static checking will not catch errors that types do not express, such as division by zero, a wrong value of the right type, or an infinite loop. A sound checker is conservative: for example `if false then 1 + true else 2` would run correctly, since the bad branch is never executed, but the checker gives every expression a type from its text alone and rejects it.
+rubric: States the function type `T1 -> T2` and the rule for `fun` that checks the body in an environment extended with the parameter type.
+rubric: States the call rule: the callee must have a function type and the argument type must equal the parameter type, with the result type being the return type.
+rubric: Correctly concludes that `f(true)` is rejected at check time because `bool` is not `int`.
+rubric: Gives a valid example of an error static types do not catch, and explains conservative rejection of safe programs.

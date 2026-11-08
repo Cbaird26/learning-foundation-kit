@@ -1,0 +1,196 @@
+@lesson
+title: Observability and running systems in production
+summary: Instrument a service with logs, metrics and traces, define SLIs and SLOs with error budgets and burn-rate alerts, and write a runbook so that someone else can operate the design at 3 a.m.
+objective: Distinguish logs, metrics and traces, and choose the signals (RED, USE, golden signals) that matter.
+objective: Define SLIs, SLOs, error budgets and burn rates, and alert on symptoms rather than causes.
+objective: Write service-level objectives and a runbook for a design, and describe safe deployment and blameless incident practice.
+reading: The System Design Primer, the sections "Performance versus scalability", "Latency versus throughput" and "Availability versus consistency" plus the appendix on operations; look up Google's free Site Reliability Engineering book chapters on service level objectives and monitoring distributed systems.
+@article
+A design is finished when someone else can run it. At 3 a.m. the pager goes off: "checkout errors high". Without good signals you will be guessing; with them, you will find the failing component in minutes. **Observability** is the property that you can understand what a system is doing, from the outside, by examining the data it emits, including for failures you did not predict.
+
+### Three kinds of telemetry
+
+- **Logs**: timestamped records of events. Write them **structured** (JSON key-value pairs) with a request id, user or tenant id (without leaking personal data or secrets), service, level and outcome. Logs answer "what happened to this request?" but are expensive to store and search at volume.
+- **Metrics**: numeric time series, cheap to store and fast to query: **counters** (requests total, errors total), **gauges** (queue depth, memory), **histograms** (latency distributions). Metrics answer "is something wrong, and how bad?" Beware **high cardinality**: labels such as `user_id` create millions of series and break the system; labels should be a small bounded set (route, status class, region).
+- **Traces**: a request's path through services as a tree of **spans**, each with start time and duration, linked by a trace id propagated in request headers. Traces answer "where did the time go?" in a microservice call chain. OpenTelemetry is the widely used vendor-neutral standard for generating all three.
+
+### What to measure
+
+Percentiles beat averages. Average latency hides the slow tail, and the tail is what users notice (and with fan-out, almost every user request hits some slow call). Track **p50, p95 and p99**.
+
+Two checklists cover most services:
+
+- **RED** for request-driven services: **R**ate (requests per second), **E**rrors (failure rate), **D**uration (latency distribution).
+- **USE** for resources (CPU, disk, network, a connection pool): **U**tilization, **S**aturation (queueing, waiting), **E**rrors.
+
+Google's "four golden signals" are latency, traffic, errors and saturation. Add **business metrics** (orders per minute): a service can be healthy by every technical metric and still be broken.
+
+### SLIs, SLOs and error budgets
+
+A **service-level indicator (SLI)** is a measurement of user-visible quality, expressed as a ratio of good events to valid events: "the fraction of requests that return non-5xx in under 300 ms". A **service-level objective (SLO)** is the target for that SLI over a window: "99.9% over 30 days". An **SLA** is a contractual promise with consequences, usually looser than the internal SLO.
+
+The **error budget** is the allowed unreliability, $1 - \text{SLO}$: 0.1% for 99.9%. It turns reliability into a shared budget: while budget remains, ship features; when it is spent, slow releases and invest in reliability. Pick SLOs from user needs, not from what the system currently achieves, and measure them from the user's side (the load balancer, not an internal health check).
+
+The **burn rate** is how fast the budget is being consumed relative to the allowed pace:
+
+$$\text{burn rate} = \frac{\text{observed error rate}}{1 - \text{SLO}}$$
+
+A burn rate of 1 uses exactly the whole budget by the end of the window. At a burn rate of 14.4, a 30-day budget lasts $30/14.4 \approx 2$ days, and one hour at that rate consumes 2 percent of it. Good alerting uses **multiple windows**: page a human for a fast burn (for example 14.4 over 1 hour), and open a ticket for a slow burn (for example 1 over 3 days). These thresholds come from common SRE practice for a 99.9% SLO over 30 days, not from a law, so tune them to your service. The budget spent is burn rate times window divided by 720 hours: 14.4 over 1 hour spends 2 percent, 6 over 6 hours spends 5 percent, and 1 over 3 days spends 10 percent. Pairing each long window with a short one (for example 5 minutes) stops the alert from firing after the problem has ended.
+
+### Alert on symptoms
+
+Page people for **symptoms** users feel (error rate, latency, an SLO burning) and not for causes (CPU at 80 percent, a single pod restarting). Causes belong on dashboards. Every page must be **actionable**, urgent and linked to a runbook; noisy alerts train people to ignore them. Alert fatigue is a reliability risk in itself.
+
+### Runbooks and incident practice
+
+A **runbook** is a short, tested document for one alert: what it means, the impact, how to confirm, the **first steps** (check these dashboards; look for a recent deploy), the **mitigations** in order of safety (roll back, shift traffic, enable degraded mode, scale up, fail over), who to escalate to, and how to verify recovery. Write it for a tired reader who did not build the system.
+
+During an incident: **mitigate first, diagnose later** (roll back the deploy before reading the code), assign an incident commander, keep a timeline, and communicate status regularly. Afterwards write a **blameless postmortem**: what happened, impact, timeline, root causes and contributing factors, what went well, and action items with owners. Blameless means you ask how the system allowed the mistake, not who made it.
+
+### Safe change
+
+Most incidents follow a change. Reduce risk with **canary releases** (a small percentage of traffic first, with automatic rollback on SLO regression), **feature flags** (turn off a feature without a deploy), **gradual rollouts across regions**, backward-compatible database migrations in several steps, and a **fast rollback** that you have practiced. Track capacity: load-test before launches and forecast growth from the estimates you made in week 2.
+
+@example
+title: Why the average lies
+problem: 100 requests complete with these latencies: 98 take 100 ms and 2 take 5,000 ms. Compute the mean, the median (p50) and the p99 (nearest-rank), and say which number shows the user's pain.
+step: Mean: $(98 \times 100 + 2 \times 5000) / 100 = (9800 + 10000)/100 = 198$ ms.
+step: p50: the 50th value in sorted order is 100 ms.
+step: p99 by nearest rank: rank $= \lceil 0.99 \times 100 \rceil = 99$. The sorted list has 98 values of 100 ms, then the 5,000 ms values at positions 99 and 100, so p99 is 5,000 ms.
+step: The mean (198 ms) looks acceptable and the median (100 ms) looks excellent, but 1 in 50 users waits 5 seconds. Only the high percentile exposes it.
+step: If a page makes 20 such calls in parallel and waits for all, the chance that at least one is slow is $1 - 0.98^{20} \approx 33$ percent, so the tail dominates real user experience.
+answer: Mean 198 ms, p50 100 ms, p99 5,000 ms; the p99 shows the pain.
+
+@example
+title: A burn-rate alert
+problem: The SLO is 99.9 percent of requests succeeding over 30 days. For the last hour 1.44 percent of requests failed. Compute the burn rate, the time until the budget is gone, and say whether to page.
+step: The error budget fraction is $1 - 0.999 = 0.001$, which is 0.1 percent.
+step: Burn rate: $1.44\% / 0.1\% = 14.4$.
+step: At this rate the 30-day budget lasts $30 / 14.4 \approx 2.1$ days, and the last hour alone used $14.4 / 720 = 2$ percent of the whole month's budget.
+step: A rule "burn rate above 14.4 over 1 hour" matches, so a human is paged: the users are feeling it and the budget will be gone in two days.
+step: The runbook's first mitigation is to check for a recent deploy and roll back, then to look at dependency error rates and traces.
+answer: Burn rate 14.4, budget gone in about 2 days; page the on-call.
+
+@mistakes
+- Alerting on causes (CPU, memory, a single restart) instead of user-visible symptoms, which creates noisy pages that are ignored.
+- Reporting average latency, which hides the slow tail that real users hit.
+- Putting high-cardinality values such as user ids in metric labels, which overloads the metrics system.
+- Writing a runbook that says "investigate" instead of giving the concrete commands, dashboards, mitigations and escalation path.
+
+@practice mc
+prompt: Which alert is best for a paging rotation?
+choice: CPU utilization on one web server is above 80 percent for 5 minutes.
+choice: One container restarted in the last hour.
+choice*: The fraction of failed checkout requests is burning the monthly error budget at 14 times the allowed pace.
+choice: The disk on a log server is 60 percent full.
+hint: Ask which alert tells you that users are being hurt right now.
+solution: A fast SLO burn is a symptom that users feel and it is actionable and urgent. High CPU on one server, a single restart or a half-full disk are causes or low-urgency conditions that belong on dashboards or in tickets.
+
+@practice code
+prompt: Write `percentile(values, p)` using the nearest-rank method: sort the values ascending, compute `rank = ceil(p / 100 * n)` for `n` values, and return the value at that 1-based rank. `p` is an integer from 1 to 100. Do not modify the input list. Example: for `[15, 20, 35, 40, 50]` the 50th percentile is `35`.
+starter:
+```python
+def percentile(values, p):
+    pass
+```
+tests:
+```python
+data = [15, 20, 35, 40, 50]
+assert percentile(data, 50) == 35
+assert percentile(data, 100) == 50
+assert percentile(data, 20) == 15
+assert percentile([50, 15, 40, 20, 35], 95) == 50
+assert percentile([7], 99) == 7
+assert percentile(list(range(1, 101)), 99) == 99
+assert data == [15, 20, 35, 40, 50]
+```
+model:
+```python
+def percentile(values, p):
+    ordered = sorted(values)
+    n = len(ordered)
+    rank = -(-p * n // 100)
+    return ordered[rank - 1]
+```
+hint: `sorted` returns a new list, so the input is untouched.
+hint: Ceiling division of `a` by `b` can be written `-(-a // b)`; rank is then `ceil(p * n / 100)`, and the list index is `rank - 1`.
+solution: Sort a copy, compute the 1-based rank as the ceiling of `p * n / 100`, and index with `rank - 1`. For 5 values and p = 50 the rank is $\lceil 2.5 \rceil = 3$, which is the third smallest value, 35. Sorting makes this $O(n \log n)$; monitoring systems use histograms or sketches instead of storing every value.
+
+@practice code
+prompt: Write `burn_rate(slo, bad, total)` where `slo` is a fraction such as `0.999`, `bad` is the number of failed requests and `total` the number of requests in the measurement window. Return the burn rate: the observed error rate divided by the error budget `1 - slo`. If `total` is 0, return `0.0`.
+starter:
+```python
+def burn_rate(slo, bad, total):
+    pass
+```
+tests:
+```python
+assert round(burn_rate(0.999, 5, 1000), 3) == 5.0
+assert round(burn_rate(0.999, 1, 10000), 3) == 0.1
+assert round(burn_rate(0.999, 144, 10000), 3) == 14.4
+assert burn_rate(0.99, 0, 100) == 0.0
+assert burn_rate(0.999, 0, 0) == 0.0
+```
+model:
+```python
+def burn_rate(slo, bad, total):
+    if total == 0:
+        return 0.0
+    error_rate = bad / total
+    return error_rate / (1 - slo)
+```
+hint: The error rate is `bad / total`; the budget is `1 - slo`.
+solution: Divide the observed error rate by the allowed error rate. A result of 5.0 means the budget is being spent five times faster than a steady spend that would finish exactly at the end of the window. Handling `total == 0` avoids a division error during quiet periods.
+
+@practice num
+prompt: A service has a 99.9 percent availability SLO over a 30-day window, so its error budget is 0.1 percent of the window's time (43.2 minutes). A total outage lasts 20 minutes. What percentage of the 30-day error budget did it consume?
+answer: 46.30
+check: 20/(30*24*60*0.001)*100
+tol: 0.01
+unit: percent
+hint: Divide the outage minutes by the budget in minutes (43.2).
+solution: The budget is $43{,}200 \times 0.001 = 43.2$ minutes. $20/43.2 = 0.463$, so the outage used about 46.3 percent of the month's budget, which is why one long incident can freeze releases for the rest of the window.
+
+@practice self
+prompt: Write service-level objectives and a runbook for a design. Use a URL shortener that serves redirects (`GET /{code}`, 100,000 requests per second at peak) and link creation (`POST /v1/links`), with a cache layer, a sharded key-value store and a click-event queue. Give: two SLIs with their SLOs for redirects and one for creation (with the window), the error budget in minutes or requests, a fast-burn and a slow-burn alert, and a runbook for the alert "redirect error rate burning fast": impact, confirmation steps, mitigations in order, escalation and recovery check.
+hint: Define each SLI as good events divided by valid events, measured at the edge.
+hint: Write the runbook so a person who has never seen the system could follow it.
+solution: A model answer:
+
+SLOs (30-day rolling window):
+- Redirect availability: SLI is the fraction of `GET /{code}` requests answered with a redirect or a correct 404/410 (not 5xx and not a timeout), measured at the load balancer. SLO 99.99 percent. The budget is 0.01 percent: at 100,000 requests per second peak (assume about 30,000 on average, 2.6 billion a day, about 78 billion a month) that is roughly 7.8 million failed requests per month, or 4.32 minutes of total outage.
+- Redirect latency: SLI is the fraction of redirects completed in under 100 ms at the load balancer. SLO 99 percent (and p99 under 100 ms is tracked on the dashboard).
+- Creation availability: SLI is the fraction of `POST /v1/links` that do not fail with 5xx. SLO 99.9 percent, budget 43.2 minutes per month.
+
+Alerts:
+- Page (fast burn): redirect error budget burn rate above 14.4 over both 1 hour and 5 minutes (the short window confirms it is still happening).
+- Page (medium burn): burn rate above 6 over 6 hours and 30 minutes.
+- Ticket (slow burn): burn rate above 1 over 3 days.
+- Dashboards (not pages): cache hit rate, store latency, queue depth, CPU.
+
+Runbook: "Redirect error rate burning fast".
+- Impact: short links are failing for some or all users; every embedding page shows broken links. Treat as severity 1 if the error rate is above 5 percent.
+- Confirm: open the redirect dashboard; check error rate by region and status code; check whether a deploy or configuration change happened in the last hour; open a trace of a failing request.
+- Mitigations in order: (1) if a deploy occurred in the last hour, roll back to the previous version (the button in the deploy tool, about 5 minutes) and watch the error rate; (2) if one region is failing, shift its traffic to the others with the traffic-shift command and verify capacity; (3) if the store is the source (timeouts or errors from one shard), increase cache TTL to 24 hours through the config flag so the cache absorbs reads, and page the storage owner; (4) if the cache cluster is down, enable the fallback to the store with the rate limiter at 70,000 requests per second to protect the store; (5) scale out redirect servers if CPU is above 80 percent.
+- Escalate: if no improvement after 15 minutes, page the incident commander and the storage on-call; post a status update every 30 minutes.
+- Recovery check: error rate below 0.01 percent for 15 minutes, p99 latency under 100 ms, queue depth normal. Then write a postmortem within 3 working days.
+rubric: SLIs are ratios of good to valid events measured at the edge, with a stated window, and the SLOs are justified for the service (redirects stricter than creation).
+rubric: The error budget is computed correctly from the SLO (for example 99.99 percent over 30 days is 4.32 minutes) and the alerts are burn-rate based with at least a fast and a slow window.
+rubric: The runbook has impact, confirmation steps, ordered mitigations (rollback first), escalation and a recovery check.
+rubric: The runbook is concrete (named dashboards, flags, thresholds and times) and refers to the design's actual components (cache, store, queue).
+
+@quiz num
+prompt: With a 99.9 percent SLO over a 30-day window (720 hours), the error rate is constant at 0.6 percent (a burn rate of 6). How many hours until the whole 30-day error budget is used up? Give the number of hours.
+answer: 120
+check: Fraction(30*24) / (Fraction(6, 10) / Fraction(1, 10))
+hint: Burn rate is the observed error rate divided by the budget; at burn rate $b$ the budget lasts the window divided by $b$.
+solution: The budget is 0.1 percent, so the burn rate is $0.6/0.1 = 6$. The budget lasts $720/6 = 120$ hours, which is 5 days.
+
+@quiz mc
+prompt: Users report that the "place order" page is slow, and the order service calls six other services. Dashboards show that every service has normal average latency. Which telemetry finds the slow dependency fastest?
+choice: Per-service CPU graphs, because slow code uses more CPU.
+choice: The list of server hostnames and uptimes.
+choice*: Distributed traces of slow requests, which show how long each service call took within the request.
+choice: Total daily request counts for each service.
+hint: You need to see where one slow request spent its time across services.
+solution: A trace shows the span durations for each downstream call within one slow request, so the slow service stands out. CPU graphs, uptimes and daily counts do not attribute latency inside a request, and averages hide the slow tail. Use percentiles to find which requests are slow, then traces to see why.

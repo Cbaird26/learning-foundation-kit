@@ -1,0 +1,310 @@
+@lesson
+title: Test doubles: stubs, fakes and mocks
+summary: Replace slow or unpredictable collaborators with stubs, fakes, spies and mocks, and know when a double helps and when it hides bugs.
+objective: Name the kinds of test double (dummy, stub, fake, spy, mock) and what each is for.
+objective: Use dependency injection and unittest.mock to isolate the code under test.
+objective: Choose between state-based and interaction-based assertions, and avoid over-mocking.
+reading: Test-Driven Development with Python, the chapters on mocking (look for "Mocks" and "Using mocks to test external dependencies"); also look up "unittest.mock" in the Python standard library documentation.
+@article
+Real code talks to other things: a payment gateway, an email service, a database, a clock. In a unit test you usually do not want the real thing: it is slow, it costs money, it fails for reasons you do not control, and it can send an email to a real customer. A **test double** is a stand-in you give to the code under test so it can run in isolation.
+
+### The kinds of double
+
+The vocabulary is not perfectly uniform across teams, but these are the common meanings:
+
+- A **dummy** fills a parameter that the test never uses (`None`, or an empty object).
+- A **stub** returns canned answers: "when asked for the exchange rate, say 1.25". It lets you control what the code *receives*.
+- A **fake** is a simplified but working implementation, such as an in-memory repository (a dictionary) instead of a database. It has real behavior, just not production-grade.
+- A **spy** records how it was called so the test can look afterwards.
+- A **mock** is a double that is preconfigured with expectations about calls and fails when they are not met. In Python's `unittest.mock`, a `Mock` object acts as both stub and spy: you set return values, and later check calls with `assert_called_once_with`.
+
+Stubs and fakes support **state-based** assertions (check the result or the final data). Spies and mocks support **interaction-based** assertions (check that a call happened).
+
+### Make the code easy to double: inject the dependency
+
+You can only substitute what you can pass in. Compare:
+
+```python
+# hard to test: builds its own dependency
+def send_welcome(user):
+    sender = SmtpSender("smtp.example.com")
+    sender.send(user.email, "Welcome!")
+
+
+# easy to test: dependency injected
+def send_welcome(user, sender):
+    sender.send(user.email, "Welcome!")
+```
+
+In production you pass the real sender; in a test you pass a `Mock()`. This is **dependency injection**, and nothing more than "take collaborators as parameters". It is the most valuable design habit that testing teaches.
+
+### Using unittest.mock
+
+```python
+from unittest.mock import Mock
+
+
+def test_welcome_email_is_sent():
+    sender = Mock()
+    user = Mock(email="ada@example.com")
+
+    send_welcome(user, sender)
+
+    sender.send.assert_called_once_with("ada@example.com", "Welcome!")
+```
+
+Any attribute of a `Mock` is another mock, and calls are recorded. Set a stubbed answer with `return_value`, and a failure with `side_effect`:
+
+```python
+gateway = Mock()
+gateway.charge.return_value = "declined"          # stub
+gateway.charge.side_effect = ConnectionError      # or: raises (wins over return_value)
+```
+
+Useful checks are `assert_called_once()`, `assert_not_called()`, `call_count` and `call_args`. `Mock(spec=RealClass)` or `create_autospec(RealClass)` makes the double reject attributes the real class does not have, which stops a test from passing against a method name that was misspelled or later renamed. When you cannot inject (a function imports and calls a library directly), `unittest.mock.patch("module.name")` replaces the name **where it is looked up** for the duration of a `with` block or a decorated test.
+
+### Fakes are often better than mocks
+
+A fake `InMemoryUserRepo` with `save`, `get` and `count` lets a test say "after registering, the user can be loaded", which describes behavior. A mock-based test says "`repo.save` was called once with these arguments", which describes the current implementation. If you later change the code to call `repo.upsert`, the mock test breaks although behavior is unchanged. Prefer fakes for collaborators with state, stubs for collaborators that only answer questions, and mocks for **outgoing side effects** you must verify (an email was sent, a payment was requested).
+
+### Over-mocking and its cost
+
+A test that mocks everything around a function ends up testing the mocks. Signs of trouble: the test is longer than the code, it breaks on every refactor, or it passes while the real integration is broken because the double behaves differently from the real service. Rules of thumb: do not mock what you own and can run cheaply (pure functions, value objects), double only the boundary (network, clock, filesystem, third-party APIs), and keep at least one integration test that uses the real thing, or a **contract test** that runs the same checks against both the fake and the real service so they cannot drift apart.
+
+@example
+title: Stubbing a gateway and spying on a mailer
+problem: `checkout(total, gateway, mailer)` charges the customer and, only if the charge succeeds, emails a receipt. Write the test for the declined case.
+
+```python
+def checkout(total, gateway, mailer):
+    if gateway.charge(total) == "ok":
+        mailer.send_receipt(total)
+        return "paid"
+    return "declined"
+```
+step: Arrange a stubbed gateway that declines, and a mailer to watch: `gateway = Mock()`, `gateway.charge.return_value = "declined"`, `mailer = Mock()`.
+step: Act: `result = checkout(25, gateway, mailer)`.
+step: Assert the outcome (state): `assert result == "declined"`.
+step: Assert the interaction that matters (a receipt must not go out): `mailer.send_receipt.assert_not_called()`. Also `gateway.charge.assert_called_once_with(25)` confirms the amount that was charged.
+answer: The stub controls the input, the spy checks the side effect, and one test covers the declined path with no network.
+
+@example
+title: A fake instead of a mock
+problem: Test `register(repo, name)`, which saves a user and returns the new id, using a fake repository.
+
+```python
+class FakeRepo:
+    def __init__(self):
+        self.rows = {}
+
+    def save(self, name):
+        new_id = len(self.rows) + 1
+        self.rows[new_id] = name
+        return new_id
+```
+step: Create the fake and call the code: `repo = FakeRepo()`, `uid = register(repo, "Ada")`.
+step: Assert on state, not calls: `assert repo.rows[uid] == "Ada"`.
+step: Register a second user and assert that the ids differ. The fake has behavior, so these checks need no knowledge of how `register` talks to the repo.
+answer: The test survives refactors of `register`, since it only checks what ends up stored.
+
+@mistakes
+- Mocking everything, including pure functions, so the test just re-states the implementation and breaks on every refactor.
+- Configuring a double that behaves differently from the real service, so tests pass while production fails.
+- Patching the wrong name (patching `time.time` when the code did `from time import time`): patch where the name is looked up.
+- Asserting only that a mock was called, and never that the code's own result or stored state is correct.
+
+@practice mc
+prompt: A test sets up `rates = Mock()` with `rates.get.return_value = 1.25` so the code under test always receives that exchange rate. What kind of test double is `rates` playing?
+choice*: A stub
+choice: A fake
+choice: A dummy
+choice: A contract test
+hint: It supplies canned answers and the test never checks how it was called.
+solution: A double that returns canned answers to control what the code receives is a stub. A fake would have working (simplified) logic, a dummy is never really used, and a contract test is not a double at all.
+
+@practice text
+prompt: What does this program print? Type the output exactly, one line per print.
+
+```python
+from unittest.mock import Mock
+
+m = Mock(return_value=42)
+print(m(1))
+print(m(2))
+print(m.call_count)
+print(m.call_args.args)
+```
+answer:
+```
+42
+42
+2
+(2,)
+```
+check: run("from unittest.mock import Mock\n\nm = Mock(return_value=42)\nprint(m(1))\nprint(m(2))\nprint(m.call_count)\nprint(m.call_args.args)\n")
+hint: `call_args` describes the most recent call only.
+solution: Every call returns the configured `42`; the mock has been called twice, and `call_args` holds the last call, whose positional arguments are the tuple `(2,)`.
+
+@practice code
+prompt: Write `send_overdue_reminders(tasks, sender)`. Each task is a dict with keys `"owner_email"`, `"title"`, `"done"` and `"overdue"`. For every task that is overdue and not done, call `sender.send(email, message)` where `message` is `"<title> is overdue"`. Return how many reminders were sent.
+starter:
+```python
+def send_overdue_reminders(tasks, sender):
+    pass
+```
+tests:
+```python
+from unittest.mock import Mock
+
+sender = Mock()
+tasks = [
+    {"owner_email": "a@x.com", "title": "Report", "done": False, "overdue": True},
+    {"owner_email": "b@x.com", "title": "Slides", "done": True, "overdue": True},
+    {"owner_email": "c@x.com", "title": "Budget", "done": False, "overdue": False},
+]
+assert send_overdue_reminders(tasks, sender) == 1
+sender.send.assert_called_once_with("a@x.com", "Report is overdue")
+
+quiet = Mock()
+assert send_overdue_reminders([], quiet) == 0
+quiet.send.assert_not_called()
+
+two = Mock()
+tasks2 = [
+    {"owner_email": "a@x.com", "title": "A", "done": False, "overdue": True},
+    {"owner_email": "b@x.com", "title": "B", "done": False, "overdue": True},
+]
+assert send_overdue_reminders(tasks2, two) == 2
+assert two.send.call_count == 2
+```
+model:
+```python
+def send_overdue_reminders(tasks, sender):
+    sent = 0
+    for task in tasks:
+        if task["overdue"] and not task["done"]:
+            sender.send(task["owner_email"], f"{task['title']} is overdue")
+            sent += 1
+    return sent
+```
+hint: A task needs a reminder only when it is overdue and not done.
+hint: Count each call to `sender.send(...)` and return the count after the loop; the message is an f-string using the task's title.
+solution: Loop over the tasks, test `task["overdue"] and not task["done"]`, call `sender.send` with the owner's email and the formatted message, and count the sends. The mock lets the tests check both the return value and exactly which calls were made, without any real email.
+
+@practice ms
+prompt: Which situations are good reasons to use a mock or other test double?
+choice*: The code calls a payment service that would charge real money.
+choice*: The code sends emails, and the test must verify that one was requested.
+choice: The code calls a small pure function that formats a date string.
+choice*: The code calls a third-party API that is slow and sometimes unavailable.
+choice: The code calls another method on the same class that is fast and deterministic.
+hint: Double the slow, costly or unpredictable boundaries, not your own cheap logic.
+solution: Paid services, outgoing side effects such as email, and slow or flaky third-party APIs are the classic boundaries to replace. Pure helpers and fast deterministic methods should run for real; mocking them just duplicates the implementation in the test.
+
+@practice self
+prompt: Review this test and explain what is wrong with it, then rewrite it so it survives refactoring.
+
+```python
+def test_register_user():
+    repo = Mock()
+    hasher = Mock()
+    hasher.hash.return_value = "h"
+    clock = Mock()
+    clock.now.return_value = 1
+    register(repo, hasher, clock, "ada", "pw")
+    hasher.hash.assert_called_once_with("pw")
+    repo.insert.assert_called_once_with("ada", "h", 1)
+```
+hint: Ask what the test would still check if the implementation were rewritten.
+solution: Problems: the test mocks every collaborator and then asserts the exact internal calls, so it restates the implementation. It breaks if `insert` becomes `save`, if hashing moves elsewhere, or if the argument order changes, even though behavior is the same; and it passes even if the stored data is wrong in a way the mocks cannot see (for example, the real repository rejecting the row). A better test uses an in-memory fake repository and a stub clock, and checks behavior: after `register(repo, hasher, clock, "ada", "pw")`, the repo can return a user named `"ada"` whose stored password is not the plaintext `"pw"` and whose created time is the clock's value. A second test registers the same name twice and checks the duplicate is refused. Keep a mock only for a true outgoing side effect, such as a welcome email.
+rubric: Identifies that the test asserts internal calls (implementation) and will break on refactors that do not change behavior.
+rubric: Proposes a fake repository and a stub clock and asserts on stored state or the returned result.
+rubric: Mentions that a double may behave differently from the real collaborator, or that an integration test is still needed.
+
+@quiz code
+prompt: Write `charge_order(total, gateway)`. If `total` is `0`, return `"free"` without calling the gateway. Otherwise call `gateway.charge(total)`: if it returns `"ok"` return `"paid"`; if it returns anything else return `"payment failed"`; if it raises `ConnectionError` return `"retry later"`.
+starter:
+```python
+def charge_order(total, gateway):
+    pass
+```
+tests:
+```python
+from unittest.mock import Mock
+
+g = Mock()
+g.charge.return_value = "ok"
+assert charge_order(30, g) == "paid"
+g.charge.assert_called_once_with(30)
+
+d = Mock()
+d.charge.return_value = "declined"
+assert charge_order(30, d) == "payment failed"
+
+off = Mock()
+off.charge.side_effect = ConnectionError
+assert charge_order(30, off) == "retry later"
+
+z = Mock()
+assert charge_order(0, z) == "free"
+z.charge.assert_not_called()
+```
+model:
+```python
+def charge_order(total, gateway):
+    if total == 0:
+        return "free"
+    try:
+        status = gateway.charge(total)
+    except ConnectionError:
+        return "retry later"
+    if status == "ok":
+        return "paid"
+    return "payment failed"
+```
+hint: Handle the free case before touching the gateway, so it is never called.
+hint: Wrap only the `gateway.charge(total)` call in `try` and catch `ConnectionError`; then compare the status.
+solution: Return `"free"` early for a zero total, call the gateway inside `try`/`except ConnectionError`, and map the status to `"paid"` or `"payment failed"`. The stubs set `return_value` and `side_effect` to drive each branch, and `assert_not_called` proves the early return.
+
+@quiz code
+prompt: Write a class `InMemoryUserRepo` that is a fake for a user table. `save(name)` stores the name and returns a new integer id (1 for the first user, then 2, and so on). `get(user_id)` returns the stored name, or `None` for an unknown id. `count()` returns how many users are stored.
+starter:
+```python
+class InMemoryUserRepo:
+    pass
+```
+tests:
+```python
+repo = InMemoryUserRepo()
+assert repo.count() == 0
+assert repo.get(1) is None
+first = repo.save("Ada")
+second = repo.save("Grace")
+assert (first, second) == (1, 2)
+assert repo.get(1) == "Ada"
+assert repo.get(2) == "Grace"
+assert repo.get(3) is None
+assert repo.count() == 2
+other = InMemoryUserRepo()
+assert other.count() == 0
+```
+model:
+```python
+class InMemoryUserRepo:
+    def __init__(self):
+        self._rows = {}
+
+    def save(self, name):
+        user_id = len(self._rows) + 1
+        self._rows[user_id] = name
+        return user_id
+
+    def get(self, user_id):
+        return self._rows.get(user_id)
+
+    def count(self):
+        return len(self._rows)
+```
+hint: A dictionary from id to name is enough for the state.
+hint: Create the dictionary in `__init__` so each repo is independent; `dict.get` returns `None` for a missing key.
+solution: Keep a dictionary of rows, derive the next id from its size, and use `dict.get` so unknown ids give `None`. A fake like this has real behavior, so tests can assert on what is stored instead of on which methods were called.

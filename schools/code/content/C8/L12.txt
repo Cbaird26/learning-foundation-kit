@@ -1,0 +1,215 @@
+@lesson
+title: Crash consistency, protection and virtualization
+summary: Explain how journaling keeps a file system consistent across crashes, trace the disk operations for creating a file, apply Unix permissions, and contrast virtual machines with containers.
+objective: Explain the crash-consistency problem for multi-block updates and how fsck, write-ahead journaling and copy-on-write address it.
+objective: Trace the disk reads and writes needed to create a file in a Unix-style file system.
+objective: Interpret and compute Unix permission bits, and describe how hypervisors and containers virtualize a machine.
+reading: Operating Systems: Three Easy Pieces, the chapter "Crash Consistency: FSCK and Journaling", plus the sections on protection and virtualization in the chapters you read earlier (limited direct execution and the permission bits in "Files and Directories"); for hypervisors and containers, look up virtual machine monitors and Linux namespaces and cgroups in another text.
+
+@article
+Appending one block to a file changes three on-disk structures: the **data bitmap** (mark a block used), the **inode** (new size and a pointer to the block) and the **data block** itself. The disk can complete only some of those writes before a **crash** (power loss or kernel panic). This is the **crash-consistency problem**.
+
+### What can go wrong
+
+If only the data block is written, the data is lost but the file system is consistent. If only the inode is written, it points to a block whose bitmap bit still says free: the inode and bitmap disagree (a **file system inconsistency**), and the block could be given to another file. If only the bitmap is written, a block is marked used but nothing points to it: a **space leak**. If the inode and bitmap are written but not the data, the file system looks consistent but the file contains garbage (**metadata consistent, data inconsistent**).
+
+### fsck
+
+The earliest approach is to let inconsistencies happen and repair them at boot with a checker, `fsck`, that scans the entire file system (superblock, bitmaps against inodes, link counts, directory entries) and fixes what it finds. It cannot recover lost data and is far too slow for large disks: its running time grows with the size of the disk, not the amount of work that was in progress.
+
+### Journaling
+
+**Write-ahead logging** (journaling) is the standard solution. Before updating the structures in place, write a description of the update to a **journal**. For the append above, a **transaction** consists of a begin block (**TxBegin** with a transaction id), the new inode, the new bitmap, the data block and an end block (**TxEnd**, the commit record). The protocol is:
+
+1. **Journal write:** write the begin block and the update blocks to the journal; wait for completion.
+2. **Journal commit:** write the commit block; wait for completion. (Writing it together with the others could let a crash leave a commit block that is on disk with garbage contents in a different block, so the disk must acknowledge the earlier writes first; a **write barrier** or cache flush enforces the order.)
+3. **Checkpoint:** write the update blocks to their final locations.
+4. **Free:** mark the transaction free in the journal.
+
+On recovery the file system scans the journal and **replays** every transaction that has a valid commit record, redoing step 3; transactions without a commit are ignored. The cost of recovery depends on the journal size, not the disk size. Writing all data twice is expensive, so most journaling file systems (ext4 by default) use **ordered journaling**, which journals only metadata but writes the data blocks to their final location **before** the metadata transaction commits, so that committed metadata never points at stale data. **Copy-on-write** file systems (such as ZFS and btrfs) avoid overwriting at all: they write new blocks and then atomically switch a root pointer.
+
+### Creating a file
+
+To create `/foo/bar` in a Unix-style file system, one valid sequence is: read the root inode and the root directory's data to find `foo`; read `foo`'s inode and its data block to confirm `bar` is absent; read the **inode bitmap** and write it back with a free inode now marked in use; write `foo`'s data block with the new entry (`bar`, inode number); read the inode table block holding the new inode and write it back, initialized; and write `foo`'s inode to update its modification time. That is 6 reads and 4 writes. With journaling, the three metadata updates (bitmap, directory block, inodes) are first written to the journal.
+
+### Protection
+
+The OS must stop programs from harming each other and the system. The hardware gives **user/kernel modes** and **memory protection** through page tables (a process cannot name another process's frames). For files, Unix stores in each inode an **owner**, a **group** and **permission bits**: three triples of read (4), write (2) and execute (1) for **owner**, **group** and **other**. Mode `0o754` (octal 754) means owner `rwx` (4+2+1), group `r-x` (4+1) and other `r--` (4), written `rwxr-xr--`. The kernel checks only one class: the owner class if the user owns the file, else the group class if the user's group matches, otherwise the other class. An owner with no permissions is denied even if the group would be allowed. The superuser bypasses these checks. Good design follows the **principle of least privilege**: give each program only the rights it needs. **Access control lists** and **capabilities** are finer-grained alternatives.
+
+### Virtualization
+
+A **hypervisor** (virtual machine monitor) runs several guest operating systems on one machine, each in a **virtual machine (VM)** with virtual CPUs, memory and devices. A **type 1** hypervisor runs directly on the hardware; a **type 2** runs as a program on a host OS. CPUs have hardware support (such as Intel VT-x and AMD-V) that lets the guest kernel run in a privileged guest mode while the hypervisor traps sensitive operations, and **nested paging** adds a second level of page tables translating guest-physical to host-physical addresses. **Containers** are lighter: all containers share the host's single kernel, and the kernel isolates them with **namespaces** (separate views of process IDs, network, mounts) and limits their resources with **control groups (cgroups)**. They start fast and use little memory, but isolation is weaker than a VM's, since a kernel flaw is shared.
+
+@example
+title: Replaying a journal after a crash
+problem: The journal holds transaction 1 (complete, with a commit record) and transaction 2 (begin and one update block, no commit). The machine crashes. What does recovery do?
+step: Recovery scans the journal from the oldest transaction.
+step: Transaction 1 has a commit record, so all its blocks were safely logged: recovery replays (re-applies) them to their final locations.
+step: Transaction 2 has no commit record, so the update may be incomplete: recovery ignores it. The file system looks as if that update never happened.
+step: The disk is now consistent, and recovery took time proportional to the journal, not to the disk.
+answer: Replay transaction 1, discard transaction 2
+
+@example
+title: Reading permission bits
+problem: A file has mode 0o640, owner uid 100, group gid 200. May a user with uid 7 and gid 200 write to it? May uid 100 execute it?
+step: 0o640 splits into owner 6 (`rw-`), group 4 (`r--`), other 0 (`---`).
+step: uid 7 is not the owner, but its group matches the file's group, so the group class applies: `r--`. Write needs bit 2, which is absent: denied.
+step: uid 100 is the owner, so the owner class `rw-` applies. Execute needs bit 1, which is absent: denied.
+answer: Neither is allowed
+
+@mistakes
+- Believing that journaling protects the contents of file data in all modes: ordered and metadata journaling guarantee a consistent file system structure, and data guarantees depend on the mode.
+- Committing a transaction before the other journal blocks are known to be on disk, which breaks the protocol.
+- Thinking that when you own a file with no owner permission, the group or other permissions still let you in: only the one matching class is checked.
+- Treating containers as small virtual machines with their own kernels: they share the host kernel.
+
+@practice mc
+prompt: In write-ahead journaling, which order of steps is correct for one transaction?
+choice*: Write the update blocks to the journal, then write the commit record, then write the blocks to their final locations
+choice: Write the blocks to their final locations first, then write the journal and the commit record
+choice: Write the commit record first, then the journal blocks, then the final locations
+choice: Write the final locations and the commit record together, and skip the journal blocks
+hint: The journal must contain the whole update before the transaction can be called committed.
+solution: The log is written first and the commit record last, so that a committed transaction is always complete in the journal. Only then is it safe to update the final locations, since recovery can redo them from the journal.
+
+@practice code
+prompt: Write `mode_string(mode)` that converts an integer permission mode (such as `0o755`) into the nine-character string used by `ls -l`: `r`, `w`, `x` or `-` for owner, group and other. Only the low nine bits of `mode` matter.
+starter:
+```python
+def mode_string(mode):
+    pass
+```
+tests:
+```python
+assert mode_string(0o755) == "rwxr-xr-x"
+assert mode_string(0o644) == "rw-r--r--"
+assert mode_string(0o000) == "---------"
+assert mode_string(0o777) == "rwxrwxrwx"
+assert mode_string(0o640) == "rw-r-----"
+assert mode_string(0o100644) == "rw-r--r--"
+```
+model:
+```python
+def mode_string(mode):
+    out = ""
+    for shift in (6, 3, 0):
+        bits = (mode >> shift) & 7
+        out += "r" if bits & 4 else "-"
+        out += "w" if bits & 2 else "-"
+        out += "x" if bits & 1 else "-"
+    return out
+```
+hint: Each class is three bits; shift right by 6, 3 and 0 and mask with 7.
+solution: For each class, test the read (4), write (2) and execute (1) bits and append the matching letter or a dash. Higher bits, such as the file-type bits in `0o100644`, are removed by the mask.
+
+@practice code
+prompt: Write `can_access(mode, owner, group, uid, gid, want)` implementing the Unix permission check for an ordinary (non-root) user. `mode` is the permission integer (for example `0o640`), `owner` and `group` are the file's owner id and group id, `uid` and `gid` are the user's ids, and `want` is `"r"`, `"w"` or `"x"`. Only one class applies: the owner class if `uid == owner`, otherwise the group class if `gid == group`, otherwise the other class. Return `True` if that class has the wanted permission.
+starter:
+```python
+def can_access(mode, owner, group, uid, gid, want):
+    pass
+```
+tests:
+```python
+assert can_access(0o640, 100, 200, 100, 5, "w") is True
+assert can_access(0o640, 100, 200, 100, 5, "x") is False
+assert can_access(0o640, 100, 200, 7, 200, "r") is True
+assert can_access(0o640, 100, 200, 7, 200, "w") is False
+assert can_access(0o640, 100, 200, 7, 8, "r") is False
+assert can_access(0o046, 100, 200, 100, 200, "r") is False
+assert can_access(0o755, 100, 200, 7, 8, "x") is True
+```
+model:
+```python
+def can_access(mode, owner, group, uid, gid, want):
+    if uid == owner:
+        bits = (mode >> 6) & 7
+    elif gid == group:
+        bits = (mode >> 3) & 7
+    else:
+        bits = mode & 7
+    needed = {"r": 4, "w": 2, "x": 1}[want]
+    return bool(bits & needed)
+```
+hint: Choose the single class first, then test its bits.
+solution: Select the owner, group or other triple with `if`/`elif`/`else`, so that an owner is never evaluated against the group bits. The test `0o046` shows the point: the owner class is `---`, so the owner is denied even though the group and other classes allow reading.
+
+@practice code
+prompt: Write `recover(journal, disk)` that models journal replay. `disk` is a dictionary mapping block numbers to contents. `journal` is a list of transactions in order; each transaction is a dictionary with `"writes"` (a dictionary of block number to new contents) and `"committed"` (a boolean). Return a new dictionary equal to `disk` with the writes of every committed transaction applied in order, ignoring uncommitted transactions. Do not modify the arguments.
+starter:
+```python
+def recover(journal, disk):
+    pass
+```
+tests:
+```python
+disk = {1: "a", 2: "b"}
+journal = [
+    {"writes": {1: "A", 3: "C"}, "committed": True},
+    {"writes": {2: "B"}, "committed": False},
+    {"writes": {1: "AA"}, "committed": True},
+]
+result = recover(journal, disk)
+assert result == {1: "AA", 2: "b", 3: "C"}
+assert disk == {1: "a", 2: "b"}
+assert recover([], disk) == disk
+assert recover([{"writes": {9: "x"}, "committed": False}], disk) == disk
+```
+model:
+```python
+def recover(journal, disk):
+    result = dict(disk)
+    for tx in journal:
+        if tx["committed"]:
+            result.update(tx["writes"])
+    return result
+```
+hint: Start from a copy of the disk so the original is untouched.
+solution: Copy the disk, then apply each committed transaction's writes in log order with `update`; later transactions overwrite earlier ones, as block 1 shows (`"A"` then `"AA"`). Uncommitted transactions are skipped.
+
+@practice self
+prompt: A process creates the file `/docs/note.txt` in a Unix-style file system (without journaling). The directory `/docs` already exists and has room for another entry in its single data block. List the disk operations in order, marking each as a read or a write, and count them.
+solution: (1) Read the root directory inode. (2) Read the root directory data block to find `docs`. (3) Read the `docs` inode. (4) Read the `docs` data block and confirm `note.txt` does not exist. (5) Read the inode bitmap. (6) Write the inode bitmap with a free inode marked in use. (7) Write the `docs` data block, adding the entry (`note.txt`, new inode number). (8) Read the inode table block containing the new inode. (9) Write that block with the new inode initialized. (10) Write the `docs` inode to update its modification time (and size, if it changed). In total 6 reads (steps 1 to 5 and 8) and 4 writes (steps 6, 7, 9 and 10).
+hint: Resolve the path first, then allocate an inode, add the directory entry, and initialize the inode.
+hint: Remember that changing a directory updates both its data block and its inode.
+rubric: Resolves the path by reading the root inode and data, then the `docs` inode and data (four reads).
+rubric: Allocates an inode by reading and writing the inode bitmap.
+rubric: Writes the directory entry, initializes the new inode, and updates the directory's inode.
+rubric: Reaches a total of about 10 operations (6 reads and 4 writes) with the writes after the lookups.
+
+@quiz code
+prompt: Write `parse_mode(s)` that converts a nine-character permission string such as `"rwxr-x---"` into the integer mode (`0o750` in that example). Each group of three characters is read, write, execute with `-` meaning absent; assume the string is valid.
+starter:
+```python
+def parse_mode(s):
+    pass
+```
+tests:
+```python
+assert parse_mode("rwxr-x---") == 0o750
+assert parse_mode("rw-r--r--") == 0o644
+assert parse_mode("---------") == 0
+assert parse_mode("rwxrwxrwx") == 0o777
+assert parse_mode("--x--x--x") == 0o111
+```
+model:
+```python
+def parse_mode(s):
+    mode = 0
+    for i, ch in enumerate(s):
+        mode <<= 1
+        if ch != "-":
+            mode |= 1
+    return mode
+```
+hint: Every character is one bit: 1 for a letter, 0 for a dash.
+solution: Read the nine characters as nine bits, most significant first: shift the result left and set the low bit when the character is not a dash. Three bits per class give the octal digits.
+
+@quiz mc
+prompt: Which statement correctly compares virtual machines and containers on a Linux host?
+choice*: Containers share the host kernel and are isolated by namespaces and cgroups, while each virtual machine runs its own guest kernel on virtual hardware
+choice: Containers each run their own kernel, and virtual machines share the host kernel
+choice: Both run a separate kernel per instance, but containers use less memory because they are compressed
+choice: Containers can only run on a type 1 hypervisor
+hint: Ask which of the two has its own operating system kernel.
+solution: A container is a group of ordinary processes of the host kernel with isolated views (namespaces) and resource limits (cgroups), so it starts quickly but shares the kernel's attack surface. A VM has its own guest kernel and gets stronger isolation at higher cost.

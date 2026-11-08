@@ -1,0 +1,225 @@
+@lesson
+title: Containers, orchestration and observability
+summary: Explain how containers isolate processes, how an orchestrator reconciles desired and actual state, and how metrics, logs, traces and service level objectives let you operate a service; then design a deployment.
+objective: Explain how containers differ from virtual machines and what namespaces, control groups and image layers provide.
+objective: Describe the Kubernetes objects Pod, Deployment and Service, and the reconciliation loop that drives them.
+objective: Compute percentiles and error budgets and explain metrics, logs and traces.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 3 "Processes" (the section on virtualization); also look up the Kubernetes documentation concepts for Pods, Deployments and Services.
+
+@article
+### Containers
+
+A **container** is an ordinary process (or group of processes) on a Linux host, given an isolated view of the system. Two kernel features do the work: **namespaces** limit what the process can *see* (its own process IDs, network interfaces, mount points, hostname, users) and **control groups (cgroups)** limit what it can *use* (CPU, memory, I/O). Unlike a virtual machine, a container does **not** run its own kernel: all containers on a host share the host kernel. They therefore start in milliseconds to seconds and use little memory, but provide weaker isolation than a VM's hypervisor boundary, so a kernel vulnerability can affect every container on the host.
+
+A container runs from an **image**, an immutable stack of read-only **layers** (file system changes) plus metadata. Layers are shared and cached, so images that build on a common base download and store the base once. Images are built from a recipe such as a Dockerfile and stored in a **registry**:
+
+```text
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "app.py"]
+```
+
+Copying the dependency file and installing before copying the source lets the build cache reuse the slow install layer when only code changes. Containers should be **immutable and disposable**: configuration comes from the environment, state lives outside in volumes or services.
+
+### Orchestration with Kubernetes
+
+Running thousands of containers needs an **orchestrator** to place, restart, scale and connect them. In Kubernetes the **control plane** has an API server, a store of cluster state (etcd, which itself uses Raft, Lesson 7), a **scheduler** that assigns Pods to nodes, and **controllers**. Each worker **node** runs a kubelet and a container runtime.
+
+- A **Pod** is the smallest deployable unit: one or more containers sharing a network namespace and volumes. Pods are mortal and get new IP addresses when recreated.
+- A **Deployment** declares a desired number of replicas of a Pod template. It manages **ReplicaSets**, which manage the Pods, and performs **rolling updates** (replace Pods gradually) and rollbacks.
+- A **Service** gives a set of Pods (chosen by labels) a stable virtual IP and DNS name and load-balances across the *ready* Pods.
+- **Probes** report health: a **liveness** probe failure makes the kubelet restart the container; a **readiness** probe failure removes the Pod from Service endpoints; a **startup** probe protects slow starters.
+
+```text
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: example/web:1.4
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+```
+
+The central idea is **declarative desired state** with a **reconciliation loop**: controllers repeatedly compare desired state (3 replicas) with observed state (2 running) and act to close the gap (start one). The loop makes the system self-healing and idempotent: running it again changes nothing once the states match. The Horizontal Pod Autoscaler uses the formula of Lesson 11 to change the replica count.
+
+```python
+def reconcile(desired, running):
+    if len(running) < desired:
+        return {"create": desired - len(running), "delete": []}
+    return {"create": 0, "delete": running[desired:]}
+```
+
+### Observability
+
+**Observability** is the ability to understand a system's internal state from its outputs. The three classic signals are **metrics** (numeric time series, cheap to store, good for dashboards and alerts), **logs** (timestamped event records, best structured as JSON) and **traces** (the path of one request through many services; a **trace ID** is propagated in request headers and each service records a **span**).
+
+Four **golden signals** to watch for a service: **latency**, **traffic**, **errors** and **saturation**. Report latency as **percentiles** rather than averages: the 99th percentile (p99) is the value that 99% of requests are at or below, and averages hide the slow tail. By the nearest-rank method, the $p$-th percentile of $n$ sorted values is the value at rank $\lceil p n / 100 \rceil$.
+
+A **service level indicator (SLI)** is a measurement (fraction of requests under 300 ms), a **service level objective (SLO)** a target for it (99.9% over 30 days), and the **error budget** is what the SLO permits to fail: $(1 - \text{SLO}) \times \text{period}$. Teams spend the budget on releases and risk, and slow down when it is used up. Alerts should fire on symptoms users feel, not on every internal cause.
+
+@example
+title: Percentile by nearest rank
+problem: Ten request latencies in milliseconds are 12, 15, 11, 90, 14, 13, 16, 12, 400, 18. What are the median (p50) and p90 by the nearest-rank method, and why does the average mislead?
+step: Sort: 11, 12, 12, 13, 14, 15, 16, 18, 90, 400.
+step: p50: rank $\lceil 50 \times 10 / 100 \rceil = 5$, the 5th value is 14 ms.
+step: p90: rank $\lceil 90 \times 10 / 100 \rceil = 9$, the 9th value is 90 ms.
+step: The mean is $(11+12+12+13+14+15+16+18+90+400)/10 = 60.1$ ms, which is neither what a typical user sees (14) nor what the slow tail sees (90 to 400). Percentiles describe both.
+answer: p50 = 14 ms, p90 = 90 ms
+
+@example
+title: One reconciliation step
+problem: A Deployment wants 3 replicas. Observed running Pods: `web-a`, `web-b`, `web-c`, `web-d` (4 Pods, after a manual change). What does the controller do, and what if `web-c` then crashes?
+step: Desired 3, observed 4: one surplus. The controller deletes one Pod (in the model `reconcile(3, [...])`, the last one in the list, `web-d`).
+step: Now 3 are running and the states match; the next pass of the loop does nothing.
+step: When `web-c` crashes, observed becomes 2 against desired 3. The controller creates one new Pod. The Deployment converges back to 3 without human action.
+answer: delete web-d; later create one Pod
+
+@mistakes
+- Believing a container has its own kernel like a VM; containers share the host kernel, so isolation is weaker.
+- Using the average latency for a service level objective instead of a percentile, hiding the slow tail.
+- Treating Pods as permanent: their names and IPs change, which is why clients use a Service.
+- Confusing liveness with readiness: a failing liveness probe restarts the container, a failing readiness probe only removes the Pod from load balancing.
+
+@practice mc
+prompt: A rolling update of a Deployment is replacing Pods. New Pods start, but their application needs 30 seconds to warm its caches before it can serve traffic correctly. Which mechanism keeps users from being routed to a Pod that is not yet able to serve?
+choice: A liveness probe, because it restarts slow Pods
+choice*: A readiness probe, because Pods that fail it are removed from the Service's endpoints
+choice: Increasing the Pod's CPU limit
+choice: A larger node
+hint: Which probe controls whether a Pod receives traffic?
+solution: The readiness probe controls whether the Service sends traffic to a Pod; until it passes, the Pod receives none. A liveness probe would instead restart the container.
+
+@practice num
+prompt: A service has an SLO of 99.9% successful requests over a 30-day period. How many minutes of total unavailability does the error budget allow? Give a decimal.
+answer: 43.2
+check: 30 * 24 * 60 * (1 - 0.999)
+tol: 0.01
+hint: The error budget is $(1 - \text{SLO})$ of the period; convert the period to minutes.
+solution: 30 days is $30 \times 24 \times 60 = 43200$ minutes, and $0.001 \times 43200 = 43.2$ minutes.
+
+@practice code
+prompt: Write `reconcile(desired, running)` for a replica controller. `desired` is the desired number of Pods and `running` is the list of names of running Pods. If fewer are running than desired, return `{"create": k, "delete": []}` where `k` is the shortfall. Otherwise return `{"create": 0, "delete": extra}` where `extra` is the list of the surplus Pods to delete, namely the names after the first `desired` in `running` (an empty list if there is no surplus).
+starter:
+```python
+def reconcile(desired, running):
+    pass
+```
+tests:
+```python
+assert reconcile(3, ["a", "b"]) == {"create": 1, "delete": []}
+assert reconcile(3, ["a", "b", "c"]) == {"create": 0, "delete": []}
+assert reconcile(2, ["a", "b", "c", "d"]) == {"create": 0, "delete": ["c", "d"]}
+assert reconcile(0, ["a"]) == {"create": 0, "delete": ["a"]}
+assert reconcile(2, []) == {"create": 2, "delete": []}
+```
+model:
+```python
+def reconcile(desired, running):
+    if len(running) < desired:
+        return {"create": desired - len(running), "delete": []}
+    return {"create": 0, "delete": running[desired:]}
+```
+hint: Compare `len(running)` with `desired`.
+hint: A shortfall means create; otherwise delete the slice `running[desired:]`, which is empty when there is no surplus.
+solution: Reconciliation closes the gap between desired and observed state. The slice `running[desired:]` selects exactly the surplus Pods and is empty when counts match, so running the function again after convergence changes nothing.
+
+@practice code
+prompt: Write `percentile(values, p)` using the nearest-rank method. `values` is a non-empty list of numbers (any order) and `p` is an integer from 1 to 100. Sort the values, compute the rank as the ceiling of `p * n / 100` using integer arithmetic only, and return the value at that 1-based rank.
+starter:
+```python
+def percentile(values, p):
+    pass
+```
+tests:
+```python
+assert percentile([15, 20, 35, 40, 50], 30) == 20
+assert percentile([15, 20, 35, 40, 50], 50) == 35
+assert percentile([15, 20, 35, 40, 50], 100) == 50
+assert percentile([50, 15, 40, 20, 35], 1) == 15
+assert percentile([12, 15, 11, 90, 14, 13, 16, 12, 400, 18], 90) == 90
+assert percentile(list(range(1, 101)), 99) == 99
+```
+model:
+```python
+def percentile(values, p):
+    ordered = sorted(values)
+    rank = -(-p * len(ordered) // 100)
+    return ordered[rank - 1]
+```
+hint: Sort first, then work out which position the percentile points at.
+hint: The rank is `-(-p * n // 100)` (ceiling without floats); the list index is `rank - 1`.
+solution: Nearest-rank takes an actual observed value: sort, compute $\lceil pn/100 \rceil$ and index with `rank - 1`. For 5 values and `p = 30` the rank is $\lceil 1.5 \rceil = 2$, so the second smallest value.
+
+@practice self
+prompt: Block deliverable: design a deployment for a supplied service. The service is a photo-sharing website for users in Europe. Components: a web frontend (stateless), a REST API (stateless), image-resizing workers that process each upload, a relational database for accounts and metadata, and storage for the photo files. Peak load is 2000 API requests per second and uploads arrive in bursts. The target is 99.9% availability, and one engineer should be able to operate it. Propose the deployment: which service model you use for each component, how you spread it over availability zones and regions, how it scales, how you handle failures and what you observe. Justify two trade-offs.
+solution: Frontend: static files from object storage behind a content delivery network (managed, no servers); API: containers on a managed orchestrator (PaaS-style) with at least 3 replicas spread over 3 availability zones in one European region, a load balancer, readiness and liveness probes, and a horizontal autoscaler targeting about 60% CPU with a minimum of 3 replicas; 2000 requests per second at about 100 per instance with 20% headroom needs 25 instances at peak. Image workers: serverless functions or a queue-driven worker pool triggered by an upload message in a durable queue, with idempotent processing and a dead-letter queue, so bursts are absorbed by the queue and scale-out. Photos: replicated object storage across zones. Database: a managed relational database with a synchronous standby in a second zone and automatic failover, plus backups and point-in-time recovery; a read replica for read-heavy queries if needed. Availability: spreading over three zones survives the loss of a zone; the managed database is the main single dependency, so its failover is tested; a second region is not used initially (cost and complexity) but backups are copied to another region for disaster recovery. Observability: metrics for the four golden signals per component, structured logs with a request ID, distributed traces across API and workers, an SLO of 99.9% successful API requests over 30 days (a 43.2 minute budget), and alerts on error-budget burn and queue age. Trade-offs: managed services reduce operational load for one engineer but increase lock-in and cost; a single region keeps writes simple and consistent and cheap, at the price of a regional outage taking the site down (accepted for 99.9%).
+hint: Go component by component, then add availability, scaling, failure handling and observability.
+rubric: Chooses an appropriate service model for each component (managed or serverless for stateless and bursty work, managed database) and says why.
+rubric: Spreads replicas across availability zones and addresses the database as the single point of failure (standby, failover, backups).
+rubric: Describes scaling (autoscaler or queue-based) and failure handling (retries with idempotence, dead-letter queue, probes).
+rubric: Names metrics, logs and traces plus an SLO or error budget, and justifies two trade-offs honestly.
+
+@quiz code
+prompt: Write `first_fit(pods, nodes)` for a simple scheduler. `pods` is a list of CPU requests (integers) and `nodes` is a list of free CPU capacities (integers). Process the pods in order and place each on the first node (lowest index) whose remaining capacity is at least the pod's request, reducing that node's remaining capacity. Return a list with, for each pod, the index of its node, or `None` if no node fits (that pod stays pending and uses no capacity). Do not modify the `nodes` argument.
+starter:
+```python
+def first_fit(pods, nodes):
+    pass
+```
+tests:
+```python
+assert first_fit([2, 3, 1], [4, 4]) == [0, 1, 0]
+assert first_fit([5], [4, 4]) == [None]
+assert first_fit([], [1]) == []
+assert first_fit([4, 4, 1], [4, 4]) == [0, 1, None]
+free = [4, 4]
+assert first_fit([2, 2, 2], free) == [0, 0, 1]
+assert free == [4, 4]
+```
+model:
+```python
+def first_fit(pods, nodes):
+    remaining = list(nodes)
+    placement = []
+    for request in pods:
+        chosen = None
+        for i, free in enumerate(remaining):
+            if free >= request:
+                chosen = i
+                remaining[i] -= request
+                break
+        placement.append(chosen)
+    return placement
+```
+hint: Work on a copy of the capacities so the argument is unchanged.
+hint: For each pod scan the nodes in order, take the first with enough room, subtract the request, and record the index (or `None`).
+solution: A copy of `nodes` tracks remaining capacity. Each pod goes to the first node that fits, which is the first-fit heuristic; real schedulers also score nodes by other factors. A pod that fits nowhere is recorded as `None` and consumes nothing.
+
+@quiz ms
+prompt: Which statements are true?
+choice*: Containers on one host share the host operating system kernel.
+choice*: A Kubernetes Service provides a stable address for a changing set of Pods.
+choice: The average latency is the best way to describe the experience of the slowest users.
+choice*: A trace ID propagated between services lets you follow one request through all of them.
+choice: A failed readiness probe restarts the container.
+hint: Recall what each mechanism is for.
+solution: Containers share the kernel; Services give stable virtual IPs and DNS names over changing Pods; traces connect spans of one request by a shared ID. Averages hide tail latency (use percentiles), and a failed readiness probe only removes the Pod from load balancing; a failed liveness probe restarts the container.

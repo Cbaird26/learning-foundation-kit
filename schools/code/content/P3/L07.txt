@@ -1,0 +1,214 @@
+@lesson
+title: Queues, streams and asynchronous processing
+summary: Decouple slow or bursty work from user requests with queues and logs, and reason about delivery guarantees, retries, ordering, backlogs and poison messages.
+objective: Explain why asynchronous processing helps and distinguish a work queue from a partitioned log (stream).
+objective: Describe at-most-once, at-least-once and effectively-once delivery, acknowledgements, visibility timeouts and dead-letter queues.
+objective: Size consumers for a backlog and keep related events in order with partition keys.
+reading: The System Design Primer, the sections "Asynchronism", "Message queues", "Task queues" and "Back pressure".
+@article
+A user uploads a profile photo. The service must resize it into five sizes, scan it, and update a search index. If the upload request does all of that, the user waits seconds, a traffic spike overwhelms the image servers, and one failing step fails the whole request. The fix is to do the minimum synchronously (store the original and return "accepted") and push the rest onto a **queue**. This is **asynchronous processing**: producers and consumers are decoupled in time and in rate.
+
+### Why queues help
+
+- **Latency**: the user-facing request returns quickly.
+- **Load leveling**: a spike fills the queue instead of crashing the workers; consumers drain it at their own pace.
+- **Failure isolation**: if the search indexer is down, messages wait; the upload still works.
+- **Independent scaling**: scale workers on queue depth, separately from the web tier.
+
+The costs are real: results arrive later (the UI must handle "processing"), the system becomes eventually consistent, and you must handle duplicates, ordering and failures explicitly.
+
+### Two models
+
+A **message queue** (work queue) delivers each message to **one** of several competing consumers; once acknowledged, it is gone. It fits tasks: send this email, resize this image.
+
+A **log** or **stream** is an append-only, partitioned sequence of events that is retained for a period. Each consumer group tracks its own **offset** (position), so many independent consumers can read the same events and a new consumer can replay history. It fits event pipelines: analytics, change data capture, feeding several downstream systems. **Publish-subscribe** means each subscriber gets a copy of every message.
+
+### Acknowledgement, retries and duplicates
+
+A consumer receives a message, does the work, then **acknowledges** it. If it crashes before acknowledging, the broker redelivers the message (often after a **visibility timeout**, during which other consumers cannot see it). This yields the standard delivery semantics:
+
+- **At-most-once**: acknowledge first, then process. A crash loses the message. Acceptable for low-value telemetry.
+- **At-least-once**: process first, then acknowledge. A crash causes redelivery, so **duplicates happen**. This is the default for work that must not be lost.
+- **Exactly-once** end to end is not something a network gives you for free. The practical goal is **effectively-once**: at-least-once delivery plus **idempotent** processing, so a second delivery has no further effect (next lesson).
+
+### Poison messages and dead-letter queues
+
+A **poison message** fails every time (malformed data, a bug). If it is retried forever, it blocks progress and wastes capacity. Limit the number of attempts, use **exponential backoff** between retries, and move the message to a **dead-letter queue** (DLQ) for inspection. Alert on DLQ depth; a growing DLQ is a bug report.
+
+### Ordering
+
+A single queue with one consumer preserves order, but then throughput is limited to one consumer. Logs achieve parallelism with **partitions**: messages with the same **partition key** (for example `user_id` or `order_id`) go to the same partition and are read in order, while different keys proceed in parallel. Order is guaranteed only **within** a partition. If order matters for an entity, key by that entity; also expect that a retry can reorder messages unless you design for it.
+
+### Backpressure and backlog
+
+If producers outpace consumers the queue grows without bound: latency rises and memory or disk fills. **Backpressure** pushes the problem back: reject or slow producers when the queue is long, bound queue sizes, and shed low-priority work. Watch **queue depth** and **age of the oldest message**: the age is the user-visible delay. To drain a backlog, consumers need more throughput than arrivals: drain time is
+
+$$t = \frac{\text{backlog}}{\text{consumer rate} - \text{arrival rate}}$$
+
+and if the consumer rate is not greater than the arrival rate the backlog never shrinks.
+
+### Transactional outbox
+
+A frequent bug: the service updates its database and then publishes a message, and crashes between the two, so the state changed but no event was sent (or the reverse). The **transactional outbox** pattern writes the event to an `outbox` table in the same database transaction as the state change; a separate relay reads the table and publishes, retrying until acknowledged. The result is at-least-once publication with no lost events.
+
+@example
+title: Visibility timeout in action
+problem: A worker takes a message "resize photo 42" from a queue with a 60 second visibility timeout. The resize takes 90 seconds. What happens, and how do you fix it?
+step: At time 0 the worker receives the message; the broker hides it from other consumers for 60 seconds.
+step: At 60 seconds the message becomes visible again because it has not been acknowledged. A second worker receives it and starts the same resize.
+step: At 90 seconds the first worker finishes and acknowledges, but the second worker is still working, so the resize runs twice. This is the normal at-least-once duplicate.
+step: Fixes: set the timeout longer than the worst-case processing time, or extend the timeout while working (a heartbeat), and make the resize idempotent, for example by writing to a path determined by photo id so that a second run overwrites with the same result.
+answer: The message is redelivered and processed twice; use a longer or extended timeout and an idempotent handler.
+
+@example
+title: Sizing consumers and draining a backlog
+problem: Messages arrive at 500 per second. One consumer processes 80 messages per second. How many consumers keep up, and with 10 consumers, how long does it take to drain a backlog of 60,000 messages?
+step: Consumers needed to keep up: $\lceil 500/80 \rceil = \lceil 6.25 \rceil = 7$ consumers.
+step: With 10 consumers the processing rate is $10 \times 80 = 800$ messages per second.
+step: The backlog shrinks by the difference between processing and arrival: $800 - 500 = 300$ messages per second.
+step: Drain time is $60{,}000 / 300 = 200$ seconds.
+step: In production add headroom (one or two more consumers), because a consumer that is exactly as fast as the arrival rate never recovers from a spike.
+answer: 7 consumers to keep up; 200 seconds to drain with 10 consumers.
+
+@mistakes
+- Retrying a failing message forever with no attempt limit or dead-letter queue, so one poison message stalls a worker.
+- Assuming exactly-once delivery and writing a non-idempotent handler, which double-charges or double-sends on redelivery.
+- Acknowledging a message before the work is done, so a crash silently loses it.
+- Assuming a partitioned log orders all messages globally; order holds only within a partition.
+
+@practice mc
+prompt: A web service must resize uploaded images, which takes up to 8 seconds, and traffic is very spiky. What is the main benefit of putting a queue between the upload endpoint and the resize workers?
+choice: It makes each resize run faster.
+choice*: The upload returns quickly and spikes are absorbed by the queue, while workers drain it at their own rate.
+choice: It guarantees that each image is resized exactly once.
+choice: It removes the need to store the original image.
+hint: Think about what the user waits for and what happens to workers during a spike.
+solution: The queue decouples request latency from processing time and levels the load. It does not speed up a single resize, it does not guarantee exactly-once processing (delivery is typically at-least-once), and the original must still be stored.
+
+@practice code
+prompt: Simulate a work queue with retries and a dead-letter list. Write `process(jobs, handler, max_attempts)`. Jobs are taken in order from a first-in-first-out queue. For each job call `handler(job)`. If it returns normally, append the job to the `done` list. If it raises any exception, put the job at the back of the queue for another attempt, unless it has now failed `max_attempts` times, in which case append it to the `dead` list. Return the tuple `(done, dead)`.
+starter:
+```python
+def process(jobs, handler, max_attempts):
+    pass
+```
+tests:
+```python
+def make_handler():
+    calls = {}
+
+    def handler(job):
+        calls[job] = calls.get(job, 0) + 1
+        if job == "bad":
+            raise ValueError("always fails")
+        if job == "flaky" and calls[job] <= 2:
+            raise ValueError("fails twice")
+
+    return handler, calls
+
+
+handler, calls = make_handler()
+assert process(["a", "flaky", "bad", "b"], handler, 3) == (
+    ["a", "b", "flaky"],
+    ["bad"],
+)
+assert calls == {"a": 1, "flaky": 3, "bad": 3, "b": 1}
+handler, calls = make_handler()
+assert process(["a", "flaky", "bad", "b"], handler, 2) == (
+    ["a", "b"],
+    ["flaky", "bad"],
+)
+assert process([], handler, 3) == ([], [])
+```
+model:
+```python
+from collections import deque
+
+
+def process(jobs, handler, max_attempts):
+    queue = deque((job, 1) for job in jobs)
+    done, dead = [], []
+    while queue:
+        job, attempt = queue.popleft()
+        try:
+            handler(job)
+            done.append(job)
+        except Exception:
+            if attempt >= max_attempts:
+                dead.append(job)
+            else:
+                queue.append((job, attempt + 1))
+    return done, dead
+```
+hint: Keep each job in the queue together with its attempt number, for example as a tuple.
+hint: A failed job that still has attempts left goes to the back of the queue, so other jobs are not blocked.
+solution: A `deque` of `(job, attempt)` pairs models the queue. A failure either re-enqueues with the attempt count increased or, at the limit, moves the job to `dead`. Because retries go to the back, one bad job cannot block the rest; note that the flaky job finishes after `b`, so retries reorder the output.
+
+@practice code
+prompt: Partitioned logs keep events with the same key in order. Write `group_by_partition(events, partitions)`. `events` is a list of `(key, payload)` tuples with string keys. The partition of a key is `sum(key.encode()) % partitions` (the sum of its byte values). Return a list of `partitions` lists; list `p` holds the payloads of the events whose key maps to partition `p`, in their original arrival order.
+starter:
+```python
+def group_by_partition(events, partitions):
+    pass
+```
+tests:
+```python
+events = [("a", 1), ("b", 2), ("a", 3), ("c", 4), ("b", 5), ("ab", 6)]
+assert group_by_partition(events, 3) == [[4, 6], [1, 3], [2, 5]]
+assert group_by_partition(events[:2], 1) == [[1, 2]]
+assert group_by_partition([], 2) == [[], []]
+assert group_by_partition([("a", 1), ("a", 2), ("a", 3)], 4) == [
+    [],
+    [1, 2, 3],
+    [],
+    [],
+]
+```
+model:
+```python
+def group_by_partition(events, partitions):
+    groups = [[] for _ in range(partitions)]
+    for key, payload in events:
+        groups[sum(key.encode()) % partitions].append(payload)
+    return groups
+```
+hint: Create `partitions` empty lists first, then append each payload to the right one.
+solution: Appending in arrival order keeps each key's events in order, because a key always maps to the same list. Different keys may land in the same partition, which is fine; ordering is promised only per key (per partition), not across the whole log. Remember to build the lists with a comprehension, not `[[]] * n`, which would alias one list.
+
+@practice mc
+prompt: A consumer receives a message, finishes the work, and crashes before sending the acknowledgement. The queue uses at-least-once delivery. What happens next?
+choice: The message is lost, because it was already processed once.
+choice*: The message is redelivered, so the handler may process it a second time and should be idempotent.
+choice: The broker detects that the work was completed and suppresses the redelivery.
+choice: The queue switches to exactly-once mode for this message.
+hint: The broker only knows what it has been told through acknowledgements.
+solution: Without an acknowledgement the broker assumes the work failed and redelivers, which causes a duplicate. The remedy is an idempotent handler, not a different delivery mode.
+
+@practice self
+prompt: For each scenario choose a work queue or a partitioned log (stream), and justify the choice in one or two sentences covering ordering, replay and consumer behavior. (1) Sending password-reset emails, where each email is sent once by any available worker. (2) Recording every price change of a product so that a search indexer, an analytics job and a cache invalidator each process all changes, and a new consumer can start from history. (3) Updating an account balance from payment events, where the events of one account must be applied in order but different accounts can run in parallel.
+hint: Ask whether one consumer or all consumers should see each message, and whether history must be replayable.
+solution: A model answer:
+
+1. Work queue. Each email is a task for one of many competing workers; once acknowledged it is done, and no replay or ordering is needed. Use retries with backoff and a dead-letter queue, and make the send idempotent with a per-reset request id so a redelivery does not send twice.
+2. Partitioned log. Several independent consumers each need every event, and a new consumer must be able to replay history; a log retains events and tracks a separate offset per consumer group. Partition by product id so changes to one product stay ordered.
+3. Partitioned log, keyed by account id. Order is needed per account, which a partition guarantees, while different accounts spread over partitions and are processed in parallel. A single queue with many competing consumers would apply events out of order. The consumer should also be idempotent by event id, because delivery is at-least-once.
+rubric: Scenario 1 chooses a work queue and mentions competing consumers or no need for replay.
+rubric: Scenario 2 chooses a log and mentions multiple independent consumers and replay (offsets per consumer group).
+rubric: Scenario 3 chooses a log keyed by account and explains per-partition ordering with cross-account parallelism.
+rubric: At least one answer addresses duplicates or idempotency.
+
+@quiz num
+prompt: Messages arrive at 400 per second. You run 6 consumers and each processes 75 messages per second. A backlog of 15,000 messages has built up. How many seconds will it take to drain the backlog completely while arrivals continue? Give the number of seconds.
+answer: 300
+check: 15000/(6*75-400)
+hint: The backlog shrinks at the processing rate minus the arrival rate.
+solution: The consumers process $6 \times 75 = 450$ messages per second and 400 arrive each second, so the backlog shrinks by 50 per second. $15{,}000 / 50 = 300$ seconds.
+
+@quiz mc
+prompt: One message in a queue contains malformed data that makes the handler throw an exception every time. The queue redelivers it immediately and the consumers spend most of their time on it, delaying everything else. What is the best fix?
+choice: Increase the visibility timeout so that the message is retried less often.
+choice*: Cap the number of attempts, use exponential backoff between retries, and move the message to a dead-letter queue with an alert.
+choice: Delete messages that fail once, to keep the queue short.
+choice: Switch the queue to at-most-once delivery so that failures are never retried.
+hint: You want a bounded number of retries and a place to inspect failures.
+solution: A bounded retry policy with backoff and a dead-letter queue stops the poison message from consuming capacity while keeping it for diagnosis. Deleting on the first failure or switching to at-most-once loses messages that would succeed on retry; a longer timeout only slows the loop.

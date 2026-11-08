@@ -1,0 +1,199 @@
+@lesson
+title: The memory hierarchy and caches
+summary: Explain locality and the memory hierarchy, split addresses into tag, index and offset, and simulate direct-mapped and set-associative caches on an address trace.
+objective: Explain temporal and spatial locality and why a hierarchy of memories gives fast average access to a large memory.
+objective: Compute the tag, index and offset of an address for a given cache organization, and the number of tag bits the cache needs.
+objective: Simulate direct-mapped and set-associative (LRU) caches on an address trace, and compute average memory access time.
+reading: Dive into Systems, Chapter 11 on storage and the memory hierarchy (the sections on caching, cache organization and locality).
+
+@article
+Processors can execute instructions far faster than large memories can supply data. We cannot build one memory that is big, fast and cheap, so computers use a **memory hierarchy**: a small, fast memory close to the processor backed by larger and slower levels. In rough orders of magnitude, registers and the first-level cache respond in about a nanosecond, DRAM main memory in tens of nanoseconds, and solid-state storage in tens of microseconds or more.
+
+### Locality
+
+The hierarchy works because programs exhibit **locality**:
+
+- **Temporal locality**: data used recently is likely to be used again soon (a loop counter, a hot variable).
+- **Spatial locality**: data near recently used data is likely to be used soon (the next array element, the next instruction).
+
+A **cache** keeps copies of recently used data. Data moves between levels in **blocks** (also called lines), typically 64 bytes, so a miss on one byte also brings in its neighbours and exploits spatial locality. An access is a **hit** if the block is in the cache and a **miss** otherwise.
+
+In C, a double loop over a 2D array in row-major order (`a[i][j]` with `j` innermost) reads memory sequentially and is cache-friendly; swapping the loops strides through memory and can be several times slower on the same machine for large arrays.
+
+### Direct-mapped caches
+
+In a **direct-mapped** cache with $S$ sets (one block per set) and blocks of $B$ bytes, an address splits into three fields:
+
+$$\underbrace{\text{tag}}_{\text{high bits}}\ \big|\ \underbrace{\text{index}}_{\log_2 S\text{ bits}}\ \big|\ \underbrace{\text{offset}}_{\log_2 B\text{ bits}}$$
+
+The **offset** selects a byte within the block. The **index** picks the one set where the block may live. The **tag** is stored with the block so we can tell *which* of the many blocks that share an index is present. Each set also has a **valid bit**, because at start-up it holds nothing. Equivalent arithmetic: with `block = addr // B`, the index is `block % S` and the tag is `block // S`. For a 32-bit address, 32 KiB of data and 64-byte blocks, there are $512$ sets, so the offset is 6 bits, the index is 9 bits and the tag is $32-9-6=17$ bits.
+
+### Associativity and replacement
+
+A direct-mapped cache suffers when two hot blocks share an index and keep evicting each other. A **set-associative** cache with $W$ ways gives each set $W$ places (an index picks a set, and the tag is compared with all $W$ ways); a **fully associative** cache has one set. More ways reduce such conflicts at the cost of more comparators and a **replacement policy**: on a miss in a full set, evict a block, commonly the **least recently used** (LRU), or approximate or random choices in practice.
+
+### Writes
+
+On a store hit, **write-through** updates the cache and memory every time, while **write-back** updates only the cache and marks the block **dirty**, writing it to memory when it is evicted. On a store miss, **write-allocate** brings the block into the cache first; **no-write-allocate** writes straight to memory. Write-back with write-allocate is the common pairing.
+
+### Why misses happen: the three Cs
+
+A **compulsory** miss is the first access to a block. A **capacity** miss occurs because the working set is larger than the cache. A **conflict** miss occurs because too many blocks map to the same set even though the cache has room elsewhere.
+
+### Average memory access time
+
+$$\text{AMAT} = \text{hit time} + \text{miss rate}\times\text{miss penalty}.$$
+
+With several levels, the miss penalty of one level is the AMAT of the next: $\text{AMAT}=t_1+m_1\,(t_2+m_2\,t_{\text{mem}})$, where $m_2$ is the local miss rate of the second level. Even a small miss rate matters: with a hit time of 1 cycle and a miss penalty of 100 cycles, a 5% miss rate gives $1+0.05\times100=6$ cycles, six times the hit time.
+
+@example
+title: Simulating a direct-mapped cache
+problem: A direct-mapped cache has 4 sets and 16-byte blocks. Starting empty, classify the byte-address accesses 0, 4, 16, 64, 0 as hits or misses.
+step: Compute `block = addr // 16`, `index = block % 4`, `tag = block // 4` for each. Address 0: block 0, index 0, tag 0. Address 4: block 0, index 0, tag 0. Address 16: block 1, index 1, tag 0. Address 64: block 4, index 0, tag 1.
+step: Address 0 misses (compulsory) and fills set 0 with tag 0. Address 4 is in the same block, so it hits (spatial locality).
+step: Address 16 misses and fills set 1. Address 64 maps to set 0 with tag 1, which differs from the stored tag 0: a miss, and it evicts block 0.
+step: The final access to address 0 finds tag 1 in set 0, so it misses again (a conflict miss). The result is: miss, hit, miss, miss, miss.
+answer: 1 hit and 4 misses
+
+@example
+title: Two levels of cache
+problem: L1 has a hit time of 1 cycle and a miss rate of 10%. L2 has a hit time of 10 cycles and a local miss rate of 20%. Main memory takes 100 cycles. What is the AMAT?
+step: An L1 miss costs the time to access L2: $10+0.2\times100=30$ cycles on average.
+step: So $\text{AMAT}=1+0.1\times30$.
+step: $0.1\times30=3$, giving $1+3=4$ cycles.
+answer: 4 cycles
+
+@mistakes
+- Using the miss rate as a fraction of all accesses at the second level; the *local* miss rate is relative to accesses that reach that level.
+- Computing the tag as the whole address divided by the block size, instead of removing the index bits as well.
+- Forgetting that an access to another address in the same block is a hit once the block is loaded.
+- Treating the miss penalty as the only cost: the hit time is paid on every access.
+
+@practice num
+prompt: A cache for 32-bit byte addresses is direct-mapped, holds 32 KiB ($32\times1024$ bytes) of data, and has 64-byte blocks. How many bits long is the tag (ignoring valid and dirty bits)?
+answer: 17
+check: 32 - int(log2(32 * 1024 / 64)) - int(log2(64))
+hint: The offset needs $\log_2 64$ bits, and the index needs $\log_2$ of the number of blocks.
+solution: There are $32768/64=512$ blocks, so the index has 9 bits; the offset has 6 bits. The tag is $32-9-6=17$ bits.
+
+@practice code
+prompt: Write `split_address(addr, block_size, num_sets)` that returns the tuple `(tag, index, offset)` for a byte address in a cache with the given block size in bytes and number of sets (both powers of two). Example: with 16-byte blocks and 64 sets, `split_address(0x1234, 16, 64)` is `(4, 35, 4)`.
+starter:
+```python
+def split_address(addr, block_size, num_sets):
+    pass
+```
+tests:
+```python
+assert split_address(0x1234, 16, 64) == (4, 35, 4)
+assert split_address(0, 16, 4) == (0, 0, 0)
+assert split_address(64, 16, 4) == (1, 0, 0)
+assert split_address(20, 16, 4) == (0, 1, 4)
+assert split_address(0xFFFF, 64, 1) == (1023, 0, 63)
+```
+model:
+```python
+def split_address(addr, block_size, num_sets):
+    offset = addr % block_size
+    block = addr // block_size
+    return (block // num_sets, block % num_sets, offset)
+```
+hint: The offset is the remainder of dividing by the block size.
+hint: Divide by the block size to get the block number; the index is its remainder modulo the number of sets and the tag is the quotient.
+solution: `offset = addr % block_size`; `block = addr // block_size`; `index = block % num_sets`; `tag = block // num_sets`. With one set the index is always 0 and the tag is the whole block number.
+
+@practice code
+prompt: Write `simulate_direct_mapped(trace, block_size, num_sets)` that simulates an initially empty direct-mapped cache on `trace`, a list of byte addresses, and returns the tuple `(hits, misses)`. A miss loads the block into its set, replacing whatever was there. Example: `simulate_direct_mapped([0, 4, 16, 64, 0], 16, 4)` is `(1, 4)`.
+starter:
+```python
+def simulate_direct_mapped(trace, block_size, num_sets):
+    pass
+```
+tests:
+```python
+assert simulate_direct_mapped([0, 4, 16, 64, 0], 16, 4) == (1, 4)
+assert simulate_direct_mapped(list(range(0, 64, 4)), 16, 4) == (12, 4)
+assert simulate_direct_mapped([0, 64, 0, 64], 16, 4) == (0, 4)
+assert simulate_direct_mapped([], 16, 4) == (0, 0)
+assert simulate_direct_mapped([5, 5, 5], 16, 1) == (2, 1)
+```
+model:
+```python
+def simulate_direct_mapped(trace, block_size, num_sets):
+    tags = [None] * num_sets
+    hits = misses = 0
+    for addr in trace:
+        block = addr // block_size
+        index = block % num_sets
+        tag = block // num_sets
+        if tags[index] == tag:
+            hits += 1
+        else:
+            misses += 1
+            tags[index] = tag
+    return hits, misses
+```
+hint: Keep one stored tag per set, initially `None` (invalid).
+hint: For each address compute index and tag; it is a hit when the stored tag equals the tag, otherwise count a miss and store the new tag.
+solution: A list `tags` of length `num_sets` models the cache. A hit requires `tags[index] == tag`; on a miss the new tag replaces the old one. A sequential walk over 16-byte blocks with 4-byte accesses misses once per block (4 misses) and hits on the other 12 accesses.
+
+@practice num
+prompt: A cache has a hit time of 2 cycles, a miss rate of 3% and a miss penalty of 100 cycles. What is the average memory access time in cycles?
+answer: 5
+tol: 0.001
+check: 2 + 0.03 * 100
+hint: AMAT = hit time + miss rate times miss penalty.
+solution: $2+0.03\times100=2+3=5$ cycles.
+
+@practice mc
+prompt: A program alternately reads two arrays whose first elements have addresses that differ by exactly the cache size, in a direct-mapped cache of which most sets remain unused. Almost every access misses. What kind of miss dominates?
+choice: Compulsory misses
+choice: Capacity misses
+choice*: Conflict misses
+choice: Coherence misses
+hint: The cache has plenty of unused room, so size is not the problem; look at where the blocks map.
+solution: Addresses that differ by exactly the cache size have the same index, so the two blocks evict each other repeatedly although other sets are empty: conflict misses. A set-associative cache with at least 2 ways would remove them.
+
+@quiz code
+prompt: Write `simulate_lru(trace, block_size, num_sets, ways)` that simulates an initially empty set-associative cache with LRU replacement on a list of byte addresses and returns `(hits, misses)`. Each set holds up to `ways` blocks; the index is `block % num_sets` where `block = addr // block_size`. On a hit the block becomes the most recently used; on a miss with a full set the least recently used block is evicted. Example: `simulate_lru([0, 64, 0, 64], 16, 4, 2)` is `(2, 2)`.
+starter:
+```python
+def simulate_lru(trace, block_size, num_sets, ways):
+    pass
+```
+tests:
+```python
+assert simulate_lru([0, 64, 0, 64], 16, 4, 2) == (2, 2)
+assert simulate_lru([0, 64, 0, 64], 16, 4, 1) == (0, 4)
+assert simulate_lru([0, 16, 0, 32, 16, 0], 16, 1, 2) == (1, 5)
+assert simulate_lru([0, 16, 32, 0], 16, 1, 3) == (1, 3)
+assert simulate_lru([], 16, 4, 2) == (0, 0)
+```
+model:
+```python
+def simulate_lru(trace, block_size, num_sets, ways):
+    sets = [[] for _ in range(num_sets)]
+    hits = misses = 0
+    for addr in trace:
+        block = addr // block_size
+        lines = sets[block % num_sets]
+        if block in lines:
+            hits += 1
+            lines.remove(block)
+        else:
+            misses += 1
+            if len(lines) == ways:
+                lines.pop(0)
+        lines.append(block)
+    return hits, misses
+```
+hint: Keep, for each set, a list of block numbers ordered from least to most recently used.
+hint: On a hit, move the block to the end of the list; on a miss, remove the first entry if the list already has `ways` blocks, then append the new block.
+solution: Each set is a list ordered by recency (oldest first). A hit removes and re-appends the block; a miss evicts `lines[0]` when the set is full and appends the new block. In the third test, three blocks cycle through two ways and LRU evicts exactly the block needed next.
+
+@quiz num
+prompt: An array of 1024 four-byte integers starts at an address that is a multiple of 64. A cold cache has 64-byte blocks. A loop reads the array once, in order, one integer at a time. How many cache misses occur (all misses are compulsory)?
+answer: 64
+check: 1024 * 4 // 64
+hint: Each miss loads a whole block; count the blocks the array occupies.
+solution: The array is $1024\times4=4096$ bytes, which is $4096/64=64$ blocks. The first access to each block misses and the other 15 accesses to it hit, so there are 64 misses.

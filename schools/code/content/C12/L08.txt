@@ -1,0 +1,282 @@
+@lesson
+title: Immutability and pure functions
+summary: Define pure functions and immutable data, explain what they buy you, and rewrite mutating loops as functions that return new values.
+objective: Distinguish pure functions from functions with side effects and recognize referential transparency.
+objective: Use immutable data in Python (tuples, frozen dataclasses, copy-on-update) and avoid shared-mutation bugs.
+objective: Rewrite imperative loops as comprehensions, folds or `itertools.accumulate`, and explain why pure functions can be memoized.
+reading: Crafting Interpreters, the discussion of state and assignment in Chapter 8 "Statements and State"; the Python documentation on `functools`, `itertools` and `dataclasses`.
+
+@article
+Last week's functions took values and returned values. This week asks what they are allowed to do besides that.
+
+### Pure functions
+
+A function is **pure** if (1) its result depends only on its arguments, and (2) calling it causes no observable effect other than returning that result. Anything else is a **side effect**: modifying an argument or a global, printing, reading a file or the clock, generating a random number.
+
+```python
+def total_pure(xs):
+    return sum(xs)
+
+counter = 0
+
+def next_id():          # impure: reads and changes global state
+    global counter
+    counter += 1
+    return counter
+```
+
+A pure function is **referentially transparent**: any call can be replaced by its value without changing the program. `total_pure([1, 2, 3])` can always be replaced by `6`. `next_id()` cannot, because each call gives a different answer.
+
+Purity pays off in practice. Pure functions are **easy to test** (no setup, no hidden state), **easy to reason about** (read the function alone), **safe to run in any order or in parallel**, and **cacheable**: because the same arguments always give the same result, the result can be stored and reused. This is **memoization**:
+
+```python
+def memoize(f):
+    cache = {}
+    def wrapper(*args):
+        if args not in cache:
+            cache[args] = f(*args)
+        return cache[args]
+    return wrapper
+```
+
+Memoizing an impure function would be a bug: it would freeze the first answer.
+
+Real programs need effects, since a program with none can do nothing useful. The common design is a **functional core, imperative shell**: keep the decisions and computations pure and push input and output to a thin outer layer.
+
+### Immutable data
+
+An **immutable** value cannot change after creation. In Python, numbers, strings, tuples, `frozenset` and `bytes` are immutable; lists, dictionaries and sets are mutable. (Python 3.15 adds a built-in immutable `frozendict`, but the rest of this lesson uses features available in every recent version.) A dataclass can be made immutable with `frozen=True`; assigning to a field then raises `FrozenInstanceError`:
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Point:
+    x: int
+    y: int
+```
+
+Immutability is shallow: a tuple holding a list is itself unchangeable, but the list inside can still change.
+
+Immutable data removes a whole category of bugs caused by **aliasing**, where two names refer to one object and a change through one surprises the other. Another source of surprise is Python's **mutable default argument**: `def f(x, acc=[])` creates the list once, when the function is defined, and shares it across calls.
+
+### Updating without mutating
+
+With immutable data you build a *new* value instead of changing the old one:
+
+```python
+def with_item(d, key, value):
+    new = dict(d)        # copy
+    new[key] = value
+    return new
+```
+
+The original is untouched, so everyone holding it still sees the same data. Copying everything on every update would be wasteful for large structures. **Persistent data structures** (used by functional languages and some libraries) share unchanged parts between the old and new versions, so an update costs much less than a full copy.
+
+### From loops to expressions
+
+Many loops can be rewritten as expressions. A loop that builds a list is a comprehension. A loop that keeps a running total is `itertools.accumulate`, or a fold. This imperative version mutates a list and a variable:
+
+```python
+def running_totals(nums):
+    out = []
+    total = 0
+    for n in nums:
+        total += n
+        out.append(total)
+    return out
+```
+
+and this one has no mutation: `list(itertools.accumulate(nums))`. Neither is always better. Use the functional form when it states the intent more directly, and keep a loop when mutation is local to the function and the loop is clearer. A function that mutates only its own local variables is still pure from the outside.
+
+@example
+title: Spotting side effects
+problem: Which of these functions is pure? (a) `def f(x): return x * 2` (b) `def g(xs): xs.sort(); return xs` (c) `def h(x): print(x); return x`
+step: (a) uses only its argument and changes nothing outside, so it is pure.
+step: (b) calls `xs.sort()`, which reorders the caller's list in place. That is a side effect on an argument, so it is impure.
+step: A pure version is `def g(xs): return sorted(xs)`, which returns a new list and leaves `xs` alone.
+step: (c) prints, which is an observable effect, so it is impure even though the return value depends only on `x`.
+answer: Only (a) is pure; (b) mutates its argument and (c) prints.
+
+@example
+title: Replacing a loop with accumulate
+problem: Rewrite the running-totals loop without mutation.
+step: The loop keeps an accumulator and records its value after each item, which is exactly what `accumulate` produces.
+step: `itertools.accumulate([3, 1, 4])` yields `3`, `4`, `8`: each value is the previous total plus the next item.
+step: Wrap it in `list` to get a list: `list(accumulate(nums))`.
+step: The new function creates only new objects, never changing `nums`, and the empty list gives `[]`.
+answer: `list(itertools.accumulate(nums))`
+
+@mistakes
+- Treating `tuple` or `frozen=True` as deep immutability; a mutable object stored inside can still change.
+- Using a mutable default argument such as `acc=[]`, which is shared between calls.
+- Returning the argument itself after modifying it (`xs.sort(); return xs`) and believing the function is pure.
+- Memoizing a function that reads the clock, a file or random numbers, which freezes the first result.
+
+@practice mc
+prompt: Which function is pure?
+choice: `def f(xs): xs.append(0); return len(xs)`
+choice: `def f(n): return random.randint(0, n)`
+choice*: `def f(xs): return [x + 1 for x in xs]`
+choice: `def f(n): print(n); return n + 1`
+hint: A pure function depends only on its arguments and changes nothing else.
+solution: The comprehension builds a new list from its argument and has no side effects. The others mutate the argument, depend on random state or print.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def add(x, acc=[]):
+    acc.append(x)
+    return acc
+
+print(add(1), add(2))
+```
+answer: [1, 2] [1, 2]
+check: run("def add(x, acc=[]):\n    acc.append(x)\n    return acc\n\nprint(add(1), add(2))\n")
+hint: The default list is created once, when `def` runs.
+solution: Both calls append to the same default list and return that same object. `print` runs after both calls, so it shows the list twice in its final state `[1, 2]`.
+
+@practice code
+prompt: Write `with_item(d, key, value)` that returns a **new** dictionary equal to `d` with `key` set to `value` (replacing any existing value). The original dictionary must not be modified.
+starter:
+```python
+def with_item(d, key, value):
+    pass
+```
+tests:
+```python
+original = {"a": 1}
+updated = with_item(original, "b", 2)
+assert updated == {"a": 1, "b": 2}
+assert original == {"a": 1}
+assert with_item({"a": 1}, "a", 5) == {"a": 5}
+assert with_item({}, "k", None) == {"k": None}
+assert with_item(original, "c", 3) is not original
+```
+model:
+```python
+def with_item(d, key, value):
+    new = dict(d)
+    new[key] = value
+    return new
+```
+hint: Make a copy of the dictionary first.
+hint: `dict(d)` makes a shallow copy; change the copy and return it.
+solution: Copy the dictionary with `dict(d)`, set the key on the copy and return the copy, so the caller's dictionary is untouched.
+
+@practice code
+prompt: The function below uses a loop and mutation. Write `running_totals(nums)` with the same behavior, as an expression with no explicit loop and no mutation of `nums` (for example with `itertools.accumulate`). It returns a list whose item `i` is the sum of `nums[0]` through `nums[i]`; an empty list gives `[]`.
+
+```python
+def running_totals(nums):
+    out = []
+    total = 0
+    for n in nums:
+        total += n
+        out.append(total)
+    return out
+```
+starter:
+```python
+from itertools import accumulate
+
+
+def running_totals(nums):
+    pass
+```
+tests:
+```python
+assert running_totals([1, 2, 3]) == [1, 3, 6]
+assert running_totals([]) == []
+assert running_totals([5]) == [5]
+assert running_totals([4, -4, 4]) == [4, 0, 4]
+data = [2, 2]
+assert running_totals(data) == [2, 4]
+assert data == [2, 2]
+```
+model:
+```python
+from itertools import accumulate
+
+
+def running_totals(nums):
+    return list(accumulate(nums))
+```
+hint: A running total is a fold that keeps every intermediate accumulator value.
+hint: `itertools.accumulate(nums)` yields exactly those values; convert the result to a list.
+solution: `accumulate` yields the running sums lazily, and `list` collects them. It never modifies `nums`, and the empty input produces an empty list.
+
+@practice ms
+prompt: Select every true statement about purity and immutability in Python.
+choice*: A tuple that contains a list can still change, because the list inside is mutable.
+choice*: A function that only mutates its own local variables can still be pure.
+choice: A frozen dataclass makes every object reachable from its fields immutable.
+choice*: Memoization is safe for pure functions because equal arguments always give equal results.
+choice: Functions that return a value are pure by definition.
+hint: Immutability is shallow, and purity is about observable effects and dependencies.
+solution: A tuple holding a list is shallowly immutable only. Purely local mutation is not observable from outside, and memoizing is safe when the result depends only on the arguments. Frozen dataclasses are shallow too, and returning a value does not rule out side effects.
+
+@quiz code
+prompt: Write `memoize(f)` that returns a function with the same results as `f` but that calls `f` at most once for each distinct tuple of positional arguments (all arguments are hashable). Example: after `g = memoize(f)`, calling `g(3)` twice calls `f` only once.
+starter:
+```python
+def memoize(f):
+    pass
+```
+tests:
+```python
+calls = []
+
+def square(x):
+    calls.append(x)
+    return x * x
+
+fast = memoize(square)
+assert fast(3) == 9
+assert fast(3) == 9
+assert fast(4) == 16
+assert calls == [3, 4]
+adds = []
+add = memoize(lambda a, b: adds.append((a, b)) or a + b)
+assert add(1, 2) == 3
+assert add(2, 1) == 3
+assert add(1, 2) == 3
+assert adds == [(1, 2), (2, 1)]
+```
+model:
+```python
+def memoize(f):
+    cache = {}
+
+    def wrapper(*args):
+        if args not in cache:
+            cache[args] = f(*args)
+        return cache[args]
+
+    return wrapper
+```
+hint: A dictionary keyed by the argument tuple can store results.
+hint: Take `*args` in the wrapper; the tuple `args` is hashable and can be the key.
+solution: The wrapper keeps a private cache in a closure. It calls `f` only when the argument tuple is new and otherwise returns the stored result. `(1, 2)` and `(2, 1)` are different keys, so both are computed.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class P:
+    x: int
+
+p = P(1)
+try:
+    p.x = 2
+except Exception as e:
+    print(type(e).__name__)
+```
+answer: FrozenInstanceError
+check: run("from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass P:\n    x: int\n\np = P(1)\ntry:\n    p.x = 2\nexcept Exception as e:\n    print(type(e).__name__)\n")
+hint: A frozen dataclass forbids assigning to its fields after creation.
+solution: Assigning to a field of a frozen dataclass raises `dataclasses.FrozenInstanceError`, and the program prints the name of that exception type.

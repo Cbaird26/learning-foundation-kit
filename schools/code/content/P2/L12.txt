@@ -1,0 +1,263 @@
+@lesson
+title: Evolving architecture: migrations and legacy systems
+summary: Change a running system in small, safe steps using characterization tests, the strangler pattern, expand and contract migrations and feature flags.
+objective: Put legacy code under test with characterization tests before changing it.
+objective: Migrate behavior or data incrementally with the strangler pattern and the expand and contract method.
+objective: Plan a low-risk migration with rollout, verification and rollback.
+reading: Architecture Patterns with Python ("Cosmic Python"), the Epilogue on how to get there from here; also look up the strangler fig pattern, "characterization tests" and "expand and contract" migrations.
+@article
+Nearly every system you will work on is a **legacy system**: it makes money, it was written under constraints nobody remembers and it has no tests. Greenfield design is rare. Most architecture work is *evolution*: moving a live system, step by step, toward a better shape without breaking it. This final lesson gives you the tools.
+
+### Why not rewrite?
+
+"Let's rewrite it from scratch" is tempting and usually fails. The old system contains years of hidden rules (the strange discount for one customer exists because of a contract); the rewrite takes longer than planned; the old system keeps changing meanwhile; and the cutover is a single high-risk event. The reliable alternative is **incremental change**: every step small, tested, deployed and reversible.
+
+### Step 1: get it under test
+
+Before you change code you do not understand, pin down what it does now. A **characterization test** records the current behavior, correct or not, as an assertion: call the function with real inputs and assert whatever it returns today. These tests do not claim the behavior is right. They tell you when you have *changed* it. To make code testable, find a **seam**: a place where you can alter behavior without editing the code under test, such as a parameter, an injected collaborator or a function you can replace. Introduce seams by the smallest safe edits (extract a function, pass a dependency in instead of constructing it inside) and then add tests.
+
+### Step 2: strangle, do not rewrite
+
+The **strangler fig pattern** puts a thin routing layer in front of the old system and moves capabilities to a new implementation one slice at a time. Requests for migrated slices go to the new code; everything else still goes to the legacy code. Over time the new system "strangles" the old one, which is finally switched off.
+
+```python
+class Router:
+    def __init__(self, legacy, new):
+        self._legacy, self._new = legacy, new
+        self._migrated = []
+
+    def migrate(self, prefix):
+        self._migrated.append(prefix)
+
+    def handle(self, path):
+        for prefix in self._migrated:
+            if path.startswith(prefix):
+                return self._new(path)
+        return self._legacy(path)
+```
+
+Rolling back a slice is removing its prefix. The same shape works inside a codebase as **branch by abstraction**: put an interface in front of the old implementation, add a new implementation behind the same interface, switch callers over gradually, then delete the old one. An **anti-corruption layer** is an adapter (week 5) that translates between the legacy model and your clean domain model, so legacy quirks do not leak into new code.
+
+### Step 3: migrate data with expand and contract
+
+Changing a database schema while the application keeps running needs the **expand and contract** (parallel change) method, because old and new code versions run at the same time during a deploy. Suppose `name` must become `first_name` and `last_name`:
+
+1. **Expand**: add the new columns (nullable). Deploy code that **writes both** old and new and **reads** the new value with a fallback to the old.
+2. **Migrate**: backfill existing rows in small batches, safely re-runnable (idempotent).
+3. **Contract**: when every reader uses the new columns and the backfill is complete, deploy code that stops writing and reading the old one; later drop the old column.
+
+Each step is deployable and reversible on its own. Never rename a column in one deploy: the running old code would break at once.
+
+### Step 4: release changes safely
+
+A **feature flag** lets you deploy code switched off, then enable it for a growing slice of users. Use a deterministic hash of the user id, so each user gets a consistent experience and raising the percentage only adds users. A **parallel run** (shadow mode) sends real traffic to both implementations, returns the old answer and logs any difference, which builds confidence before cutover. Always know your **rollback**: flipping a flag or reverting a route must be faster than fixing forward. Remove flags after rollout; old flags are their own debt.
+
+### Managing technical debt
+
+Technical debt is a trade-off, not a sin: you borrowed speed and pay interest in slower changes. Make it visible (a list with the cost of each item), pay down what blocks upcoming work first, and follow the **boy scout rule**: leave code a bit better than you found it, in small separate commits. Use architecture tests (week 11) so migrated parts do not slide back. Record each major decision as an ADR, including the decision to *keep* an ugly module because replacing it is not worth it.
+
+### Putting it together
+
+A realistic plan: write characterization tests around the legacy billing calculation; insert an interface; build the new implementation behind a flag; shadow-run it for two weeks and fix the differences; roll out to 5, 25, 100 percent with monitoring and a rollback; then delete the old code and the flag.
+
+@example
+title: Expand and contract in three states
+problem: Rows have a `name` field. You are splitting it into `first` and `last`. Trace this reader through the three phases and say what it returns.
+
+```python
+def read_first(row):
+    if "first" in row:
+        return row["first"]
+    return row["name"].split()[0]
+```
+step: **Before the migration** the row is `{"name": "Ada Lovelace"}`. There is no `first`, so the fallback splits the name and returns `"Ada"`.
+step: **Expand and backfill** the row becomes `{"name": "Ada Lovelace", "first": "Ada", "last": "Lovelace"}`. The reader now finds `first` and returns `"Ada"`, with no change visible to callers.
+step: **Contract**: once nothing reads `name`, the old field is removed, leaving `{"first": "Ada", "last": "Lovelace"}`; the reader still returns `"Ada"`.
+step: The reader works in all three states, so old and new application versions can run side by side during each deploy, and any step can be reverted.
+answer: `"Ada"` in all three phases.
+
+@example
+title: Strangling one route
+problem: A legacy app serves `/invoices/...` and `/reports/...`. You rebuilt invoices. Show how requests are routed during migration and how to roll back.
+step: Put a router in front of both systems, with the new invoice code and the legacy app behind it.
+step: Initially nothing is migrated, so both `/invoices/9` and `/reports/3` go to the legacy handler.
+step: Call `migrate("/invoices")`. Now `/invoices/9` goes to the new handler; `/reports/3` still goes to legacy.
+step: If the new invoices misbehave in production, remove the prefix (or flip a flag) and traffic returns to legacy immediately, with no deploy of the old code needed.
+step: Repeat for `/reports`, and when no prefix is routed to legacy, retire it.
+answer: Migrated prefixes route to the new code and everything else to legacy; rollback is removing the prefix.
+
+@mistakes
+- Starting a refactor before there are tests around the behavior, so no one can tell whether a change broke something.
+- Renaming or dropping a column in a single deploy, which breaks the old code that is still running during the rollout.
+- Leaving feature flags and "temporary" dual paths in the code for years until nobody knows which one is live.
+- Treating a characterization test as a statement that the behavior is correct. It only records what happens today.
+
+@practice mc
+prompt: A team wants to replace a 15-year-old billing module that has no tests and many undocumented rules. Which first step is the safest?
+choice: Rewrite the module from the specification and switch over on a weekend
+choice: Delete the unclear parts and see what customers complain about
+choice*: Write characterization tests that record the module's current outputs for real inputs, then change it in small steps
+choice: Freeze the module and never change it again
+hint: What lets you notice when you change behavior accidentally?
+solution: Characterization tests capture what the module does today, so each later change can be checked against it. A weekend rewrite or deleting parts risks losing undocumented rules, and freezing the module only postpones the problem.
+
+@practice code
+prompt: Write a class `Router(legacy, new)` where `legacy` and `new` are functions that take a path and return a string. `migrate(prefix)` marks a path prefix as migrated, and `unmigrate(prefix)` removes it. `handle(path)` calls `new(path)` if the path starts with any migrated prefix, and `legacy(path)` otherwise, and returns the result.
+starter:
+```python
+class Router:
+    pass
+```
+tests:
+```python
+router = Router(lambda p: "legacy:" + p, lambda p: "new:" + p)
+assert router.handle("/invoices/9") == "legacy:/invoices/9"
+router.migrate("/invoices")
+assert router.handle("/invoices/9") == "new:/invoices/9"
+assert router.handle("/reports/3") == "legacy:/reports/3"
+router.migrate("/reports/")
+assert router.handle("/reports/3") == "new:/reports/3"
+router.unmigrate("/invoices")
+assert router.handle("/invoices/9") == "legacy:/invoices/9"
+router.unmigrate("/never-added")
+assert router.handle("/reports/3") == "new:/reports/3"
+```
+model:
+```python
+class Router:
+    def __init__(self, legacy, new):
+        self._legacy = legacy
+        self._new = new
+        self._migrated = set()
+
+    def migrate(self, prefix):
+        self._migrated.add(prefix)
+
+    def unmigrate(self, prefix):
+        self._migrated.discard(prefix)
+
+    def handle(self, path):
+        for prefix in self._migrated:
+            if path.startswith(prefix):
+                return self._new(path)
+        return self._legacy(path)
+```
+hint: Keep the migrated prefixes in a collection and test each with `startswith`.
+hint: `set.discard` removes an item without an error if it is missing.
+solution: The router is the strangler: migrated prefixes go to the new code and everything else stays on the legacy path. `unmigrate` is the instant rollback, and `discard` makes it safe to call for a prefix that was never added.
+
+@practice text
+prompt: What does this program print? Type the three lines of output exactly.
+
+```python
+row = {"name": "Ada Lovelace"}
+
+def read_first(row):
+    if "first" in row:
+        return row["first"]
+    return row["name"].split()[0]
+
+print(read_first(row))
+row["first"] = "Ada"
+row["last"] = "Lovelace"
+print(read_first(row))
+del row["name"]
+print(read_first(row))
+```
+answer:
+```
+Ada
+Ada
+Ada
+```
+check: run("row = {'name': 'Ada Lovelace'}\n\ndef read_first(row):\n    if 'first' in row:\n        return row['first']\n    return row['name'].split()[0]\n\nprint(read_first(row))\nrow['first'] = 'Ada'\nrow['last'] = 'Lovelace'\nprint(read_first(row))\ndel row['name']\nprint(read_first(row))\n")
+hint: The reader prefers the new field and falls back to the old one.
+solution: At first the fallback splits `name`; after the backfill it reads `first`; after the old field is deleted it still reads `first`. A reader that works in every state is what makes expand and contract safe.
+
+@practice code
+prompt: Write `rollout(flag, user_id, percent)` returning `True` if the feature is on for this user. Compute `n` from the first 8 hex digits of the SHA-256 digest of the text `f"{flag}:{user_id}"` (`int(digest[:8], 16) % 100`), and return `n < percent`. This makes the decision deterministic per user and flag, and raising `percent` only adds users. Use `hashlib`.
+starter:
+```python
+import hashlib
+
+def rollout(flag, user_id, percent):
+    pass
+```
+tests:
+```python
+assert all(rollout("new-billing", u, 0) is False for u in range(50))
+assert all(rollout("new-billing", u, 100) is True for u in range(50))
+assert rollout("new-billing", 42, 50) == rollout("new-billing", 42, 50)
+on30 = [u for u in range(200) if rollout("new-billing", u, 30)]
+on60 = [u for u in range(200) if rollout("new-billing", u, 60)]
+assert set(on30) <= set(on60)
+assert 20 < len(on30) < 110
+assert 60 < len(on60) < 180
+```
+model:
+```python
+import hashlib
+
+def rollout(flag, user_id, percent):
+    digest = hashlib.sha256(f"{flag}:{user_id}".encode()).hexdigest()
+    return int(digest[:8], 16) % 100 < percent
+```
+hint: Hash the string `flag:user_id`, take the first 8 hex digits as a number, and reduce it modulo 100.
+solution: A stable hash puts each user in a fixed bucket from 0 to 99; the feature is on when the bucket is below the percentage. Because buckets do not change, raising the percentage from 30 to 60 only adds users and nobody flips back and forth.
+
+@practice self
+prompt: You inherit a 12-year-old order-management application: a single large codebase, a shared database with 90 tables, almost no tests, and a nightly job that calculates shipping costs with rules nobody fully understands. The business wants a new shipping-cost engine that supports more carriers. Write a migration plan: how you get the current behavior under test, how you introduce the new engine without a big-bang cutover, how you verify it matches (or deliberately differs from) the old one, how you roll out and roll back, and the two biggest risks with your mitigation for each.
+hint: Think in order: pin down current behavior, create a seam, run both, roll out gradually, keep a way back.
+solution: 1. Pin down behavior: export a sample of real orders (a few thousand, including odd ones: oversized, international, multi-parcel) and record the legacy engine's answer for each as characterization tests; do this by calling the legacy function through a small seam (extract `calculate_shipping(order)` from the nightly job and have the job call it). 2. Introduce an interface: define a `ShippingCalculator` port with `cost(order)`; wrap the legacy code as `LegacyCalculator`; callers depend on the port only. Build `NewCalculator` behind it, using an anti-corruption adapter so the new code works with a clean `Order` value and not the 90-table schema. 3. Verify by parallel run: in production, compute both costs, return and use the legacy one, and log each difference with the order data. Review the differences with the business: each is either a bug in the new engine (fix) or an undocumented legacy quirk (decide to keep it or record an ADR to drop it). 4. Roll out: a feature flag with a deterministic user or order hash at 1, 10, 50, 100 percent, with monitoring of cost differences and complaints; rollback is flipping the flag to 0, which needs no deploy. 5. Clean up: remove the legacy calculator and the flag after a full billing cycle at 100 percent. Risks: (a) hidden rules not covered by samples, mitigated by the parallel run over a full month, including month-end cases, and by logging every mismatch; (b) the shared database means the new engine cannot change tables the legacy code still reads, mitigated by using expand and contract for any schema change and by reading through the adapter only.
+rubric: Starts with characterization tests on real data and a seam, before any change to behavior.
+rubric: Avoids a big-bang cutover by using an interface with two implementations, a parallel run and a gradual flag-based rollout with a rollback that needs no deploy.
+rubric: Addresses verification of differences and names at least two realistic risks (undiscovered rules, shared database coupling, data differences) with concrete mitigations.
+
+@quiz code
+prompt: Write `migrate_rows(rows, drop_old=False)` for the name split. Each row is a dict. For every row that has a `"name"` key and no `"first"` key, add `"first"` (the text before the first space) and `"last"` (everything after it, or `""` if the name is a single word). Rows that already have `"first"` stay as they are. If `drop_old` is true, remove `"name"` from migrated rows. Return a new list of new dicts and leave the input unchanged. Running the function twice must give the same result as running it once.
+starter:
+```python
+def migrate_rows(rows, drop_old=False):
+    pass
+```
+tests:
+```python
+rows = [{"id": 1, "name": "Ada Lovelace"}, {"id": 2, "name": "Plato"}]
+out = migrate_rows(rows)
+assert out[0] == {"id": 1, "name": "Ada Lovelace", "first": "Ada", "last": "Lovelace"}
+assert out[1] == {"id": 2, "name": "Plato", "first": "Plato", "last": ""}
+assert rows == [{"id": 1, "name": "Ada Lovelace"}, {"id": 2, "name": "Plato"}]
+assert migrate_rows(out) == out
+final = migrate_rows(rows, drop_old=True)
+assert final[0] == {"id": 1, "first": "Ada", "last": "Lovelace"}
+done = [{"id": 3, "first": "Bo", "last": "Li"}]
+assert migrate_rows(done) == done
+assert migrate_rows([{"id": 4, "name": "Mary Ann Smith"}])[0]["last"] == "Ann Smith"
+assert migrate_rows([]) == []
+```
+model:
+```python
+def migrate_rows(rows, drop_old=False):
+    result = []
+    for row in rows:
+        new = dict(row)
+        if "name" in new and "first" not in new:
+            first, _, last = new["name"].partition(" ")
+            new["first"] = first
+            new["last"] = last
+            if drop_old:
+                del new["name"]
+        result.append(new)
+    return result
+```
+hint: Copy each row, and use `str.partition(" ")` to split at the first space only.
+solution: The backfill is idempotent because rows that already have `first` are skipped, so it is safe to re-run in batches. Copying each row keeps the input unchanged, and `partition` splits at the first space, giving an empty `last` for single names.
+
+@quiz mc
+prompt: A team must rename the database column `phone` to `mobile` while the application runs on several servers that are deployed one at a time. Which approach is safe?
+choice: Rename the column in the same deploy as the code change
+choice: Stop all servers, rename the column, and restart, whenever the next quiet moment comes
+choice*: Add `mobile`, deploy code that writes both and reads `mobile` with a fallback to `phone`, backfill, then remove the use of `phone` and drop it later
+choice: Rename the column first and let the old servers fail until they are redeployed
+hint: Old and new code run at the same time during a deploy.
+solution: Expand and contract keeps every intermediate state compatible with both code versions, so each step can be deployed and reverted. Renaming in place breaks whichever code version still uses the old name, and a full stop causes avoidable downtime.

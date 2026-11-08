@@ -1,0 +1,230 @@
+@lesson
+title: Sockets and transport: UDP
+summary: Explain what the transport layer adds to IP, use the socket model and ports for demultiplexing, and parse UDP headers and compute the Internet checksum.
+objective: Explain multiplexing and demultiplexing with port numbers, for both UDP and TCP.
+objective: Write and read simple UDP and TCP socket programs using the sockets API.
+objective: Decode a UDP header and compute and verify the Internet checksum.
+objective: State what UDP does and does not guarantee, and when it is the right choice.
+reading: Computer Networks: A Systems Approach, Chapter 5 "End-to-End Protocols", the section on the simple demultiplexer (UDP).
+
+@article
+IP delivers a packet to a **host**; the transport layer delivers data to the right **process** on that host. It does this with **port numbers**: 16-bit integers (0 to 65535). Ports 0 to 1023 are the **well-known ports** (80 HTTP, 443 HTTPS, 53 DNS, 25 SMTP, 22 SSH); the operating system gives clients a temporary **ephemeral** port. At the sender, **multiplexing** gathers data from many sockets and adds transport headers; at the receiver, **demultiplexing** uses the header's port numbers to pass each arriving segment to the correct socket.
+
+### The sockets API
+
+A **socket** is the door between an application and the network stack. The program asks the operating system to create a socket, and then uses calls such as `bind`, `listen`, `accept`, `connect`, `send` and `recv` (Python's `socket` module wraps these). Here is a UDP echo server that upper-cases one message (run it on your own computer, not in the browser):
+
+```python
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+    s.bind(("127.0.0.1", 9999))
+    data, addr = s.recvfrom(2048)
+    s.sendto(data.upper(), addr)
+```
+
+and the client:
+
+```python
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+    s.sendto(b"hello", ("127.0.0.1", 9999))
+    reply, _ = s.recvfrom(2048)
+    print(reply)  # b'HELLO'
+```
+
+`SOCK_DGRAM` selects UDP; `SOCK_STREAM` selects TCP. There is no connection set-up: each `sendto` names the destination. A TCP server instead calls `listen()` and `accept()`, which returns a **new** socket for each client, while a client calls `connect()`.
+
+### What UDP provides
+
+The **User Datagram Protocol** (RFC 768) adds almost nothing to IP: port-based demultiplexing and an optional error check. It has **no handshake, no reliability, no ordering, no congestion control and no connection state**. Each `sendto` produces exactly one datagram, so UDP preserves **message boundaries**, whereas TCP delivers an unstructured byte stream. UDP is used where a late retransmission is worthless or where the application wants its own control: DNS queries (one small request and reply), DHCP, real-time audio and video, online games, and QUIC (which builds reliability and congestion control on top of UDP).
+
+**Demultiplexing.** A UDP socket is identified by (destination IP, destination port): datagrams from different senders to the same port arrive at the same socket. A TCP socket is identified by the **four-tuple** (source IP, source port, destination IP, destination port), so a web server can serve thousands of clients on port 443, each with its own connection socket.
+
+### The UDP header
+
+The header is 8 bytes, four 16-bit fields in network byte order (big-endian): source port, destination port, **length** (header plus data, in bytes) and **checksum**. A UDP datagram is carried in an IP packet whose total length is at most 65535 bytes, so the largest UDP payload over IPv4 is $65535 - 20 - 8 = 65507$ bytes.
+
+### The Internet checksum
+
+UDP, TCP and IPv4 headers use the **Internet checksum** (RFC 1071): treat the data as a sequence of 16-bit big-endian words (pad an odd final byte with a zero byte), add them with **ones'-complement** arithmetic (any carry out of bit 16 is added back into the low bits), and take the bitwise complement of the sum. The receiver adds all words including the checksum; the result is `0xFFFF` if no error was detected. For UDP the sum also covers a **pseudo-header** (source and destination IP and the protocol number) so that misdelivered datagrams are caught; the checksum is optional in IPv4 (a value of 0 means "not computed") and mandatory in IPv6. The checksum catches many but not all errors: it is weak compared with the CRC used by the link layer.
+
+@example
+title: Decoding a UDP header
+problem: The first 8 bytes of a UDP datagram are `13 88 00 35 00 1c ab cd` (hexadecimal). Give the ports, the length and the payload size.
+step: The fields are 16 bits each: `1388`, `0035`, `001c`, `abcd`.
+step: Source port `0x1388` = 5000; destination port `0x0035` = 53, which is DNS.
+step: Length `0x001c` = 28 bytes including the 8-byte header, so the payload is $28 - 8 = 20$ bytes.
+step: `0xabcd` is the checksum. The datagram goes to a DNS server from ephemeral port 5000.
+answer: source 5000, destination 53, length 28, payload 20 bytes
+
+@example
+title: Computing a checksum
+problem: Compute the Internet checksum of the four bytes `12 34 ab cd`.
+step: The 16-bit words are `0x1234` and `0xabcd`.
+step: Add them: `0x1234 + 0xabcd = 0xbe01`. There is no carry out of 16 bits.
+step: Complement: `0xffff - 0xbe01 = 0x41fe`.
+step: Verify: the receiver adds `0xbe01 + 0x41fe = 0xffff`, which means no error was detected.
+answer: `0x41fe`
+
+@mistakes
+- Believing that UDP is "faster because it is a better protocol". It does less work, and the application must handle loss and reordering if it cares.
+- Forgetting that the UDP length field includes the 8-byte header.
+- Thinking that two TCP clients connecting to the same server port share one socket at the server. Each connection has its own socket, identified by the four-tuple.
+- Forgetting to add the carry back into the sum in ones'-complement arithmetic.
+
+@practice mc
+prompt: A UDP server socket is bound to port 5000. Datagrams arrive from two different client hosts, both addressed to port 5000 on the server. What happens?
+choice*: Both are delivered to the same server socket, which can tell the senders apart by their source addresses
+choice: The second sender is refused until the first has finished, because UDP has connections
+choice: Each sender gets its own server socket automatically, as with TCP
+choice: The datagrams are dropped, because two hosts cannot use the same destination port
+hint: A UDP socket is identified only by its destination address and port.
+solution: UDP demultiplexes on (destination IP, destination port), so both datagrams go to the one bound socket; each datagram carries its sender's address, which `recvfrom` returns.
+
+@practice num
+prompt: What is the largest number of payload bytes in a single UDP datagram over IPv4, given that an IPv4 packet is at most 65535 bytes including its 20-byte header (no options) and a UDP header is 8 bytes?
+answer: 65507
+check: 65535 - 20 - 8
+hint: Subtract both headers from the largest IP packet.
+solution: $65535 - 20 - 8 = 65507$ bytes.
+
+@practice code
+prompt: Write `parse_udp_header(data)` that takes at least 8 bytes of a UDP datagram and returns the tuple `(source_port, dest_port, length, checksum)` of four integers. The fields are 16-bit unsigned integers in network (big-endian) byte order. Ignore any bytes after the first 8. You may use the `struct` module.
+starter:
+```python
+def parse_udp_header(data):
+    pass
+```
+tests:
+```python
+hdr = bytes.fromhex("1388 0035 001c abcd".replace(" ", ""))
+assert parse_udp_header(hdr) == (5000, 53, 28, 0xabcd)
+assert parse_udp_header(hdr + b"payload") == (5000, 53, 28, 0xabcd)
+assert parse_udp_header(bytes([0, 1, 0, 2, 0, 8, 0, 0])) == (1, 2, 8, 0)
+assert parse_udp_header(bytes([255] * 8)) == (65535, 65535, 65535, 65535)
+```
+model:
+```python
+import struct
+
+
+def parse_udp_header(data):
+    return struct.unpack("!HHHH", data[:8])
+```
+hint: `struct.unpack` takes a format string; `!` means network byte order and `H` is an unsigned 16-bit integer.
+hint: Use the format `"!HHHH"` on exactly the first 8 bytes.
+solution: `struct.unpack("!HHHH", data[:8])` reads four big-endian 16-bit integers, and slicing to 8 bytes ignores the payload.
+
+@practice code
+prompt: Write `internet_checksum(data)` that returns the 16-bit Internet checksum (an integer from 0 to 65535) of the `bytes` object `data`: pad with one zero byte if the length is odd, add all 16-bit big-endian words, fold any carry out of bit 16 back into the sum until the sum fits in 16 bits, then return the bitwise complement limited to 16 bits. The checksum of empty data is `0xFFFF`.
+starter:
+```python
+def internet_checksum(data):
+    pass
+```
+tests:
+```python
+assert internet_checksum(bytes.fromhex("0001f203f4f5f6f7")) == 0x220d
+assert internet_checksum(b"\xff\xff\x00\x01") == 0xfffe
+assert internet_checksum(bytes.fromhex("1234abcd")) == 0x41fe
+assert internet_checksum(bytes.fromhex("123456")) == 0x97cb
+assert internet_checksum(b"") == 0xffff
+```
+model:
+```python
+def internet_checksum(data):
+    if len(data) % 2:
+        data += b"\x00"
+    total = 0
+    for i in range(0, len(data), 2):
+        total += (data[i] << 8) | data[i + 1]
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+```
+hint: Build each word as `(high_byte << 8) | low_byte`.
+hint: After summing, loop while `total >> 16` is not zero: replace `total` by its low 16 bits plus the carry.
+solution: Pad to even length, add the 16-bit words, fold carries back in (`total = (total & 0xFFFF) + (total >> 16)`) until it fits in 16 bits, and return `~total & 0xFFFF`. For `12 34 56` the padded words are `0x1234` and `0x5600`, whose sum `0x6834` complements to `0x97cb`.
+
+@practice code
+prompt: Write a class `UdpHost` that models port demultiplexing on one host. `bind(port)` creates a socket queue for `port` and raises `ValueError` if that port is already bound. `deliver(src, dst_port, payload)` appends `(src, payload)` to the queue of `dst_port` and returns `True`, or returns `False` if no socket is bound to `dst_port` (the datagram is discarded). `recv(port)` removes and returns the oldest `(src, payload)` pair from the queue of `port`, or returns `None` if the queue is empty; it raises `ValueError` if the port is not bound.
+starter:
+```python
+class UdpHost:
+    pass
+```
+tests:
+```python
+h = UdpHost()
+h.bind(5000)
+assert h.deliver(("10.0.0.1", 4000), 5000, b"a") is True
+assert h.deliver(("10.0.0.2", 4001), 5000, b"b") is True
+assert h.deliver(("10.0.0.2", 4001), 6000, b"c") is False
+assert h.recv(5000) == (("10.0.0.1", 4000), b"a")
+assert h.recv(5000) == (("10.0.0.2", 4001), b"b")
+assert h.recv(5000) is None
+assert raises(ValueError, h.bind, 5000)
+assert raises(ValueError, h.recv, 6000)
+```
+model:
+```python
+class UdpHost:
+    def __init__(self):
+        self._queues = {}
+
+    def bind(self, port):
+        if port in self._queues:
+            raise ValueError("port in use")
+        self._queues[port] = []
+
+    def deliver(self, src, dst_port, payload):
+        queue = self._queues.get(dst_port)
+        if queue is None:
+            return False
+        queue.append((src, payload))
+        return True
+
+    def recv(self, port):
+        if port not in self._queues:
+            raise ValueError("port not bound")
+        queue = self._queues[port]
+        return queue.pop(0) if queue else None
+```
+hint: A dictionary from port number to a list of waiting datagrams is enough.
+hint: `deliver` must not create a queue; only `bind` does.
+solution: Keep `{port: [datagrams]}`. `bind` adds an empty list (or raises if present), `deliver` appends to an existing list or reports failure, and `recv` pops from the front of the list (first in, first out).
+
+@quiz code
+prompt: Write `udp_header(src_port, dst_port, payload)` that returns the 8-byte UDP header (type `bytes`) for the given payload (`bytes`): source port, destination port, length (8 plus the payload length) and a checksum field of 0 (meaning "not computed" in IPv4), each as a 16-bit big-endian integer.
+starter:
+```python
+def udp_header(src_port, dst_port, payload):
+    pass
+```
+tests:
+```python
+assert udp_header(5000, 53, b"hello") == bytes.fromhex("1388003500 0d0000".replace(" ", ""))
+assert udp_header(1, 2, b"") == bytes([0, 1, 0, 2, 0, 8, 0, 0])
+assert len(udp_header(1000, 2000, b"x" * 100)) == 8
+assert udp_header(65535, 65535, b"ab")[4:6] == b"\x00\x0a"
+```
+model:
+```python
+import struct
+
+
+def udp_header(src_port, dst_port, payload):
+    return struct.pack("!HHHH", src_port, dst_port, 8 + len(payload), 0)
+```
+hint: The length field counts the header as well as the payload.
+hint: `struct.pack("!HHHH", a, b, c, d)` writes four big-endian 16-bit integers.
+solution: Pack the two ports, the length `8 + len(payload)` and a zero checksum with `struct.pack("!HHHH", ...)`.
+
+@quiz num
+prompt: Two 16-bit words are summed for an Internet checksum: `0xFFFF` and `0x0001`. After folding the carry back in and complementing, what is the checksum, as a decimal integer?
+answer: 65534
+check: (~(((0xFFFF + 0x0001) & 0xFFFF) + ((0xFFFF + 0x0001) >> 16))) & 0xFFFF
+hint: The sum `0x10000` has a carry out of bit 16; add the carry back to the low 16 bits.
+solution: $0xFFFF + 0x0001 = 0x10000$; folding the carry gives $0x0000 + 0x1 = 0x0001$. The complement of `0x0001` in 16 bits is `0xFFFE`, which is 65534.

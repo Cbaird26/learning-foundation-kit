@@ -1,0 +1,249 @@
+@lesson
+title: Routing algorithms: link state and distance vector
+summary: Compute least-cost paths with Dijkstra's algorithm and the Bellman-Ford equation, and explain how link-state and distance-vector routing protocols use them.
+objective: Run Dijkstra's algorithm by hand and in code and build a forwarding table from it.
+objective: Run Bellman-Ford and the distance-vector update, and explain count-to-infinity and poison reverse.
+objective: Compare link-state and distance-vector routing in messages, convergence and robustness.
+objective: State the running times of Dijkstra's algorithm and Bellman-Ford.
+reading: Computer Networks: A Systems Approach, Chapter 3 "Internetworking", the section on routing (distance-vector, link-state and the shortest-path algorithms).
+
+@article
+Routing is the network-wide process that fills the forwarding tables. We model the network as a graph: nodes are routers, edges are links, and each edge has a **cost** (a hop count, a delay, or a value set by an administrator). A routing algorithm finds a **least-cost path** from each router to each destination. Two families are used.
+
+### Link-state routing and Dijkstra's algorithm
+
+In **link-state** routing every router learns the **whole topology**: each router measures the cost to its neighbors and **floods** this information in link-state advertisements to all other routers. Each router then runs **Dijkstra's algorithm** locally on the same graph. Dijkstra's algorithm needs all link costs to be non-negative. Let $D(v)$ be the current best known cost from the source $s$ to $v$.
+
+1. Set $D(s) = 0$ and $D(v) = \infty$ for all other $v$; let $N'$ (the finished set) be empty.
+2. Pick the node $u$ not in $N'$ with the smallest $D(u)$ and add it to $N'$; its cost is now final.
+3. For each neighbor $v$ of $u$ not in $N'$, set $D(v) \leftarrow \min(D(v),\, D(u) + c(u,v))$.
+4. Repeat from step 2 until all reachable nodes are in $N'$.
+
+With a simple array the running time is $O(V^2)$; with a binary heap (priority queue) it is $O((V + E)\log V)$. To build the **forwarding table**, a router records for each destination the **first hop** of its least-cost path. Link-state protocols (OSPF, IS-IS) converge quickly and react to changes by flooding, but cost memory (the full topology) and flooding messages. If link costs depend on traffic, route oscillations can occur.
+
+### Distance-vector routing and Bellman-Ford
+
+In **distance-vector** routing each router knows only its neighbors and the link costs to them, and keeps a **vector** of its current cost estimates to every destination. The algorithm rests on the Bellman-Ford equation
+
+$$d_x(y) = \min_{v \in \text{neighbors}(x)} \{\, c(x,v) + d_v(y) \,\}.$$
+
+Each router sends its vector to its neighbors whenever it changes, and recomputes with the equation when it receives a neighbor's vector. The process is **iterative, asynchronous and distributed**, and, if no link cost changes, it converges to the true least costs. The centralized **Bellman-Ford algorithm** relaxes every edge $V - 1$ times and takes $O(VE)$ time; it handles negative edge weights and can detect a negative cycle (a further relaxation still improves a distance).
+
+**Good news travels fast, bad news slowly.** If a link cost falls, neighbors learn it within a few exchanges. If a link cost rises or a link fails, routers may route through each other in a loop and raise their estimates a little at a time: **count to infinity**. For example, if $z$ reaches $x$ only through $y$, and $y$'s link to $x$ fails, $y$ may believe $z$ still has a path to $x$ and adopt it through $z$ itself. Remedies: define a small value as "infinity" (RIP uses 16 hops, so its maximum usable path is 15 hops) and **poison reverse**: if $z$ routes to $x$ through $y$, then $z$ tells $y$ that its distance to $x$ is infinite, so $y$ never routes back through $z$. Poison reverse removes two-node loops but not all longer loops.
+
+### Comparison
+
+| | Link state | Distance vector |
+|---|---|---|
+| Knowledge | full topology | neighbors' vectors |
+| Messages | flooding to all routers | to neighbors only |
+| Computation | Dijkstra at each router | Bellman-Ford equation, shared work |
+| Convergence | fast | can be slow (count to infinity) |
+| A faulty router | advertises only its own links wrongly | can advertise wrong paths to everyone |
+
+@example
+title: Running Dijkstra's algorithm
+problem: Graph (undirected): A-B 2, A-C 5, B-C 1, B-D 4, C-D 1, C-E 7, D-E 3. Find least costs from A.
+step: Start: $D(A) = 0$, everything else $\infty$. Finish A: $D(B) = 2$, $D(C) = 5$.
+step: Smallest unfinished is B (2). Update C: $\min(5, 2+1) = 3$; D: $2 + 4 = 6$.
+step: Next C (3). Update D: $\min(6, 3+1) = 4$; E: $3 + 7 = 10$.
+step: Next D (4). Update E: $\min(10, 4+3) = 7$. Finally E (7) is finished.
+step: Result: A 0, B 2, C 3, D 4, E 7; the path to E is A-B-C-D-E, so A's first hop to every destination is B.
+answer: A 0, B 2, C 3, D 4, E 7
+
+@example
+title: A distance-vector update
+problem: Router x has neighbors y (link cost 2) and z (link cost 7). It receives $d_y = \{x{:}2,\ y{:}0,\ z{:}1\}$ and $d_z = \{x{:}7,\ y{:}1,\ z{:}0\}$. Compute x's new vector.
+step: For destination y: via y it costs $2 + 0 = 2$; via z it costs $7 + 1 = 8$. The minimum is 2.
+step: For destination z: via y it costs $2 + 1 = 3$; via z it costs $7 + 0 = 7$. The minimum is 3.
+step: Destination x itself costs 0.
+step: x's vector is $\{x{:}0,\ y{:}2,\ z{:}3\}$ and its path to z goes through y, so it improved from 7 to 3.
+answer: x: 0, y: 2, z: 3
+
+@mistakes
+- Using Dijkstra's algorithm on a graph with negative edge weights. It can finalize a node too early; use Bellman-Ford.
+- Forgetting that the forwarding table stores the first hop, not the whole path or only the distance.
+- Believing that distance-vector routers know the topology. They know only distances and neighbors.
+- Thinking poison reverse eliminates all routing loops. It handles only loops between two neighbors.
+
+@practice mc
+prompt: Which statement correctly contrasts link-state and distance-vector routing?
+choice*: In link state each router learns the full topology and runs Dijkstra's algorithm; in distance vector each router only exchanges cost vectors with its neighbors
+choice: In link state routers exchange vectors with neighbors only; in distance vector every router floods the whole network
+choice: Link-state routing cannot handle link failures
+choice: Distance-vector routing needs every router to have the same global map
+hint: Ask which protocol floods link information to all routers.
+solution: Link-state routers flood link costs so everyone has the same map and computes paths with Dijkstra; distance-vector routers know only their neighbors and the vectors they advertise.
+
+@practice num
+prompt: An undirected network has links A-B 4, A-C 2, B-C 1, B-D 5, C-D 8, C-E 10, D-E 2, D-F 6, E-F 3 (the numbers are costs). What is the least cost from A to F?
+answer: 13
+check: int(run("import heapq\ng = {'A': {'B': 4, 'C': 2}, 'B': {'A': 4, 'C': 1, 'D': 5}, 'C': {'A': 2, 'B': 1, 'D': 8, 'E': 10}, 'D': {'B': 5, 'C': 8, 'E': 2, 'F': 6}, 'E': {'C': 10, 'D': 2, 'F': 3}, 'F': {'D': 6, 'E': 3}}\ndist = {'A': 0}\nheap = [(0, 'A')]\nwhile heap:\n    d, u = heapq.heappop(heap)\n    if d > dist.get(u, 1e9):\n        continue\n    for v, w in g[u].items():\n        nd = d + w\n        if nd < dist.get(v, 1e9):\n            dist[v] = nd\n            heapq.heappush(heap, (nd, v))\nprint(dist['F'])\n"))
+hint: Run Dijkstra from A: C = 2 first, then B through C.
+hint: B = 3, D = 8, E = 10 (through D), then compare D + 6 with E + 3.
+solution: Dijkstra from A gives C 2, B 3 (via C), D 8 (via B), E 10 (via D, since the direct link C-E would cost 12) and F is $\min(8 + 6,\ 10 + 3) = 13$ via A-C-B-D-E-F.
+
+@practice code
+prompt: Write `dijkstra(graph, source)` where `graph` is a dictionary mapping each node to a dictionary `{neighbor: cost}` (all costs non-negative; the graph lists each edge in the entries of both endpoints if it is undirected). Return a dictionary with the least cost from `source` to every node reachable from it (including the source itself with cost 0). Unreachable nodes are left out.
+starter:
+```python
+def dijkstra(graph, source):
+    pass
+```
+tests:
+```python
+g = {"A": {"B": 2, "C": 5}, "B": {"A": 2, "C": 1, "D": 4},
+     "C": {"A": 5, "B": 1, "D": 1, "E": 7},
+     "D": {"B": 4, "C": 1, "E": 3}, "E": {"C": 7, "D": 3}}
+assert dijkstra(g, "A") == {"A": 0, "B": 2, "C": 3, "D": 4, "E": 7}
+assert dijkstra(g, "E") == {"E": 0, "D": 3, "C": 4, "B": 5, "A": 7}
+assert dijkstra({"A": {"B": 1}, "B": {"A": 1}, "C": {}}, "A") == {"A": 0, "B": 1}
+assert dijkstra({"A": {}}, "A") == {"A": 0}
+assert dijkstra({"A": {"B": 0}, "B": {}}, "A") == {"A": 0, "B": 0}
+```
+model:
+```python
+import heapq
+
+
+def dijkstra(graph, source):
+    dist = {}
+    heap = [(0, source)]
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in dist:
+            continue
+        dist[u] = d
+        for v, cost in graph.get(u, {}).items():
+            if v not in dist:
+                heapq.heappush(heap, (d + cost, v))
+    return dist
+```
+hint: Use `heapq` as a priority queue of `(distance, node)` pairs.
+hint: The first time a node is popped its distance is final; skip nodes already finished.
+solution: Pop the smallest `(d, u)`; if `u` is already finished skip it, otherwise record `d` as its final cost and push each unfinished neighbor with `d + cost`. Stale heap entries are ignored when popped, so every node is finalized once.
+
+@practice code
+prompt: Write `next_hops(graph, source)` that returns the forwarding table of router `source`: a dictionary mapping every other reachable node to the first hop (the neighbor of `source`) on a least-cost path to it. The graph format is the same as for Dijkstra's algorithm: `{node: {neighbor: cost}}` with non-negative costs. In the tests every least-cost path is unique.
+starter:
+```python
+def next_hops(graph, source):
+    pass
+```
+tests:
+```python
+g = {"A": {"B": 2, "C": 5}, "B": {"A": 2, "C": 1, "D": 4},
+     "C": {"A": 5, "B": 1, "D": 1, "E": 7},
+     "D": {"B": 4, "C": 1, "E": 3}, "E": {"C": 7, "D": 3}}
+assert next_hops(g, "C") == {"A": "B", "B": "B", "D": "D", "E": "D"}
+assert next_hops(g, "A") == {"B": "B", "C": "B", "D": "B", "E": "B"}
+assert next_hops(g, "E") == {"D": "D", "C": "D", "B": "D", "A": "D"}
+assert next_hops({"A": {}}, "A") == {}
+```
+model:
+```python
+import heapq
+
+
+def next_hops(graph, source):
+    dist = {}
+    first = {}
+    heap = [(0, source, None)]
+    while heap:
+        d, u, hop = heapq.heappop(heap)
+        if u in dist:
+            continue
+        dist[u] = d
+        if u != source:
+            first[u] = hop
+        for v, cost in graph.get(u, {}).items():
+            if v not in dist:
+                heapq.heappush(heap, (d + cost, v, v if u == source else hop))
+    return first
+```
+hint: Run Dijkstra but also remember, for each node, which neighbor of the source its path started with.
+hint: When expanding the source itself, the first hop of a neighbor is that neighbor; otherwise it inherits the first hop of the node being expanded.
+solution: Store the first hop together with each heap entry. Neighbors of the source are their own first hop; any other node inherits the first hop of the node from which it was reached. The first time a node is popped, its distance and first hop are final.
+
+@practice code
+prompt: Write `bellman_ford(nodes, edges, source)` where `nodes` is a list of node names and `edges` is a list of directed edges `(u, v, weight)`; weights may be negative. Return a dictionary of the least cost from `source` to every node, using `float("inf")` for unreachable nodes. If a negative-weight cycle is reachable from `source`, raise `ValueError`.
+starter:
+```python
+def bellman_ford(nodes, edges, source):
+    pass
+```
+tests:
+```python
+inf = float("inf")
+edges = [("A", "B", 4), ("A", "C", 5), ("B", "C", -3), ("C", "D", 2)]
+assert bellman_ford(["A", "B", "C", "D"], edges, "A") == {
+    "A": 0, "B": 4, "C": 1, "D": 3}
+assert bellman_ford(["A", "B", "X"], [("A", "B", 1)], "A") == {
+    "A": 0, "B": 1, "X": inf}
+bad = [("A", "B", 1), ("B", "C", -2), ("C", "B", 1)]
+assert raises(ValueError, bellman_ford, ["A", "B", "C"], bad, "A")
+assert raises(ValueError, bellman_ford, ["A", "B", "C"], bad, "C")
+assert bellman_ford(["A"], [], "A") == {"A": 0}
+```
+model:
+```python
+def bellman_ford(nodes, edges, source):
+    inf = float("inf")
+    dist = {n: inf for n in nodes}
+    dist[source] = 0
+    for _ in range(len(nodes) - 1):
+        for u, v, w in edges:
+            if dist[u] + w < dist[v]:
+                dist[v] = dist[u] + w
+    for u, v, w in edges:
+        if dist[u] + w < dist[v]:
+            raise ValueError("negative cycle")
+    return dist
+```
+hint: Relax every edge `len(nodes) - 1` times: `if dist[u] + w < dist[v]` then update.
+hint: After those passes, one more pass that still finds an improvement proves a negative cycle is reachable.
+solution: Start with infinity everywhere except the source, relax all edges $V - 1$ times, then do one more pass: if any edge can still be relaxed there is a reachable negative cycle. Because `inf + w` is `inf`, edges out of unreachable nodes never change anything.
+
+@quiz code
+prompt: Write `dv_update(me, costs, vectors)` that computes a router's new distance vector from its neighbors' vectors. `me` is the router's name; `costs` maps each neighbor to the link cost from `me`; `vectors` maps each neighbor to that neighbor's vector (a dictionary from destination to cost). Return a dictionary with `me` mapped to 0 and every other destination mentioned in any neighbor's vector mapped to `min over neighbors v of costs[v] + vectors[v][destination]`, using only the neighbors whose vector contains that destination.
+starter:
+```python
+def dv_update(me, costs, vectors):
+    pass
+```
+tests:
+```python
+v = {"y": {"x": 2, "y": 0, "z": 1}, "z": {"x": 7, "y": 1, "z": 0}}
+assert dv_update("x", {"y": 2, "z": 7}, v) == {"x": 0, "y": 2, "z": 3}
+assert dv_update("x", {"y": 1}, {"y": {"y": 0, "w": 5, "x": 1}}) == {
+    "x": 0, "y": 1, "w": 6}
+assert dv_update("x", {}, {}) == {"x": 0}
+assert dv_update("a", {"b": 3, "c": 1},
+                 {"b": {"d": 1, "b": 0}, "c": {"d": 5, "c": 0}}) == {
+    "a": 0, "b": 3, "d": 4, "c": 1}
+```
+model:
+```python
+def dv_update(me, costs, vectors):
+    result = {me: 0}
+    for neighbor, cost in costs.items():
+        for dest, dist in vectors[neighbor].items():
+            if dest == me:
+                continue
+            candidate = cost + dist
+            if dest not in result or candidate < result[dest]:
+                result[dest] = candidate
+    return result
+```
+hint: This is the Bellman-Ford equation: take the minimum, over neighbors, of link cost plus the neighbor's distance.
+hint: Skip the entry for `me` in the neighbors' vectors, because the distance to yourself is 0.
+solution: Loop over neighbors and over the destinations in their vectors, compute `cost + dist`, and keep the smallest candidate for each destination; `me` stays at 0.
+
+@quiz mc
+prompt: Router z reaches destination x only through neighbor y. Using poison reverse, what does z advertise to y about x?
+choice: Its true distance to x
+choice*: An infinite distance to x
+choice: Nothing, it sends no vector to y at all
+choice: A distance of 0 to x
+hint: The aim is that y never chooses a route that goes back through z.
+solution: With poison reverse, z tells y that its distance to x is infinite whenever z's route to x goes through y, so y will not route to x through z and the two-node loop cannot form.

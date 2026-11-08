@@ -1,0 +1,331 @@
+@lesson
+title: Layered and hexagonal architecture: ports and adapters
+summary: Organize an application into layers whose dependencies point inward, and isolate storage and delivery behind ports with swappable adapters.
+objective: Describe the layers of a typical application and state the dependency rule.
+objective: Define ports and adapters and implement an in-memory adapter for testing.
+objective: Draw the layers for a described application and show where each piece of code lives.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 2 "Repository Pattern", Chapter 4 "Our First Use Case: Flask API and Service Layer" and Chapter 3 "A Brief Interlude: On Coupling and Abstractions".
+@article
+You can have a perfect domain model and still end up with a codebase nobody can change, if SQL, HTTP handlers and business rules are mixed in the same functions. Architecture is the plan for **where code lives and who may depend on whom**. This week you learn the two most useful plans: layers and ports and adapters.
+
+### The layered architecture
+
+The classic **layered architecture** splits an application horizontally:
+
+1. **Presentation** (or delivery): HTTP handlers, CLI commands, UI. Translates between the outside world and the application.
+2. **Application** (service layer): use cases such as "place an order". Orchestrates: loads aggregates, calls the domain, saves, publishes events. Holds no business rules itself.
+3. **Domain**: entities, value objects, aggregates and domain services. The rules.
+4. **Infrastructure**: databases, message brokers, email, file systems.
+
+In the *strict* classic version each layer depends on the one below, so the domain depends on the database layer. This has a cost: your most important code, the rules, cannot be tested or understood without the database.
+
+### The dependency rule and hexagonal architecture
+
+**Hexagonal architecture** (also called **ports and adapters**; onion and clean architecture are close relatives) reverses this. The **dependency rule**: source-code dependencies point **inward**, toward the domain. The domain imports nothing from the application layer, web framework or database library.
+
+- A **port** is an interface the application *needs* or *offers*, defined in application or domain terms. Example: a `TaskRepository` with `add(task)`, `get(task_id)` and `all()`.
+- An **adapter** is a concrete implementation that connects a port to a technology. `SqlTaskRepository` and `InMemoryTaskRepository` both implement the port.
+- **Driving** (primary) adapters call the application: a Flask route, a CLI command, a test. **Driven** (secondary) adapters are called by the application: databases, email, payment gateways.
+
+This is Dependency Inversion (week 3) used at the scale of the whole system: the service depends on the `TaskRepository` abstraction, and the SQL adapter depends on that abstraction too.
+
+```python
+class InMemoryTaskRepository:
+    def __init__(self):
+        self._tasks = {}
+
+    def add(self, task):
+        self._tasks[task.id] = task
+
+    def get(self, task_id):
+        return self._tasks.get(task_id)
+```
+
+```python
+class TaskService:
+    def __init__(self, repo):
+        self._repo = repo
+
+    def complete(self, task_id):
+        task = self._repo.get(task_id)
+        if task is None:
+            raise LookupError(task_id)
+        task.done = True
+```
+
+`TaskService` never mentions SQL. In production it receives `SqlTaskRepository(connection)`; in a unit test it receives `InMemoryTaskRepository()`, which is fast and needs no setup.
+
+### The composition root
+
+Somewhere the pieces must be assembled: construct the adapters, inject them into the services, hand the services to the delivery layer. Do it in **one place near the program's entry point**, the **composition root** (`main.py`, a `bootstrap()` function). Everything else receives its dependencies. The swap from SQLite to Postgres, or from a web UI to a command line, is a change to that one place plus a new adapter.
+
+### Where does each thing go?
+
+- Business rule ("no overlapping bookings"): domain.
+- "Load the room, book it, save it, send the confirmation": application service.
+- "Parse the JSON body, call the service, return a 201": driving adapter.
+- "Run this SQL": driven adapter, behind a port.
+- Transactions: usually started and committed by the service layer, using a unit of work, so use cases succeed or fail as a whole.
+
+### Trade-offs
+
+Ports and adapters buy testability and replaceability, and they cost extra classes and indirection. A script of 100 lines does not need them. A service that will live for years, talks to a database and an external API, and has real rules does. Do not build a port for something that will never be swapped *and* is easy to test as it is. A good compromise for a new system is: keep the domain pure, put storage behind a repository port, and keep the rest simple until a need appears.
+
+### Testing strategy this enables
+
+Domain tests: plain objects, no setup. Service tests: in-memory adapters, fast, covering use-case flow. Adapter tests (**integration tests**): a handful that prove the SQL adapter really works against a real database. Few end-to-end tests through the delivery layer. This is the shape of the **test pyramid**, and it only works if the layers are separable.
+
+@example
+title: Swapping storage through a port
+problem: `TaskService` works with `InMemoryTaskRepository`. Show that a different adapter, such as one that logs each call, can be used without changing `TaskService`.
+step: The port is informal: an object with `get(task_id)` and `add(task)`. `TaskService` calls only those.
+step: Write a second adapter that wraps another repository and records calls:
+
+```python
+class LoggingRepository:
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = []
+
+    def get(self, task_id):
+        self.calls.append(("get", task_id))
+        return self._inner.get(task_id)
+
+    def add(self, task):
+        self.calls.append(("add", task.id))
+        self._inner.add(task)
+```
+step: Compose at the entry point: `TaskService(LoggingRepository(InMemoryTaskRepository()))`.
+step: `TaskService` is unchanged and untested for the new adapter, because it only relies on the port. The same trick lets you move from memory to SQL.
+answer: Inject a different adapter that implements the same port; no change to the service.
+
+@example
+title: Drawing the layers for a to-do app
+problem: A to-do app has a web page and a command-line tool, stores tasks in SQLite, and has the rule "a completed task cannot be completed again". Show the layers and where each piece lives.
+step: Domain: `Task` (entity) with `complete()`, which raises an error if already done. Pure Python, no imports from outside.
+step: Application: `TaskService` with `create(title)` and `complete(task_id)`; it depends on the port `TaskRepository`.
+step: Driven adapters: `SqliteTaskRepository` (production) and `InMemoryTaskRepository` (tests), both implementing the port.
+step: Driving adapters: a web route and a CLI command; each parses input, calls the `TaskService` and formats the result. Neither contains the rule.
+step: Composition root: `main.py` builds the repository and service, and passes the service to whichever interface starts.
+step: Arrows: web and CLI point to the service; the service points to the domain and the port; the SQLite and in-memory adapters point to the port. Nothing in the domain points outward.
+answer: Delivery adapters then service then domain, with infrastructure adapters implementing a port owned by the application.
+
+@mistakes
+- Letting the domain import the ORM or web framework "just for one decorator". The dependency rule is broken and the domain is no longer testable alone.
+- Putting business rules in route handlers or SQL queries, where they get duplicated across the web and CLI.
+- Creating a port and adapter for every class, including ones that will never be swapped, then drowning in boilerplate.
+- Treating an in-memory fake as proof the real adapter works. You still need integration tests against the real database.
+
+@practice mc
+prompt: In a hexagonal application, which dependency violates the dependency rule?
+choice: The web route imports `TaskService`
+choice: `SqliteTaskRepository` imports the `TaskRepository` port definition
+choice*: The `Task` domain class imports the SQL library to run queries
+choice: `main.py` imports both the service and the adapters
+hint: Dependencies must point toward the domain, never out of it.
+solution: The domain must not depend on infrastructure, so a `Task` that imports a SQL library breaks the rule. The route importing the service, the adapter importing its port and the composition root importing everything all point inward or sit at the outer edge where wiring belongs.
+
+@practice code
+prompt: Write `InMemoryTaskRepository`, an adapter for a task repository port. `add(task)` stores a task by its `id` attribute and raises `ValueError` if that id already exists. `get(task_id)` returns the task or `None`. `all()` returns a list of all tasks sorted by id.
+starter:
+```python
+class InMemoryTaskRepository:
+    pass
+```
+tests:
+```python
+class T:
+    def __init__(self, id, title):
+        self.id = id
+        self.title = title
+
+repo = InMemoryTaskRepository()
+assert repo.all() == []
+repo.add(T(2, "b"))
+repo.add(T(1, "a"))
+assert [t.title for t in repo.all()] == ["a", "b"]
+assert repo.get(2).title == "b"
+assert repo.get(9) is None
+assert raises(ValueError, repo.add, T(1, "dup"))
+assert len(repo.all()) == 2
+```
+model:
+```python
+class InMemoryTaskRepository:
+    def __init__(self):
+        self._tasks = {}
+
+    def add(self, task):
+        if task.id in self._tasks:
+            raise ValueError(f"duplicate id {task.id}")
+        self._tasks[task.id] = task
+
+    def get(self, task_id):
+        return self._tasks.get(task_id)
+
+    def all(self):
+        return [self._tasks[i] for i in sorted(self._tasks)]
+```
+hint: A private dictionary keyed by id is enough.
+solution: The adapter stores tasks in a private dict keyed by id, rejects duplicates in `add`, returns `None` from `get` for a missing id, and sorts keys in `all`. Because it follows the same interface as a SQL repository would, services can be tested with it.
+
+@practice text
+prompt: What does this program print? Type the two lines of output exactly.
+
+```python
+class FakeRepo:
+    def __init__(self):
+        self.saved = []
+
+    def add(self, name):
+        self.saved.append(name)
+
+class Service:
+    def __init__(self, repo):
+        self.repo = repo
+
+    def register(self, name):
+        name = name.strip().title()
+        self.repo.add(name)
+        return name
+
+repo = FakeRepo()
+service = Service(repo)
+print(service.register("  ada lovelace "))
+print(repo.saved)
+```
+answer:
+```
+Ada Lovelace
+['Ada Lovelace']
+```
+check: run("class FakeRepo:\n    def __init__(self):\n        self.saved = []\n\n    def add(self, name):\n        self.saved.append(name)\n\nclass Service:\n    def __init__(self, repo):\n        self.repo = repo\n\n    def register(self, name):\n        name = name.strip().title()\n        self.repo.add(name)\n        return name\n\nrepo = FakeRepo()\nservice = Service(repo)\nprint(service.register('  ada lovelace '))\nprint(repo.saved)\n")
+hint: `strip()` removes the outer spaces and `title()` capitalizes each word.
+solution: The service cleans the name to `Ada Lovelace`, gives it to the injected repository and returns it. The fake records what it was given, which is how service tests check behavior without a database.
+
+@practice code
+prompt: Write the application service `TaskService(repo)`. The repository port has `add(task)` and `get(task_id)`, and tasks are objects with `id`, `title` and `done` attributes; use the `Task` class provided. `create(title)` makes a task with the next id (starting at 1, increasing by 1 per task made by this service), saves it with `repo.add`, and returns the id. `complete(task_id)` sets `done = True` on the stored task and raises `LookupError` if there is no such task.
+starter:
+```python
+class Task:
+    def __init__(self, id, title):
+        self.id = id
+        self.title = title
+        self.done = False
+
+class TaskService:
+    pass
+```
+tests:
+```python
+class FakeRepo:
+    def __init__(self):
+        self.tasks = {}
+
+    def add(self, task):
+        self.tasks[task.id] = task
+
+    def get(self, task_id):
+        return self.tasks.get(task_id)
+
+repo = FakeRepo()
+service = TaskService(repo)
+first = service.create("write")
+second = service.create("test")
+assert (first, second) == (1, 2)
+assert repo.tasks[1].title == "write"
+assert repo.tasks[1].done is False
+service.complete(2)
+assert repo.tasks[2].done is True
+assert repo.tasks[1].done is False
+assert raises(LookupError, service.complete, 99)
+```
+model:
+```python
+class Task:
+    def __init__(self, id, title):
+        self.id = id
+        self.title = title
+        self.done = False
+
+class TaskService:
+    def __init__(self, repo):
+        self._repo = repo
+        self._next_id = 1
+
+    def create(self, title):
+        task = Task(self._next_id, title)
+        self._next_id += 1
+        self._repo.add(task)
+        return task.id
+
+    def complete(self, task_id):
+        task = self._repo.get(task_id)
+        if task is None:
+            raise LookupError(task_id)
+        task.done = True
+```
+hint: The service receives the repository in its constructor and never creates one.
+solution: `create` builds a `Task`, hands it to the port and returns its id; `complete` loads through the port, changes the entity and reports a missing task with `LookupError`. The service has no idea whether the repository is SQL or a dictionary.
+
+@practice self
+prompt: A library lends books to members through a website and a librarian's command-line tool. Rules: a member may have at most 3 books on loan; a book can be on loan to only one member; loans last 14 days. Records live in PostgreSQL, and overdue reminders are sent by email. Draw (as a text diagram or a list with arrows) the layers of a hexagonal design. Show each piece of code, the layer it lives in, which ports exist, which adapters implement them, and the direction of each dependency. Say where the 3-book rule lives.
+hint: Put the rules in the domain, the use cases in the application layer, and every technology behind a port.
+solution: Domain: `Member` and `Book` entities, `Loan` and `DueDate` value objects, and an aggregate root (`Member` or a `Loan` ledger) with `borrow(book_id, today)` that enforces the 3-book limit and the due date. Application layer: `LendingService` with `borrow(member_id, book_id)`, `return_book(...)` and `send_overdue_reminders()`; it loads aggregates through ports, calls the domain and saves. Ports (owned by the application layer): `LoanRepository` (get, save), `BookCatalog` (find book availability) and `Notifier` (send reminder). Driven adapters: `PostgresLoanRepository` and `InMemoryLoanRepository` for the repository port; `SmtpNotifier` and `FakeNotifier` for the notifier. Driving adapters: a web route (parses the request, calls `LendingService.borrow`, returns 200 or 409) and a CLI command (does the same with different I/O). Composition root: `main.py` builds the Postgres repository and SMTP notifier, builds `LendingService` and passes it to the web app and CLI. Dependencies: web and CLI point to the service; the service points to the domain and to the port interfaces; the Postgres and SMTP adapters point to the ports; the domain points to nothing. The 3-book rule lives in the domain (`borrow`), so both the website and the command line get it, and a unit test needs no database.
+rubric: Places the domain rules (3-book limit, one holder per book, 14-day due date) in the domain layer and names the aggregate or entities involved.
+rubric: Shows an application service and at least two ports with their real and in-memory or fake adapters, plus both driving adapters.
+rubric: Shows the dependency arrows pointing inward, a composition root that wires the pieces, and keeps the domain free of PostgreSQL and email.
+
+@quiz code
+prompt: Write a driven adapter `JsonNoteRepository(path)` that stores notes (strings) as a JSON list in the text file at `path`. Assume the file already exists and contains a JSON list. `add(note)` appends a note and writes the list back; `all()` returns the list of notes read from the file. Two repository objects with the same path must see the same notes. Use `open()` and the `json` module.
+starter:
+```python
+import json
+
+class JsonNoteRepository:
+    pass
+```
+tests:
+```python
+write_file("notes.json", "[]")
+a = JsonNoteRepository("notes.json")
+assert a.all() == []
+a.add("buy milk")
+a.add("call Ana")
+assert a.all() == ["buy milk", "call Ana"]
+b = JsonNoteRepository("notes.json")
+assert b.all() == ["buy milk", "call Ana"]
+b.add("third")
+assert a.all() == ["buy milk", "call Ana", "third"]
+import json as _json
+assert _json.loads(read_file("notes.json")) == ["buy milk", "call Ana", "third"]
+```
+model:
+```python
+import json
+
+class JsonNoteRepository:
+    def __init__(self, path):
+        self._path = path
+
+    def all(self):
+        with open(self._path, "r") as f:
+            return json.load(f)
+
+    def add(self, note):
+        notes = self.all()
+        notes.append(note)
+        with open(self._path, "w") as f:
+            json.dump(notes, f)
+```
+hint: Read the file fresh in `all()` and rewrite it in `add`; keep only the path in the object.
+solution: The file is the shared state, so `all()` always reads it and `add()` reads, appends and writes back. A service written against `add` and `all` works with this adapter or an in-memory one.
+
+@quiz mc
+prompt: A team wants to switch from SQLite to PostgreSQL. Their application service constructs `SqliteRepository()` inside its methods. What change makes the switch cheapest in future?
+choice: Rename `SqliteRepository` to `Repository` and keep constructing it inside the methods
+choice: Copy the service and edit the copy for PostgreSQL
+choice*: Inject a repository that follows a port into the service's constructor, and build the concrete one in the composition root
+choice: Move the SQL statements into the web route handlers
+hint: Where should the decision about which database to use be made?
+solution: Injecting the repository and choosing the adapter in one composition root means the switch is a new adapter plus one line of wiring. Renaming still hard-wires the class, copying duplicates logic, and moving SQL into routes spreads storage knowledge further.

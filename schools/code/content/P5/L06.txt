@@ -1,0 +1,304 @@
+@lesson
+title: Containers with Docker
+summary: Package a Python web application into a small, reproducible container image that runs as a non-root user, and run it locally with its database.
+objective: Explain images, containers, layers and why containers give reproducible deployments.
+objective: Write a Dockerfile that uses a pinned base image, caches dependencies and runs without root.
+objective: Use a .dockerignore file and Docker Compose to run the application and a database locally.
+reading: The Twelve-Factor App, the "Dependencies" (II), "Port binding" (VII) and "Disposability" (IX) factors.
+
+@article
+"It works on my machine" usually means "my machine has a different Python, different libraries and a different operating system from yours." A **container** removes the differences by shipping the application together with its dependencies. An **image** is the packaged, read-only template; a **container** is a running instance of an image. Unlike a virtual machine, a container shares the host's kernel, so it starts in seconds and is much lighter. Docker is the best-known tool, and the image format is an open standard (OCI), so the same image runs on many platforms.
+
+### A Dockerfile for a Python web app
+
+A **Dockerfile** is a recipe: each instruction creates a **layer**, and layers are cached. Here is a Dockerfile for an application whose code is a package `app` served by Gunicorn (listed in `requirements.txt`):
+
+```dockerfile
+FROM python:3.13-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN useradd --create-home --uid 10001 appuser
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+USER appuser
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=3s \
+    CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health')"]
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app"]
+```
+
+What each part does and why:
+
+- **`FROM python:3.13-slim-bookworm`** pins the language version and the Debian release; never use `latest`, because it changes under you. For strictly reproducible builds, pin the image digest as well (`python:3.13-slim-bookworm@sha256:...`) and update it deliberately. Newer Python versions and newer Debian releases than `bookworm` exist, so check the official image page and move up on purpose, keeping the same pinning habit.
+- **`PYTHONUNBUFFERED=1`** makes logs appear immediately, which matters when you read them from the container's output.
+- **`COPY requirements.txt .` before `COPY . .`** is a caching trick: dependency installation is expensive and only changes when `requirements.txt` changes, so it sits in an early layer that is reused when only your code changes.
+- **`USER appuser`** runs the process without root, so a bug in the app cannot trivially control the container.
+- **`HEALTHCHECK`** lets the runtime test whether the app answers; it uses only the standard library so the image needs no extra tools.
+- **`CMD`** in the exec (JSON array) form runs the server as the main process so it receives stop signals.
+
+The app listens on a port taken from configuration and logs to standard output (twelve-factor "port binding" and "logs" factors); the platform decides where those go.
+
+### Keep images small and clean
+
+Add a `.dockerignore` so the build context excludes junk and, importantly, secrets:
+
+```text
+.git
+.venv
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+tests/
+```
+
+For compiled dependencies, a **multi-stage build** compiles in a first stage and copies only the result into a slim final stage. Never `COPY .env` and never write secrets with `ENV` or `ARG`, because both stay readable in the image history. Rebuild regularly to pick up security patches in the base image, and scan images for known vulnerabilities (week 10).
+
+### Building and running
+
+```bash
+docker build -t toolshare:0.1.0 .
+docker run --rm -p 8000:8000 --env-file .env toolshare:0.1.0
+```
+
+`-t` names and tags the image with a version, `-p 8000:8000` maps host port to container port (`host:container`), and `--env-file` supplies config at runtime without baking it in. Tag images with the version or the Git commit hash so you always know what is running.
+
+### Docker Compose for local development
+
+**Docker Compose** describes several containers in one file. This `compose.yaml` runs the app with a PostgreSQL database:
+
+```yaml
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://app:${DB_PASSWORD}@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in your shell or .env}
+      POSTGRES_DB: app
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  dbdata:
+```
+
+Start it with `docker compose up --build`. The `${DB_PASSWORD:?...}` form stops with an error if the variable is missing, so there is no default password in the file. The named volume keeps database data when the container is replaced; containers themselves are disposable. Inside Compose, the app reaches the database by the service name `db`, not `localhost`, which is why `web` overrides `DATABASE_URL` from `.env` with a host of `db` and the same password. PostgreSQL has newer major versions than 17; pick a current supported one on purpose.
+
+@example
+title: Fixing a slow, fragile Dockerfile
+problem: A Dockerfile starts `FROM python:latest`, runs `COPY . .` first, then `pip install -r requirements.txt`, and has no `USER`. Every code edit reinstalls all dependencies. Fix it.
+step: Pin the base image: `FROM python:3.13-slim-bookworm`, so builds are repeatable and smaller.
+step: Reorder for caching: `COPY requirements.txt .`, then `RUN pip install --no-cache-dir -r requirements.txt`, then `COPY . .`. Now editing code reuses the dependency layer.
+step: Add a non-root user with `RUN useradd --create-home --uid 10001 appuser` and `USER appuser` before `CMD`.
+step: Add a `.dockerignore` listing `.git`, `.venv` and `.env` so the build context is small and no secret can be copied in.
+answer: A pinned base image, dependency layer before the code layer, a non-root user and a `.dockerignore`.
+
+@example
+title: Running the container with config
+problem: The container exits immediately with `DATABASE_URL is required`. You have a local `.env` file. How do you start it and confirm it works?
+step: The error is the app failing fast, which is correct: the container has no environment yet.
+step: Supply config at runtime: `docker run --rm -p 8000:8000 --env-file .env toolshare:0.1.0`.
+step: Open `http://localhost:8000/health` in a browser, or run `docker ps` and look for `healthy` in the status column after the interval passes.
+step: Read logs with `docker logs <container-name>`; they come from standard output, so no log files are involved.
+answer: Pass the variables with `--env-file` at run time and verify via the health endpoint and `docker logs`.
+
+@mistakes
+- Using `FROM python:latest` or an untagged image, so a rebuild next month silently changes the Python version.
+- Copying all files before installing dependencies, which defeats layer caching and slows every build.
+- Running as root, or baking secrets into the image with `COPY .env`, `ENV` or `ARG`.
+- Treating a container like a server: storing data inside it, instead of in a volume or an external database.
+
+@practice mc
+prompt: Why does the Dockerfile copy `requirements.txt` and run `pip install` before copying the rest of the source?
+choice: Because Docker refuses to copy the source files first.
+choice*: So the slow dependency layer is cached and only rebuilt when `requirements.txt` changes, not on every code edit.
+choice: Because pip cannot run after the source is copied.
+choice: To make the final image run faster at runtime.
+hint: Docker reuses a layer when the instruction and the files it depends on are unchanged.
+solution: Layers are cached in order. Putting rarely changing steps first means a code edit invalidates only the later layers, so rebuilds are fast. It has no effect on runtime speed.
+
+@practice code
+prompt: Write `lint_dockerfile(text)` that returns a list of problem names found in a Dockerfile, in this order and each at most once: `"unpinned-base"` if any `FROM` line uses an image with no tag or the tag `latest` (an image containing `@sha256:` counts as pinned, and `FROM` options starting with `--` and an `AS name` suffix are ignored), `"uses-add"` if any line starts with `ADD ` and `"runs-as-root"` if there is no `USER` line. Compare instruction words case-insensitively and ignore leading spaces.
+starter:
+```python
+def lint_dockerfile(text):
+    pass
+```
+tests:
+```python
+good = "FROM python:3.13-slim-bookworm AS base\nCOPY . .\nUSER appuser\nCMD [\"x\"]\n"
+assert lint_dockerfile(good) == []
+bad = "from python:latest\nADD app.tar.gz /app\n"
+assert lint_dockerfile(bad) == ["unpinned-base", "uses-add", "runs-as-root"]
+assert lint_dockerfile("FROM ubuntu\nUSER 1000\n") == ["unpinned-base"]
+digest = "FROM python@sha256:abc123\nUSER app\n"
+assert lint_dockerfile(digest) == []
+reg = "FROM registry.example.test:5000/team/app\nUSER app\n"
+assert lint_dockerfile(reg) == ["unpinned-base"]
+plat = "FROM --platform=linux/amd64 python:3.13-slim AS x\nUSER app\n"
+assert lint_dockerfile(plat) == []
+```
+model:
+```python
+def lint_dockerfile(text):
+    problems = []
+    unpinned = False
+    uses_add = False
+    has_user = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        parts = line.split()
+        if not parts:
+            continue
+        word = parts[0].upper()
+        if word == "FROM":
+            args = [p for p in parts[1:] if not p.startswith("--")]
+            image = args[0] if args else ""
+            if "@sha256:" not in image:
+                name = image.split("/")[-1]
+                if ":" not in name or name.endswith(":latest"):
+                    unpinned = True
+        elif word == "ADD":
+            uses_add = True
+        elif word == "USER":
+            has_user = True
+    if unpinned:
+        problems.append("unpinned-base")
+    if uses_add:
+        problems.append("uses-add")
+    if not has_user:
+        problems.append("runs-as-root")
+    return problems
+```
+hint: Split each line into words; the first word is the instruction.
+hint: Look for the tag only in the last path segment, because a registry host can contain a colon for a port.
+solution: Walk the lines, recording whether any `FROM` image is unpinned (checking the tag only in the segment after the last `/`), whether `ADD` appears, and whether `USER` appears. Then append the problem names in the required order.
+
+@practice code
+prompt: Write `is_ignored(path, patterns)` for a simplified `.dockerignore`. A pattern that ends with `/` ignores any path that starts with the whole pattern, slash included (`tests/` ignores `tests/a.py` but not `tests` or `tests_old/a.py`); a pattern starting with `*.` ignores any path whose file name (the part after the last `/`) ends with that extension; any other pattern ignores only a path that equals it exactly. Return `True` if any pattern matches.
+starter:
+```python
+def is_ignored(path, patterns):
+    pass
+```
+tests:
+```python
+pats = [".env", "tests/", "*.pyc", ".git/"]
+assert is_ignored(".env", pats) is True
+assert is_ignored("tests/test_api.py", pats) is True
+assert is_ignored("app/cache.pyc", pats) is True
+assert is_ignored("app/main.py", pats) is False
+assert is_ignored("app/.env", pats) is False
+assert is_ignored("tests", pats) is False
+assert is_ignored("tests_old/a.py", pats) is False
+assert is_ignored("anything", []) is False
+```
+model:
+```python
+def is_ignored(path, patterns):
+    name = path.split("/")[-1]
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            if path.startswith(pattern):
+                return True
+        elif pattern.startswith("*."):
+            if name.endswith(pattern[1:]):
+                return True
+        elif path == pattern:
+            return True
+    return False
+```
+hint: Handle the three pattern kinds in separate branches.
+hint: For `*.pyc`, compare the end of the file name with `.pyc` (the pattern without its `*`).
+solution: A trailing-slash pattern is a prefix test on the path, a `*.ext` pattern is a suffix test on the file name, and everything else is exact equality. Return `True` on the first match and `False` after the loop.
+
+@practice ms
+prompt: Which practices make a container image safer and more reproducible? Select all that apply.
+choice*: Pin the base image to a specific version tag, or a digest.
+choice*: Run the application as a non-root user.
+choice: Put the production database password in an `ENV` instruction so the container starts without configuration.
+choice*: Exclude `.env` and `.git` with a `.dockerignore` file.
+choice: Use `latest` so you always get the newest base image automatically.
+hint: Reproducible means the same build gives the same result; safe means a leak or bug has limited impact.
+solution: Pinning, a non-root user and a `.dockerignore` all help. An `ENV` password is readable by anyone with the image, and `latest` makes builds change without notice.
+
+@practice self
+prompt: Containerize your capstone (or a small Flask or FastAPI app). Write the Dockerfile, the `.dockerignore`, and the exact commands to build the image with a version tag, run it with a `.env` file, and check that it is healthy. Explain in three sentences why each of the pinned base image, the instruction order and the non-root user matters.
+hint: Install dependencies in their own layer before copying the code.
+solution: Dockerfile: `FROM python:3.13-slim-bookworm`; set `PYTHONUNBUFFERED=1`; `WORKDIR /app`; `RUN useradd --create-home --uid 10001 appuser`; `COPY requirements.txt .`; `RUN pip install --no-cache-dir -r requirements.txt`; `COPY . .`; `USER appuser`; `EXPOSE 8000`; a `HEALTHCHECK` that requests `/health`; and `CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app"]`. `.dockerignore`: `.git`, `.venv`, `__pycache__/`, `*.pyc`, `.env`, `.pytest_cache/`. Commands: `docker build -t myapp:0.1.0 .`, then `docker run --rm -p 8000:8000 --env-file .env myapp:0.1.0`, then open `http://localhost:8000/health` or check `docker ps` for `healthy`. Why: the pinned base image means a rebuild next month produces the same Python version, so surprises come from my changes only; copying `requirements.txt` and installing before copying the code keeps the slow dependency layer cached, so code edits rebuild in seconds; the non-root user limits what an attacker or a bug can do if the process is compromised.
+rubric: The Dockerfile uses a pinned base image (not `latest`), installs dependencies before copying the code, and sets a non-root `USER`.
+rubric: The `.dockerignore` excludes `.env` and `.git`, and no secret appears in the Dockerfile.
+rubric: Gives valid build and run commands with a version tag, `-p` port mapping and `--env-file`, and a way to verify health.
+rubric: The three explanations are correct and specific: reproducibility, layer caching and reduced privilege.
+
+@quiz code
+prompt: Write `parse_port_mapping(text)` for a Docker `-p` value of the form `host:container` such as `"8080:8000"`. Return a tuple of two ints `(host, container)`. Raise `ValueError` if there is not exactly one colon, if either part is not all digits, or if either number is outside 1 to 65535.
+starter:
+```python
+def parse_port_mapping(text):
+    pass
+```
+tests:
+```python
+assert parse_port_mapping("8080:8000") == (8080, 8000)
+assert parse_port_mapping("80:80") == (80, 80)
+assert raises(ValueError, parse_port_mapping, "8080")
+assert raises(ValueError, parse_port_mapping, "8080:8000:1")
+assert raises(ValueError, parse_port_mapping, "abc:80")
+assert raises(ValueError, parse_port_mapping, "0:80")
+assert raises(ValueError, parse_port_mapping, "80:70000")
+assert raises(ValueError, parse_port_mapping, "80:")
+assert raises(ValueError, parse_port_mapping, "+80:80")
+```
+model:
+```python
+def parse_port_mapping(text):
+    parts = text.split(":")
+    if len(parts) != 2:
+        raise ValueError("expected host:container")
+    numbers = []
+    for part in parts:
+        if not part.isdigit():
+            raise ValueError(f"not a port number: {part!r}")
+        number = int(part)
+        if not 1 <= number <= 65535:
+            raise ValueError(f"port out of range: {number}")
+        numbers.append(number)
+    return (numbers[0], numbers[1])
+```
+hint: `text.split(":")` gives the pieces; check how many there are first.
+hint: `"".isdigit()` is `False`, which handles an empty part.
+solution: Split on `:`, require exactly two parts, require each to be all digits with `isdigit`, convert, and check the range 1 to 65535 before returning the tuple.
+
+@quiz mc
+prompt: What is the difference between a Docker image and a container?
+choice: They are two names for the same thing.
+choice*: An image is the read-only package of the application and its dependencies; a container is a running instance created from an image.
+choice: An image is a running process; a container is a file on disk.
+choice: A container is a full virtual machine with its own kernel; an image is its hard disk.
+hint: Think of a class and an object.
+solution: The image is the immutable template, and each container is a running instance of it. Containers share the host kernel, unlike virtual machines.

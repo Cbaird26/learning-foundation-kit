@@ -1,0 +1,326 @@
+@lesson
+title: Dynamic memory: malloc, free and the heap
+summary: Allocate, resize and release memory with malloc, calloc, realloc and free, avoid the standard mistakes, and build a growable array.
+objective: Explain where static, stack and heap objects live and how long each lasts.
+objective: Use `malloc`, `calloc`, `realloc` and `free` correctly, including error checks and the `sizeof *p` idiom.
+objective: Recognize memory leaks, use-after-free and double free.
+objective: Build a growable array whose appends take amortized constant time.
+reading: Beej's Guide to C Programming, the chapter on manual memory allocation (look up "Manual Memory Allocation", `malloc`, `calloc` and `realloc`).
+@article
+A C program's objects have one of three storage durations. **Static** objects (globals and `static` variables) exist for the whole run. **Automatic** objects (locals and parameters) live on the **stack** and vanish when their function returns. **Allocated** objects live on the **heap**: you create them with `malloc` and they exist until you call `free`. Use the heap when the size is unknown until runtime or when data must outlive the function that created it.
+
+### The allocation functions
+
+All are declared in `<stdlib.h>`.
+
+- `void *malloc(size_t n)` allocates `n` bytes with **uninitialized** contents and returns the address, or `NULL` on failure.
+- `void *calloc(size_t count, size_t size)` allocates `count * size` bytes **set to zero** and fails (returns `NULL`) if the multiplication overflows.
+- `void *realloc(void *p, size_t n)` resizes a block, keeping the old contents up to the smaller of the two sizes. It may **move** the block, so the old pointer is invalid after a successful call. On failure it returns `NULL` and leaves the old block untouched.
+- `void free(void *p)` releases a block obtained from one of the above. `free(NULL)` does nothing.
+
+Allocated memory is suitably aligned for any object type, and `void *` converts to any object pointer type without a cast in C.
+
+```c
+size_t n = 5;
+int *a = malloc(n * sizeof *a);     /* sizeof *a follows the type of a */
+if (a == NULL) {
+    return 1;                       /* always check */
+}
+for (size_t i = 0; i < n; i++) {
+    a[i] = (int)(i * i);
+}
+free(a);
+a = NULL;                           /* no dangling pointer left behind */
+```
+
+Writing `sizeof *a` instead of `sizeof(int)` keeps the size right if the type of `a` later changes. Compute sizes as `count * sizeof *p` and make sure the multiplication cannot overflow (`calloc` checks for you, or compare `count` with `SIZE_MAX / sizeof *p`).
+
+### Using realloc safely
+
+Never write `p = realloc(p, n);`: if it fails you lose the only pointer to the old block (a leak). Use a temporary:
+
+```c
+int *tmp = realloc(p, new_cap * sizeof *tmp);
+if (tmp == NULL) {
+    /* p is still valid: handle the error, free p if giving up */
+} else {
+    p = tmp;
+}
+```
+
+### The three classic bugs
+
+- **Memory leak**: a block is never freed (the last pointer to it is lost). The program works but consumes more and more memory.
+- **Use after free**: reading or writing a block after `free`. The behavior is undefined; it often "works" until the memory is reused.
+- **Double free**: calling `free` twice on the same pointer, which corrupts the allocator's bookkeeping.
+
+Defence: give every block a single **owner** responsible for freeing it, document ownership in function comments, free in the same module that allocates, and set pointers to `NULL` after freeing. Only pointers returned by `malloc`, `calloc` or `realloc` (and unchanged) may be passed to `free`: freeing a pointer into the middle of a block, or to a local array, is undefined.
+
+### A growable array
+
+A dynamic array stores a pointer, a length and a capacity, and doubles the capacity when full:
+
+```c
+typedef struct {
+    int *data;
+    size_t len;
+    size_t cap;
+} vec;
+
+int vec_push(vec *v, int x) {
+    if (v->len == v->cap) {
+        size_t ncap = v->cap ? v->cap * 2 : 4;
+        int *tmp = realloc(v->data, ncap * sizeof *tmp);
+        if (tmp == NULL) {
+            return -1;
+        }
+        v->data = tmp;
+        v->cap = ncap;
+    }
+    v->data[v->len++] = x;
+    return 0;
+}
+```
+
+Starting from `{NULL, 0, 0}`, the capacity goes 4, 8, 16, ... Each growth copies at most the current length, and the copies over $n$ pushes total less than $2n$ elements, so a push costs $O(1)$ **amortized** (a single push that triggers growth costs $O(n)$ in the worst case). The code relies on `realloc(NULL, n)` behaving like `malloc(n)`. The owner calls `free(v.data)` once when done.
+
+### Strings on the heap
+
+To copy a string, allocate `strlen(s) + 1` bytes, then `memcpy` or `strcpy`. A function that returns such a pointer transfers ownership to its caller, who must `free` it. (`strdup` does this; it was a POSIX function for decades and became part of standard C in C23.)
+
+@example
+title: Tracing the capacity of a growable array
+problem: Starting from an empty `vec` (`data` is `NULL`, `len` and `cap` are `0`), `vec_push` is called 9 times. What is `cap` after the 1st, 5th and 9th push, and how many times does `realloc` run?
+step: The 1st push finds `len == cap == 0`, so `ncap` becomes `4`: `realloc(NULL, ...)` acts like `malloc`. `cap` is `4`.
+step: Pushes 2 to 4 fit. The 5th push finds `len == 4 == cap`, so `cap` becomes `8` and the 4 stored items are copied if the block moves.
+step: Pushes 6 to 8 fit. The 9th push finds `len == 8 == cap`, so `cap` becomes `16`.
+step: `realloc` ran on pushes 1, 5 and 9, so 3 times, and `cap` after those pushes was `4`, `8` and `16`.
+answer: `4`, `8`, `16`; three calls
+
+@example
+title: Copying a string onto the heap
+problem: Write `char *copy_string(const char *s)` that returns a newly allocated copy of `s`, or `NULL` if allocation fails.
+step: The copy needs `strlen(s)` characters plus one byte for the terminator.
+step: Check the result of `malloc` before using it.
+step: Copy including the terminator, and return the new pointer; the caller now owns it:
+
+```c
+char *copy_string(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    if (p == NULL) {
+        return NULL;
+    }
+    memcpy(p, s, n);
+    return p;
+}
+```
+step: The caller must `free` the result exactly once. Allocating only `strlen(s)` bytes would make `memcpy` write one byte past the block.
+
+@mistakes
+- Not checking whether `malloc` returned `NULL` before using the result.
+- Writing `p = realloc(p, n)`, which leaks the old block when `realloc` fails.
+- Using a pointer after `realloc` moved the block (for example keeping a copy of the old `data` pointer).
+- Allocating `strlen(s)` bytes instead of `strlen(s) + 1` for a string copy.
+- Freeing a block twice, or freeing memory that did not come from `malloc` (a local array, or a pointer into the middle of a block).
+
+@practice text
+prompt: What does this program print? Type the output exactly (two numbers separated by one space).
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void) {
+    int *a = calloc(4, sizeof *a);
+    if (a == NULL) {
+        return 1;
+    }
+    a[1] = 7;
+    a[3] = 2;
+    int sum = 0;
+    for (int i = 0; i < 4; i++) {
+        sum += a[i];
+    }
+    printf("%d %d\n", sum, a[0]);
+    free(a);
+    return 0;
+}
+```
+answer: 9 0
+check: run_c('#include <stdio.h>\n#include <stdlib.h>\n\nint main(void) {\n    int *a = calloc(4, sizeof *a);\n    if (a == NULL) {\n        return 1;\n    }\n    a[1] = 7;\n    a[3] = 2;\n    int sum = 0;\n    for (int i = 0; i < 4; i++) {\n        sum += a[i];\n    }\n    printf("%d %d\\n", sum, a[0]);\n    free(a);\n    return 0;\n}\n')
+hint: `calloc` zero-fills the block, unlike `malloc`.
+solution: All four `int`s start at `0`; storing `7` and `2` makes the sum `9`, and `a[0]` was never written, so it is still `0`.
+
+@practice code
+prompt: Model a heap as a free list: a Python list of `(start, size)` tuples sorted by `start`, describing the free blocks. Write `first_fit(free_list, n)` that serves a request for `n` bytes (`n >= 1`) using the **first-fit** policy: take the first block whose size is at least `n`, and allocate from its beginning. Return `(address, new_free_list)`. The block is replaced by its remainder `(start + n, size - n)` unless the remainder is empty, in which case it is removed. If no block is large enough return `(None, free_list)`. Do not modify the list you are given.
+starter:
+```python
+def first_fit(free_list, n):
+    pass
+```
+tests:
+```python
+free = [(0, 4), (10, 16), (40, 8)]
+assert first_fit(free, 4) == (0, [(10, 16), (40, 8)])
+assert first_fit(free, 5) == (10, [(0, 4), (15, 11), (40, 8)])
+assert first_fit(free, 16) == (10, [(0, 4), (40, 8)])
+assert first_fit(free, 17) == (None, free)
+assert first_fit([], 1) == (None, [])
+assert free == [(0, 4), (10, 16), (40, 8)]
+```
+model:
+```python
+def first_fit(free_list, n):
+    for i, (start, size) in enumerate(free_list):
+        if size >= n:
+            rest = []
+            if size > n:
+                rest = [(start + n, size - n)]
+            return start, free_list[:i] + rest + free_list[i + 1:]
+    return None, free_list
+```
+hint: Scan the blocks in order and stop at the first one with `size >= n`.
+hint: Build the new list from the blocks before it, the remainder (if any), and the blocks after it.
+solution: First fit scans from the lowest address and splits the first block that is big enough. Slicing builds a new list, so the caller's list is unchanged. Real allocators add headers, alignment and size classes, but splitting a free block is the same idea.
+
+@practice mc
+prompt: What is wrong with this function?
+
+```c
+char *dup_name(const char *s) {
+    char *copy = malloc(strlen(s));
+    if (copy == NULL) {
+        return NULL;
+    }
+    strcpy(copy, s);
+    return copy;
+}
+```
+choice: Nothing; `strlen(s)` bytes are enough to hold the string.
+choice*: The block has no room for the terminating NUL, so `strcpy` writes one byte past the end of the allocation.
+choice: `malloc` must not be called with a value computed by `strlen`.
+choice: The function leaks memory because it returns the pointer instead of freeing it.
+hint: How many bytes does `"abc"` occupy in memory?
+solution: A string of length `n` needs `n + 1` bytes. With only `n` bytes, `strcpy` writes the terminator outside the block, a heap buffer overflow. Allocate `strlen(s) + 1`. Returning the pointer is how ownership passes to the caller, not a leak.
+
+@practice code
+prompt: When blocks are freed, an allocator merges neighbours. Write `coalesce(free_list)` where `free_list` is a list of `(start, size)` tuples of free blocks in any order, none overlapping. Return a new list sorted by `start` in which any two blocks that touch (the end `start + size` of one equals the `start` of the next) are merged into one block.
+starter:
+```python
+def coalesce(free_list):
+    pass
+```
+tests:
+```python
+assert coalesce([(0, 4), (4, 4)]) == [(0, 8)]
+assert coalesce([(20, 5), (0, 4), (4, 6)]) == [(0, 10), (20, 5)]
+assert coalesce([(0, 2), (3, 2)]) == [(0, 2), (3, 2)]
+assert coalesce([]) == []
+assert coalesce([(8, 8), (0, 8), (16, 8)]) == [(0, 24)]
+```
+model:
+```python
+def coalesce(free_list):
+    merged = []
+    for start, size in sorted(free_list):
+        if merged and merged[-1][0] + merged[-1][1] == start:
+            prev_start, prev_size = merged[-1]
+            merged[-1] = (prev_start, prev_size + size)
+        else:
+            merged.append((start, size))
+    return merged
+```
+hint: Sort by start address first, so neighbours are adjacent in the list.
+hint: For each block, compare its start with the end of the last merged block; extend that block if they touch, otherwise append a new one.
+solution: After sorting, one pass merges runs of touching blocks. The cost is $O(k \log k)$ for $k$ blocks, dominated by the sort. Coalescing fights **external fragmentation**, where there is enough free memory in total but no single block is large enough.
+
+@practice text
+prompt: What does this program print? Type the output exactly (a number and a number).
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    size_t cap = 0;
+    int grows = 0;
+    for (int len = 0; len < 20; len++) {
+        if ((size_t)len == cap) {
+            cap = cap ? cap * 2 : 4;
+            grows++;
+        }
+    }
+    printf("%zu %d\n", cap, grows);
+    return 0;
+}
+```
+answer: 32 4
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    size_t cap = 0;\n    int grows = 0;\n    for (int len = 0; len < 20; len++) {\n        if ((size_t)len == cap) {\n            cap = cap ? cap * 2 : 4;\n            grows++;\n        }\n    }\n    printf("%zu %d\\n", cap, grows);\n    return 0;\n}\n')
+hint: The capacity grows when `len` equals it: at lengths 0, 4, 8, ...
+solution: Growth happens at `len` = 0, 4, 8 and 16, giving capacities 4, 8, 16 and 32. After the loop `cap` is `32` and `grows` is `4`.
+
+@quiz code
+prompt: A dynamic array starts empty with capacity 0. When an append finds the array full (`length == capacity`), it grows: the new capacity is 1 if the old one was 0, otherwise double the old one, and the `length` existing elements are copied to the new block. Write `count_copies(n)` that returns the total number of element copies made by all growths during `n` appends (the appended items themselves are not counted).
+starter:
+```python
+def count_copies(n):
+    pass
+```
+tests:
+```python
+assert count_copies(0) == 0
+assert count_copies(1) == 0
+assert count_copies(2) == 1
+assert count_copies(3) == 3
+assert count_copies(4) == 3
+assert count_copies(5) == 7
+assert count_copies(9) == 15
+assert count_copies(17) == 31
+```
+model:
+```python
+def count_copies(n):
+    cap = 0
+    length = 0
+    copies = 0
+    for _ in range(n):
+        if length == cap:
+            copies += length
+            cap = 1 if cap == 0 else cap * 2
+        length += 1
+    return copies
+```
+hint: Simulate the appends: keep `length`, `cap` and a running total of copies.
+hint: When `length == cap`, add `length` to the total, then update `cap`.
+solution: Growth happens at lengths 0, 1, 2, 4, 8, ..., copying that many elements, so the total is $0 + 1 + 2 + 4 + \dots$, less than $2n$. That is why doubling gives amortized $O(1)$ appends, whereas growing by a fixed amount each time would cost $O(n^2)$ in total.
+
+@quiz text
+prompt: What does this program print? Type the output exactly (a word, a space and a number, as printed).
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    char *s = malloc(6);
+    if (s == NULL) {
+        return 1;
+    }
+    strcpy(s, "hello");
+    char *t = realloc(s, 12);
+    if (t == NULL) {
+        free(s);
+        return 1;
+    }
+    s = t;
+    strcat(s, " you");
+    printf("%s %zu\n", s, strlen(s));
+    free(s);
+    return 0;
+}
+```
+answer: hello you 9
+check: run_c('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\nint main(void) {\n    char *s = malloc(6);\n    if (s == NULL) {\n        return 1;\n    }\n    strcpy(s, "hello");\n    char *t = realloc(s, 12);\n    if (t == NULL) {\n        free(s);\n        return 1;\n    }\n    s = t;\n    strcat(s, " you");\n    printf("%s %zu\\n", s, strlen(s));\n    free(s);\n    return 0;\n}\n')
+hint: `realloc` keeps the contents; the string `"hello you"` has how many characters?
+solution: After `realloc` the 12-byte block still holds `hello`. Appending `" you"` makes `hello you`, nine characters, which fits in 12 bytes with its terminator.

@@ -1,0 +1,127 @@
+@project
+title: A reliable transport protocol simulator
+overview: You will write a Python simulator of a reliable transport protocol over a lossy channel, first stop-and-wait and then a sliding-window protocol (Go-Back-N), and measure how throughput changes with the loss rate and the window size. You will compare the measurements with a simple analytical model and write a short report that links what you saw to the design of TCP.
+goal: Implement stop-and-wait and Go-Back-N correctly over a channel that randomly loses packets and acknowledgments.
+goal: Measure throughput as a function of loss rate, window size and delay, using repeated runs with different random seeds.
+goal: Compare measurements with the analytical stop-and-wait model and explain the differences.
+goal: Explain in a report which TCP mechanisms (windows, cumulative ACKs, timeouts, fast retransmit, congestion control) correspond to what you observed.
+step: Read the model in the first material block and create `sim.py` with the supplied `Channel` class. Write a function `stop_and_wait(n_packets, delay, timeout, loss, seed)` that follows the rules exactly and returns the total number of ticks. Check that with `loss = 0` the result is `n_packets * (1 + 2 * delay)`.
+step: Write the analytical formula from the second material block as a function and check that the average of 200 seeded runs of your stop-and-wait simulation is within 5 percent of it for loss rates 0.02, 0.05 and 0.1.
+step: Implement `go_back_n(n_packets, window, delay, timeout, loss, seed)` following the rules in the third material block. Test it with `loss = 0` (throughput should approach `min(1, window / (1 + 2 * delay))` packets per tick), with `window = 1` (it should behave like stop-and-wait) and with a loss rate of 0.1 (all packets must still be delivered, in order, exactly once).
+step: Write a driver that sweeps the loss rate over 0, 0.01, 0.02, 0.05, 0.1 and 0.2 and the window over 1, 4, 16 and 64 with `delay = 10` and `timeout = 30`, averaging 20 seeds per point, and prints a table of throughput (packets per tick) for each protocol and setting. Optionally plot it if you have `matplotlib` installed.
+step: Add one extension of your choice: selective repeat (retransmit only the lost packets), a fast retransmit rule (resend the oldest packet after 3 duplicate ACKs), or an adaptive timeout using the RTT estimator from week 6. Measure its effect.
+step: Write the report (two to three pages): the model and assumptions, tables or plots, the comparison with theory, and a discussion of TCP (why windows are needed on high-delay links, why Go-Back-N wastes bandwidth under loss, what changes when the window must also react to congestion). Mention the limits of your simulator.
+material: **The model.** Time is measured in integer ticks. The sender has `n_packets` packets to deliver, numbered 0 to `n_packets - 1`. Sending one data packet occupies the sender for 1 tick. A packet that is not lost needs `delay` ticks to reach the receiver, and an ACK needs another `delay` ticks to come back (ACKs take no time to send). Every data packet and every ACK is lost independently with probability `loss`. The retransmission timeout is `timeout` ticks, with `timeout >= 1 + 2 * delay`. Supplied code:
+
+```python
+import random
+
+
+class Channel:
+    """A lossy channel: each call decides whether one packet survives."""
+
+    def __init__(self, loss, seed):
+        self.loss = loss
+        self.rng = random.Random(seed)
+
+    def survives(self):
+        return self.rng.random() >= self.loss
+```
+
+**Stop-and-wait rules.** Repeat for each packet until it is acknowledged: send the packet (1 tick); call `survives()` for the data packet, and if it survives call `survives()` again for its ACK. If both survive, the attempt took `1 + 2 * delay` ticks in total and the sender moves on to the next packet. Otherwise the attempt took `timeout` ticks (the sender waited for the timer) and the same packet is sent again. The function returns the sum of all attempt times.
+material: **The analytical model for stop-and-wait.** An attempt succeeds with probability $q = (1 - p)^2$, where $p$ is the loss rate, because both the data packet and its ACK must survive. The number of attempts per packet is geometric with mean $1/q$, so the mean number of failed attempts is $1/q - 1$. The expected time per packet is
+
+$$E[T] = \left(\frac{1}{q} - 1\right)\cdot \text{timeout} + (1 + 2\cdot\text{delay}),$$
+
+and the throughput is $1/E[T]$ packets per tick. For $p = 0$ it reduces to $1/(1 + 2\cdot\text{delay})$, the stop-and-wait utilization formula of week 6 with a transmission time of 1 tick.
+material: **Go-Back-N rules.** The sender has a window of `window` packets: it may have at most `window` unacknowledged packets in flight (`base` is the lowest unacknowledged packet number, `next` the next to send, and `next - base <= window` must hold). At each tick the sender sends one packet if the window allows. A packet that survives reaches the receiver `delay` ticks after it was sent. The receiver accepts only the next expected packet number; for every arriving packet (in order or not) it sends a cumulative ACK carrying the next expected number, which survives with probability `1 - loss` and arrives `delay` ticks later. When an ACK with number `a > base` arrives, the sender sets `base = a` and restarts its timer. The timer is for the oldest unacknowledged packet: if `timeout` ticks pass after `base` was last sent or the timer was last restarted without an advancing ACK, the sender goes back and resends packets `base`, `base + 1`, ... as the window allows. The simulation ends when `base == n_packets`. Return the total number of ticks; throughput is `n_packets` divided by that. Use an event queue or a dictionary from arrival tick to list of events, and use one `Channel` object so that runs are reproducible for a given seed.
+deliverable: `sim.py` containing `Channel`, `stop_and_wait`, `go_back_n` and the sweep driver, with a short comment on how to run it.
+deliverable: The measured throughput table (and plots if you made them) in your report.
+deliverable: A two-to-three page report (PDF or Markdown) with the analysis and the TCP discussion.
+rubric: Both protocols are correct: all packets delivered in order exactly once, the lossless results match the formulas, and Go-Back-N with a window of 1 matches stop-and-wait.
+rubric: The measurements average several seeds, cover the specified loss rates and window sizes, and are reported clearly.
+rubric: The comparison with the analytical model is quantitative and any difference is explained (for example, the effect of rare long runs of losses).
+rubric: The report explains why throughput falls with loss and rises with window size, and why the window cannot grow without limit on a real network.
+rubric: The TCP discussion is accurate: it names cumulative ACKs, timeouts, fast retransmit, the receive window and congestion control, and connects each to a result.
+tutor: My Go-Back-N simulation delivers packets twice or out of order. How can I debug the state of the sender and the receiver tick by tick?
+tutor: How can I check that my simulator's average throughput agrees with the formula, and how many seeds do I need?
+tutor: How does what I measured with a fixed window relate to TCP's congestion window and the Mathis formula?
+
+@review
+**Week 1: delay, loss, throughput.** Nodal delay is processing plus queuing plus transmission ($L/R$) plus propagation ($d/s$). Store-and-forward over $N$ links with $P$ packets takes $(N + P - 1)L/R$. Traffic intensity $La/R$ near 1 means long queues; above 1, loss. Throughput is limited by the bottleneck link.
+
+**Week 2: layers.** Application, transport, network, link, physical; message, segment, packet, frame. Encapsulation adds headers (TCP 20, IPv4 20, Ethernet 14 plus a 4-byte FCS). Routers change link addresses and TTL, never IP addresses (except NAT).
+
+**Week 3: HTTP.** Request line, headers, body; methods and status classes; cookies for state; conditional GET with ETag and 304; page load RTTs for non-persistent, persistent and pipelined connections; HTTP/2 multiplexing and HTTP/3 over QUIC.
+
+**Week 4: DNS.** Hierarchy of root, TLD and authoritative servers; recursive query from the host, iterative queries from the resolver; record types; TTL caching; wire format of names; SMTP, IMAP and DHCP.
+
+**Week 5: sockets and UDP.** Ports for multiplexing; UDP demultiplexes by destination port, TCP by the four-tuple; 8-byte UDP header; Internet checksum.
+
+**Week 6: reliable transfer and TCP.** Stop-and-wait utilization, Go-Back-N and selective repeat, byte sequence numbers, cumulative ACKs, three-way handshake and teardown, RTT estimation and RTO.
+
+**Week 7: flow and congestion control.** rwnd protects the receiver, cwnd protects the network; slow start, AIMD, fast retransmit, timeouts; throughput proportional to $1/(\text{RTT}\sqrt{p})$.
+
+**Week 8: IP.** CIDR, subnet masks, $2^h - 2$ hosts, VLSM allocation largest first, longest-prefix match, fragmentation in multiples of 8 bytes, IPv6.
+
+**Weeks 9 and 10: routing.** Dijkstra for link state, Bellman-Ford for distance vector, count to infinity and poison reverse; OSPF inside an AS, BGP between ASes by policy; NAT tables.
+
+**Weeks 11 and 12: link layer and security.** CRC, MAC addresses, ARP, learning switches, CSMA/CD and CSMA/CA; TLS 1.3 handshake, certificates and hostname checks, forward secrecy, firewalls, SYN cookies, DNSSEC and RPKI.
+
+**Self-check.** Can you (1) compute a delay with all four components; (2) draw a TCP connection with correct sequence and acknowledgment numbers; (3) trace a cold-cache DNS lookup and an HTTP request; (4) simulate a congestion window; (5) subnet a block and find the longest-prefix match; (6) run Dijkstra and a distance-vector update by hand; (7) explain what each message of the TLS handshake achieves?
+
+**Common errors.** Forgetting to convert bytes to bits; adding transmission delay once for a multi-hop path; treating the ACK number as the last byte received; confusing flow control with congestion control; using $2^h$ instead of $2^h - 2$ hosts; forgetting that fragment offsets count 8-byte units; choosing a BGP route by cost instead of policy; thinking switches look at IP addresses.
+
+@exam code
+prompt: Write `stop_and_wait_time(n_packets, tx, delay, timeout, lost)` that returns the total time to deliver `n_packets` packets with stop-and-wait. The sender makes data transmissions one after another; the transmissions are numbered 0, 1, 2, ... across the whole transfer (retransmissions count too). A transmission whose number is in the set `lost` is lost: the sender waits `timeout` and sends the same packet again. Any other transmission succeeds, takes `tx + 2 * delay` and moves the sender to the next packet. All ACKs arrive.
+starter:
+```python
+def stop_and_wait_time(n_packets, tx, delay, timeout, lost):
+    pass
+```
+tests:
+```python
+assert stop_and_wait_time(3, 1, 4, 10, {1}) == 37
+assert stop_and_wait_time(2, 1, 4, 10, set()) == 18
+assert stop_and_wait_time(0, 1, 4, 10, {0}) == 0
+assert stop_and_wait_time(1, 2, 5, 20, {0, 1}) == 52
+assert stop_and_wait_time(2, 1, 1, 5, {0, 2}) == 16
+```
+model:
+```python
+def stop_and_wait_time(n_packets, tx, delay, timeout, lost):
+    total = 0
+    attempt = 0
+    delivered = 0
+    while delivered < n_packets:
+        if attempt in lost:
+            total += timeout
+        else:
+            total += tx + 2 * delay
+            delivered += 1
+        attempt += 1
+    return total
+```
+hint: Keep a counter of transmissions and a counter of delivered packets.
+hint: Loop until all packets are delivered; add `timeout` for a lost transmission and `tx + 2 * delay` for a successful one.
+solution: Number the transmissions with a counter that always advances. If the current number is in `lost` the packet stays undelivered and `timeout` is added; otherwise `tx + 2 * delay` is added and the delivered count increases. For 3 packets with transmission 1 lost: 9 + 10 + 9 + 9 = 37.
+
+@exam num
+prompt: An HTTP response body of 6000 bytes is sent over TCP and IPv4 on Ethernet (20-byte TCP header, 20-byte IPv4 header, 14-byte Ethernet header, 4-byte FCS, MTU 1500, no options) on a 100 Mb/s link ($10^8$ bits per second). The data is split into segments of at most the MSS. How many microseconds does it take to transmit all the frames (count only transmission, ignore propagation and queuing)?
+answer: 503.2
+check: (6000 + (-(-6000 // (1500 - 40))) * 58) * 8 / 1e8 * 1e6
+tol: 0.01
+unit: microseconds
+hint: Find the MSS from the MTU and the two headers, then the number of segments.
+hint: Each segment adds 58 bytes of headers and trailer.
+solution: The MSS is $1500 - 40 = 1460$ bytes, so 6000 bytes need $\lceil 6000/1460 \rceil = 5$ segments. The bytes on the wire are $6000 + 5 \times 58 = 6290$, which is 50 320 bits; at $10^8$ bits per second that is 503.2 microseconds.
+
+@exam self
+prompt: A laptop with address 192.168.50.20/24 behind a home router (192.168.50.1, public address 203.0.113.7) opens `https://www.example.org/` for the first time, with empty caches. Describe, in order, everything that happens on the network until the first byte of the page arrives: address resolution of the destination (DNS and, on the local link, ARP), the TCP and TLS 1.3 handshakes, the HTTP request, and what the router does to the packets (forwarding, NAT, header changes). Give the number of round trips before the HTTP request can be sent, and name two security properties the connection has and one thing an observer on the path can still see.
+solution: The laptop applies its mask: the DNS resolver and the web server are outside 192.168.50.0/24, so it sends packets via the default gateway 192.168.50.1. It first needs the gateway's MAC address, which it gets with an ARP broadcast ("who has 192.168.50.1?") and a unicast reply. It sends a DNS query for www.example.org (UDP port 53) to its resolver; the router NATs it (source rewritten to 203.0.113.7 and a public port, TTL decremented, new Ethernet header). The resolver, with cold caches, queries a root server, a TLD server and an authoritative server (referrals, then the A record with a TTL) and returns the address; the reply is NATed back via the translation table. Then TCP: SYN, SYN-ACK, ACK to port 443 (1 RTT), with sequence numbers and the NAT mapping reused for the connection. The client sends ClientHello with the server name and a key share together with the final ACK; the server answers with ServerHello, Certificate chain, CertificateVerify and Finished; the client validates the chain, the hostname and the signature and sends Finished with the HTTP request: 2 round trips before the request (1 for TCP and 1 for TLS 1.3). The HTTP request `GET / HTTP/1.1` with a Host header is encrypted in TLS records; the response arrives one more RTT later. The properties are confidentiality and integrity of the data, and authentication of the server by its certificate (and forward secrecy). An observer on the path still sees the IP addresses, the packet sizes and timing, and possibly the server name in the ClientHello.
+hint: Go layer by layer: first local delivery (ARP and the gateway), then DNS, then TCP, then TLS, then HTTP.
+hint: Remember that the router changes the Ethernet addresses and TTL on every hop and, as a NAT, the source address and port of outgoing packets.
+rubric: Describes ARP for the gateway, the cold-cache DNS lookup (root, TLD, authoritative) and NAT translation of outgoing and incoming packets.
+rubric: Gives the order TCP handshake, TLS 1.3 handshake, HTTP request, with 2 RTT before the request is sent.
+rubric: Names confidentiality, integrity and server authentication, and a correct limitation such as visible IP addresses or timing.
+rubric: States that IP addresses stay end to end except for the NAT rewrite, while MAC addresses and TTL change at each hop.

@@ -1,0 +1,271 @@
+@lesson
+title: Objects, classes and dynamic dispatch
+summary: Explain objects, classes, inheritance and dynamic dispatch, trace method resolution in Python, and implement method lookup in a small object system.
+objective: Define an object as state bundled with behavior, and a class as a template that supplies the behavior.
+objective: Explain dynamic dispatch and trace which method runs under inheritance, overriding and `super()`.
+objective: Implement method lookup along a chain of classes, and describe vtables and Python's method resolution order.
+reading: Crafting Interpreters, Chapter 12 "Classes" and Chapter 13 "Inheritance".
+
+@article
+An **object** bundles **state** (fields) with **behavior** (methods that operate on that state). A **class** is a template: it names the methods that all its instances share, and each instance carries its own field values. Calling `acct.deposit(50)` means "send the message `deposit` to the object `acct`", and the object decides what that means.
+
+### Inheritance and overriding
+
+A class can **inherit** from a parent class (its **superclass**), gaining its methods and fields, and can **override** a method by defining one with the same name:
+
+```python
+class Shape:
+    def area(self):
+        return 0
+
+    def describe(self):
+        return f"{type(self).__name__} with area {self.area()}"
+
+class Rect(Shape):
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+
+    def area(self):
+        return self.w * self.h
+
+print(Rect(2, 3).describe())   # Rect with area 6
+```
+
+`describe` is defined once, in `Shape`, yet it calls `Rect`'s `area`. That is **dynamic dispatch**.
+
+### Dynamic dispatch
+
+With **dynamic dispatch** (late binding), the method that runs is chosen at run time from the **actual class of the receiver** (the object before the dot), not from the declared type of a variable. This is what makes **polymorphism** work: code written against a base class works with every subclass, including ones written later. A loop that calls `shape.area()` on a list of mixed shapes needs no `if` on the kind of shape.
+
+**Static dispatch**, by contrast, picks the function at compile time from declared types. Function overloading in C++ and Java is resolved statically by argument types, while virtual methods are dispatched dynamically.
+
+### How lookup works
+
+Abstractly, each class holds a table of its methods and a link to its parent. To dispatch `obj.m(args)`:
+
+1. Find the class of `obj`.
+2. Look for `m` in that class's table; if absent, look in the parent class, and so on up the chain.
+3. Call the method found with `obj` as the first argument (`self`); if none is found, report an error.
+
+Compiled languages such as C++ implement this efficiently with a **vtable**: each class has an array of function pointers, each object stores a pointer to its class's table, and a virtual call is an index into the array and an indirect call, taking constant time. Python does a dictionary lookup through the classes.
+
+In Python, `super()` finds the *next* class after the current one in the **method resolution order (MRO)**, the linear order in which classes are searched. With multiple inheritance, Python computes the MRO using the **C3 linearization**, which keeps each class before its parents and preserves the order in which the bases are listed. You can inspect it with `Class.__mro__`. For a diamond (`D` inherits from `B` and `C`, both of which inherit from `A`), the MRO is `D, B, C, A, object`: `A` is searched only once, after both of its subclasses.
+
+### Objects without classes
+
+Languages differ in how they provide objects. **Class-based** languages (Java, Python, C++) define classes first. **Prototype-based** languages (JavaScript's underlying model, Self) have objects inherit directly from other objects through a prototype link. The mechanism of following a chain to find a method is the same.
+
+### Design notes
+
+Inheritance models an **is-a** relationship, and a subclass should be usable wherever its parent is expected (the **Liskov substitution principle**). Deep hierarchies are hard to change; a widely used guideline is to **prefer composition** (an object *has* a collaborator that it delegates to) over inheritance unless the is-a relationship is genuine. Python also allows **duck typing**: any object with the right methods works, with no shared parent needed.
+
+We can model the whole mechanism with plain dictionaries. A class is `{"name", "parent", "methods"}`; an instance is `{"class": cls, "fields": {}}`; a method is a function taking the instance first. Looking up a method is a loop that follows `"parent"` links until it finds the name or runs out of classes, which is exactly step 2 above.
+
+@example
+title: Tracing dispatch with super
+problem: What does this program print?
+
+```python
+class A:
+    def who(self):
+        return "A"
+
+class B(A):
+    def who(self):
+        return "B>" + super().who()
+
+class C(B):
+    pass
+
+print(C().who())
+```
+step: `C()` creates an instance of `C`. The call `who()` searches `C` first, and `C` defines no `who`.
+step: The search moves to the parent `B`, which defines `who`. That method runs with `self` still being the `C` instance.
+step: In `B.who`, `super().who()` searches the classes after `B` in `C`'s MRO (`C, B, A, object`), so it finds `A.who`, which returns `"A"`.
+step: `B.who` returns `"B>" + "A"`.
+answer: `B>A`
+
+@example
+title: The diamond
+problem: With `class D(B, C)` where `B` and `C` both inherit from `A`, what is `D`'s MRO, and why is it not `D, B, A, C`?
+step: C3 linearization requires that a class appears before all its parents, and keeps the left-to-right order of the base list.
+step: `B` comes before `C` because of the order `(B, C)`.
+step: `A` is a parent of both `B` and `C`, so it must come after both of them.
+step: Therefore the MRO is `D, B, C, A, object`. `D, B, A, C` would put `A` before its subclass `C`.
+answer: `D, B, C, A, object`
+
+@mistakes
+- Believing the declared type of a variable decides which method runs in Python; the class of the actual object decides.
+- Forgetting to call `super().__init__(...)` in a subclass constructor that needs the parent's fields initialized.
+- Using inheritance for code reuse when the classes are not truly in an is-a relationship, which creates fragile hierarchies.
+- Assuming `super()` means "the parent class"; it means "the next class in the MRO", which matters with multiple inheritance.
+
+@practice mc
+prompt: A function takes a list of `Shape` objects and calls `s.area()` on each one. The list contains `Rect` and `Circle` objects, and both classes override `area`. Which `area` runs for each element?
+choice: Always `Shape.area`, because the list is declared as a list of shapes
+choice*: The `area` of the actual class of each object
+choice: The `area` of whichever class was defined last
+choice: None; Python raises a `TypeError` for mixed lists
+hint: Dynamic dispatch uses the receiver's class at run time.
+solution: Dynamic dispatch looks up the method starting from the class of the actual object, so each element uses its own class's `area`.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+class A:
+    def hello(self):
+        return "A"
+
+class B(A):
+    def hello(self):
+        return "B" + super().hello()
+
+print(B().hello())
+```
+answer: BA
+check: run("class A:\n    def hello(self):\n        return 'A'\n\nclass B(A):\n    def hello(self):\n        return 'B' + super().hello()\n\nprint(B().hello())\n")
+hint: `super().hello()` calls the version in the parent class.
+solution: `B.hello` returns `"B"` followed by the result of `A.hello`, which is `"A"`, so the output is `BA`.
+
+@practice code
+prompt: Define a class `Rect` with `__init__(self, w, h)`, an `area()` method returning `w * h`, and a `describe()` method returning the string `"<ClassName>:<area>"` such as `"Rect:6"`, using `type(self).__name__`. Define `Square(Rect)` with `__init__(self, side)` that calls the parent constructor with `side, side`. `Square` must not define its own `area` or `describe`.
+starter:
+```python
+class Rect:
+    pass
+```
+tests:
+```python
+r = Rect(2, 3)
+assert r.area() == 6
+assert r.describe() == "Rect:6"
+s = Square(3)
+assert s.area() == 9
+assert s.describe() == "Square:9"
+assert isinstance(s, Rect)
+assert "area" not in Square.__dict__
+assert "describe" not in Square.__dict__
+shapes = [Rect(1, 4), Square(2), Rect(5, 5)]
+assert [x.describe() for x in shapes] == ["Rect:4", "Square:4", "Rect:25"]
+```
+model:
+```python
+class Rect:
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+
+    def area(self):
+        return self.w * self.h
+
+    def describe(self):
+        return f"{type(self).__name__}:{self.area()}"
+
+
+class Square(Rect):
+    def __init__(self, side):
+        super().__init__(side, side)
+```
+hint: `type(self).__name__` gives the name of the object's actual class, even inside a method inherited from `Rect`.
+hint: `Square.__init__` only needs to call `super().__init__(side, side)`; everything else is inherited.
+solution: `describe` is written once in `Rect` and uses `type(self).__name__`, so a `Square` prints its own name through dynamic dispatch on the receiver. `Square` just forwards its side to the parent constructor.
+
+@practice code
+prompt: A class is a dictionary `{"name": str, "parent": class-or-None, "methods": dict}` mapping method names to functions. Write `find_method(cls, name)` that returns the function for `name` found by searching `cls` and then its parent chain (nearest class first), or `None` if no class in the chain defines it.
+starter:
+```python
+def find_method(cls, name):
+    pass
+```
+tests:
+```python
+base = {"name": "Base", "parent": None,
+        "methods": {"hi": lambda self: "base hi", "bye": lambda self: "base bye"}}
+mid = {"name": "Mid", "parent": base, "methods": {"hi": lambda self: "mid hi"}}
+leaf = {"name": "Leaf", "parent": mid, "methods": {}}
+assert find_method(leaf, "hi")(None) == "mid hi"
+assert find_method(leaf, "bye")(None) == "base bye"
+assert find_method(base, "hi")(None) == "base hi"
+assert find_method(leaf, "missing") is None
+assert find_method(base, "missing") is None
+assert find_method(mid, "bye") is base["methods"]["bye"]
+```
+model:
+```python
+def find_method(cls, name):
+    while cls is not None:
+        if name in cls["methods"]:
+            return cls["methods"][name]
+        cls = cls["parent"]
+    return None
+```
+hint: Start with the given class and move to its parent when the method is not found.
+hint: A `while` loop with `cls = cls["parent"]` ends when `cls` becomes `None`.
+solution: Follow the parent links from the given class: the first class whose method table contains the name wins, which is overriding. Running off the end of the chain means the method does not exist.
+
+@practice ms
+prompt: Select every true statement about dynamic dispatch and inheritance in Python.
+choice*: The method that runs is chosen from the class of the object that receives the call.
+choice*: A subclass can override a parent's method by defining one with the same name.
+choice: `super()` always refers to the direct parent class named in the `class` statement.
+choice*: `Class.__mro__` shows the order in which classes are searched for an attribute.
+choice: Overriding a method changes the method in the parent class for all objects.
+hint: `super()` follows the MRO of the receiver's class, and overriding affects only the subclass.
+solution: Dispatch uses the receiver's class, overriding is by redefinition in the subclass, and `__mro__` lists the search order. `super()` means "next in the MRO", and an override in a subclass does not change the parent class.
+
+@quiz code
+prompt: Using the dictionary object model, write `send(obj, name, *args)`. An object is `{"class": cls, "fields": dict}`; a class is `{"name": str, "parent": class-or-None, "methods": dict}`. Find the method `name` by searching the object's class and then its parents (nearest first), and call it as `method(obj, *args)`, returning the result. If no class in the chain defines it, raise `AttributeError`.
+starter:
+```python
+def send(obj, name, *args):
+    pass
+```
+tests:
+```python
+animal = {
+    "name": "Animal", "parent": None,
+    "methods": {
+        "speak": lambda self: "...",
+        "name": lambda self: self["fields"]["name"],
+        "add": lambda self, n, m: n + m,
+    },
+}
+dog = {"name": "Dog", "parent": animal,
+       "methods": {"speak": lambda self: "Woof"}}
+rex = {"class": dog, "fields": {"name": "Rex"}}
+generic = {"class": animal, "fields": {"name": "Thing"}}
+assert send(rex, "speak") == "Woof"
+assert send(generic, "speak") == "..."
+assert send(rex, "name") == "Rex"
+assert send(rex, "add", 2, 3) == 5
+assert raises(AttributeError, send, rex, "fly")
+```
+model:
+```python
+def send(obj, name, *args):
+    cls = obj["class"]
+    while cls is not None:
+        if name in cls["methods"]:
+            return cls["methods"][name](obj, *args)
+        cls = cls["parent"]
+    raise AttributeError(name)
+```
+hint: Start from `obj["class"]` and walk up the parent links until you find the name.
+hint: Call the method you found with the object as the first argument, followed by `*args`.
+solution: This is dynamic dispatch in miniature. The class of the receiver is the starting point of the search, the nearest definition wins, and the receiver is passed as `self`.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```python
+class A: pass
+class B(A): pass
+class C(A): pass
+class D(C, B): pass
+print([k.__name__ for k in D.__mro__])
+```
+answer: ['D', 'C', 'B', 'A', 'object']
+check: run("class A: pass\nclass B(A): pass\nclass C(A): pass\nclass D(C, B): pass\nprint([k.__name__ for k in D.__mro__])\n")
+hint: A class must come before its parents, and the listed bases keep their order.
+solution: `C` precedes `B` because `D` lists `C` first, and `A` comes after both of its subclasses, followed by `object`: `['D', 'C', 'B', 'A', 'object']`.

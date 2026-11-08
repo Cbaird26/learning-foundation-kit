@@ -1,0 +1,203 @@
+@lesson
+title: Load balancing and horizontal scaling
+summary: Scale a service by running many identical stateless servers behind a load balancer, and choose balancing algorithms, health checks and capacity with failure in mind.
+objective: Explain vertical versus horizontal scaling and why statelessness makes the second one work.
+objective: Compare layer 4 and layer 7 load balancers and choose among round robin, least connections and hashing.
+objective: Design health checks and size a fleet so it survives the loss of a server or a zone.
+reading: The System Design Primer, the sections "Load balancer", "Horizontal scaling", "Layer 4 load balancing", "Layer 7 load balancing" and "Reverse proxy".
+@article
+Your service worked fine at 200 requests per second on one server. Marketing launches a campaign and traffic goes to 5,000. You have two options. **Vertical scaling** (scale up) means a bigger machine: more cores and memory. It is simple, needs no code changes, and hits a ceiling, and the one machine remains a single point of failure. **Horizontal scaling** (scale out) means more machines running the same code, with a **load balancer** spreading requests across them. It has no hard ceiling and gives redundancy, but it forces you to design for distribution.
+
+### Statelessness is the enabler
+
+A server is **stateless** when any request can be handled by any instance, because everything needed lives either in the request or in a shared store. If your web servers keep login sessions in their own memory, the second request of a user may land on a different server and look logged out. Move state out: signed tokens carried by the client, or a shared session store such as an in-memory key-value service. Uploaded files go to object storage, not the local disk; caches that must be shared go to a shared cache; scheduled jobs need a lock or a single owner so they do not run N times. Once instances are interchangeable you can add, remove and replace them freely, which is what makes autoscaling and rolling deploys possible.
+
+### What a load balancer does
+
+A load balancer receives client connections and forwards them to healthy backends. It also commonly terminates TLS (TLS 1.3 is the current version), so backends handle plain traffic inside the private network, and it can speak HTTP/2 or HTTP/3 (which runs over QUIC) to clients while using simpler protocols behind it.
+
+- A **layer 4** balancer works on TCP or UDP connections and ports. It is fast and protocol-agnostic but cannot look at URLs or headers.
+- A **layer 7** balancer understands HTTP. It can route `/api/*` to one pool and `/images/*` to another, add headers, retry idempotent requests, and apply rate limits, at the price of more processing per request.
+
+Large systems stack balancers: DNS or an anycast address picks a region, a global balancer picks a data center, and a local one picks a server. Run the balancers themselves in pairs or clusters, otherwise you have moved the single point of failure.
+
+### Choosing an algorithm
+
+| Algorithm | Idea | Good when |
+|---|---|---|
+| Round robin | Rotate through servers in order | Requests cost about the same |
+| Weighted round robin | Servers with more capacity appear more often | Mixed hardware |
+| Least connections | Send to the server with fewest active connections | Requests vary in duration |
+| Hashing on a key | Same key (client IP, user id) goes to the same server | You want cache or connection affinity |
+| Consistent hashing | Hashing where adding or removing a server moves few keys | Cache fleets, sharded stores (week 5) |
+
+**Sticky sessions** (affinity) pin a user to one server. They are a crutch for stateful servers: load becomes uneven, and when that server dies its users lose their state.
+
+### Health checks and draining
+
+The balancer must stop sending traffic to a broken server. A **liveness** check asks "is the process running?"; a **readiness** check asks "can it serve requests right now?" (database reachable, caches warmed). Keep readiness checks cheap and make them depend on what the server truly needs, but be careful about checking shared dependencies: if every server fails readiness because one shared database is slow, the balancer removes all of them and turns a slowdown into an outage. When a server is removed for a deploy, **connection draining** lets in-flight requests finish before it stops.
+
+### Sizing a fleet
+
+Measure how many requests per second one instance sustains at a safe utilization (often 60 to 70 percent of its breaking point, to leave room for spikes). Then:
+
+$$N = \left\lceil \frac{\text{peak QPS}}{\text{QPS per server}} \right\rceil + 1$$
+
+The extra server is **N+1** redundancy. To survive losing an entire availability zone, spread servers over at least three zones and size so that the remaining two can carry the peak.
+
+### Autoscaling
+
+Autoscaling adds or removes instances based on a metric such as CPU or requests per instance. Start-up time matters: if a new server needs three minutes to boot and warm up, scale on a trend or keep a baseline, because by the time the new capacity arrives the spike may be over, or the old fleet may already be overloaded.
+
+@example
+title: Sizing across zones
+problem: Peak traffic is 9,000 requests per second. One instance safely handles 700 requests per second. You run in 3 availability zones and must keep serving the peak if one whole zone is lost. How many instances do you need in total?
+step: Without any zone failure, $\lceil 9000/700 \rceil = \lceil 12.86 \rceil = 13$ instances, and N+1 gives 14.
+step: If one zone is lost, the other two zones must carry all 9,000 requests per second. Each of those two zones must therefore handle 4,500, which needs $\lceil 4500/700 \rceil = 7$ instances.
+step: Place 7 instances in each of the 3 zones: 21 instances in total. After losing a zone, 14 instances remain, with capacity $14 \times 700 = 9{,}800 \ge 9{,}000$.
+step: The cost of zone-level resilience is 21 versus 14 instances, 50 percent more. That is a business decision; state it explicitly.
+answer: 21 instances (7 per zone).
+
+@example
+title: In-memory sessions break behind a balancer
+problem: A login handler stores `sessions[token] = user_id` in a Python dictionary inside each server process. Two servers sit behind a round-robin balancer. Why do users get logged out at random, and what is the fix?
+step: A user logs in; the request goes to server 1, which stores the session in its own memory.
+step: The next request is routed to server 2 by round robin. Server 2's dictionary has no such token, so it answers 401 and the user appears logged out.
+step: Sticky sessions would hide this but not fix it: a deploy or crash on server 1 still destroys all its sessions.
+step: The fix is to move state out of the process: a shared session store (a replicated in-memory key-value service), or a signed, expiring token the client sends with each request so servers need no memory of it.
+answer: Session state was local to one instance; make the servers stateless with a shared store or signed tokens.
+
+@mistakes
+- Keeping sessions, uploads or caches on the local server, so instances are not interchangeable.
+- Sizing the fleet for the average load, or exactly for the peak with no spare instance, so one failure causes an overload cascade.
+- Making a readiness check depend on a shared dependency so that a database slowdown makes the balancer eject every server at once.
+- Forgetting that the load balancer is itself a component that needs redundancy.
+
+@practice mc
+prompt: Why does making web servers stateless help horizontal scaling?
+choice: Stateless servers need less memory, so more of them fit on one machine.
+choice*: Any instance can serve any request, so instances can be added, removed or replaced without losing user state.
+choice: Stateless servers never need a database, which removes the main bottleneck.
+choice: A stateless design lets the load balancer skip health checks.
+hint: Think about what happens to the user's next request if it lands on a different server.
+solution: Statelessness makes instances interchangeable, so the balancer can route each request anywhere and the fleet can grow, shrink or restart freely. State still exists, but it lives in shared stores instead of in the process.
+
+@practice code
+prompt: Write a class `RoundRobin` that picks servers in rotation, skipping servers that are marked down. `RoundRobin(servers)` takes a list of names. Methods: `mark_down(name)`, `mark_up(name)`, and `next()`, which returns the next healthy server in list order and advances the rotation. If every server is down, `next()` raises `RuntimeError`.
+starter:
+```python
+class RoundRobin:
+    def __init__(self, servers):
+        pass
+
+    def mark_down(self, name):
+        pass
+
+    def mark_up(self, name):
+        pass
+
+    def next(self):
+        pass
+```
+tests:
+```python
+rr = RoundRobin(["a", "b", "c"])
+assert [rr.next() for _ in range(4)] == ["a", "b", "c", "a"]
+rr.mark_down("b")
+assert [rr.next() for _ in range(3)] == ["c", "a", "c"]
+rr.mark_up("b")
+assert [rr.next() for _ in range(3)] == ["a", "b", "c"]
+rr.mark_down("a")
+rr.mark_down("b")
+rr.mark_down("c")
+assert raises(RuntimeError, rr.next)
+```
+model:
+```python
+class RoundRobin:
+    def __init__(self, servers):
+        self.servers = list(servers)
+        self.down = set()
+        self.index = 0
+
+    def mark_down(self, name):
+        self.down.add(name)
+
+    def mark_up(self, name):
+        self.down.discard(name)
+
+    def next(self):
+        for _ in range(len(self.servers)):
+            server = self.servers[self.index]
+            self.index = (self.index + 1) % len(self.servers)
+            if server not in self.down:
+                return server
+        raise RuntimeError("no healthy servers")
+```
+hint: Keep an index into the list and a set of servers that are down.
+hint: In `next`, try at most `len(servers)` positions, advancing the index each time; return the first healthy one.
+solution: The rotation index always advances, so a recovered server rejoins at its natural place in the order. Trying at most one full lap guarantees the method terminates and raises only when every server is down.
+
+@practice code
+prompt: Write `least_loaded(connections)` for a least-connections balancer. `connections` is a non-empty dictionary mapping server name to its number of active connections. Return the name of the server with the fewest connections; when several are tied, return the one that is first in alphabetical order.
+starter:
+```python
+def least_loaded(connections):
+    pass
+```
+tests:
+```python
+assert least_loaded({"a": 5, "b": 2, "c": 9}) == "b"
+assert least_loaded({"web2": 3, "web1": 3, "web3": 4}) == "web1"
+assert least_loaded({"only": 100}) == "only"
+assert least_loaded({"x": 0, "y": 0}) == "x"
+```
+model:
+```python
+def least_loaded(connections):
+    return min(connections, key=lambda name: (connections[name], name))
+```
+hint: `min` accepts a `key` function; a tuple key compares its first item first.
+solution: Using the key `(count, name)` picks the smallest count and breaks ties by name. Real balancers also add randomness among ties so one server is not always chosen first.
+
+@practice ms
+prompt: Which statements about sticky sessions (client affinity) are true? Select all that apply.
+choice*: They can leave load unevenly distributed because heavy users stay on one server.
+choice*: When the pinned server fails, the user's in-memory session state on it is lost.
+choice: They let the fleet scale out faster than stateless servers can.
+choice*: They are often a workaround for servers that keep user state in memory.
+choice: They are required whenever a layer 7 load balancer is used.
+hint: Think about what pinning does to balance and to failure behavior.
+solution: Pinning concentrates users, so balance suffers; state in the pinned server dies with it; and affinity is usually a symptom of local state. It neither speeds up scaling nor is required by layer 7 balancing.
+
+@practice self
+prompt: You run an e-commerce site: a web tier (login, catalog pages, checkout) serving about 6,000 requests per second at peak, in 3 availability zones of one region. It currently has one load balancer and 8 servers that keep login sessions in memory. Propose the changes to the web and load-balancing tier. Cover state, balancer type and algorithm, health checks, fleet size (one instance safely handles 600 requests per second) and what happens if a zone fails.
+hint: Fix state first, then pick the balancer, then do the capacity arithmetic.
+solution: A model answer:
+
+- State: move sessions out of the processes into a shared replicated session store (or signed tokens). Uploads and caches also go to shared services. Then servers are interchangeable and no sticky sessions are needed.
+- Balancer: use a managed layer 7 balancer that is itself redundant across the 3 zones. Terminate TLS 1.3 there, route `/checkout` and `/static` to different pools if needed, and send static assets via a CDN.
+- Algorithm: least connections, because page and checkout requests vary in duration; round robin is acceptable if requests are uniform.
+- Health checks: a cheap readiness endpoint that checks the instance's own ability (process up, local config loaded), plus a separate deep check for alerting, not for ejecting servers. Use connection draining during deploys.
+- Capacity: 6,000 / 600 = 10 instances for the peak. Surviving a zone loss needs the two remaining zones to carry 6,000, so each zone needs 5 instances, which gives 15 in total. The current 8 servers could not even carry the peak.
+- Zone failure: the balancer ejects the failed zone's instances through health checks, and the remaining 10 instances carry 6,000 requests per second at full utilization of the safe limit; autoscaling adds more over a few minutes, and a degraded mode (read-only catalog, queued orders) covers the gap.
+rubric: Moves session state out of the web servers (shared store or tokens) and explains why.
+rubric: Chooses a balancer type and algorithm with a reason tied to the workload, and addresses redundancy of the balancer itself.
+rubric: The capacity arithmetic is correct (10 for peak, 15 across three zones for zone-loss tolerance) and the existing 8 servers are identified as insufficient.
+rubric: Health checks and failure behavior are described, including the risk of ejecting all servers.
+
+@quiz num
+prompt: Peak traffic is 15,000 requests per second. One server safely handles 800 requests per second. Using the rule N = ceil(peak / per-server capacity) + 1, how many servers do you provision?
+answer: 20
+check: ceil(15000/800)+1
+hint: Divide, round up, then add the spare server.
+solution: $15{,}000 / 800 = 18.75$, rounded up to 19. Adding one server for N+1 redundancy gives 20.
+
+@quiz mc
+prompt: A server's process is running and its port is open, but its database connection pool is exhausted, so every real request fails with an error. Which health check design removes this server from rotation without ejecting the whole fleet when only one server has the problem?
+choice: A TCP check that only verifies that the port accepts connections.
+choice: A ping that checks whether the host answers network probes.
+choice*: A readiness endpoint that exercises a lightweight query through the server's own connection pool and reports failure when it cannot get a connection.
+choice: A check that returns success whenever the process id exists.
+hint: The check must test the thing that is actually broken: this instance's ability to serve real requests.
+solution: A readiness check that exercises the instance's own connection pool detects this per-instance failure. Port and process checks pass even though real requests fail. If the shared database itself is down, every server fails the check, so pair this with alerting and a degradation plan rather than relying on ejection alone.

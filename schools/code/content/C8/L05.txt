@@ -1,0 +1,284 @@
+@lesson
+title: Locks and race conditions
+summary: Identify race conditions and critical sections, protect them with locks, and explain how spin locks, ticket locks and compare-and-swap are built from atomic hardware instructions.
+objective: Explain how a shared counter update loses increments when two threads interleave.
+objective: Use a mutex to make a critical section atomic and evaluate a lock by correctness, fairness and performance.
+objective: Implement test-and-set, ticket and compare-and-swap based synchronization in a simulation.
+reading: Operating Systems: Three Easy Pieces, the chapters "Locks" and "Lock-based Concurrent Data Structures".
+
+@article
+Two threads incrementing one shared counter seems harmless. In C, `counter++` on a global is not one step. A typical compiler turns it into three machine instructions:
+
+```text
+load   r1, [counter]    ; read the shared value into a register
+add    r1, r1, 1        ; add one in the register
+store  [counter], r1    ; write the result back
+```
+
+Each thread has its own registers, but both share `counter` in memory. Suppose `counter` is 0. If thread A loads 0, then thread B loads 0, then both add 1 and both store 1, the final value is 1 although two increments ran. One update was lost. A **race condition** exists when the result depends on the timing of unsynchronized threads. The code that touches shared data this way is a **critical section**, and what we need is **mutual exclusion**: at most one thread inside it at a time.
+
+If each of two threads does one such increment, the final value can be 1 or 2. With more increments the possible final values spread out: in this model, two threads doing two increments each can finish with 2, 3 or 4.
+
+### Locks
+
+A **lock** (mutex) is a variable with two states, held or free, and two operations: `lock()` waits until the lock is free and takes it, and `unlock()` frees it. With POSIX threads:
+
+```c
+pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+long counter = 0;
+
+void *increment(void *arg) {
+    for (int i = 0; i < 1000; i++) {
+        pthread_mutex_lock(&m);
+        counter++;
+        pthread_mutex_unlock(&m);
+    }
+    return NULL;
+}
+```
+
+Now the three-instruction sequence cannot interleave with another thread's, and two threads running 1000 increments each always end at 2000. Hold a lock for as short a time as is correct: long critical sections serialize the program.
+
+We judge a lock on **correctness** (mutual exclusion, and eventually someone gets in: no deadlock), **fairness** (does a waiting thread ever starve?) and **performance** (cost with no contention, with many threads on one CPU and on several CPUs).
+
+### Building a lock
+
+A lock built from ordinary loads and stores is subtly broken (checking a flag and then setting it is itself a race), so hardware provides **atomic instructions**.
+
+- **Test-and-set** atomically writes 1 and returns the old value. A **spin lock** repeats it: `while (test_and_set(&flag)) ;` and releases by writing 0. It is correct but wastes CPU time while spinning and gives no fairness guarantee. In C11: `while (atomic_flag_test_and_set(&f)) ;` and `atomic_flag_clear(&f)`.
+- **Compare-and-swap (CAS)** atomically checks that a location equals an expected value and, only if so, writes a new value; it reports what was there. Lock-free updates retry in a loop: read the old value, compute the new, CAS, and retry if someone else changed it. In C11 it is `atomic_compare_exchange_strong`.
+- **Ticket lock** uses fetch-and-add: a thread takes the next ticket number with an atomic add and waits until the "now serving" counter equals its ticket; `unlock` increments the serving counter. Threads are served in arrival order, so it is **fair**.
+
+Spinning is wasteful when the lock holder is not running, which on a single CPU is always. Real implementations (for example futex-based locks on Linux) spin briefly and then ask the kernel to put the thread to sleep until the lock is released; such a **two-phase lock** combines both approaches. On a uniprocessor, a kernel can also protect short critical sections by disabling interrupts, but user programs must never be allowed to, and it does not work with several CPUs.
+
+@example
+title: A lost update, step by step
+problem: `counter` is 0 and threads A and B each run `counter++` once (load, add, store). Show an interleaving that ends with 1.
+step: A: `load r1, [counter]` reads 0 into A's register.
+step: Context switch to B: `load r1, [counter]` also reads 0, because A has not stored yet.
+step: B: `add` makes its register 1 and `store` writes 1 to `counter`.
+step: Back to A: `add` makes its register 1 (it still holds 0 plus 1) and `store` writes 1 again. Final value 1: one increment was lost.
+answer: Both threads read 0 before either stores, so the final value is 1
+
+@example
+title: Ticket lock with three threads
+problem: A ticket lock starts with next ticket 0 and now serving 0. Threads X, Y and Z call `lock` in that order. Which thread enters, and what happens at `unlock`?
+step: X takes ticket 0, Y takes 1, Z takes 2; next ticket is now 3.
+step: Now serving is 0, so only X, the holder of ticket 0, enters. Y and Z spin.
+step: X calls `unlock`: now serving becomes 1. Y holds ticket 1, so Y enters.
+step: After Y unlocks, serving is 2 and Z enters. The order is X, Y, Z, the order they asked, so no thread starves.
+
+@mistakes
+- Believing `counter++` is atomic because it is one line of C: it compiles to a load, an add and a store.
+- Protecting the writes but not the reads: every access to the shared data, including reads, must hold the same lock.
+- Using different locks for different threads: the lock gives exclusion only if all threads use the same one.
+- Holding a lock across slow operations such as I/O, which blocks every other thread that needs it.
+
+@practice mc
+prompt: Two threads each execute `balance = balance + 10;` on a shared global `balance`, with no locks. Which statement is correct?
+choice*: Updates can be lost, because the read-add-write sequence of one thread can interleave with that of the other
+choice: The result is always correct, because each C statement executes atomically
+choice: The result is always correct on a single-CPU machine, because only one thread runs at a time
+choice: The program deadlocks, because both threads need the same variable
+hint: Even on one CPU, a timer interrupt can switch threads between the load and the store.
+solution: A context switch between the load and the store lets the other thread's update be overwritten. A single CPU does not prevent this, because the switch can happen between instructions.
+
+@practice code
+prompt: Write a class `SpinLock` that models a test-and-set spin lock in a single thread. It has an attribute `flag` that is 0 initially. `try_lock()` atomically sets `flag` to 1 and returns `True` if it was 0 before, and returns `False` (leaving `flag` at 1) if it was already 1. `unlock()` sets `flag` to 0.
+starter:
+```python
+class SpinLock:
+    pass
+```
+tests:
+```python
+lock = SpinLock()
+assert lock.flag == 0
+assert lock.try_lock() is True
+assert lock.flag == 1
+assert lock.try_lock() is False
+assert lock.flag == 1
+lock.unlock()
+assert lock.flag == 0
+assert lock.try_lock() is True
+```
+model:
+```python
+class SpinLock:
+    def __init__(self):
+        self.flag = 0
+
+    def try_lock(self):
+        old = self.flag
+        self.flag = 1
+        return old == 0
+
+    def unlock(self):
+        self.flag = 0
+```
+hint: Test-and-set returns the old value and always writes 1.
+solution: Save the old flag, set it to 1, and succeed only if the old flag was 0. A real spin lock would loop on `try_lock` until it succeeds; the hardware makes the read and write indivisible.
+
+@practice code
+prompt: Write a class `TicketLock` modeling a ticket lock. It has integer attributes `ticket` (the next ticket to hand out) and `turn` (the ticket now being served), both 0 initially. `take_ticket()` returns the current `ticket` and then increments it. `my_turn(t)` returns `True` if `t == turn`. `unlock()` increments `turn`.
+starter:
+```python
+class TicketLock:
+    pass
+```
+tests:
+```python
+lock = TicketLock()
+a = lock.take_ticket()
+b = lock.take_ticket()
+c = lock.take_ticket()
+assert (a, b, c) == (0, 1, 2)
+assert lock.my_turn(a) and not lock.my_turn(b)
+lock.unlock()
+assert lock.my_turn(b) and not lock.my_turn(c) and not lock.my_turn(a)
+lock.unlock()
+assert lock.my_turn(c)
+assert lock.ticket == 3 and lock.turn == 2
+```
+model:
+```python
+class TicketLock:
+    def __init__(self):
+        self.ticket = 0
+        self.turn = 0
+
+    def take_ticket(self):
+        t = self.ticket
+        self.ticket += 1
+        return t
+
+    def my_turn(self, t):
+        return t == self.turn
+
+    def unlock(self):
+        self.turn += 1
+```
+hint: `take_ticket` is a fetch-and-add: return the old value and add one.
+solution: Hand out consecutive ticket numbers and let the holder whose ticket equals `turn` proceed. Unlocking advances `turn`, so threads enter in the order they took tickets.
+
+@practice num
+prompt: This CPython program starts 4 threads that each add 1 to a shared counter 1000 times under a lock. What number does it print?
+
+```python
+import threading
+
+counter = 0
+lock = threading.Lock()
+
+def work():
+    global counter
+    for _ in range(1000):
+        with lock:
+            counter += 1
+
+threads = [threading.Thread(target=work) for _ in range(4)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(counter)
+```
+answer: 4000
+check: int(run("import threading\n\ncounter = 0\nlock = threading.Lock()\n\ndef work():\n    global counter\n    for _ in range(1000):\n        with lock:\n            counter += 1\n\nthreads = [threading.Thread(target=work) for _ in range(4)]\nfor t in threads:\n    t.start()\nfor t in threads:\n    t.join()\nprint(counter)\n"))
+hint: With the lock held for each increment, no update is lost.
+solution: The lock makes each increment atomic with respect to the others, so all $4 \times 1000$ increments count and the program prints 4000.
+
+@practice code
+prompt: Model two threads that each perform `n` increments of a shared counter that starts at 0, with no lock. Each increment is three steps: load the counter into the thread's private register, add 1 to the register, store the register into the counter. Write `possible_values(n)` that tries every interleaving of the two threads' steps (each thread's own steps stay in order) and returns the sorted list of distinct final counter values. For `n = 0` return `[0]`.
+starter:
+```python
+def possible_values(n):
+    pass
+```
+tests:
+```python
+assert possible_values(0) == [0]
+assert possible_values(1) == [1, 2]
+assert possible_values(2) == [2, 3, 4]
+```
+model:
+```python
+from itertools import combinations
+
+
+def possible_values(n):
+    program = ["load", "add", "store"] * n
+    m = len(program)
+    results = set()
+    for slots in combinations(range(2 * m), m):
+        who = [1] * (2 * m)
+        for s in slots:
+            who[s] = 0
+        counter = 0
+        reg = [0, 0]
+        pc = [0, 0]
+        for t in who:
+            step = program[pc[t]]
+            pc[t] += 1
+            if step == "load":
+                reg[t] = counter
+            elif step == "add":
+                reg[t] += 1
+            else:
+                counter = reg[t]
+        results.add(counter)
+    return sorted(results)
+```
+hint: Choose which `m` of the `2m` time slots belong to thread 0 with `itertools.combinations`; the others belong to thread 1.
+hint: For each choice, run the steps in time order: each thread has its own register and program counter, and they share `counter`.
+solution: Each interleaving is a choice of which time slots go to thread 0. Replaying the steps with private registers and a shared counter gives one final value per interleaving; collect them in a set. For `n = 1` the answers are 1 (a lost update) and 2.
+
+@quiz code
+prompt: A one-element list `cell` models a memory word. Write `compare_and_swap(cell, expected, new)`, which returns the old value `cell[0]` and sets `cell[0] = new` only if the old value equals `expected`. Then write `atomic_increment(cell)` that increases `cell[0]` by 1 using a loop that reads the old value and calls `compare_and_swap` until it succeeds, and returns the new value.
+starter:
+```python
+def compare_and_swap(cell, expected, new):
+    pass
+
+
+def atomic_increment(cell):
+    pass
+```
+tests:
+```python
+c = [5]
+assert compare_and_swap(c, 5, 9) == 5 and c == [9]
+assert compare_and_swap(c, 5, 1) == 9 and c == [9]
+assert atomic_increment(c) == 10 and c == [10]
+d = [0]
+for _ in range(3):
+    atomic_increment(d)
+assert d == [3]
+```
+model:
+```python
+def compare_and_swap(cell, expected, new):
+    old = cell[0]
+    if old == expected:
+        cell[0] = new
+    return old
+
+
+def atomic_increment(cell):
+    while True:
+        old = cell[0]
+        if compare_and_swap(cell, old, old + 1) == old:
+            return old + 1
+```
+hint: CAS reports the old value whether or not it swapped.
+hint: The increment succeeded if CAS returned the same `old` value you passed as `expected`.
+solution: `compare_and_swap` swaps only when the cell still holds the expected value. `atomic_increment` retries until no other thread changed the cell between its read and its CAS; here there is no interference, so it succeeds on the first try.
+
+@quiz mc
+prompt: A lock holder has been preempted while other threads on a single CPU spin waiting for the lock. What is the main problem with a spin lock in this situation?
+choice*: The spinning threads burn their time slices doing no useful work until the holder runs again and releases the lock
+choice: The lock can no longer provide mutual exclusion
+choice: The holder can never run again, so a deadlock is certain
+choice: The spinning threads corrupt the shared data
+hint: On one CPU, the holder cannot run while another thread occupies the CPU.
+solution: Mutual exclusion still holds and the holder will eventually run, but every spinning thread wastes its entire slice. This is why practical locks put waiting threads to sleep after a short spin.

@@ -1,0 +1,198 @@
+@lesson
+title: SQL: joins
+summary: Combine rows from several tables with inner, outer, cross and self joins, and choose between ON and WHERE for conditions.
+objective: Write INNER JOIN, LEFT JOIN, CROSS JOIN and self-join queries with table aliases.
+objective: Predict the number of rows a join produces, including unmatched rows and NULL padding.
+objective: Use a LEFT JOIN with IS NULL to find rows with no match, and explain the difference between ON and WHERE in outer joins.
+reading: CMU 15-445/645 Database Systems, the SQL lecture (joins section); also the join chapter of the SQLite documentation on SELECT.
+@article
+Data in a well-designed database is spread over several tables so that each fact is stored once. A **join** puts related rows back together. Conceptually a join is a Cartesian product followed by a selection, exactly the theta join of week 2. Databases do not literally build the product; they use join algorithms (week 10).
+
+Suppose `dept(id, name)` and `emp(id, name, dept_id)`, where `emp.dept_id` is a foreign key to `dept.id`.
+
+### Inner join
+
+```sql
+SELECT e.name AS employee, d.name AS department
+FROM emp AS e
+JOIN dept AS d ON e.dept_id = d.id;
+```
+
+`JOIN` alone means `INNER JOIN`. A pair of rows is returned only when the `ON` condition is true. An employee whose `dept_id` is NULL, or refers to no department, vanishes from the result, and so does a department with no employees. **Table aliases** (`e`, `d`) shorten names and are required when a table appears twice. Qualify a column (`e.name`) whenever the name occurs in more than one table.
+
+If `ON` compares a foreign key to the primary key it references, each employee row matches at most one department, so the inner join has at most `|emp|` rows. In a many-to-many join the row count can exceed both inputs: if a key value occurs 3 times on one side and 4 on the other, it contributes 12 rows.
+
+### Outer joins
+
+An **outer join** also keeps unmatched rows of one or both sides, padding the missing side with NULL.
+
+- `LEFT JOIN` keeps every row of the left table.
+- `RIGHT JOIN` keeps every row of the right table.
+- `FULL JOIN` keeps unmatched rows from both sides.
+
+SQLite supports `RIGHT` and `FULL` joins from version 3.39 (2022); older versions need `LEFT JOIN` only, and since `A RIGHT JOIN B` equals `B LEFT JOIN A`, the left join is enough in practice.
+
+```sql
+SELECT d.name, e.name
+FROM dept AS d
+LEFT JOIN emp AS e ON e.dept_id = d.id;
+```
+
+Every department appears at least once; a department with no employees appears once with `e.name` NULL. A department with three employees appears three times.
+
+### ON versus WHERE
+
+For an inner join, a condition in `ON` or in `WHERE` gives the same rows. For an outer join it does not. `ON` decides which rows *match*; unmatched left rows are still kept. `WHERE` runs afterwards and removes rows from the final result. Compare:
+
+```sql
+-- keeps every department; only Ann can match (other departments show NULL)
+SELECT d.name, e.name FROM dept d
+LEFT JOIN emp e ON e.dept_id = d.id AND e.name = 'Ann';
+
+-- drops every department row whose employee is not Ann
+SELECT d.name, e.name FROM dept d
+LEFT JOIN emp e ON e.dept_id = d.id
+WHERE e.name = 'Ann';
+```
+
+The second query rejects the NULL-padded rows because `NULL = 'Ann'` is unknown, so it behaves like an inner join. A filter on the *right* table belongs in `ON` if you want to keep unmatched left rows.
+
+### Finding rows with no match (anti-join)
+
+To list departments with no employees, left join and keep the padded rows:
+
+```sql
+SELECT d.name
+FROM dept d LEFT JOIN emp e ON e.dept_id = d.id
+WHERE e.id IS NULL;
+```
+
+Test a column that can never be NULL in a real match, such as `e.id`, the primary key.
+
+### Cross joins, self joins, USING and NATURAL
+
+`CROSS JOIN` is the plain product, with no condition. A **self join** joins a table to itself under two aliases, which is how you relate rows of one table, such as an employee and their manager (`emp e JOIN emp m ON e.manager_id = m.id`). `JOIN ... USING (col)` is shorthand for equality on a column of the same name in both tables, with one copy of the column in the output. `NATURAL JOIN` equates all same-named columns automatically; it breaks silently when someone adds a column, so avoid it in real code.
+
+@example
+title: Counting rows of a left join
+problem: `dept` has (1, Eng), (2, Ops), (3, HR). `emp(name, dept_id)` has (Ann, 1), (Bo, 1), (Cy, 2), (Di, NULL). How many rows does `dept LEFT JOIN emp ON emp.dept_id = dept.id` return, and which department row is padded?
+step: Eng matches Ann and Bo, giving 2 rows.
+step: Ops matches Cy, giving 1 row.
+step: HR matches nobody, so it appears once with NULL employee columns.
+step: Di has no department, but she is on the right side of a left join, so she is not kept.
+answer: 4 rows; the HR row is padded with NULL.
+
+@example
+title: A self join
+problem: `staff(id, name, boss_id)` has (1, Kim, NULL), (2, Lee, 1), (3, Max, 1), (4, Ned, 2). List each employee with the name of their boss, including employees with no boss.
+step: Use two aliases: `e` for the employee and `b` for the boss.
+step: Link them with `e.boss_id = b.id`.
+step: Kim has no boss, so use a left join from `e` to keep her.
+step: The query:
+
+```sql
+SELECT e.name AS employee, b.name AS boss
+FROM staff e LEFT JOIN staff b ON e.boss_id = b.id;
+```
+step: The result is (Kim, NULL), (Lee, Kim), (Max, Kim), (Ned, Lee).
+answer: The query above returns four rows, one per employee.
+
+@mistakes
+- Putting a filter on the right-hand table in `WHERE` after a `LEFT JOIN`, which silently turns it into an inner join.
+- Forgetting a join condition, so the result is a Cartesian product with `|A| * |B|` rows.
+- Joining on non-key columns that repeat, which multiplies rows and inflates later counts and sums.
+- Referring to an ambiguous column such as `name` without a table alias.
+
+@practice num
+prompt: Tables: `dept(id, name)` = (1, 'Eng'), (2, 'Ops'), (3, 'HR'); `emp(id, name, dept_id)` = (1, 'Ann', 1), (2, 'Bo', 1), (3, 'Cy', 2), (4, 'Di', NULL), (5, 'Ed', 9). How many rows does `SELECT * FROM emp JOIN dept ON emp.dept_id = dept.id` return?
+answer: 3
+check: len(sql("CREATE TABLE dept(id INT, name TEXT); INSERT INTO dept VALUES (1,'Eng'),(2,'Ops'),(3,'HR'); CREATE TABLE emp(id INT, name TEXT, dept_id INT); INSERT INTO emp VALUES (1,'Ann',1),(2,'Bo',1),(3,'Cy',2),(4,'Di',NULL),(5,'Ed',9);", "SELECT * FROM emp JOIN dept ON emp.dept_id = dept.id"))
+hint: An inner join keeps only pairs whose condition is true. What happens to NULL and to department 9?
+solution: Ann and Bo match Eng and Cy matches Ops. Di's NULL never equals anything, and department 9 does not exist, so Di and Ed are dropped. Three rows remain.
+
+@practice num
+prompt: Tables: `dept(id, name)` = (1, 'Eng'), (2, 'Ops'), (3, 'HR'); `emp(id, name, dept_id)` = (1, 'Ann', 1), (2, 'Bo', 1), (3, 'Cy', 2), (4, 'Di', NULL), (5, 'Ed', 9). How many rows does `SELECT * FROM dept LEFT JOIN emp ON emp.dept_id = dept.id` return?
+answer: 4
+check: len(sql("CREATE TABLE dept(id INT, name TEXT); INSERT INTO dept VALUES (1,'Eng'),(2,'Ops'),(3,'HR'); CREATE TABLE emp(id INT, name TEXT, dept_id INT); INSERT INTO emp VALUES (1,'Ann',1),(2,'Bo',1),(3,'Cy',2),(4,'Di',NULL),(5,'Ed',9);", "SELECT * FROM dept LEFT JOIN emp ON emp.dept_id = dept.id"))
+hint: Count one row per matching pair, plus one padded row for each department with no employee.
+solution: Eng gives 2 rows (Ann, Bo), Ops gives 1 (Cy), and HR gives 1 padded row. The employees Di and Ed are not kept because they are on the right side. The total is 4.
+
+@practice text
+prompt: Table `staff(id, name, boss_id)` holds (1, 'Kim', NULL), (2, 'Lee', 1), (3, 'Max', 1), (4, 'Ned', 2). Type the single name returned by this query.
+
+```sql
+SELECT e.name
+FROM staff e JOIN staff b ON e.boss_id = b.id
+WHERE b.name = 'Lee'
+```
+answer: Ned
+check: sql("CREATE TABLE staff(id INT, name TEXT, boss_id INT); INSERT INTO staff VALUES (1,'Kim',NULL),(2,'Lee',1),(3,'Max',1),(4,'Ned',2);", "SELECT e.name FROM staff e JOIN staff b ON e.boss_id = b.id WHERE b.name = 'Lee'")[0][0]
+hint: `b` is the boss row and `e` is the employee row whose `boss_id` points at it.
+solution: The only row `b` with name Lee has id 2. The employees whose `boss_id` is 2 are those matching `e`; only Ned qualifies.
+
+@practice code
+prompt: Write `left_join(r, s, on_r, on_s, s_cols)` for relations stored as lists of dictionaries. For each row `x` of `r` in order, find the rows `y` of `s`, in their order, with `x[on_r] == y[on_s]`, and output `{**x, **y}` for each. A `None` key never matches anything (as in SQL). If a row of `r` has no match, output `x` plus every column named in `s_cols` set to `None`.
+starter:
+```python
+def left_join(r, s, on_r, on_s, s_cols):
+    pass
+```
+tests:
+```python
+r = [{"id": 1, "dept": 10}, {"id": 2, "dept": 20}, {"id": 3, "dept": None}]
+s = [{"did": 10, "dname": "Eng"}, {"did": 10, "dname": "Dev"},
+     {"did": 30, "dname": "Ops"}]
+cols = ["did", "dname"]
+assert left_join(r, s, "dept", "did", cols) == [
+    {"id": 1, "dept": 10, "did": 10, "dname": "Eng"},
+    {"id": 1, "dept": 10, "did": 10, "dname": "Dev"},
+    {"id": 2, "dept": 20, "did": None, "dname": None},
+    {"id": 3, "dept": None, "did": None, "dname": None},
+]
+assert left_join([], s, "dept", "did", cols) == []
+nulls = [{"did": None, "dname": "X"}]
+assert left_join(r[2:], nulls, "dept", "did", cols) == [
+    {"id": 3, "dept": None, "did": None, "dname": None}
+]
+```
+model:
+```python
+def left_join(r, s, on_r, on_s, s_cols):
+    out = []
+    for x in r:
+        matches = [y for y in s
+                   if x[on_r] is not None and x[on_r] == y[on_s]]
+        if matches:
+            for y in matches:
+                out.append({**x, **y})
+        else:
+            out.append({**x, **{c: None for c in s_cols}})
+    return out
+```
+hint: For each left row, first collect the list of matching right rows.
+hint: If that list is empty, output the left row padded with `None` for each name in `s_cols`; do not forget that `None` keys must not match.
+solution: Loop over `r`, collecting `matches` among `s` while refusing `None` keys. Emit one merged dictionary per match, or one padded dictionary when there is no match. This keeps every left row, as `LEFT JOIN` must.
+
+@practice self
+prompt: Schema: `Customer(cid, name, city)`, `Orders(oid, cid, odate)`, `OrderLine(oid, sku, qty)`, `Product(sku, title, price)`. Write SQL for: (a) each customer name with the titles of all products they have ordered (customers with no orders need not appear); (b) the names of customers who have placed no orders; (c) all pairs of different customers who live in the same city, listing each pair once.
+hint: For (b), keep unmatched rows with a LEFT JOIN and test a key of the right table for NULL. For (c), use two aliases of the same table.
+solution: (a) `SELECT DISTINCT c.name, p.title FROM Customer c JOIN Orders o ON o.cid = c.cid JOIN OrderLine l ON l.oid = o.oid JOIN Product p ON p.sku = l.sku;` (b) `SELECT c.name FROM Customer c LEFT JOIN Orders o ON o.cid = c.cid WHERE o.oid IS NULL;` (c) `SELECT a.name, b.name FROM Customer a JOIN Customer b ON a.city = b.city AND a.cid < b.cid;` The condition `a.cid < b.cid` removes self-pairs and mirror images.
+rubric: (a) chains four tables with join conditions on the keys and removes repeated pairs with DISTINCT.
+rubric: (b) uses a LEFT JOIN and tests a primary-key column of the right table for NULL.
+rubric: (c) joins Customer to itself under two aliases on city and uses an inequality on the key to list each pair once.
+
+@quiz mc
+prompt: Tables `dept(id, name)` and `emp(id, dept_id)` exist. A developer writes `SELECT d.name, e.id FROM dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE e.id > 0` to list all departments, even those without employees. What happens?
+choice*: Departments with no employees are missing from the result, because the padded NULL rows fail the `WHERE` test.
+choice: Departments with no employees appear with `e.id` NULL, as intended.
+choice: The query is rejected because `WHERE` cannot mention the right table of a left join.
+choice: Every department appears once, regardless of how many employees it has.
+hint: What does `NULL > 0` evaluate to, and what does `WHERE` do with that value?
+solution: The padded rows have `e.id` NULL, `NULL > 0` is unknown, and `WHERE` drops unknown rows, so the outer join degenerates into an inner join. Move such a condition into `ON` if unmatched left rows must be kept.
+
+@quiz num
+prompt: Tables: `dept(id)` = 1, 2, 3, 4 and `emp(id, dept_id)` = (1, 1), (2, 1), (3, 3). How many rows does `SELECT d.id FROM dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE e.id IS NULL` return?
+answer: 2
+check: len(sql("CREATE TABLE dept(id INT); INSERT INTO dept VALUES (1),(2),(3),(4); CREATE TABLE emp(id INT, dept_id INT); INSERT INTO emp VALUES (1,1),(2,1),(3,3);", "SELECT d.id FROM dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE e.id IS NULL"))
+hint: Which departments have no matching employee row?
+solution: Departments 1 and 3 have employees. Departments 2 and 4 are padded with NULL, and the `IS NULL` test keeps exactly those, so two rows are returned.

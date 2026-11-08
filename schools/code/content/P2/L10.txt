@@ -1,0 +1,264 @@
+@lesson
+title: Events, messaging and microservices
+summary: Design asynchronous, event-driven flows that tolerate duplicates and failures, and decide honestly when to split a system into services.
+objective: Distinguish commands from events and explain at-least-once delivery, idempotent consumers and eventual consistency.
+objective: Apply the transactional outbox and retry with exponential backoff.
+objective: Weigh a modular monolith against microservices for a described team and system.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 8 "Events and the Message Bus", Chapter 11 "Event-Driven Architecture: Using Events to Integrate Microservices" and Chapter 12 on CQRS.
+@article
+Last week's API was synchronous: the caller waits. Many real workflows cannot or should not wait: sending email, updating a search index, charging a card, telling five other systems that an order exists. **Messaging** decouples the sender from the receivers in time (the receiver can be down for a minute) and in knowledge (the sender does not know who listens). It also introduces new failure modes you must design for. This week is about both sides.
+
+### Commands and events
+
+A **command** is a request to do something: `ReserveStock(order_id)`. It has one intended handler and can be rejected. An **event** is a fact that already happened: `OrderPlaced(order_id, total)`. It has zero or many subscribers, and cannot be refused. Name events in the past tense, in domain language (week 7). Keeping the two apart keeps responsibilities clear: commands say what to do, events let others react.
+
+A **message broker** (queue or log) sits between producers and consumers, stores messages durably and delivers them. Within one process, the same idea is an in-memory **message bus** like the `EventBus` observer from week 6, a good first step because it removes coupling without adding infrastructure.
+
+### Delivery guarantees and the duplicate problem
+
+Networks drop acknowledgements. If a consumer processes a message but crashes before acknowledging it, the broker redelivers. Most brokers therefore offer **at-least-once delivery**: every message arrives, sometimes more than once. True exactly-once delivery between independent systems is not generally achievable; what you build is exactly-once *effect*.
+
+The answer is an **idempotent consumer**: processing the same message twice has the same result as processing it once. Typical techniques: record processed message ids and skip repeats; make the operation naturally idempotent ("set status to shipped", not "add one to the counter"); use a unique constraint in the database.
+
+Also expect **out-of-order delivery** and **poison messages** that always fail. Retry with a limit, then move the message to a **dead-letter queue** for a human to inspect.
+
+### The transactional outbox
+
+A service saves an order to its database and publishes `OrderPlaced`. These are two systems: if the save succeeds and the publish fails, the world never hears of the order; if you publish first and the save fails, it hears of one that does not exist. The **transactional outbox** solves this: in the *same database transaction*, write the order and a row in an `outbox` table. A separate relay process reads unpublished outbox rows, publishes them and marks them done. Publication is at-least-once (the relay can crash between publishing and marking), so consumers must be idempotent, which they already are.
+
+### Eventual consistency and sagas
+
+Aggregates are consistent immediately, but different aggregates and services become consistent **eventually**, after events propagate. The product must be designed for that ("your order is being confirmed"). For a workflow that spans services, a **saga** is a sequence of local transactions, each publishing an event that triggers the next; when a step fails, **compensating actions** undo earlier steps (refund the payment, release the stock). You cannot roll back across services, so every step needs a defined compensation.
+
+### Microservices: what you buy and what you pay
+
+A **microservice** architecture splits a system into small, independently deployable services, each owning its data and communicating over the network. **Benefits:** teams deploy independently, services scale and fail separately, technology can differ per service. **Costs:** every call is now a network call that can be slow, fail or time out (so you need timeouts, retries with backoff and circuit breakers); data is spread across stores so there are no cross-service transactions or joins; you need service discovery, tracing, centralized logging and automated deployment; debugging a request means following it across services; and versioned contracts (week 9) multiply.
+
+Honest guidance for a new hire to carry into design reviews:
+
+- Start with a **modular monolith**: one deployable, with strong module boundaries following the domain. You keep most benefits of separation and avoid the distributed-systems tax.
+- Split on **bounded contexts** (an area where the ubiquitous language is consistent, like Billing or Shipping) and on real organizational or scaling pressure, not on technical layers.
+- A "distributed monolith", services that must be deployed together and call each other synchronously in long chains, has the costs of both worlds and the benefits of neither.
+- Services should own their data. A shared database is hidden coupling.
+
+### Resilience basics
+
+Set a **timeout** on every network call. **Retry** only idempotent operations, with **exponential backoff** (waiting 1, 2, 4 seconds...) and jitter so many clients do not retry in lockstep. A **circuit breaker** stops calling a failing dependency for a while so it can recover. Evolve **event schemas** with the compatibility rules from week 9: add optional fields, do not rename.
+
+@example
+title: An idempotent consumer
+problem: A payment-credit consumer receives messages `(id, amount)`. The broker delivers `("a", 5)`, `("b", 3)`, `("a", 5)` again, `("c", 2)`. What is the right total and how do you get it?
+step: At-least-once delivery means `("a", 5)` can arrive twice. Adding both would credit 5 twice.
+step: Keep the set of processed message ids and check it first:
+
+```python
+seen = set()
+total = 0
+for msg_id, amount in messages:
+    if msg_id in seen:
+        continue
+    seen.add(msg_id)
+    total += amount
+```
+step: Trace: `a` is new (total 5); `b` is new (total 8); `a` is a repeat, skipped; `c` is new (total 10).
+step: In production, record the id and apply the effect in one database transaction, or the crash window comes back.
+answer: `10`, with three distinct messages processed.
+
+@example
+title: Why the outbox beats "save, then publish"
+problem: `place_order` saves the order and then calls `broker.publish(OrderPlaced)`. The process crashes between the two lines. What goes wrong, and how does the outbox fix it?
+step: After the crash the order exists in the database but the event was never published: the warehouse never hears about it, and no error was recorded.
+step: Swapping the lines is no better: a published event can describe an order whose save then failed.
+step: With an outbox, one transaction writes both the order row and an `outbox` row holding the event. The transaction is all or nothing.
+step: A relay process polls the outbox, publishes each unpublished event and marks it published. If the relay crashes after publishing but before marking, the event is published again.
+step: Duplicate events are acceptable because consumers are idempotent, so the system reaches the right state.
+answer: Write the event to an outbox table in the same transaction as the data, and publish from there with idempotent consumers.
+
+@mistakes
+- Assuming exactly-once delivery. Design for at-least-once delivery with idempotent consumers.
+- Splitting into microservices for a team of six, then spending most of the time on deployment pipelines and tracing instead of features.
+- Letting two services share one database "for now": any schema change now needs both teams, so the services are not independent.
+- Retrying non-idempotent operations, such as a payment `POST` without an idempotency key, which turns a timeout into a double charge.
+
+@practice mc
+prompt: A consumer reads `StockAdjusted(delta=-1)` events from a broker with at-least-once delivery. A crash causes the same event to be delivered twice. What is the correct design response?
+choice: Switch brokers until one promises exactly-once delivery
+choice: Process each message twice and divide the effect by two
+choice*: Make the consumer idempotent, for example by recording processed event ids and skipping repeats
+choice: Delete the message from the broker before processing it, so it can never be redelivered
+hint: You cannot stop duplicates; what can you control?
+solution: Duplicates must be tolerated, so the consumer records processed ids (or uses an operation that is naturally idempotent). Exactly-once delivery is not generally available, and deleting before processing risks losing the message if the consumer crashes.
+
+@practice code
+prompt: Write a class `BalanceConsumer` with `handle(message)` and a `balance` attribute that starts at 0. A message is a dict `{"id": str, "amount": int}`. Handling adds `amount` to the balance, unless a message with the same `id` has been handled before, in which case it does nothing. `handle` returns `True` if the message was applied and `False` if it was a duplicate.
+starter:
+```python
+class BalanceConsumer:
+    pass
+```
+tests:
+```python
+c = BalanceConsumer()
+assert c.balance == 0
+assert c.handle({"id": "a", "amount": 5}) is True
+assert c.handle({"id": "b", "amount": 3}) is True
+assert c.handle({"id": "a", "amount": 5}) is False
+assert c.balance == 8
+assert c.handle({"id": "c", "amount": -2}) is True
+assert c.balance == 6
+d = BalanceConsumer()
+assert d.handle({"id": "a", "amount": 1}) is True
+assert d.balance == 1
+```
+model:
+```python
+class BalanceConsumer:
+    def __init__(self):
+        self.balance = 0
+        self._seen = set()
+
+    def handle(self, message):
+        if message["id"] in self._seen:
+            return False
+        self._seen.add(message["id"])
+        self.balance += message["amount"]
+        return True
+```
+hint: Remember which ids you have handled in a private set.
+solution: The set of processed ids makes the handler idempotent: a redelivered message changes nothing. Each consumer has its own set, so a second consumer starts fresh.
+
+@practice text
+prompt: What does this program print? Type the output exactly (one line of two numbers separated by a space).
+
+```python
+seen = set()
+total = 0
+for msg_id, amount in [("a", 5), ("b", 3), ("a", 5), ("c", 2)]:
+    if msg_id in seen:
+        continue
+    seen.add(msg_id)
+    total += amount
+print(total, len(seen))
+```
+answer: 10 3
+check: run("seen = set()\ntotal = 0\nfor msg_id, amount in [('a', 5), ('b', 3), ('a', 5), ('c', 2)]:\n    if msg_id in seen:\n        continue\n    seen.add(msg_id)\n    total += amount\nprint(total, len(seen))\n")
+hint: The second `"a"` message is skipped.
+solution: The repeated `a` is ignored, so the total is `5 + 3 + 2 = 10` and three ids are recorded. An at-least-once broker can produce exactly this input.
+
+@practice code
+prompt: Write a class `OutboxStore` that simulates the transactional outbox. `save_order(order_id)` appends the id to a list `orders` and, in the same step, appends an event dict `{"type": "OrderPlaced", "order_id": order_id}` to a list `outbox`. `publish_pending(publish)` calls `publish(event)` for each event not yet published, in the order they were saved, marks them published so a second call does not repeat them, and returns how many it published. If `publish` raises, the event that failed and the ones after it remain pending.
+starter:
+```python
+class OutboxStore:
+    pass
+```
+tests:
+```python
+sent = []
+store = OutboxStore()
+store.save_order("o1")
+store.save_order("o2")
+assert store.orders == ["o1", "o2"]
+assert store.publish_pending(sent.append) == 2
+assert [e["order_id"] for e in sent] == ["o1", "o2"]
+assert sent[0]["type"] == "OrderPlaced"
+assert store.publish_pending(sent.append) == 0
+store.save_order("o3")
+
+def failing(event):
+    raise RuntimeError("broker down")
+
+assert raises(RuntimeError, store.publish_pending, failing)
+assert store.publish_pending(sent.append) == 1
+assert sent[-1]["order_id"] == "o3"
+assert len(sent) == 3
+```
+model:
+```python
+class OutboxStore:
+    def __init__(self):
+        self.orders = []
+        self.outbox = []
+        self._published = 0
+
+    def save_order(self, order_id):
+        self.orders.append(order_id)
+        self.outbox.append({"type": "OrderPlaced", "order_id": order_id})
+
+    def publish_pending(self, publish):
+        count = 0
+        while self._published < len(self.outbox):
+            publish(self.outbox[self._published])
+            self._published += 1
+            count += 1
+        return count
+```
+hint: Keep a counter of how many outbox events have been published so far.
+hint: Advance the counter only after `publish` returns without an error.
+solution: Order and event are recorded together, standing in for one database transaction. The relay publishes from the first unpublished index and advances the counter only after a successful publish, so a failure leaves that event and later ones pending for the next attempt.
+
+@practice self
+prompt: A company's monolith (a team of 8 engineers) handles catalog, orders, payments and email. Orders are placed 20 times a minute; the payments code changes rarely but must meet compliance rules; the email sender is slow and sometimes fails. A manager proposes "rewrite everything as 12 microservices". Write a recommendation: what you would split first, if anything, and why; what you would keep together; how the order, payment and email steps would communicate (events or calls, what happens when payment fails after stock is reserved); and the three biggest operational costs you would warn about.
+hint: Look for the part with a real reason to be separate, and for what has to stay consistent together.
+solution: Recommendation: keep one deployable and make it a modular monolith first, with modules for catalog, orders, payments and notifications and clear interfaces between them. Twelve services for eight engineers would add deployment, tracing and contract work that the load (20 orders a minute) does not need. Split first: email, which is slow, failure-prone and does not need an immediate answer, by making `OrderPlaced` an event published through a transactional outbox and consumed by a notification worker with retries, backoff and a dead-letter queue; the order flow no longer waits on it. Payments is the second candidate, because of its compliance boundary and slow change rate, but only once its module interface is clean; it keeps its own data. Keep catalog and orders together while they share transactions. Flow: placing an order reserves stock and creates the order in one transaction, then publishes `OrderPlaced`; payments consumes it and publishes `PaymentSucceeded` or `PaymentFailed`; on failure a compensating action releases the reserved stock and marks the order cancelled (a saga). All consumers are idempotent because delivery is at-least-once, and payment requests carry an idempotency key. Costs to warn about: (1) distributed failure handling (timeouts, retries, partial failure and duplicates everywhere); (2) observability (tracing and logs across services, correlation ids); (3) data consistency and contract versioning (no cross-service joins or transactions, eventual consistency visible to users, and schema changes needing coordination).
+rubric: Recommends an incremental path (modular monolith, split a justified part first) and gives reasons tied to the facts given, not a blanket yes or no.
+rubric: Describes the event flow with an outbox or equivalent, idempotent consumers, and a compensating action for payment failure.
+rubric: Names at least three real operational costs of distribution, such as failure handling, observability, consistency and contract management.
+
+@quiz code
+prompt: Write `call_with_retry(fn, attempts, sleep, base=1)`. It calls `fn()` and returns its result. If `fn` raises an exception, wait using `sleep(delay)` and try again, where the delay is `base * 2 ** k` after the k-th failure (k starts at 0), for at most `attempts` calls in total. Do not sleep after the last failed attempt; after the last failure re-raise the exception.
+starter:
+```python
+def call_with_retry(fn, attempts, sleep, base=1):
+    pass
+```
+tests:
+```python
+delays = []
+state = {"calls": 0}
+
+def flaky():
+    state["calls"] += 1
+    if state["calls"] < 3:
+        raise ConnectionError("down")
+    return "ok"
+
+assert call_with_retry(flaky, 5, delays.append) == "ok"
+assert delays == [1, 2]
+assert state["calls"] == 3
+
+def broken():
+    raise ValueError("always")
+
+delays2 = []
+assert raises(ValueError, call_with_retry, broken, 3, delays2.append)
+assert delays2 == [1, 2]
+delays3 = []
+assert call_with_retry(lambda: 7, 3, delays3.append) == 7
+assert delays3 == []
+delays4 = []
+assert raises(ValueError, call_with_retry, broken, 4, delays4.append, 0.5)
+assert delays4 == [0.5, 1.0, 2.0]
+```
+model:
+```python
+def call_with_retry(fn, attempts, sleep, base=1):
+    for k in range(attempts):
+        try:
+            return fn()
+        except Exception:
+            if k == attempts - 1:
+                raise
+            sleep(base * 2 ** k)
+```
+hint: Loop over the attempts and catch the exception; only sleep when another attempt will follow.
+solution: Exponential backoff doubles the wait after each failure, giving a struggling dependency time to recover. The last failure is re-raised and no sleep follows it. In production you would add random jitter and retry only idempotent calls.
+
+@quiz mc
+prompt: Which situation is the best reason to split a part of a monolith into its own service?
+choice: The code has many classes and feels big
+choice: Developers want to use a different framework for each module
+choice*: One part has a different scaling or failure profile and an independent team can own its data and release cycle
+choice: Two modules call each other often and share a database table
+hint: Look for a reason that is about independence, not size or fashion.
+solution: A distinct scaling, reliability or ownership need with a clean data boundary is a sound reason to separate a service. Size alone, framework preference and tight chatty coupling over a shared table are reasons to be cautious, since they lead to a distributed monolith.

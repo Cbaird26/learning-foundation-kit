@@ -1,0 +1,219 @@
+@lesson
+title: SQL: grouping, aggregates and subqueries
+summary: Summarize data with aggregate functions, GROUP BY and HAVING, and build queries from scalar, IN, EXISTS and correlated subqueries.
+objective: Apply COUNT, SUM, AVG, MIN and MAX, and explain how each treats NULL and empty inputs.
+objective: Write GROUP BY queries with HAVING and distinguish WHERE filtering from HAVING filtering.
+objective: Write scalar, IN, EXISTS and correlated subqueries, and avoid the NOT IN trap with NULL.
+reading: CMU 15-445/645 Database Systems, the SQL lecture (aggregates, grouping, nested queries); also the SQLite documentation on aggregate functions.
+@article
+So far each output row came from one input row (or one joined combination). **Aggregation** collapses many rows into one summary value.
+
+### Aggregate functions
+
+`COUNT(*)` counts rows. `COUNT(col)` counts rows where `col` is not NULL. `COUNT(DISTINCT col)` counts distinct non-NULL values. `SUM`, `AVG`, `MIN` and `MAX` ignore NULL values. Over an empty input, `COUNT` returns 0 but `SUM`, `AVG`, `MIN` and `MAX` return NULL. Note that `AVG(x)` divides by the number of non-NULL values, not by the number of rows.
+
+```sql
+SELECT COUNT(*), COUNT(bonus), AVG(bonus) FROM emp;
+```
+
+If `bonus` is 10, NULL, 20 then the result is 3, 2 and 15.0.
+
+### GROUP BY and HAVING
+
+`GROUP BY` partitions the rows by the values of the listed columns and produces one output row per group. In standard SQL every column in `SELECT` must either be in `GROUP BY` or be inside an aggregate function. SQLite is lenient about this and picks an arbitrary row's value, which is a source of bugs; write standard queries.
+
+```sql
+SELECT dept, COUNT(*) AS n, AVG(salary) AS avg_salary
+FROM emp
+WHERE active = 1
+GROUP BY dept
+HAVING COUNT(*) >= 3
+ORDER BY avg_salary DESC;
+```
+
+The logical order is `FROM`, `WHERE`, `GROUP BY`, `HAVING`, `SELECT`, `ORDER BY`. `WHERE` filters **rows before grouping** and cannot contain aggregates. `HAVING` filters **groups after aggregation** and can. Put a condition in `WHERE` whenever it can be, because it removes rows before the expensive grouping. All rows with NULL in a grouping column form one group.
+
+### Subqueries
+
+A **subquery** is a `SELECT` inside another statement. There are several kinds.
+
+A **scalar subquery** returns one value and can be used where a value is expected:
+
+```sql
+SELECT name FROM emp
+WHERE salary > (SELECT AVG(salary) FROM emp);
+```
+
+An **`IN` subquery** returns a column of values: `WHERE dept_id IN (SELECT id FROM dept WHERE city = 'Oslo')`.
+
+An **`EXISTS` subquery** is true when the inner query returns at least one row, whatever columns it selects. A subquery is **correlated** when it refers to a column of the outer query, so it is conceptually re-evaluated for each outer row:
+
+```sql
+SELECT e.name FROM emp e
+WHERE e.salary > (SELECT AVG(x.salary) FROM emp x
+                  WHERE x.dept = e.dept);
+```
+
+This finds employees who earn more than their own department's average. Optimizers often rewrite correlated subqueries as joins (week 10).
+
+A **derived table** is a subquery in `FROM`: `FROM (SELECT dept, AVG(salary) AS a FROM emp GROUP BY dept) AS d`. A **common table expression** names a subquery up front with `WITH d AS (SELECT ...) SELECT ... FROM d`, which reads more clearly.
+
+### The NOT IN trap
+
+`x NOT IN (a, b)` means `NOT (x = a OR x = b)`. If the list contains NULL, then for any `x` not equal to the other values the condition is `NOT (false OR unknown)`, which is unknown, so the row is **dropped**. A `NOT IN` subquery that returns even one NULL therefore returns no rows. Prefer `NOT EXISTS`, which is not fooled by NULL:
+
+```sql
+SELECT c.name FROM customer c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.cid = c.cid);
+```
+
+### Set operators
+
+`UNION`, `INTERSECT` and `EXCEPT` combine the results of two queries with matching columns and remove duplicates (`UNION ALL` keeps them). They are the SQL versions of union, intersection and difference.
+
+@example
+title: Grouping step by step
+problem: Table `sale(region, amount)` holds (east, 10), (east, 20), (west, 5), (north, 7), (north, 8), (north, 9). Evaluate `SELECT region, SUM(amount) FROM sale GROUP BY region HAVING COUNT(*) >= 2 ORDER BY SUM(amount) DESC`.
+step: Group by region: east has {10, 20}, west has {5}, north has {7, 8, 9}.
+step: Compute `SUM` and `COUNT(*)` per group: east 30 with 2 rows, west 5 with 1, north 24 with 3.
+step: `HAVING COUNT(*) >= 2` removes west.
+step: Sort by sum descending: east (30), then north (24).
+answer: (east, 30) and (north, 24).
+
+@example
+title: COUNT with NULLs
+problem: Column `bonus` of table `emp` holds 10, NULL, 20, NULL. What do `COUNT(*)`, `COUNT(bonus)`, `SUM(bonus)` and `AVG(bonus)` return?
+step: `COUNT(*)` counts rows, so it is 4.
+step: `COUNT(bonus)` counts non-NULL values: 10 and 20, so 2.
+step: `SUM(bonus)` ignores NULL: 10 + 20 = 30.
+step: `AVG(bonus)` divides by the 2 non-NULL values, not by 4: 30 / 2 = 15.
+answer: 4, 2, 30 and 15.
+
+@mistakes
+- Putting an aggregate in `WHERE` (for example `WHERE COUNT(*) > 2`); use `HAVING`.
+- Selecting a non-grouped column alongside an aggregate; standard SQL rejects it and SQLite quietly returns an arbitrary value.
+- Using `NOT IN` with a subquery that can return NULL; the whole query then returns nothing.
+- Computing an average of a column with NULLs and expecting NULL to count as zero.
+
+@practice code
+prompt: Write `group_avg(rows, key, col)`. `rows` is a list of dictionaries. Return a dictionary mapping each distinct value of `row[key]` to the average (a float) of `row[col]` over the rows in that group, ignoring `None` values like SQL's `AVG`. If every value in a group is `None`, map the group to `None`.
+starter:
+```python
+def group_avg(rows, key, col):
+    pass
+```
+tests:
+```python
+rows = [
+    {"d": "a", "s": 10},
+    {"d": "a", "s": 20},
+    {"d": "b", "s": None},
+    {"d": "c", "s": 5},
+    {"d": "a", "s": None},
+]
+assert group_avg(rows, "d", "s") == {"a": 15.0, "b": None, "c": 5.0}
+assert group_avg([], "d", "s") == {}
+assert group_avg([{"d": 1, "s": 3}, {"d": 1, "s": 4}], "d", "s") == {1: 3.5}
+```
+model:
+```python
+def group_avg(rows, key, col):
+    sums = {}
+    counts = {}
+    for row in rows:
+        g = row[key]
+        sums.setdefault(g, 0)
+        counts.setdefault(g, 0)
+        if row[col] is not None:
+            sums[g] += row[col]
+            counts[g] += 1
+    return {g: (sums[g] / counts[g] if counts[g] else None) for g in sums}
+```
+hint: Keep, per group, a running sum and a count of non-`None` values.
+hint: Create the group entry even when its first value is `None`, so all-`None` groups appear with `None`.
+solution: One pass accumulates `sums[g]` and `counts[g]` for non-`None` values while still registering every group. The average is the sum divided by the count, or `None` when the count is 0. This is exactly how `AVG` ignores NULL.
+
+@practice num
+prompt: Table `sale(region, amount)` holds (east, 10), (east, 20), (west, 5), (north, 7), (north, 8), (north, 9). How many rows does `SELECT region FROM sale GROUP BY region HAVING COUNT(*) >= 2` return?
+answer: 2
+check: len(sql("CREATE TABLE sale(region TEXT, amount INT); INSERT INTO sale VALUES ('east',10),('east',20),('west',5),('north',7),('north',8),('north',9);", "SELECT region FROM sale GROUP BY region HAVING COUNT(*) >= 2"))
+hint: Count the rows in each region first, then keep regions with at least two.
+solution: East has 2 rows, west 1 and north 3. `HAVING` keeps east and north, so two rows are returned.
+
+@practice text
+prompt: Table `emp(name TEXT, salary INT)` holds (Ann, 50), (Bo, 70), (Cy, 60), (Di, 80). Type the single name returned by this query.
+
+```sql
+SELECT name FROM emp
+WHERE salary = (SELECT MAX(salary) FROM emp
+                WHERE salary < (SELECT MAX(salary) FROM emp))
+```
+answer: Bo
+check: sql("CREATE TABLE emp(name TEXT, salary INT); INSERT INTO emp VALUES ('Ann',50),('Bo',70),('Cy',60),('Di',80);", "SELECT name FROM emp WHERE salary = (SELECT MAX(salary) FROM emp WHERE salary < (SELECT MAX(salary) FROM emp))")[0][0]
+hint: Evaluate the innermost subquery first and work outward.
+solution: The innermost query gives 80. The middle query is the largest salary below 80, which is 70. The outer query returns the employee with salary 70, Bo. In general this finds the second-highest salary.
+
+@practice num
+prompt: Tables `t(x)` = 1, 2, 3 and `u(y)` = 1, NULL. How many rows does `SELECT x FROM t WHERE x NOT IN (SELECT y FROM u)` return?
+answer: 0
+check: len(sql("CREATE TABLE t(x INT); INSERT INTO t VALUES (1),(2),(3); CREATE TABLE u(y INT); INSERT INTO u VALUES (1),(NULL);", "SELECT x FROM t WHERE x NOT IN (SELECT y FROM u)"))
+hint: Evaluate `2 NOT IN (1, NULL)` using three-valued logic.
+solution: `2 NOT IN (1, NULL)` is `NOT (2 = 1 OR 2 = NULL)`, which is `NOT (false OR unknown)`, so unknown. The same happens for 3, and 1 is found in the list. No row has a true condition, so the result is empty.
+
+@practice mc
+prompt: Table `emp(name, dept, salary)`. Which query lists the departments whose average salary exceeds 60?
+choice*: `SELECT dept FROM emp GROUP BY dept HAVING AVG(salary) > 60`
+choice: `SELECT dept FROM emp WHERE AVG(salary) > 60 GROUP BY dept`
+choice: `SELECT dept FROM emp GROUP BY dept WHERE AVG(salary) > 60`
+choice: `SELECT dept, AVG(salary) FROM emp HAVING salary > 60`
+hint: Which clause is evaluated after grouping, and where does it appear in a query?
+solution: A condition on an aggregate of a group belongs in `HAVING`, written after `GROUP BY`. `WHERE` runs before grouping and cannot contain aggregates, and `HAVING salary > 60` with no `GROUP BY` refers to an ungrouped column.
+
+@quiz code
+prompt: Write `top_group(rows, key, col)`. `rows` is a list of dictionaries. Add up `row[col]` per distinct `row[key]`, treating `None` values as contributing nothing (the group still exists). Return the group value with the largest total; if several tie, return the smallest group value. If `rows` is empty return `None`. Group values are mutually comparable (all strings, or all integers).
+starter:
+```python
+def top_group(rows, key, col):
+    pass
+```
+tests:
+```python
+rows = [
+    {"r": "east", "v": 10},
+    {"r": "west", "v": 25},
+    {"r": "east", "v": 15},
+    {"r": "north", "v": None},
+]
+assert top_group(rows, "r", "v") == "east"
+tie = [{"r": "b", "v": 5}, {"r": "a", "v": 5}]
+assert top_group(tie, "r", "v") == "a"
+assert top_group([], "r", "v") is None
+assert top_group([{"r": 3, "v": None}], "r", "v") == 3
+```
+model:
+```python
+def top_group(rows, key, col):
+    totals = {}
+    for row in rows:
+        totals.setdefault(row[key], 0)
+        if row[col] is not None:
+            totals[row[key]] += row[col]
+    if not totals:
+        return None
+    return max(sorted(totals), key=lambda g: totals[g])
+```
+hint: First compute a dictionary of totals per group.
+hint: `max` returns the first maximal item it meets, so scan the groups in sorted order to break ties toward the smallest.
+solution: Accumulate totals (registering groups even for `None` values), then take the maximum over the groups in sorted order: sorting first makes the first maximal group the smallest one, which resolves ties as required.
+
+@quiz num
+prompt: Table `emp(name, dept, salary)` holds (A, d1, 100), (B, d1, 60), (C, d2, 50), (D, d2, 90), (E, d2, 70). How many rows does this query return?
+
+```sql
+SELECT e.name FROM emp e
+WHERE e.salary > (SELECT AVG(x.salary) FROM emp x WHERE x.dept = e.dept)
+```
+answer: 2
+check: len(sql("CREATE TABLE emp(name TEXT, dept TEXT, salary INT); INSERT INTO emp VALUES ('A','d1',100),('B','d1',60),('C','d2',50),('D','d2',90),('E','d2',70);", "SELECT e.name FROM emp e WHERE e.salary > (SELECT AVG(x.salary) FROM emp x WHERE x.dept = e.dept)"))
+hint: Compute each department's average, then compare each employee with their own department's average.
+solution: Department d1 averages 80, so only A (100) is above it. Department d2 averages 70, so only D (90) is above it (E equals the average and is not greater). Two rows are returned.

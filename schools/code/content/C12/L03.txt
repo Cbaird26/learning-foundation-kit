@@ -1,0 +1,323 @@
+@lesson
+title: Abstract syntax trees and recursive-descent parsing
+summary: Represent expressions as abstract syntax trees and write a recursive-descent parser that turns a list of tokens into a tree with correct precedence and associativity.
+objective: Explain how an abstract syntax tree differs from the token list and from a concrete parse tree.
+objective: Turn each grammar rule into one parsing function (recursive descent).
+objective: Parse binary operators with correct precedence and left associativity using loops.
+reading: Crafting Interpreters, Chapter 5 "Representing Code" and Chapter 6 "Parsing Expressions".
+
+@article
+A token list is flat, but arithmetic is nested: in `1 + 2 * 3` the product is a part of the sum. The **abstract syntax tree (AST)** records this structure and nothing else. Parentheses, whitespace and punctuation have done their job during parsing, so they do not appear as nodes (that is the "abstract" in the name).
+
+### Representing the tree
+
+In this course an AST node is a tuple whose first element names the kind of node:
+
+```python
+("num", 3)                       # the number 3
+("neg", node)                    # unary minus
+("bin", "+", left, right)        # binary operator
+```
+
+The tree for `1 + 2 * 3` is `("bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))`. Reading it from the root, the top operation is `+`, and its right operand is the product.
+
+### Recursive descent
+
+**Recursive-descent parsing** turns a grammar directly into code: one function per nonterminal, and each function calls the functions for the nonterminals in its production. Here is the grammar from last week, with unary minus added:
+
+```text
+expr   -> term   ( ("+" | "-") term )*
+term   -> factor ( ("*" | "/") factor )*
+factor -> NUM | "(" expr ")" | "-" factor
+```
+
+The parser keeps a position `pos` into the token list. `peek` looks at the current token without consuming it; `advance` consumes it. Each function parses as much as it can and returns a node:
+
+```python
+def parse(tokens):
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else ("EOF", "")
+
+    def advance():
+        nonlocal pos
+        tok = peek()
+        pos += 1
+        return tok
+
+    def expr():
+        node = term()
+        while peek() in (("OP", "+"), ("OP", "-")):
+            op = advance()[1]
+            node = ("bin", op, node, term())
+        return node
+
+    def term():
+        node = factor()
+        while peek() in (("OP", "*"), ("OP", "/")):
+            op = advance()[1]
+            node = ("bin", op, node, factor())
+        return node
+
+    def factor():
+        kind, text = advance()
+        if kind == "NUM":
+            return ("num", int(text))
+        if kind == "OP" and text == "-":
+            return ("neg", factor())
+        if kind == "LPAREN":
+            node = expr()
+            if advance()[0] != "RPAREN":
+                raise SyntaxError("expected )")
+            return node
+        raise SyntaxError(f"unexpected token {text!r}")
+
+    node = expr()
+    if peek()[0] != "EOF":
+        raise SyntaxError("unexpected trailing tokens")
+    return node
+```
+
+### Why this gives the right shape
+
+**Precedence** comes from the call structure. `expr` calls `term` for each operand, so products are fully built before `expr` sees a `+`. **Left associativity** comes from the loop: each pass makes the tree built so far the *left* child of a new node. For `10 - 4 - 3` the loop first builds `(10 - 4)` and then `((10 - 4) - 3)`.
+
+Parentheses work because `factor` calls `expr` again: whatever is inside the parentheses is parsed from scratch and returned as a single node, which overrides precedence. Recursion in the grammar becomes recursion in the code, and the Python call stack plays the role of a stack of unfinished constructs.
+
+### Errors
+
+A parser should reject bad input with a clear error rather than guess. The final check above catches leftover tokens such as the `2 3` that follow the `1` in `1 2 3`. Real parsers also report position information; we leave it out for brevity.
+
+Recursive descent is a **top-down** method that decides what to do by looking at the next token, which works for grammars with no left recursion. Writing `expr -> expr "+" term` directly would make `expr` call itself before consuming anything, which never terminates; the loop form above is the standard fix. For the grammars in this course, the parser runs in $O(n)$ time for $n$ tokens.
+
+@example
+title: Parsing 1 + 2 * 3 by hand
+problem: Show how the parser builds the tree for the tokens of `1 + 2 * 3`.
+step: `expr` calls `term`, which calls `factor`. The first token is `NUM 1`, so `factor` returns `("num", 1)`. `term` sees `+`, which is not `*` or `/`, so it returns the node unchanged.
+step: Back in `expr`, the next token is `+`. The loop consumes it and calls `term` for the right operand.
+step: That `term` gets `("num", 2)` from `factor`, sees `*`, consumes it and calls `factor` again to get `("num", 3)`. It builds `("bin", "*", ("num", 2), ("num", 3))` and returns.
+step: `expr` builds `("bin", "+", ("num", 1), <that product>)`. No tokens remain, so the loop ends and the parse is complete.
+answer: `("bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))`
+
+@example
+title: Associativity from the loop
+problem: Why does `8 - 3 - 2` parse as `(8 - 3) - 2`, and what does each loop pass hold?
+step: `expr` starts with `node = ("num", 8)`.
+step: Pass 1 consumes `-` and the operand 3, producing `node = ("bin", "-", ("num", 8), ("num", 3))`.
+step: Pass 2 consumes the second `-` and the operand 2. The old `node` becomes the left child: `("bin", "-", (8 - 3 tree), ("num", 2))`.
+step: The tree therefore means `(8 - 3) - 2 = 3`. Had the right operand been parsed recursively by `expr`, the tree would mean `8 - (3 - 2) = 7`.
+answer: The loop makes the tree built so far the left child each time, so subtraction is left associative.
+
+@mistakes
+- Parsing `expr` as `term "+" expr` (recursing on the right), which makes `+` and `-` right associative and gives `8 - 3 - 2 = 7`.
+- Forgetting to consume the closing parenthesis, or never checking that it is present.
+- Not checking for leftover tokens after the top-level `expr`, so `1 2` is silently accepted as `1`.
+- Putting `+` and `*` at the same grammar level, which loses precedence.
+
+@practice mc
+prompt: In a recursive-descent parser for `expr -> term ("+" term)*`, what makes `1 + 2 + 3` group as `(1 + 2) + 3`?
+choice: The scanner reorders the tokens
+choice*: A loop that wraps the tree built so far as the left child of each new `+` node
+choice: Parentheses are inserted automatically
+choice: Each `term` calls `expr` for its right operand
+hint: Think about what the variable `node` holds after each pass of the loop.
+solution: Each pass of the loop builds a new node whose left child is the previous result, so the first `+` ends up lower in the tree. Recursing to `expr` for the right operand would group to the right instead.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def show(node):
+    if node[0] == "num":
+        return str(node[1])
+    return "(" + show(node[2]) + node[1] + show(node[3]) + ")"
+
+tree = ("bin", "-", ("bin", "-", ("num", 8), ("num", 3)), ("num", 2))
+print(show(tree))
+```
+answer: ((8-3)-2)
+check: run("def show(node):\n    if node[0] == 'num':\n        return str(node[1])\n    return '(' + show(node[2]) + node[1] + show(node[3]) + ')'\n\ntree = ('bin', '-', ('bin', '-', ('num', 8), ('num', 3)), ('num', 2))\nprint(show(tree))\n")
+hint: Work outward from the leaves: the inner tree is `(8-3)`.
+solution: The inner `bin` node prints `(8-3)`. The outer node puts that on the left of `-` and `2` on the right, giving `((8-3)-2)`. This printer shows the grouping the tree encodes.
+
+@practice code
+prompt: Write `depth(node)` that returns the height of an AST in nodes: a `("num", n)` node has depth 1, a `("neg", child)` node has depth 1 plus the depth of its child, and a `("bin", op, left, right)` node has depth 1 plus the larger of the depths of its two children.
+starter:
+```python
+def depth(node):
+    pass
+```
+tests:
+```python
+assert depth(("num", 5)) == 1
+assert depth(("neg", ("num", 5))) == 2
+assert depth(("bin", "+", ("num", 1), ("num", 2))) == 2
+tree = ("bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))
+assert depth(tree) == 3
+deep = ("bin", "-", ("bin", "-", ("num", 8), ("num", 3)), ("num", 2))
+assert depth(deep) == 3
+assert depth(("neg", ("neg", ("neg", ("num", 1))))) == 4
+```
+model:
+```python
+def depth(node):
+    kind = node[0]
+    if kind == "num":
+        return 1
+    if kind == "neg":
+        return 1 + depth(node[1])
+    return 1 + max(depth(node[2]), depth(node[3]))
+```
+hint: A tree is processed naturally by recursion: handle the leaf case first.
+hint: For a `bin` node the children are at indexes 2 and 3; use `max` of their depths.
+solution: Recursion mirrors the tree. A number is a leaf with depth 1, `neg` adds 1 to its child, and `bin` adds 1 to the deeper of its two subtrees.
+
+@practice code
+prompt: Write `parse(tokens)` for this grammar, where `tokens` is a list of `(kind, text)` tuples as produced by a tokenizer (kinds `NUM`, `OP`, `LPAREN`, `RPAREN`):
+
+`expr -> term (("+" | "-") term)*`, `term -> factor (("*" | "/") factor)*`, `factor -> NUM | "(" expr ")" | "-" factor`.
+
+It returns an AST: `("num", int)`, `("neg", node)` or `("bin", op, left, right)`, with `+ - * /` left associative and `*`, `/` binding tighter than `+`, `-`. Raise `SyntaxError` for malformed input, including leftover tokens or a missing `)`.
+starter:
+```python
+def parse(tokens):
+    pass
+```
+tests:
+```python
+import re
+
+def toks(s):
+    out = []
+    for m in re.finditer(r"\d+|[-+*/]|\(|\)", s):
+        t = m.group()
+        if t.isdigit():
+            out.append(("NUM", t))
+        elif t == "(":
+            out.append(("LPAREN", t))
+        elif t == ")":
+            out.append(("RPAREN", t))
+        else:
+            out.append(("OP", t))
+    return out
+
+assert parse(toks("7")) == ("num", 7)
+assert parse(toks("1+2*3")) == (
+    "bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))
+assert parse(toks("8-3-2")) == (
+    "bin", "-", ("bin", "-", ("num", 8), ("num", 3)), ("num", 2))
+assert parse(toks("(1+2)*3")) == (
+    "bin", "*", ("bin", "+", ("num", 1), ("num", 2)), ("num", 3))
+assert parse(toks("-4*2")) == (
+    "bin", "*", ("neg", ("num", 4)), ("num", 2))
+assert raises(SyntaxError, parse, toks("(1+2"))
+assert raises(SyntaxError, parse, toks("1 2"))
+assert raises(SyntaxError, parse, toks("1+"))
+```
+model:
+```python
+def parse(tokens):
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else ("EOF", "")
+
+    def advance():
+        nonlocal pos
+        tok = peek()
+        pos += 1
+        return tok
+
+    def expr():
+        node = term()
+        while peek() in (("OP", "+"), ("OP", "-")):
+            op = advance()[1]
+            node = ("bin", op, node, term())
+        return node
+
+    def term():
+        node = factor()
+        while peek() in (("OP", "*"), ("OP", "/")):
+            op = advance()[1]
+            node = ("bin", op, node, factor())
+        return node
+
+    def factor():
+        kind, text = advance()
+        if kind == "NUM":
+            return ("num", int(text))
+        if kind == "OP" and text == "-":
+            return ("neg", factor())
+        if kind == "LPAREN":
+            node = expr()
+            if advance()[0] != "RPAREN":
+                raise SyntaxError("expected )")
+            return node
+        raise SyntaxError(f"unexpected token {text!r}")
+
+    node = expr()
+    if peek()[0] != "EOF":
+        raise SyntaxError("unexpected trailing tokens")
+    return node
+```
+hint: Write one inner function per grammar rule and a shared position that `advance` moves.
+hint: `expr` and `term` have the same shape: parse an operand, then loop while the next token is one of their operators, wrapping the node built so far.
+solution: Implement `expr`, `term` and `factor` as mutually recursive functions over a shared position. The loops give left associativity, the layering gives precedence, and the two checks (the closing parenthesis and no leftover tokens) produce the `SyntaxError`s.
+
+@practice mc
+prompt: Which of these grammar rules cannot be implemented directly by a recursive-descent function, because the function would call itself without consuming a token?
+choice: `factor -> "(" expr ")"`
+choice: `expr -> term ("+" term)*`
+choice*: `expr -> expr "+" term | term`
+choice: `factor -> "-" factor | NUM`
+hint: Look for a rule whose first symbol on the right is the nonterminal being defined.
+solution: A rule that starts with itself is left recursive: the function for `expr` would call `expr` first and recurse forever. Rewriting it as `term ("+" term)*` and using a loop removes the problem. The other rules each consume a token before any recursive call.
+
+@quiz code
+prompt: Write `to_postfix(node)` that converts an AST into a postfix (reverse Polish) string with tokens separated by single spaces. A `("num", n)` node gives `"n"`, a `("neg", c)` node gives the child's string followed by `" neg"`, and a `("bin", op, l, r)` node gives the left string, the right string and `op`, in that order. Example: for `1 + 2 * 3`, the result is `"1 2 3 * +"`.
+starter:
+```python
+def to_postfix(node):
+    pass
+```
+tests:
+```python
+assert to_postfix(("num", 7)) == "7"
+t = ("bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))
+assert to_postfix(t) == "1 2 3 * +"
+t2 = ("bin", "*", ("bin", "+", ("num", 1), ("num", 2)), ("num", 3))
+assert to_postfix(t2) == "1 2 + 3 *"
+assert to_postfix(("neg", ("num", 4))) == "4 neg"
+t3 = ("bin", "-", ("bin", "-", ("num", 8), ("num", 3)), ("num", 2))
+assert to_postfix(t3) == "8 3 - 2 -"
+```
+model:
+```python
+def to_postfix(node):
+    kind = node[0]
+    if kind == "num":
+        return str(node[1])
+    if kind == "neg":
+        return to_postfix(node[1]) + " neg"
+    return " ".join([to_postfix(node[2]), to_postfix(node[3]), node[1]])
+```
+hint: Postfix is a post-order traversal: operands first, then the operator.
+hint: Recursively convert the children, then join the pieces with spaces.
+solution: This is a post-order traversal. Convert the children recursively and put the operator after its operands. Postfix needs no parentheses because the order alone shows the grouping.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def show(node):
+    if node[0] == "num":
+        return str(node[1])
+    return "(" + show(node[2]) + node[1] + show(node[3]) + ")"
+
+print(show(("bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))))
+```
+answer: (1+(2*3))
+check: run("def show(node):\n    if node[0] == 'num':\n        return str(node[1])\n    return '(' + show(node[2]) + node[1] + show(node[3]) + ')'\n\nprint(show(('bin', '+', ('num', 1), ('bin', '*', ('num', 2), ('num', 3)))))\n")
+hint: Print the product first, since it is the right child of the `+` node.
+solution: The right child prints `(2*3)`. The root puts `1` on the left and that on the right of `+`, giving `(1+(2*3))`.

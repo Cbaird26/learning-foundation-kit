@@ -1,0 +1,279 @@
+@lesson
+title: Undefined behavior and secure C
+summary: Explain what undefined behavior is and how compilers exploit it, recognize the common vulnerability patterns in C code, and write defensive code with checked arithmetic and bounded operations.
+objective: Distinguish undefined, unspecified and implementation-defined behavior and give examples of each.
+objective: Recognize buffer overflows, integer overflows in size computations, and format-string bugs, and write the fixed versions.
+objective: Write overflow checks that are themselves free of undefined behavior.
+objective: Use compiler warnings, sanitizers and hardening options as part of a secure development workflow.
+reading: Beej's Guide to C Programming, the sections on undefined behavior and on integer types; for secure coding, look up the SEI CERT C Coding Standard and your compiler's documentation of `-fsanitize` options.
+@article
+The C standard describes three kinds of gaps. **Implementation-defined** behavior varies by compiler but must be documented (the size of `int`, whether plain `char` is signed). **Unspecified** behavior has several allowed outcomes with no documentation required (the order in which function arguments are evaluated). **Undefined behavior (UB)** means the standard imposes **no requirements at all**: the program may crash, give a wrong answer, appear to work, or be transformed by the optimizer into something surprising.
+
+### Common sources of UB
+
+- Signed integer overflow (`INT_MAX + 1`), division by zero, and `INT_MIN / -1`.
+- Out-of-bounds array access, or forming a pointer beyond one past the end of an object.
+- Dereferencing `NULL`, a dangling pointer or a freed block; reading an uninitialized automatic variable whose address was never taken.
+- Shifting by a negative amount or by at least the width of the type.
+- Modifying an object twice without a sequence point between (`i = i++ + 1`), or reading a value while modifying it elsewhere in the same expression.
+- Accessing an object through a pointer of an incompatible type (a strict aliasing violation), and calling `memcpy` on overlapping ranges.
+- Modifying a string literal; a data race between threads.
+
+### Why UB is dangerous
+
+Compilers assume UB never happens and optimize on that basis. In
+
+```c
+int check(int x) {
+    if (x + 1 < x) {      /* meant: "did x + 1 overflow?" */
+        return -1;
+    }
+    return x + 1;
+}
+```
+
+the compiler may reason that signed overflow cannot occur, so `x + 1 < x` is always false, and delete the test. Likewise, a null check written *after* a dereference may be removed, because the dereference already "proved" the pointer non-null. The error you see can be far from the cause, and it can change between compiler versions and optimization levels. Testing alone cannot show the absence of UB.
+
+### Vulnerability patterns
+
+Most memory-safety vulnerabilities in C programs come from a few patterns. Study them in order to recognize and prevent them; the examples show a flawed version beside its fix.
+
+**1. Unbounded copies.**
+
+```c
+/* VULNERABLE: no length check; input longer than 15 bytes overflows buf */
+char buf[16];
+strcpy(buf, input);
+
+/* FIXED: bounded, always terminated, truncation detected */
+char buf[16];
+if (snprintf(buf, sizeof buf, "%s", input) >= (int)sizeof buf) {
+    /* input was too long: reject it */
+}
+```
+
+**2. Integer overflow in a size computation.**
+
+```c
+/* VULNERABLE: n * sizeof *a can wrap around, allocating a tiny block */
+int *a = malloc(n * sizeof *a);
+
+/* FIXED: reject sizes that would overflow, or use calloc */
+if (n > SIZE_MAX / sizeof *a) {
+    return NULL;
+}
+int *a = malloc(n * sizeof *a);
+```
+
+**3. Format-string bugs.**
+
+```c
+/* VULNERABLE: the text is used as the format; "%s%s" or "%n" is interpreted */
+printf(user_text);
+
+/* FIXED: a constant format string */
+printf("%s", user_text);
+```
+
+**4. Signed/unsigned confusion.** In `-1 < 1u` the `-1` is converted to `unsigned int` and becomes a huge value, so the comparison is false. A negative length converted to `size_t` becomes enormous. Use unsigned types for sizes, and check ranges before converting.
+
+**5. Use after free, double free, uninitialized data and missing `NULL` checks** (weeks 7 and 8).
+
+### Writing overflow checks without UB
+
+The check has to happen **before** the overflow:
+
+```c
+#include <limits.h>
+int add_checked(int a, int b, int *out) {
+    if ((b > 0 && a > INT_MAX - b) || (b < 0 && a < INT_MIN - b)) {
+        return -1;                 /* would overflow */
+    }
+    *out = a + b;
+    return 0;
+}
+```
+
+GCC and Clang also provide `__builtin_add_overflow`, and C23 adds `<stdckdint.h>` with `ckd_add`, `ckd_sub` and `ckd_mul`. Unsigned arithmetic wraps by definition, so an unsigned sum overflowed exactly when the result is smaller than an operand.
+
+### Defence in depth
+
+Write correct code first; mitigations only make exploitation harder. Compile with `-std=c17 -Wall -Wextra -Wpedantic` and treat warnings as errors in your build; test with `-fsanitize=address,undefined`; fuzz input parsers; initialize variables; prefer length-carrying interfaces (`snprintf`, `fgets`, `memcpy` with a checked length) to the unbounded `strcpy`, `strcat`, `sprintf` and `gets`; keep every buffer's size next to its pointer; validate all external input. Hardened builds add stack protectors (`-fstack-protector-strong`) and fortified library calls (`-D_FORTIFY_SOURCE=2` with optimization), and operating systems add non-executable stacks and address-space layout randomization. These mitigations do not fix a bug; they make some bugs harder to exploit. Memory-safe languages remove whole classes of these errors, and new code in security-sensitive areas increasingly uses them, but vast amounts of C remain in operating systems, embedded devices and libraries, so the ability to read and write C defensively stays essential.
+
+@example
+title: Why the overflow test disappears
+problem: Explain why the `check` function in the article may not detect overflow, and write a correct version.
+step: For signed `int`, `x + 1` overflows only when `x == INT_MAX`, and that overflow is undefined behavior.
+step: The compiler may assume undefined behavior never occurs, so it may conclude `x + 1 < x` is always false and remove the branch. At `-O0` the test may appear to work, which hides the bug.
+step: Test the condition **without** performing the overflowing operation: `if (x == INT_MAX) return -1;`.
+step: The fixed function: `if (x == INT_MAX) { return -1; } return x + 1;`. It is free of undefined behavior at every optimization level.
+
+@example
+title: Reviewing a function for vulnerabilities
+problem: Find the flaws in `void hello(const char *name) { char buf[16]; sprintf(buf, "Hi, %s", name); printf(buf); }` and fix it.
+step: `sprintf` has no limit: a `name` of more than 11 characters (`"Hi, "` takes 4 bytes, and the terminator takes 1 more) writes past `buf`, a stack buffer overflow.
+step: `printf(buf)` uses data derived from input as the format string, so `%` sequences in `name` are interpreted (a format-string bug).
+step: Use a bounded write and a constant format: `snprintf(buf, sizeof buf, "Hi, %s", name);` then `printf("%s\n", buf);`.
+step: Truncation is now safe but silent; if truncated greetings matter, compare the return value of `snprintf` with `sizeof buf` and report an error.
+
+@mistakes
+- Believing that code which "works when I test it" cannot contain undefined behavior.
+- Writing an overflow check that performs the overflowing signed operation first.
+- Passing user-controlled text as a `printf` format string.
+- Computing an allocation size as `count * size` without checking for wraparound.
+- Mixing signed and unsigned values in a comparison, so that negatives become huge numbers.
+- Relying on stack protectors or ASLR instead of fixing the underlying bug.
+
+@practice mc
+prompt: With 32-bit two's-complement `int` and `#include <limits.h>`, which of these evaluations has undefined behavior in C?
+choice: `UINT_MAX + 1u` (unsigned addition)
+choice*: `INT_MAX + 1` (signed addition), when the value is computed at run time
+choice: `-7 % 2`
+choice: `(unsigned char)300`
+hint: The standard treats signed and unsigned overflow differently.
+solution: Unsigned arithmetic wraps modulo $2^N$ by definition, `-7 % 2` is `-1` since C99, and converting `300` to `unsigned char` gives `44`. Only signed overflow (`INT_MAX + 1`) is undefined.
+
+@practice num
+prompt: What number does this program print?
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a = -1;
+    unsigned int b = 1;
+    printf("%d\n", a < b);
+    return 0;
+}
+```
+answer: 0
+check: int(run_c('#include <stdio.h>\n\nint main(void) {\n    int a = -1;\n    unsigned int b = 1;\n    printf("%d\\n", a < b);\n    return 0;\n}\n'))
+hint: In a comparison of `int` and `unsigned int`, the `int` is converted to `unsigned int`.
+solution: `-1` converted to `unsigned int` is `UINT_MAX`, which is not less than `1`, so the comparison yields `0`. Compilers with `-Wextra` warn about comparisons between signed and unsigned values.
+
+@practice code
+prompt: On a 64-bit system `size_t` holds values from 0 to $2^{64} - 1$. Write `alloc_size(count, size)` that returns `count * size` as the number of bytes to allocate, or `None` if the product is larger than $2^{64} - 1$. Both arguments are non-negative integers. Decide by comparing with a division, the way safe C does (in C the product itself would silently wrap), not by checking whether the exact product is too big.
+starter:
+```python
+def alloc_size(count, size):
+    pass
+```
+tests:
+```python
+assert alloc_size(10, 4) == 40
+assert alloc_size(0, 8) == 0
+assert alloc_size(5, 0) == 0
+assert alloc_size(2 ** 62, 8) is None
+assert alloc_size(2 ** 32, 2 ** 32) is None
+assert alloc_size(2 ** 32, 2 ** 32 - 1) == 2 ** 64 - 2 ** 32
+assert alloc_size(1, 2 ** 64 - 1) == 2 ** 64 - 1
+```
+model:
+```python
+SIZE_MAX = 2 ** 64 - 1
+
+
+def alloc_size(count, size):
+    if size != 0 and count > SIZE_MAX // size:
+        return None
+    return count * size
+```
+hint: `count * size <= SIZE_MAX` is equivalent to `count <= SIZE_MAX // size` when `size` is positive.
+hint: Handle `size == 0` separately (the product is 0), and otherwise compare `count` with `SIZE_MAX // size`.
+solution: Dividing the limit by `size` avoids forming a product that might overflow, which is the idiom `if (n > SIZE_MAX / sizeof *p)` in C. The integer division is exact enough because for integers $count \cdot size \le M \iff count \le \lfloor M / size \rfloor$.
+
+@practice mc
+prompt: A program contains `printf(user_text);` where `user_text` comes from the network. What is the vulnerability and the correct fix?
+choice: A buffer overflow in `printf`; fix it by declaring `user_text` with a larger array.
+choice*: The attacker controls the format string, so conversions such as `%s`, `%x` and `%n` read or write memory; fix it with a constant format: `printf("%s", user_text);`.
+choice: An integer overflow in the length of `user_text`; fix it by casting to `size_t`.
+choice: There is no vulnerability, because `printf` only prints characters.
+hint: What does `printf` do when it meets a `%` in its first argument?
+solution: `printf` interprets its first argument as a format. With attacker-supplied text, conversions without matching arguments read arbitrary stack data, and `%n` writes the number of characters printed to memory. The data must always be an argument, never the format.
+
+@practice self
+prompt: Review this function as if you were a security reviewer. Name each flaw, explain how it arises, and write a corrected version that takes the buffer size into account.
+
+```c
+void greet(const char *name) {
+    char buf[16];
+    sprintf(buf, "Hello, %s!", name);
+    printf(buf);
+}
+```
+solution: Two flaws. (1) `sprintf` writes without a limit into a 16-byte stack buffer: `"Hello, "` and `"!"` use 8 bytes plus a terminator, so a `name` longer than 7 characters overflows `buf` (undefined behavior; a classic stack buffer overflow). (2) `printf(buf)` uses the formatted text as the format string, so any `%` in `name` is interpreted: a format-string vulnerability. A corrected version: `char buf[16]; int n = snprintf(buf, sizeof buf, "Hello, %s!", name); if (n < 0 || (size_t)n >= sizeof buf) { fputs("name too long\n", stderr); return; } printf("%s\n", buf);` (or `puts(buf)`). The size is passed to `snprintf` through `sizeof buf`, the truncation is detected from the return value, and the output uses a constant format.
+rubric: Identifies the unbounded `sprintf` as a buffer overflow and says why 16 bytes is not enough.
+rubric: Identifies `printf(buf)` as a format-string vulnerability.
+rubric: Fixes both with `snprintf(buf, sizeof buf, ...)` and a constant format such as `"%s"`.
+rubric: Handles truncation explicitly (checks the return value) rather than ignoring it.
+hint: Count the bytes the greeting needs for a long `name`.
+hint: Look at both the call that fills the buffer and the call that prints it.
+
+@practice text
+prompt: What does this program print? Type the number.
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    unsigned int x = 1u << 31;
+    printf("%u\n", x);
+    return 0;
+}
+```
+answer: 2147483648
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    unsigned int x = 1u << 31;\n    printf("%u\\n", x);\n    return 0;\n}\n')
+hint: A 32-bit `unsigned int` can hold values up to 4294967295.
+solution: `1u << 31` sets only the top bit of a 32-bit unsigned value, which is $2^{31} = 2147483648$. The shift is well defined because the left operand is unsigned and the shift count is less than the width. With a signed `1 << 31` the result does not fit in `int` and the behavior is undefined, so use unsigned types for bit masks.
+
+@quiz code
+prompt: Write `checked_add32(a, b)` for 32-bit signed integers: `a` and `b` are Python integers in the range $-2^{31}$ to $2^{31} - 1$. Return `a + b` if it also fits in that range, otherwise `None`. Decide using comparisons with the limits written the way safe C does it (for example `a > INT_MAX - b` when `b > 0`), since in C the overflowing addition itself would be undefined behavior.
+starter:
+```python
+def checked_add32(a, b):
+    pass
+```
+tests:
+```python
+assert checked_add32(1, 2) == 3
+assert checked_add32(2147483647, 0) == 2147483647
+assert checked_add32(2147483647, 1) is None
+assert checked_add32(-2147483648, -1) is None
+assert checked_add32(-2147483648, 2147483647) == -1
+assert checked_add32(-5, -7) == -12
+assert checked_add32(1073741824, 1073741824) is None
+```
+model:
+```python
+INT_MAX = 2 ** 31 - 1
+INT_MIN = -(2 ** 31)
+
+
+def checked_add32(a, b):
+    if b > 0 and a > INT_MAX - b:
+        return None
+    if b < 0 and a < INT_MIN - b:
+        return None
+    return a + b
+```
+hint: Overflow upward needs `b > 0` and `a + b > INT_MAX`, which can be rewritten as `a > INT_MAX - b`.
+hint: The downward case is symmetric: `b < 0` and `a < INT_MIN - b`.
+solution: Rearranging the inequality moves the arithmetic to a side that cannot overflow: `INT_MAX - b` is safe when `b > 0`, and `INT_MIN - b` is safe when `b < 0`. When `b` is zero, no overflow is possible. These are the same tests as in the C function `add_checked`.
+
+@quiz num
+prompt: What number does this program print?
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    unsigned char c = 250;
+    c = c + 10;
+    printf("%d\n", c);
+    return 0;
+}
+```
+answer: 4
+check: int(run_c('#include <stdio.h>\n\nint main(void) {\n    unsigned char c = 250;\n    c = c + 10;\n    printf("%d\\n", c);\n    return 0;\n}\n'))
+hint: `c + 10` is computed as an `int`; the result is then converted back to `unsigned char`.
+solution: `250 + 10 = 260`, and storing it in an `unsigned char` reduces it modulo 256, giving `4`. The conversion is well defined (no undefined behavior), unlike signed overflow.

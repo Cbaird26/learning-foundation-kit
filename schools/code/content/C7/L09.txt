@@ -1,0 +1,345 @@
+@lesson
+title: Linked structures in C
+summary: Build, traverse, modify and free singly linked lists in C, using a pointer to a pointer for clean insertion and removal.
+objective: Define a self-referential node type and build a list with `malloc`.
+objective: Write list operations (push, find, remove, reverse, free) with correct pointer updates.
+objective: Use a pointer to a pointer (`node **`) to avoid special cases at the head.
+objective: Reason about ownership and time complexity of list operations.
+reading: Beej's Guide to C Programming, the chapters on structs and manual memory allocation, which cover self-referential structs (look up "linked list" in the index); then any data structures text's section on singly linked lists.
+@article
+A **linked list** stores each element in its own heap-allocated **node** holding a value and a pointer to the next node. The list itself is just a pointer to the first node, the **head**; the last node's `next` is `NULL`.
+
+```c
+typedef struct node {
+    int value;
+    struct node *next;
+} node;
+```
+
+The tag `struct node` is needed inside the definition, because the typedef name does not exist yet at that point. An empty list is `head == NULL`.
+
+### Basic operations
+
+Pushing at the front takes $O(1)$ time. Because the head pointer must change, the function takes a pointer to it:
+
+```c
+int push_front(node **head, int value) {
+    node *n = malloc(sizeof *n);
+    if (n == NULL) {
+        return -1;
+    }
+    n->value = value;
+    n->next = *head;
+    *head = n;
+    return 0;
+}
+```
+
+Walking the list uses a loop on the pointer: `for (node *p = head; p != NULL; p = p->next)`. Finding a value is $O(n)$; reaching the $k$-th node is $O(k)$ (no random access). Appending at the end is $O(n)$ unless you also keep a tail pointer. Inserting or removing a node you already have a pointer to (and its predecessor) is $O(1)$, because no elements move.
+
+### Freeing a list
+
+Read `next` **before** freeing the node:
+
+```c
+void free_list(node *head) {
+    while (head != NULL) {
+        node *next = head->next;
+        free(head);
+        head = next;
+    }
+}
+```
+
+Writing `free(head); head = head->next;` is a use after free. The code that calls `malloc` for a node owns it until the node is unlinked and freed; document who owns the list as a whole.
+
+### Removing with a pointer to a pointer
+
+The tricky part of removal is the head: the first node has no predecessor node. A pointer to the **link that points at the current node** removes the special case. `pp` starts as `&head` and later becomes the address of some node's `next` field:
+
+```c
+int remove_first(node **head, int value) {
+    for (node **pp = head; *pp != NULL; pp = &(*pp)->next) {
+        if ((*pp)->value == value) {
+            node *dead = *pp;
+            *pp = dead->next;      /* unlink: bypass the node */
+            free(dead);
+            return 1;
+        }
+    }
+    return 0;
+}
+```
+
+`*pp` is the node under inspection; assigning to `*pp` rewrites whichever link led to it, whether that is the head variable or a `next` field. Draw this on paper: `pp` is an arrow pointing at an arrow.
+
+### Reversing in place
+
+```c
+node *reverse(node *head) {
+    node *prev = NULL;
+    while (head != NULL) {
+        node *next = head->next;   /* remember the rest */
+        head->next = prev;         /* flip this link */
+        prev = head;
+        head = next;
+    }
+    return prev;
+}
+```
+
+It runs in $O(n)$ time and $O(1)$ extra space, and returns the new head.
+
+### Other linked structures
+
+A **doubly linked list** adds a `prev` pointer, which makes removal of a known node $O(1)$ at the cost of more pointer updates. A **stack** is a list used through `push_front` and a pop of the head; a **queue** keeps head and tail pointers. A **binary tree** node has two child pointers, `left` and `right`, and is usually processed with recursion; freeing it is a post-order traversal (free both children, then the node). A **cycle** (a `next` pointer leading back into the list) makes a traversal loop forever; two pointers that move at different speeds can detect one.
+
+Linked lists have poor locality: nodes are scattered in memory and each step is a pointer chase, so arrays are usually faster in practice unless you need cheap insertion in the middle. Choose a list when the operations you need are constant-time splices.
+
+@example
+title: Tracing a list reversal
+problem: Trace `reverse` on the list `1 -> 2 -> 3`, drawing the pointers after each iteration.
+step: Start: `prev = NULL`, `head` at node 1. The list is `1 -> 2 -> 3 -> NULL`.
+step: Iteration 1: `next` is node 2; node 1's link is set to `prev` (`NULL`); `prev` becomes node 1 and `head` becomes node 2. Now `1 -> NULL` is finished and `2 -> 3` is left.
+step: Iteration 2: `next` is node 3; node 2 now points to node 1; `prev` is node 2 and `head` is node 3. The finished part is `2 -> 1 -> NULL`.
+step: Iteration 3: `next` is `NULL`; node 3 points to node 2; `prev` is node 3 and `head` is `NULL`, so the loop ends. The function returns node 3: `3 -> 2 -> 1 -> NULL`.
+
+@example
+title: Removing the head with node **
+problem: Show why `remove_first(&head, 3)` needs no special case when the list is `3 -> 1`.
+step: `pp` starts as `&head`, so `*pp` is the head variable, which points at node 3.
+step: `(*pp)->value == 3`, so `dead` is node 3 and `*pp = dead->next` assigns node 1 to the **head variable itself**.
+step: `free(dead)` releases node 3, and the list is now `1`.
+step: For a match in the middle, `pp` would be `&prev_node->next`, and the same two lines would rewrite that `next` field. One code path serves both cases.
+
+@mistakes
+- Freeing a node and then reading `head->next`: save `next` first.
+- Losing the rest of the list by overwriting the only pointer to it before saving it.
+- Forgetting that adding or removing the first node changes the caller's head pointer, so the function needs `node **` or must return the new head.
+- Not setting the last node's `next` to `NULL` (malloc does not zero memory), so traversals run into garbage.
+- Leaking nodes by overwriting a head pointer or never calling `free_list`.
+
+@practice text
+prompt: What does this program print? Type the output exactly (three numbers separated by single spaces).
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct node {
+    int value;
+    struct node *next;
+} node;
+
+static node *push(node *head, int v) {
+    node *n = malloc(sizeof *n);
+    if (n == NULL) {
+        exit(1);
+    }
+    n->value = v;
+    n->next = head;
+    return n;
+}
+
+int main(void) {
+    node *head = NULL;
+    for (int i = 1; i <= 3; i++) {
+        head = push(head, i);
+    }
+    for (node *p = head; p != NULL; p = p->next) {
+        printf("%d ", p->value);
+    }
+    printf("\n");
+    while (head != NULL) {
+        node *next = head->next;
+        free(head);
+        head = next;
+    }
+    return 0;
+}
+```
+answer: 3 2 1
+check: run_c('#include <stdio.h>\n#include <stdlib.h>\n\ntypedef struct node {\n    int value;\n    struct node *next;\n} node;\n\nstatic node *push(node *head, int v) {\n    node *n = malloc(sizeof *n);\n    if (n == NULL) {\n        exit(1);\n    }\n    n->value = v;\n    n->next = head;\n    return n;\n}\n\nint main(void) {\n    node *head = NULL;\n    for (int i = 1; i <= 3; i++) {\n        head = push(head, i);\n    }\n    for (node *p = head; p != NULL; p = p->next) {\n        printf("%d ", p->value);\n    }\n    printf("\\n");\n    while (head != NULL) {\n        node *next = head->next;\n        free(head);\n        head = next;\n    }\n    return 0;\n}\n')
+hint: Each `push` puts the new node in front of the old head.
+solution: Pushing 1, 2, 3 at the front builds `3 -> 2 -> 1`, so a traversal from the head prints `3 2 1` (the program also prints a trailing space before the newline, which the answer check ignores).
+
+@practice code
+prompt: Model a linked list in Python with two lists: `val[i]` is the value of node `i`, and `nxt[i]` is the index of the next node, or `-1` for `NULL`. Write `to_list(val, nxt, head)` that returns the values in list order as a Python list, starting at node index `head` (`-1` means the empty list).
+starter:
+```python
+def to_list(val, nxt, head):
+    pass
+```
+tests:
+```python
+val = [10, 20, 30]
+nxt = [2, -1, 1]
+assert to_list(val, nxt, 0) == [10, 30, 20]
+assert to_list(val, nxt, 1) == [20]
+assert to_list(val, nxt, -1) == []
+assert to_list([5], [-1], 0) == [5]
+```
+model:
+```python
+def to_list(val, nxt, head):
+    out = []
+    p = head
+    while p != -1:
+        out.append(val[p])
+        p = nxt[p]
+    return out
+```
+hint: Follow `nxt` from `head` until the index is `-1`.
+hint: Append `val[p]` at each node, then set `p = nxt[p]`.
+solution: This is the traversal `for (p = head; p != NULL; p = p->next)`, with indices playing the role of pointers. Note that the node numbering (index) is unrelated to list order.
+
+@practice code
+prompt: Using the array model of a list (`val[i]` is the value of node `i`, `nxt[i]` is the next node's index or `-1`), write `reverse(nxt, head)` that reverses the list in place by changing the entries of `nxt`, exactly like the C `reverse`. Return the index of the new head. `val` is not needed and must not change. For `head == -1` return `-1`.
+starter:
+```python
+def reverse(nxt, head):
+    pass
+```
+tests:
+```python
+nxt = [1, 2, -1]
+assert reverse(nxt, 0) == 2
+assert nxt == [-1, 0, 1]
+nxt = [-1]
+assert reverse(nxt, 0) == 0
+assert nxt == [-1]
+assert reverse([], -1) == -1
+nxt = [2, -1, 1]
+assert reverse(nxt, 0) == 1
+assert nxt == [-1, 2, 0]
+```
+model:
+```python
+def reverse(nxt, head):
+    prev = -1
+    while head != -1:
+        following = nxt[head]
+        nxt[head] = prev
+        prev = head
+        head = following
+    return prev
+```
+hint: Keep `prev` (starting at `-1`) and the current node `head`.
+hint: Save `nxt[head]` before overwriting it, then set `nxt[head] = prev`, advance `prev` and `head`.
+solution: Each iteration flips one link, as in the traced example. The saved `following` index plays the role of the C variable `next`: without it the rest of the list would be lost. The time is $O(n)$ and the extra space is $O(1)$.
+
+@practice mc
+prompt: This function is meant to free every node of a list. What is wrong with it?
+
+```c
+void free_list(node *head) {
+    for (node *p = head; p != NULL; p = p->next) {
+        free(p);
+    }
+}
+```
+choice: Nothing; it frees each node exactly once.
+choice*: After `free(p)`, the loop update `p = p->next` reads the freed node: a use after free.
+choice: It leaks the last node, because the loop stops when `p` is `NULL`.
+choice: It frees each node twice.
+hint: In what order do the loop body and the update expression run?
+solution: The update `p = p->next` runs after the body, when `p` has already been freed. Save `next` before freeing: `node *next = p->next; free(p); p = next;`.
+
+@practice text
+prompt: A list holds `3 -> 2 -> 1` (head first). After this program removes the first node whose value is `2`, what does it print? Type the output exactly.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct node {
+    int value;
+    struct node *next;
+} node;
+
+static node *push(node *head, int v) {
+    node *n = malloc(sizeof *n);
+    if (n == NULL) {
+        exit(1);
+    }
+    n->value = v;
+    n->next = head;
+    return n;
+}
+
+static int remove_first(node **head, int value) {
+    for (node **pp = head; *pp != NULL; pp = &(*pp)->next) {
+        if ((*pp)->value == value) {
+            node *dead = *pp;
+            *pp = dead->next;
+            free(dead);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    node *head = NULL;
+    for (int i = 1; i <= 3; i++) {
+        head = push(head, i);
+    }
+    int found = remove_first(&head, 2);
+    printf("%d:", found);
+    for (node *p = head; p != NULL; p = p->next) {
+        printf(" %d", p->value);
+    }
+    printf("\n");
+    while (head != NULL) {
+        node *next = head->next;
+        free(head);
+        head = next;
+    }
+    return 0;
+}
+```
+answer: 1: 3 1
+check: run_c('#include <stdio.h>\n#include <stdlib.h>\n\ntypedef struct node {\n    int value;\n    struct node *next;\n} node;\n\nstatic node *push(node *head, int v) {\n    node *n = malloc(sizeof *n);\n    if (n == NULL) {\n        exit(1);\n    }\n    n->value = v;\n    n->next = head;\n    return n;\n}\n\nstatic int remove_first(node **head, int value) {\n    for (node **pp = head; *pp != NULL; pp = &(*pp)->next) {\n        if ((*pp)->value == value) {\n            node *dead = *pp;\n            *pp = dead->next;\n            free(dead);\n            return 1;\n        }\n    }\n    return 0;\n}\n\nint main(void) {\n    node *head = NULL;\n    for (int i = 1; i <= 3; i++) {\n        head = push(head, i);\n    }\n    int found = remove_first(&head, 2);\n    printf("%d:", found);\n    for (node *p = head; p != NULL; p = p->next) {\n        printf(" %d", p->value);\n    }\n    printf("\\n");\n    while (head != NULL) {\n        node *next = head->next;\n        free(head);\n        head = next;\n    }\n    return 0;\n}\n')
+hint: The list built by the loop is `3 -> 2 -> 1`; `remove_first` returns 1 when it removes a node.
+solution: `remove_first` finds the node with value `2`, rewrites the link that pointed to it (the `next` of node 3) to skip it, frees it and returns `1`. The list is then `3 -> 1`, so the program prints `1: 3 1`.
+
+@quiz code
+prompt: Using the array model of a list (`val[i]`, `nxt[i]` is the next node's index or `-1`), write `has_cycle(nxt, head)` that returns `True` if following `nxt` from `head` never reaches `-1` (the list contains a cycle) and `False` otherwise. Use **Floyd's tortoise and hare** (a slow pointer moving one step, a fast pointer moving two) and no set or other extra collection, so the extra space is $O(1)$. `head == -1` is the empty list.
+starter:
+```python
+def has_cycle(nxt, head):
+    pass
+```
+tests:
+```python
+assert has_cycle([1, 2, -1], 0) is False
+assert has_cycle([], -1) is False
+assert has_cycle([0], 0) is True
+assert has_cycle([1, 2, 3, 1], 0) is True
+assert has_cycle([1, -1], 0) is False
+assert has_cycle([1, 2, 0], 1) is True
+```
+model:
+```python
+def has_cycle(nxt, head):
+    slow = head
+    fast = head
+    while fast != -1 and nxt[fast] != -1:
+        slow = nxt[slow]
+        fast = nxt[nxt[fast]]
+        if slow == fast:
+            return True
+    return False
+```
+hint: Move `slow` one node and `fast` two nodes per round; if `fast` falls off the end (reaches `-1`) there is no cycle.
+hint: Check that `fast` and `nxt[fast]` are both valid before moving two steps, and report a cycle when the two pointers become equal.
+solution: In a cycle the fast pointer gains one node on the slow pointer each round, so they must meet; in a list that ends, the fast pointer reaches `-1` first. The loop makes $O(n)$ steps in total, with $O(1)$ extra space.
+
+@quiz mc
+prompt: A singly linked list keeps only a head pointer and holds $n$ nodes. What is the worst-case time to append a new node at the end?
+choice: $O(1)$, because `malloc` runs in constant time.
+choice: $O(\log n)$, by splitting the list in half.
+choice*: $O(n)$, because the whole list must be walked to find the last node.
+choice: $O(n^2)$, because each node must be compared with every other.
+hint: How can you reach the last node when you only know the first?
+solution: Without a tail pointer, the only way to find the last node is to follow every `next` link. Keeping a tail pointer makes the append $O(1)$ (you must then update it on removals).

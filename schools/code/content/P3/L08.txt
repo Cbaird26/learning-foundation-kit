@@ -1,0 +1,194 @@
+@lesson
+title: Consistency, availability and idempotency
+summary: Choose a consistency model deliberately, reason about quorums and partitions, and make retried operations safe with idempotency keys, sagas and a well-designed job pipeline.
+objective: State the CAP theorem correctly and use PACELC to discuss the everyday latency versus consistency trade-off.
+objective: Compare strong, eventual, read-your-writes and monotonic-read consistency, and compute quorum overlap.
+objective: Design idempotent operations and a job-processing pipeline that tolerates retries and partial failure.
+reading: The System Design Primer, the sections "Consistency patterns", "Availability patterns" and "CAP theorem" (and the "Idempotent operations" notes in the asynchronism material).
+@article
+Two data centers lose their network link for ten minutes. Both still receive writes from users. Should they keep accepting writes (and risk contradicting each other) or refuse writes until the link returns (and be unavailable)? That question is the heart of distributed data design, and the CAP theorem names it.
+
+### CAP, stated carefully
+
+The **CAP theorem** says that when a **network partition** (P) occurs, a replicated system must choose between **consistency** (C: every read sees the latest write, as if there were one copy, formally linearizability) and **availability** (A: every request to a working node gets a non-error response). It does not say you pick two of three always: partitions happen whether you like it or not, so the real choice is **CP** or **AP during a partition**. When there is no partition, you can have both. A CP system (a quorum-based store, for example) refuses some requests during a partition; an AP system answers but may return stale data and must reconcile conflicting writes afterwards.
+
+**PACELC** extends this: if there is a Partition, choose Availability or Consistency; **Else**, even when the system runs normally, choose between **Latency** and **Consistency**. Waiting for a replica in another region to confirm a write is consistent but slow; answering from the nearest replica is fast but may be stale. This everyday trade-off matters more than rare partitions.
+
+### Consistency models
+
+- **Strong (linearizable)**: operations appear to happen in one global order consistent with real time. Simple to reason about, most expensive.
+- **Eventual**: if no new writes occur, all replicas eventually agree. Reads may be stale and concurrent writes may conflict.
+- **Read-your-writes**: a client always sees its own writes.
+- **Monotonic reads**: a client never sees data go backwards in time.
+- **Causal**: if one event could have influenced another, everyone sees them in that order.
+
+Choose per feature. A bank transfer needs strong consistency; a like count or a "last seen" time can be eventual. Eventual consistency needs a **conflict resolution** rule: last-writer-wins by timestamp (simple, but silently drops one update), merging with a data type designed for it (such as a counter or set that merges), or asking the application or user.
+
+### Quorums
+
+With $N$ replicas of an item, a write waits for $W$ acknowledgements and a read queries $R$ replicas. If
+
+$$R + W > N$$
+
+every read quorum overlaps every write quorum in at least one replica, so a read sees the latest acknowledged write (provided it takes the value with the newest version). With $N=3$: $W=2, R=2$ is balanced; $W=3, R=1$ makes reads cheap and writes fragile; $W=1, R=3$ is the opposite. A smaller $R+W$ gives lower latency and higher availability but allows stale reads.
+
+### Idempotency
+
+An operation is **idempotent** if doing it twice has the same effect as doing it once. Setting a value is idempotent; "add 10 to the balance" is not. Networks lose responses, so clients time out and retry; queues redeliver. Therefore any operation that can be retried must be made idempotent. The standard tool is the **idempotency key**: the client generates a unique key per logical operation (a UUID) and sends it with every retry. The server stores the key together with the result (atomically with the effect, for example under a unique constraint in the same transaction). A repeat request with the same key returns the stored result without redoing the work. Keys need an expiry window and the server should reject a reused key sent with a different request body.
+
+"Exactly-once" processing is therefore built from **at-least-once delivery plus idempotent handling**.
+
+### Transactions across services
+
+Inside one database use a transaction. Across services you cannot hold one: **two-phase commit** coordinates a commit but blocks if the coordinator fails and couples availability. The usual alternative is a **saga**: a sequence of local transactions, each with a **compensating action** that undoes it (reserve stock; charge card; if shipping fails, refund and release stock). Each step is triggered by an event published reliably with the outbox pattern, and each step must be idempotent. Sagas give eventual consistency and must expose intermediate states ("payment pending") honestly to users.
+
+### Designing a job pipeline
+
+A durable pipeline combines the pieces of the last two weeks: a **job record** in a database (id, type, state, attempts, result), a **queue** carrying job ids, **workers** that claim a job (using a lease or conditional update), do idempotent work, and update the state; **retries** with exponential backoff and jitter; a **dead-letter queue**; **timeouts**; and **metrics** on queue age and failure rate. Make each stage write its output under a name derived from the job id, so repeated attempts overwrite rather than duplicate. A reaper requeues jobs whose lease expired.
+
+@example
+title: Quorum arithmetic
+problem: A key is stored on N = 5 replicas. Writes wait for W = 3 acknowledgements. What is the smallest R for which reads are guaranteed to see the latest acknowledged write, and how many replica failures can reads and writes each tolerate?
+step: The overlap condition is $R + W > N$, so $R > 5 - 3 = 2$, which means $R \ge 3$.
+step: With W = 3 a write needs 3 live replicas, so writes tolerate $5 - 3 = 2$ failed replicas.
+step: With R = 3 a read needs 3 live replicas, so reads also tolerate 2 failures.
+step: Proof of overlap: a write reached 3 replicas and a read asks 3, and $3 + 3 = 6 > 5$, so at least one replica is in both sets; taking the newest version among the replies returns the latest write.
+step: If you used R = 2, a read could ask exactly the 2 replicas the write skipped (5 - 3 = 2) and return stale data.
+answer: R = 3; both reads and writes tolerate 2 failed replicas.
+
+@example
+title: An idempotency key for a payment
+problem: A mobile app calls `POST /payments` to charge 25. The response is lost because of a timeout and the app retries. How do you avoid charging twice?
+step: The app creates a UUID, `key = "9f2c..."`, when the user taps Pay, and sends it in an `Idempotency-Key` header on every attempt.
+step: The server begins a transaction, inserts a row into `idempotency(key, request_hash, response)` (the key has a unique constraint), performs the charge and stores the response.
+step: On the retry the insert hits the unique constraint, so the server returns the stored response and does not call the card network again.
+step: If the same key arrives with a different amount, the stored request hash does not match, and the server rejects it as a client error.
+step: Keys are kept for 24 hours, long enough for any realistic retry.
+answer: Store the key with the result in the same transaction as the charge, and return the stored result on repeats.
+
+@mistakes
+- Treating CAP as "pick any two" without noticing that you cannot avoid partitions, and ignoring the everyday latency versus consistency trade-off.
+- Using last-writer-wins with clocks that disagree, which silently discards valid updates.
+- Retrying a non-idempotent operation (a charge, an email) after a timeout, which duplicates it.
+- Claiming exactly-once delivery instead of designing at-least-once delivery with idempotent consumers.
+
+@practice mc
+prompt: Two data centers hold replicas of a shopping-cart store. A network partition separates them. If the system keeps accepting writes in both, which does it choose, and what must it do afterwards?
+choice: It chooses consistency, and it must roll back all writes made during the partition.
+choice*: It chooses availability, and it must reconcile conflicting writes when the partition heals.
+choice: It avoids the trade-off, because a partition only affects latency.
+choice: It chooses neither, because CAP applies only when there is no partition.
+hint: Both sides keep answering, so what could be different between them afterwards?
+solution: Accepting writes on both sides keeps the system available but lets the replicas diverge, so it needs a conflict resolution step (merge, last-writer-wins or application logic) after the partition heals. A system that preferred consistency would refuse writes on at least one side.
+
+@practice num
+prompt: A key is stored on N = 7 replicas and each write waits for W = 5 acknowledgements. What is the smallest read quorum R that guarantees every read overlaps the latest acknowledged write (R + W > N)?
+answer: 3
+check: 7-5+1
+hint: You need R + 5 to be greater than 7.
+solution: $R + 5 > 7$ gives $R > 2$, so the smallest integer is $R = 3$.
+
+@practice code
+prompt: Write a class `PaymentProcessor` that charges an account idempotently. `PaymentProcessor(balance)` starts with a balance (an attribute named `balance`). `charge(key, amount)` charges `amount` once per idempotency `key`. If `amount` exceeds the balance, it declines and the balance is unchanged; otherwise it subtracts the amount. It returns a dictionary `{"status": "ok", "balance": new_balance}` or `{"status": "declined", "balance": current_balance}`. Calling `charge` again with a key that was already used must return the same stored result and must not change the balance, even if the earlier result was a decline.
+starter:
+```python
+class PaymentProcessor:
+    def __init__(self, balance):
+        pass
+
+    def charge(self, key, amount):
+        pass
+```
+tests:
+```python
+p = PaymentProcessor(100)
+assert p.charge("k1", 30) == {"status": "ok", "balance": 70}
+assert p.charge("k1", 30) == {"status": "ok", "balance": 70}
+assert p.balance == 70
+assert p.charge("k2", 80) == {"status": "declined", "balance": 70}
+assert p.charge("k2", 80) == {"status": "declined", "balance": 70}
+assert p.balance == 70
+assert p.charge("k3", 70) == {"status": "ok", "balance": 0}
+assert p.balance == 0
+assert p.charge("k1", 30) == {"status": "ok", "balance": 70}
+```
+model:
+```python
+class PaymentProcessor:
+    def __init__(self, balance):
+        self.balance = balance
+        self.results = {}
+
+    def charge(self, key, amount):
+        if key in self.results:
+            return self.results[key]
+        if amount > self.balance:
+            result = {"status": "declined", "balance": self.balance}
+        else:
+            self.balance -= amount
+            result = {"status": "ok", "balance": self.balance}
+        self.results[key] = result
+        return result
+```
+hint: Remember each key's result in a dictionary and look in it before doing anything.
+solution: The dictionary of past results is the idempotency store. Checking it first means a retry returns the stored result unchanged. In a real service the check, the balance update and the stored result would be one database transaction, so a crash cannot leave one without the others. Note that a replay of `k1` returns the original balance of 70, not the current one.
+
+@practice ms
+prompt: Which settings of (N, W, R) guarantee that a read overlaps the latest acknowledged write? Select all that apply.
+choice*: N = 3, W = 2, R = 2
+choice*: N = 5, W = 3, R = 3
+choice: N = 5, W = 2, R = 3
+choice: N = 4, W = 1, R = 3
+choice*: N = 3, W = 1, R = 3
+hint: The condition is R + W > N.
+solution: The settings with R + W greater than N are N=3 with W=2, R=2 (4 > 3), N=5 with W=3, R=3 (6 > 5), and N=3 with W=1, R=3 (4 > 3). In the other two, R + W equals N exactly (2 + 3 = 5 for N=5, and 1 + 3 = 4 for N=4), which is not greater than N, so a read can miss the replicas that took the write.
+
+@practice self
+prompt: Design a job-processing pipeline. Users upload a PDF; the system must extract text, generate thumbnails and update a search index, within a few minutes. Peak is 50 uploads per second. Jobs can fail, workers can crash, queues redeliver, and the same upload may be submitted twice by a retrying client. Describe: the components and the flow of a job; the job states and where they are stored; how duplicates and retries are made safe; the failure handling (timeouts, backoff, dead-letter, crashed workers); and what you monitor.
+hint: Think of the job as a database record plus a message carrying its id.
+hint: Ask of every step: what happens if it runs twice, or never finishes?
+solution: A model answer:
+
+- Flow: the API stores the PDF in object storage under a key derived from the upload id, inserts a job row (state `queued`) in the database, and writes a message with the job id to a queue (through a transactional outbox so the row and the message are never out of step). It returns 202 Accepted with the job id. Workers read messages, claim the job, run the stages, and mark it `done`. Three stages (text, thumbnails, index) can be separate queues so that each scales independently and a failing indexer does not block thumbnails.
+- States: `queued`, `running` (with a lease expiry time and a worker id), `done`, `failed`, `dead`. They live in the database so that the UI can show progress and a support person can inspect any job. The state change uses a conditional update (set `running` only if the state is `queued` or the lease has expired), which prevents two workers from owning the job at once.
+- Idempotency: the client sends an idempotency key per upload; a unique constraint on the key makes a duplicate submission return the original job id. Each stage writes its output under a name derived from the job id and stage (for example `jobs/{id}/thumb-200.png`), so a re-run overwrites with identical content. The index update is an upsert keyed by document id.
+- Failure handling: workers set a lease timeout longer than the worst case and extend it with a heartbeat; a reaper requeues jobs whose lease expired. Failures are retried with exponential backoff and jitter up to 5 attempts, then the job goes to a dead-letter queue and state `dead`, with an alert. Permanent errors (a corrupt PDF) skip the retries and go straight to `failed` with a message for the user.
+- Capacity: 50 uploads per second at 4 seconds of work per upload needs about 200 busy workers at peak; scale workers on queue depth and on the age of the oldest message.
+- Monitoring: queue depth, age of the oldest message, job latency percentiles per stage, retry and dead-letter rates, lease expirations, and an end-to-end success rate SLO.
+rubric: Describes a durable job record plus a queue message, with the state machine and where it is stored.
+rubric: Makes duplicates and retries safe with an idempotency key, deterministic output names or upserts, and conditional claiming of jobs.
+rubric: Handles crashed workers (lease or visibility timeout), retries with backoff, and a dead-letter path, and distinguishes permanent from transient failures.
+rubric: Lists specific metrics (queue age, retry rate, dead-letter count) and includes at least a rough capacity calculation.
+
+@quiz code
+prompt: Replicas answer a read quorum with `(version, value)` pairs. Write `latest(responses)` that returns the value from the response with the highest version number. If `responses` is empty, raise `ValueError`. Versions in a response set are all different.
+starter:
+```python
+def latest(responses):
+    pass
+```
+tests:
+```python
+assert latest([(3, "c"), (5, "e"), (4, "d")]) == "e"
+assert latest([(1, "only")]) == "only"
+assert latest([(7, {"x": 1}), (2, {"x": 0})]) == {"x": 1}
+assert raises(ValueError, latest, [])
+```
+model:
+```python
+def latest(responses):
+    if not responses:
+        raise ValueError("no responses")
+    return max(responses, key=lambda pair: pair[0])[1]
+```
+hint: `max` accepts a `key` function; compare by the first element of each pair.
+solution: The newest version wins, which is how a quorum read returns the latest write when `R + W > N`. Comparing only the version avoids comparing the values, which may not be orderable (such as dictionaries). Real systems also write the newest value back to stale replicas (read repair).
+
+@quiz mc
+prompt: A client calls a "send invoice email" API and the request times out, so the client does not know whether the email was sent. Which design makes retrying safe?
+choice: Make the client wait longer and never retry.
+choice: Add a delay of ten seconds before every retry.
+choice*: The client sends the same unique idempotency key on every attempt, and the server stores the key with the outcome and returns it for repeats.
+choice: The server counts the requests and sends the email only on the third one.
+hint: The server must be able to recognize that a request is a repeat of an earlier one.
+solution: An idempotency key lets the server detect repeats and return the first result without sending a second email. Waiting longer or delaying retries does not remove the ambiguity, and counting requests would drop real emails.

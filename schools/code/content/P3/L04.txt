@@ -1,0 +1,270 @@
+@lesson
+title: Caching: strategies and invalidation
+summary: Choose where to cache, pick a read and write strategy, and keep cached data acceptably fresh without causing stampedes.
+objective: Compare cache-aside, read-through, write-through, write-behind and write-around.
+objective: Compute hit rate effects on latency and on database load.
+objective: Choose an invalidation and eviction approach, and prevent cache stampedes.
+reading: The System Design Primer, the section "Cache" (client, CDN, web server, database, application caching; cache-aside, write-through, write-behind, refresh-ahead) and "Content delivery network".
+@article
+Memory is about a thousand times faster than a solid-state disk and far faster than a database round trip, so the cheapest way to make a read-heavy system fast and cheap is to not do the work twice. A **cache** stores the result of an expensive operation so the next request can reuse it. The price is **staleness**: the cache may serve a value that has since changed. Two hard problems in practice are knowing when to throw cached data away (invalidation) and what to do when the cache is empty under load.
+
+### Where caches live
+
+Layers, from closest to the user: the browser (controlled with HTTP headers such as `Cache-Control` and `ETag`), a **CDN** at the edge (static files and cacheable pages), an in-process cache inside your service, a shared cache cluster (an in-memory key-value store) and the database's own buffer cache. Each layer you add cuts load on the one behind it but adds one more place where data can be stale.
+
+### Read strategies
+
+- **Cache-aside** (lazy loading): the application checks the cache; on a miss it reads the database, stores the result in the cache and returns it. Only requested data is cached and a cache outage degrades to database reads. This is the default choice.
+- **Read-through**: the cache itself loads from the database on a miss. The application sees one interface.
+
+### Write strategies
+
+- **Write-through**: write to the cache and the database together before acknowledging. Reads are fresh, writes are slower.
+- **Write-behind** (write-back): write to the cache, acknowledge, and flush to the database later in batches. Writes are fast, but data can be lost if the cache fails before the flush.
+- **Write-around**: write only to the database and let reads populate the cache. Good for data written once and rarely read.
+
+With cache-aside, the usual update rule is: **update the database, then delete the cache key** (rather than updating the cached value, which races more easily). The next read repopulates it.
+
+### Hit rate and what it buys
+
+The **hit rate** $h$ is the fraction of reads served from the cache. If a hit costs $t_c$ and a miss costs the cache lookup plus the database read $t_d$, the average read time is
+
+$$t_{\text{avg}} = h\,t_c + (1-h)(t_c + t_d)$$
+
+and the database sees only $(1-h)$ of the read traffic. Going from 90 to 99 percent hit rate cuts database load by 10 times, not by 9 percent: always think in terms of the **miss rate**. Hit rate depends on the access pattern: a popular catalog with a small hot set caches wonderfully; a workload that reads every record once does not.
+
+### Invalidation and eviction
+
+Cache invalidation is hard because the cache and the database cannot be updated atomically. Your tools are:
+
+- **TTL** (time to live): every entry expires after a fixed time. Simple and bounded staleness; choose TTL from the business tolerance ("a price may be up to 60 seconds old").
+- **Explicit invalidation**: delete or update the key when the data changes. Fresher, but you must find every key affected (a product appears in its page, in lists and in search results).
+- **Versioned keys**: include a version in the key (`product:42:v7`), so a change produces a new key and old entries simply age out.
+
+Because memory is finite, caches also **evict**. **LRU** (least recently used) removes the entry unused for the longest time; **LFU** removes the least frequently used. LRU is the common default.
+
+### Failure modes
+
+A **cache stampede** (thundering herd) happens when a hot key expires and thousands of requests miss at once and all hit the database. Defenses: **request coalescing** (single flight: one request recomputes while others wait), **jittered TTLs** (add random time so keys do not expire together), **stale-while-revalidate** (serve the old value while one request refreshes it) and refresh-ahead for known hot keys. Other failures: **cache penetration** (repeated requests for keys that do not exist; cache a short-lived "not found"), and a **cold cache** after a restart (warm it gradually or protect the database with rate limits).
+
+### What not to cache
+
+Do not cache data that must be strongly consistent (account balance during a transfer), data unique per user at high cardinality with low reuse, or anything personal in a shared layer without including the user in the key. Mind security: a CDN that caches a response containing one user's data and serves it to others is a data leak.
+
+@example
+title: What a 90 percent hit rate buys
+problem: A service handles 10,000 reads per second. A cache hit costs 1 ms. A miss costs the cache lookup (1 ms) plus a 20 ms database read. The hit rate is 90 percent. Find the average latency and the database read rate. What happens at a 99 percent hit rate?
+step: Average latency: $0.9 \times 1 + 0.1 \times (1 + 20) = 0.9 + 2.1 = 3.0$ ms.
+step: Database load: misses are $10\% \times 10{,}000 = 1{,}000$ reads per second.
+step: At 99 percent: average latency is $0.99 \times 1 + 0.01 \times 21 = 1.2$ ms and the database sees 100 reads per second, a tenfold drop.
+step: Lesson: the last few points of hit rate are worth the most for protecting the database, which is why hot-key handling and sensible TTLs matter.
+answer: 3.0 ms and 1,000 database reads per second at 90 percent; 1.2 ms and 100 per second at 99 percent.
+
+@example
+title: Cache-aside with an update
+problem: Trace a cache-aside read of product 7, then a price change, then another read. The cache TTL is 5 minutes. Which step guarantees freshness, and what is the remaining risk?
+step: Read 1: the cache has no `product:7`, so this is a miss. The service reads the row from the database, stores it in the cache with a 5-minute TTL and returns it.
+step: Price change: the service writes the new price to the database, then deletes `product:7` from the cache.
+step: Read 2: miss again, because the key was deleted; the service loads the new price and caches it.
+step: Remaining risk: if a reader loaded the old row just before the database update and stored it just after the delete, the stale value stays until the TTL expires. Writing to the database first and deleting second narrows the race; the TTL bounds the damage to 5 minutes.
+answer: Deleting the key after the database write keeps reads fresh; the TTL bounds the rare race.
+
+@mistakes
+- Updating the cache first and the database second, so a failure in between leaves the cache holding data the database never received.
+- Setting the same TTL on every key written at the same moment, so they all expire together and cause a stampede.
+- Forgetting to put the user, language or other variant in the key, so one user receives another user's cached response.
+- Treating the cache as the source of truth with no way to rebuild it; a cache can be wiped at any time.
+
+@practice mc
+prompt: A product catalog is read thousands of times per second and changes a few times a day. A price may be up to 60 seconds stale. Which approach fits best?
+choice: Write-behind caching with no TTL so that reads never touch the database.
+choice*: Cache-aside with a TTL of about 60 seconds, deleting the key when a product is updated.
+choice: No cache, because any staleness is unacceptable for prices.
+choice: Cache every product forever and rebuild the whole cache each night.
+hint: The business accepted 60 seconds of staleness, which is a natural TTL.
+solution: Cache-aside with a TTL matches the stated tolerance and keeps the database load low; explicit deletion on update makes changes show up quickly in the common case. Write-behind and infinite caches risk lost or very stale data.
+
+@practice code
+prompt: Write a class `LRUCache` with a fixed capacity. `LRUCache(capacity)` creates it. `get(key)` returns the value or `None` if the key is absent, and marks the key as most recently used. `put(key, value)` stores the value, marks the key as most recently used, and if the cache then holds more than `capacity` keys it evicts the least recently used key. Both operations should take constant time on average.
+starter:
+```python
+class LRUCache:
+    def __init__(self, capacity):
+        pass
+
+    def get(self, key):
+        pass
+
+    def put(self, key, value):
+        pass
+```
+tests:
+```python
+c = LRUCache(2)
+c.put("a", 1)
+c.put("b", 2)
+assert c.get("a") == 1
+c.put("c", 3)
+assert c.get("b") is None
+assert c.get("a") == 1
+assert c.get("c") == 3
+c.put("a", 10)
+c.put("d", 4)
+assert c.get("c") is None
+assert c.get("a") == 10
+```
+model:
+```python
+from collections import OrderedDict
+
+
+class LRUCache:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.items = OrderedDict()
+
+    def get(self, key):
+        if key not in self.items:
+            return None
+        self.items.move_to_end(key)
+        return self.items[key]
+
+    def put(self, key, value):
+        self.items[key] = value
+        self.items.move_to_end(key)
+        if len(self.items) > self.capacity:
+            self.items.popitem(last=False)
+```
+hint: `collections.OrderedDict` remembers insertion order and has `move_to_end` and `popitem(last=False)`.
+hint: Keep the most recently used key at the end; evict from the front.
+solution: Move a key to the end on every `get` and `put`; when the size exceeds the capacity, `popitem(last=False)` removes the front, which is the least recently used key. In the test, `get("a")` makes `b` the oldest, so adding `c` evicts `b`.
+
+@practice num
+prompt: A service receives 12,000 reads per second. A cache absorbs 85 percent of them (the hit rate is 85 percent) and every miss goes to the database. How many reads per second does the database receive?
+answer: 1800
+check: 12000*(1-0.85)
+tol: 0.01
+hint: The database sees the misses, which are 1 minus the hit rate.
+solution: The miss rate is 15 percent, and $0.15 \times 12{,}000 = 1{,}800$ reads per second.
+
+@practice text
+prompt: What does this program print? Type the four lines exactly.
+
+```python
+db = {"a": 1, "b": 2}
+cache = {}
+db_reads = 0
+
+
+def get(key):
+    global db_reads
+    if key in cache:
+        return cache[key]
+    db_reads += 1
+    cache[key] = db[key]
+    return cache[key]
+
+
+for k in ["a", "b", "a", "a", "b"]:
+    get(k)
+print(db_reads)
+db["a"] = 10
+print(get("a"))
+cache.pop("a", None)
+print(get("a"))
+print(db_reads)
+```
+answer:
+```
+2
+1
+10
+3
+```
+check: run('db = {"a": 1, "b": 2}\ncache = {}\ndb_reads = 0\n\n\ndef get(key):\n    global db_reads\n    if key in cache:\n        return cache[key]\n    db_reads += 1\n    cache[key] = db[key]\n    return cache[key]\n\n\nfor k in ["a", "b", "a", "a", "b"]:\n    get(k)\nprint(db_reads)\ndb["a"] = 10\nprint(get("a"))\ncache.pop("a", None)\nprint(get("a"))\nprint(db_reads)\n')
+hint: Only the first read of each key reaches the database.
+hint: After `db["a"]` changes, the cache still holds the old value until the key is removed.
+solution: Five reads touch two distinct keys, so 2 database reads. The cached value 1 is stale after the database change, so the next read prints 1. After `cache.pop`, the read misses, loads 10, and raises `db_reads` to 3.
+
+@practice self
+prompt: A news site serves article pages to about 40,000 requests per second at peak. Articles change rarely after publishing, but editors correct them in the first hour, and a "breaking" article can become hot within seconds. Choose a caching strategy for this read-heavy service: say which layers cache what, the read and write strategy, the TTLs and invalidation, how you prevent a stampede on a breaking story, and what you do not cache.
+hint: Think from the edge inward: browser, CDN, application cache, database.
+hint: Separate content that is the same for everyone from content that is personal.
+solution: A model answer:
+
+- Layers: the CDN caches the rendered article HTML and static assets, because they are identical for all anonymous readers. An application-level shared cache holds the article body and metadata fetched from the database. The browser caches static assets with long lifetimes and versioned file names.
+- Read strategy: cache-aside in the application cache; the CDN is the main protection, so the database sees only a trickle.
+- TTLs: static assets get a year with versioned names; article pages get a short CDN TTL (for example 60 seconds) with stale-while-revalidate, so a stale page can be served while one request refreshes it. Articles older than a day can have a longer TTL such as 10 minutes.
+- Invalidation: when an editor saves a correction the service writes the database, then purges that article's key in the application cache and sends a purge for that URL to the CDN. The short TTL is the backstop if a purge fails.
+- Stampede protection: request coalescing at the CDN (collapse concurrent misses into one origin request), single flight in the application for the same key, and jittered TTLs on application keys. Warm the cache for a story when it is published.
+- Not cached: personalised parts (user name, recommendations, paywall state) are fetched separately by the client or edge function, so private data never lands in a shared cached page. Search results and comment counts use short TTLs.
+- Result: at a 99 percent combined hit rate the origin sees about 400 requests per second instead of 40,000.
+rubric: Names at least two cache layers and says what each one stores, and separates shared from personalised content.
+rubric: Chooses a read strategy and an invalidation method (TTL plus explicit purge or versioned keys) tied to the staleness tolerance.
+rubric: Explains stampede protection with a specific mechanism (coalescing, jitter, stale-while-revalidate, or warming).
+rubric: States what is not cached or how private data is kept out of shared caches, and justifies the choices with numbers or reasoning.
+
+@quiz code
+prompt: Write a class `TTLCache` whose entries expire. `TTLCache(ttl, clock)` takes a lifetime in seconds and a function `clock()` returning the current time in seconds. `set(key, value)` stores a value that expires `ttl` seconds after it was set. `get(key)` returns the value, or `None` if the key is missing or has expired (an entry is expired when the current time is greater than or equal to its expiry time). Setting a key again restarts its lifetime.
+starter:
+```python
+class TTLCache:
+    def __init__(self, ttl, clock):
+        pass
+
+    def set(self, key, value):
+        pass
+
+    def get(self, key):
+        pass
+```
+tests:
+```python
+now = [0]
+c = TTLCache(10, lambda: now[0])
+c.set("a", 1)
+now[0] = 9
+assert c.get("a") == 1
+now[0] = 10
+assert c.get("a") is None
+assert c.get("zzz") is None
+c.set("b", 2)
+now[0] = 15
+c.set("b", 3)
+now[0] = 24
+assert c.get("b") == 3
+now[0] = 25
+assert c.get("b") is None
+```
+model:
+```python
+class TTLCache:
+    def __init__(self, ttl, clock):
+        self.ttl = ttl
+        self.clock = clock
+        self.items = {}
+
+    def set(self, key, value):
+        self.items[key] = (value, self.clock() + self.ttl)
+
+    def get(self, key):
+        entry = self.items.get(key)
+        if entry is None:
+            return None
+        value, expires_at = entry
+        if self.clock() >= expires_at:
+            del self.items[key]
+            return None
+        return value
+```
+hint: Store each value together with its expiry time, `clock() + ttl`.
+solution: Store `(value, expires_at)`. On `get`, compare the current time with `expires_at` and drop the entry once it has expired. Injecting the clock makes the cache testable without sleeping, which is a good habit for any time-dependent code.
+
+@quiz mc
+prompt: A hot cached key with a 5-minute TTL expires. Within a second, 3,000 requests miss and all query the database, which slows down badly. Which change best prevents this from recurring?
+choice: Raise the database connection limit so more of the 3,000 queries can run in parallel.
+choice*: Coalesce concurrent misses so one request recomputes the value while the others wait or receive the stale value, and add random jitter to TTLs.
+choice: Remove the TTL so the key never expires.
+choice: Switch the cache from LRU to LFU eviction.
+hint: The problem is many simultaneous recomputations of the same value.
+solution: Coalescing means the database sees one query per expiry, and jitter spreads expirations of different keys apart. More connections increase the load on the struggling database; removing the TTL trades the stampede for unbounded staleness; the eviction policy does not affect expiry-driven misses.

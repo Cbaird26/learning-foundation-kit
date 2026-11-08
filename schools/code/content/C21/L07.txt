@@ -1,0 +1,224 @@
+@lesson
+title: Consensus: Paxos and Raft
+summary: State the consensus problem, explain single-decree Paxos and the Raft protocol, and compute quorums, vote decisions and commit points.
+objective: State the properties of consensus and explain why a majority quorum makes agreement safe.
+objective: Trace the two phases of single-decree Paxos, including how a proposer must reuse a previously accepted value.
+objective: Explain Raft terms, leader election, the up-to-date log rule and log replication with the commit rule.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 8 "Fault tolerance" (look up the discussion of consensus and agreement in process groups); also look up the Raft consensus algorithm in any introductory description.
+
+@article
+In **consensus**, a set of processes each propose a value and must decide on one. The required properties are:
+
+- **Agreement:** no two processes decide different values.
+- **Validity:** the decided value was proposed by some process.
+- **Termination:** every non-faulty process eventually decides.
+
+The **FLP impossibility result** shows that in a fully asynchronous system, no deterministic protocol can guarantee both safety and termination if even one process may crash. Real protocols therefore guarantee **safety always** (agreement and validity hold under any delays and crashes) and **liveness only when the network is reasonably well behaved**, often using timeouts and randomization.
+
+Consensus is the foundation of replicated logs, leader election, configuration stores and distributed locks. Both protocols below tolerate $f$ crash failures with $2f+1$ servers, because any two majorities intersect.
+
+### Paxos (single decree)
+
+Roles: **proposers**, **acceptors**, learners. Each acceptor remembers `promised` (the highest proposal number it promised to) and the proposal it last accepted. Proposal numbers are unique and ordered.
+
+1. **Prepare / promise.** A proposer picks a number $n$ and sends PREPARE($n$) to the acceptors. An acceptor that has not promised a number $\ge n$ promises not to accept any proposal numbered below $n$, and replies with the highest-numbered proposal it has accepted, if any.
+2. **Accept / accepted.** If the proposer hears promises from a **majority**, it sends ACCEPT($n$, $v$). Here $v$ must be the value of the highest-numbered accepted proposal reported in the promises; only if no acceptor reported one may it use its own value. An acceptor accepts unless it has promised a higher number.
+
+A value is **chosen** once a majority of acceptors have accepted the same proposal. The rule "reuse the highest accepted value" is what preserves safety when proposers compete or crash. Competing proposers can livelock, so practical systems elect a stable leader (Multi-Paxos), which runs phase 1 once and then needs only phase 2 for each log entry.
+
+### Raft
+
+Raft solves the same problem for a **replicated log**, designed to be easy to understand. Servers are **followers**, **candidates** or the **leader**. Time is divided into **terms**, numbered consecutively; each term has at most one leader.
+
+**Election.** A follower that hears nothing from a leader for a randomized **election timeout** becomes a candidate: it increments its term, votes for itself and sends RequestVote to all. A server grants at most one vote per term, and only if the candidate's log is **at least as up to date** as its own: compare the *term of the last entry* first; if equal, the longer log wins. A candidate with votes from a majority becomes leader. Randomized timeouts make split votes rare.
+
+**Log replication.** The leader appends a client command to its log and sends AppendEntries to followers. Each request names the index and term of the preceding entry (`prevLogIndex`, `prevLogTerm`); a follower rejects the request if it does not have a matching entry, and the leader backs up and retries until the logs agree, then overwrites any conflicting entries on the follower. An entry is **committed** when it is stored on a majority and the leader may then apply it. A leader only commits entries **from its own current term** by counting replicas; earlier entries become committed indirectly when a later entry from the current term commits. Committed entries are never lost, because the voting rule guarantees any new leader has them.
+
+```python
+def log_ok(my_term, my_index, cand_term, cand_index):
+    if cand_term != my_term:
+        return cand_term > my_term
+    return cand_index >= my_index
+```
+
+@example
+title: Paxos reuses an accepted value
+problem: Three acceptors A1, A2, A3 are idle. Proposer P1 sends PREPARE(1) to all, gets three promises, sends ACCEPT(1, "red") and only A1 accepts before P1 crashes. Proposer P2 then runs PREPARE(2) and hears promises from A2 and A3 only. What value does P2 propose?
+step: A1 holds the accepted proposal (1, "red"). A2 and A3 accepted nothing.
+step: P2 needs promises from a majority (2 of 3). It received them from A2 and A3, which report no accepted proposal.
+step: Because none of the promises mentions an accepted value, P2 is free to propose its own value, say "blue", with ACCEPT(2, "blue") to A2 and A3, and "blue" is chosen when both accept.
+step: Safe, because "red" was not chosen (only one acceptor, not a majority, accepted it). If P2's majority had included A1, the promise from A1 would report (1, "red") and P2 would have to propose "red".
+answer: P2 may propose its own value; it must propose "red" if A1 is in its majority
+
+@example
+title: Raft vote decisions
+problem: Server S has a log whose last entry is at index 7 in term 3. Candidates ask for its vote in the same term: C1 has last entry (index 9, term 2), C2 has (index 5, term 3), C3 has (index 8, term 3). Which candidates is S allowed to vote for?
+step: Compare the term of the last entry first. C1 has term 2 < 3, so C1's log is less up to date despite being longer: denied.
+step: C2 has term 3, equal, and index 5 < 7: shorter log, denied.
+step: C3 has term 3 and index 8 $\ge$ 7: at least as up to date, so S may vote for C3 (if it has not voted in this term yet).
+answer: only C3
+
+@mistakes
+- Comparing log length before the term of the last entry in Raft's election rule.
+- Letting a Paxos proposer choose its own value after it has seen an accepted value in a promise.
+- Committing an entry from an earlier term just because a majority stores it; Raft counts replicas only for entries of the leader's current term.
+- Believing consensus tolerates a minority of failures with fewer than $2f+1$ servers.
+
+@practice mc
+prompt: Why must a Raft or Paxos cluster use a majority quorum rather than any quorum of the same size smaller than a majority?
+choice: Smaller quorums are slower
+choice*: Any two majorities intersect, so a later quorum always includes someone who knows about an earlier decision
+choice: Majorities allow all servers to crash
+choice: Majorities guarantee termination in an asynchronous network
+hint: Think about what a new leader must be sure to learn about.
+solution: Any two majorities of the same cluster share at least one server, so information about a decided value or committed entry always reaches any later quorum. Smaller quorums could be disjoint, and no quorum size gets around FLP.
+
+@practice num
+prompt: A Raft cluster has 9 servers. How many servers must store a log entry (the leader included) before the entry can be committed?
+answer: 5
+check: 9 // 2 + 1
+hint: A majority is more than half of the servers.
+solution: Half of 9 is 4.5, so a majority is 5. The cluster tolerates 4 failures.
+
+@practice code
+prompt: Write a class `Acceptor` for single-decree Paxos. It keeps `promised` (initially 0), `acc_n` (the number of the accepted proposal, initially 0) and `acc_v` (the accepted value, initially `None`). `prepare(n)`: if `n` is **greater than** `promised`, set `promised = n` and return `("promise", acc_n, acc_v)`; otherwise return `("nack",)`. `accept(n, v)`: if `n >= promised`, set `promised = n`, `acc_n = n`, `acc_v = v` and return `"accepted"`; otherwise return `"rejected"`.
+starter:
+```python
+class Acceptor:
+    pass
+```
+tests:
+```python
+a = Acceptor()
+assert a.prepare(5) == ("promise", 0, None)
+assert a.accept(5, "x") == "accepted"
+assert a.prepare(7) == ("promise", 5, "x")
+assert a.accept(6, "y") == "rejected"
+assert a.prepare(7) == ("nack",)
+assert a.accept(7, "z") == "accepted"
+assert a.prepare(9) == ("promise", 7, "z")
+b = Acceptor()
+assert b.accept(3, "w") == "accepted"
+assert b.prepare(2) == ("nack",)
+```
+model:
+```python
+class Acceptor:
+    def __init__(self):
+        self.promised = 0
+        self.acc_n = 0
+        self.acc_v = None
+
+    def prepare(self, n):
+        if n > self.promised:
+            self.promised = n
+            return ("promise", self.acc_n, self.acc_v)
+        return ("nack",)
+
+    def accept(self, n, v):
+        if n >= self.promised:
+            self.promised = n
+            self.acc_n = n
+            self.acc_v = v
+            return "accepted"
+        return "rejected"
+```
+hint: Store the three fields in `__init__`. Each method compares `n` with `self.promised`.
+hint: `prepare` uses strict `>` and does not change the accepted proposal; `accept` uses `>=` and records both the number and the value.
+solution: The acceptor's promise makes it ignore older proposal numbers, and its reply to `prepare` reveals the highest proposal it has accepted, which the proposer must respect. Accepting also raises `promised`, so later lower-numbered accepts are rejected.
+
+@practice code
+prompt: Write `log_ok(my_term, my_index, cand_term, cand_index)` returning `True` if a Raft server whose last log entry has term `my_term` and index `my_index` may vote for a candidate whose last entry has term `cand_term` and index `cand_index`. The candidate's log must be at least as up to date: a higher last term wins; with equal last terms, the log with the larger or equal last index wins. Ignore whether the server has already voted.
+starter:
+```python
+def log_ok(my_term, my_index, cand_term, cand_index):
+    pass
+```
+tests:
+```python
+assert log_ok(3, 7, 3, 8) is True
+assert log_ok(3, 7, 3, 7) is True
+assert log_ok(3, 7, 3, 5) is False
+assert log_ok(3, 7, 2, 9) is False
+assert log_ok(2, 9, 3, 1) is True
+assert log_ok(0, 0, 0, 0) is True
+```
+model:
+```python
+def log_ok(my_term, my_index, cand_term, cand_index):
+    if cand_term != my_term:
+        return cand_term > my_term
+    return cand_index >= my_index
+```
+hint: Decide by the last terms first, and only look at the indexes when the terms are equal.
+hint: If the terms differ, the answer is `cand_term > my_term`. If they are equal, the answer is `cand_index >= my_index`.
+solution: Raft compares the term of the last entry before the length, so a candidate with a shorter log from a later term can win while a longer log from an older term cannot. Equal terms fall back to log length.
+
+@practice code
+prompt: Write `commit_index(match, log_terms, current_term, commit)` for a Raft leader. `match` lists, for every server including the leader, the highest log index known to be stored there (the leader's own entry is its log length). `log_terms` is the leader's log: `log_terms[i - 1]` is the term of entry `i`. Return the largest index `N > commit` such that entry `N` has term `current_term` and strictly more than half of the entries of `match` are `>= N`; if there is none, return `commit`.
+starter:
+```python
+def commit_index(match, log_terms, current_term, commit):
+    pass
+```
+tests:
+```python
+assert commit_index([5, 5, 4, 3, 2], [1, 1, 2, 3, 3], 3, 0) == 4
+assert commit_index([5, 5, 4, 3, 2], [1, 1, 2, 3, 3], 4, 1) == 1
+assert commit_index([3, 3, 1], [1, 2, 2], 2, 0) == 3
+assert commit_index([2, 2, 2], [1, 1], 2, 0) == 0
+assert commit_index([4, 1, 1], [1, 1, 1, 2], 2, 2) == 2
+assert commit_index([4, 4, 4], [1, 1, 1, 2], 2, 2) == 4
+```
+model:
+```python
+def commit_index(match, log_terms, current_term, commit):
+    majority = len(match) // 2 + 1
+    for n in range(len(log_terms), commit, -1):
+        if log_terms[n - 1] != current_term:
+            continue
+        if sum(1 for m in match if m >= n) >= majority:
+            return n
+    return commit
+```
+hint: Try candidate indexes from the end of the log down to `commit + 1` and return the first that qualifies.
+hint: A candidate `N` qualifies if its term equals `current_term` and at least `len(match) // 2 + 1` servers have `match >= N`.
+solution: Scan from the highest index downward; the first entry of the current term replicated on a majority is the new commit index. Entries from older terms are skipped by the term test (a majority copy is not enough, as the fourth test shows) and become committed indirectly when a later current-term entry commits.
+
+@quiz code
+prompt: Write `choose_value(promises, my_value)` for a Paxos proposer that has gathered promises from a majority. `promises` is a list of `(accepted_n, accepted_v)` pairs, one per acceptor, where `accepted_n == 0` means that acceptor has accepted nothing. Return the value of the pair with the highest `accepted_n`, or `my_value` if every `accepted_n` is 0.
+starter:
+```python
+def choose_value(promises, my_value):
+    pass
+```
+tests:
+```python
+assert choose_value([(0, None), (0, None)], "mine") == "mine"
+assert choose_value([(1, "cyan"), (0, None)], "mine") == "cyan"
+assert choose_value([(2, "blue"), (5, "green"), (3, "red")], "mine") == "green"
+assert choose_value([], "mine") == "mine"
+assert choose_value([(4, None), (0, None)], "mine") is None
+```
+model:
+```python
+def choose_value(promises, my_value):
+    best_n, best_v = 0, my_value
+    for n, v in promises:
+        if n > best_n:
+            best_n, best_v = n, v
+    return best_v
+```
+hint: Track the highest proposal number seen and its value, starting from "nothing accepted".
+hint: Start with `best_n = 0` and `best_v = my_value`, and update both whenever you see a larger `accepted_n`.
+solution: Paxos safety requires the proposer to adopt the value of the highest-numbered accepted proposal among the promises. If no acceptor accepted anything, the proposer is free to use its own value. The last test shows a value can legitimately be `None`; only the number decides.
+
+@quiz ms
+prompt: Which statements about Raft are true?
+choice*: Each term has at most one leader.
+choice*: A server grants at most one vote per term.
+choice: A leader commits an entry from an older term as soon as it is stored on a majority.
+choice*: A follower may have its conflicting log entries overwritten by the leader.
+choice: A candidate with the longest log always wins the vote, whatever the terms of the last entries.
+hint: Think about the voting rule and the commit rule.
+solution: One vote per server per term means at most one candidate gets a majority, so at most one leader per term. Leaders overwrite conflicting follower entries to make logs match. Older-term entries are committed only indirectly, and the voting rule compares the last entry's term before the log length.

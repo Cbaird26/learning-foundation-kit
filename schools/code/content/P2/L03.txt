@@ -1,0 +1,355 @@
+@lesson
+title: The SOLID principles
+summary: Apply the five SOLID principles to spot design problems in classes and fix them without over-engineering.
+objective: State each SOLID principle precisely and give a code smell that signals its violation.
+objective: Use dependency injection to invert a dependency on a concrete class.
+objective: Judge when applying a principle helps and when it only adds indirection.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 3 on coupling and abstractions, and the part of Chapter 13 on dependency injection; also look up the five SOLID principles by name.
+@article
+SOLID is a set of five guidelines for class design. They are not laws. They are names for patterns that experienced engineers noticed make code easier to change, and you will hear them in code review and in interviews. Use them to explain *why* a design hurts, then decide how much fixing is worth it.
+
+### S: Single Responsibility Principle
+
+A class should have **one reason to change**: it answers to one stakeholder or one concern. An `Invoice` class that calculates totals, renders PDF and writes to the database changes when tax law changes, when the brand changes and when the database changes. Split it so each change touches one class. This is week 1's cohesion again.
+
+### O: Open/Closed Principle
+
+Code should be **open for extension, closed for modification**: you add behavior by adding new code, not by editing tested code. The smell is a growing `if`/`elif` chain on a type:
+
+```python
+def area(shape):
+    if shape["kind"] == "circle":
+        return 3.14159 * shape["r"] ** 2
+    elif shape["kind"] == "square":
+        return shape["side"] ** 2
+```
+
+Every new shape edits `area`. With polymorphism, each shape knows its own `area()` and callers just call it; a new shape is a new class and no existing code changes.
+
+### L: Liskov Substitution Principle
+
+If `S` is a subtype of `T`, code written for `T` must keep working when given an `S`. In practice this is **behavioral subtyping**: a subclass must not demand more than the parent (stronger preconditions), nor promise less (weaker postconditions), nor break its invariants. The classic violation is a `Square` that extends `Rectangle` and, when you set its width, also changes its height. Code that sets a width and expects the area to be `width * height` gets a surprise. The subtype was "is-a" in geometry but not in behavior. Another smell: a subclass that overrides a method just to raise `NotImplementedError`.
+
+### I: Interface Segregation Principle
+
+Clients should not be forced to depend on methods they do not use. A `Machine` interface with `print()`, `scan()` and `fax()` forces a basic printer to implement two methods it cannot support. Prefer several small interfaces (in Python, small `Protocol` classes or abstract base classes) that each describe one role.
+
+### D: Dependency Inversion Principle
+
+High-level policy (what the business does) should not depend on low-level detail (how email is sent or where data is stored). **Both should depend on an abstraction.** Compare:
+
+```python
+class SmtpSender:
+    def send(self, to, text):
+        ...  # talks to a real mail server
+
+class Notifier:
+    def __init__(self):
+        self._sender = SmtpSender()   # hard-wired detail
+
+    def welcome(self, name):
+        self._sender.send(name, f"Welcome, {name}!")
+```
+
+`Notifier` cannot be tested without a mail server, and switching to SMS means editing it. The fix is **dependency injection**: receive the collaborator from outside.
+
+```python
+class Notifier:
+    def __init__(self, sender):
+        self._sender = sender
+
+    def welcome(self, name):
+        self._sender.send(name, f"Welcome, {name}!")
+```
+
+Now `Notifier` needs only "something with `send(to, text)`". In production you pass `SmtpSender()`; in a test you pass a fake that records messages. Python's duck typing means the abstraction can be informal, but a `typing.Protocol` documents it:
+
+```python
+from typing import Protocol
+
+class Sender(Protocol):
+    def send(self, to: str, text: str) -> None: ...
+```
+
+### Using SOLID with judgment
+
+Principles cost something: more classes, more names, more places to look. A new hire's most common mistake is building an abstraction for a second implementation that never arrives. A good rule is to wait for the **second concrete case** or for a real pain (a test that needs a fake, a change that touches five files). Do not split a 20-line class "for SRP" if it changes for one reason. In a design review, ask: "what change are we protecting against, and how likely is it?"
+
+@example
+title: Replacing a type switch with polymorphism
+problem: Adding a `Triangle` currently means editing `total_area`. Redesign so that it does not.
+
+```python
+def total_area(shapes):
+    total = 0
+    for s in shapes:
+        if s["kind"] == "circle":
+            total += 3.14159 * s["r"] ** 2
+        elif s["kind"] == "square":
+            total += s["side"] ** 2
+    return total
+```
+step: Find the reason for change: every new kind of shape edits this function, so it is not closed for modification.
+step: Move the knowledge into the shapes. Each class has its own `area()`:
+
+```python
+import math
+
+class Circle:
+    def __init__(self, r):
+        self.r = r
+
+    def area(self):
+        return math.pi * self.r ** 2
+
+class Square:
+    def __init__(self, side):
+        self.side = side
+
+    def area(self):
+        return self.side ** 2
+```
+step: `total_area` now only asks each shape: `return sum(s.area() for s in shapes)`.
+step: A `Triangle` class with an `area()` method works at once, and `total_area` is untouched. That is open for extension, closed for modification.
+answer: Give each shape an `area()` method and let `total_area` call it.
+
+@example
+title: Testing code that sends email
+problem: Show how dependency injection lets you test `Notifier.welcome` without a mail server.
+step: `Notifier` receives its `sender` in the constructor, so the test can supply any object with a `send(to, text)` method.
+step: Write a fake that records what it is asked to send:
+
+```python
+class FakeSender:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, to, text):
+        self.sent.append((to, text))
+```
+step: Build the object under test with the fake and act:
+
+```python
+fake = FakeSender()
+Notifier(fake).welcome("Ann")
+```
+step: Assert on the recorded behavior: `fake.sent == [("Ann", "Welcome, Ann!")]`.
+step: The test is fast, needs no network, and does not change when production moves from email to SMS.
+answer: Inject a fake sender and assert on what it recorded.
+
+@mistakes
+- Reading SRP as "a class has one method". The test is one reason to change, not one function.
+- Using inheritance for code reuse when the subclass is not substitutable (a `Stack` that extends `list` exposes `insert` and `sort`, which break stack behavior).
+- Creating an interface and a factory for every class on day one. Abstract when there is a second case or a real pain.
+- Calling a design "DI" because it uses a framework container, while the classes still construct their collaborators with `Concrete()` inside methods.
+
+@practice mc
+prompt: A class `Report` has methods `calculate()`, `render_pdf()` and `save_to_database()`. It must be edited whenever the formulas change, whenever the layout changes and whenever the storage changes. Which principle does it violate?
+choice*: Single Responsibility: it has several reasons to change
+choice: Liskov Substitution: a subclass changes the meaning of an inherited method
+choice: Interface Segregation: clients are forced to implement methods they cannot support
+choice: Open/Closed: it cannot be subclassed
+hint: Count the different people or concerns that can force an edit to the class.
+solution: Formulas, layout and storage are three separate concerns, so the class has three reasons to change, which violates Single Responsibility. The other options describe different problems: broken substitutability, fat interfaces and modification-only extension.
+
+@practice code
+prompt: Write classes `Circle(r)` and `Rectangle(w, h)`, each with an `area()` method, and a function `total_area(shapes)` that returns the sum of `s.area()` for the given shapes. `total_area` must not check the type of any shape, so a new shape class with an `area()` method works without changing it. `Circle.area()` uses `math.pi`.
+starter:
+```python
+import math
+
+def total_area(shapes):
+    pass
+```
+tests:
+```python
+assert total_area([]) == 0
+assert total_area([Rectangle(2, 3)]) == 6
+assert round(Circle(1).area(), 4) == 3.1416
+assert round(total_area([Circle(2), Rectangle(2, 5)]), 3) == 22.566
+
+class Triangle:
+    def __init__(self, b, h):
+        self.b = b
+        self.h = h
+
+    def area(self):
+        return self.b * self.h / 2
+
+assert total_area([Triangle(4, 3), Rectangle(1, 1)]) == 7.0
+```
+model:
+```python
+import math
+
+class Circle:
+    def __init__(self, r):
+        self.r = r
+
+    def area(self):
+        return math.pi * self.r ** 2
+
+class Rectangle:
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+
+    def area(self):
+        return self.w * self.h
+
+def total_area(shapes):
+    return sum(s.area() for s in shapes)
+```
+hint: Each class knows how to compute its own area; `total_area` only calls the method.
+solution: Polymorphism removes the type switch: `total_area` depends only on "has an `area()` method", so the `Triangle` in the tests works without touching it. That is the Open/Closed Principle.
+
+@practice text
+prompt: What does this program print? Type the two lines of output exactly.
+
+```python
+class Rect:
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+
+    def set_width(self, w):
+        self.w = w
+
+    def area(self):
+        return self.w * self.h
+
+class Square(Rect):
+    def __init__(self, s):
+        super().__init__(s, s)
+
+    def set_width(self, w):
+        self.w = w
+        self.h = w
+
+def grow(r):
+    r.set_width(5)
+    return r.area()
+
+print(grow(Rect(2, 3)))
+print(grow(Square(2)))
+```
+answer:
+```
+15
+25
+```
+check: run("class Rect:\n    def __init__(self, w, h):\n        self.w = w\n        self.h = h\n\n    def set_width(self, w):\n        self.w = w\n\n    def area(self):\n        return self.w * self.h\n\nclass Square(Rect):\n    def __init__(self, s):\n        super().__init__(s, s)\n\n    def set_width(self, w):\n        self.w = w\n        self.h = w\n\ndef grow(r):\n    r.set_width(5)\n    return r.area()\n\nprint(grow(Rect(2, 3)))\nprint(grow(Square(2)))\n")
+hint: The `Square` version of `set_width` also changes the height.
+solution: The rectangle becomes 5 by 3, area 15. The square becomes 5 by 5, area 25. A caller that expects "changing the width leaves the height alone" is surprised by `Square`, so `Square` is not substitutable for `Rect`: a Liskov Substitution violation.
+
+@practice code
+prompt: Write a class `Notifier` whose constructor takes a `sender` object, and a method `welcome(name)` that calls `sender.send(name, "Welcome, <name>!")` (for example `"Welcome, Ann!"`). The `Notifier` must not create any sender itself.
+starter:
+```python
+class Notifier:
+    pass
+```
+tests:
+```python
+class FakeSender:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, to, text):
+        self.sent.append((to, text))
+
+fake = FakeSender()
+n = Notifier(fake)
+n.welcome("Ann")
+assert fake.sent == [("Ann", "Welcome, Ann!")]
+n.welcome("Bo")
+assert fake.sent[-1] == ("Bo", "Welcome, Bo!")
+assert len(fake.sent) == 2
+other = FakeSender()
+Notifier(other).welcome("Cy")
+assert other.sent == [("Cy", "Welcome, Cy!")]
+assert len(fake.sent) == 2
+```
+model:
+```python
+class Notifier:
+    def __init__(self, sender):
+        self._sender = sender
+
+    def welcome(self, name):
+        self._sender.send(name, f"Welcome, {name}!")
+```
+hint: Store the collaborator that was passed in; do not construct one.
+solution: The constructor receives the dependency (dependency injection) and `welcome` calls its `send`. Because `Notifier` depends only on "something with `send`", the tests substitute a fake: that is the Dependency Inversion Principle in practice.
+
+@practice self
+prompt: Review this class against SOLID. Identify at least three violations, name the principle for each, and describe the redesign (the classes or interfaces you would create and who gets passed what).
+
+```python
+class OrderProcessor:
+    def process(self, order):
+        total = sum(l.price * l.qty for l in order.lines)
+        if order.kind == "standard":
+            total *= 1.0
+        elif order.kind == "member":
+            total *= 0.9
+        elif order.kind == "staff":
+            total *= 0.7
+        db = PostgresConnection("prod-host")
+        db.execute("INSERT INTO orders VALUES (?, ?)", (order.id, total))
+        SmtpClient("mail-host").send(order.email, f"Total {total}")
+        return total
+```
+hint: Look at what changes when a new customer type, a new database or a new notification channel is added.
+solution: (1) Single Responsibility: `process` prices, persists and notifies, so pricing rules, storage and email each force edits to it. Split into a pricing step, an order repository and a notifier. (2) Open/Closed: each new customer kind edits the `if`/`elif` chain. Replace it with a discount policy per customer kind (a small class or function with `apply(total)`) chosen from a mapping, so a new kind is new code only. (3) Dependency Inversion: the class constructs `PostgresConnection` and `SmtpClient` directly, so it cannot be tested without them and cannot switch to another store or channel. Define small abstractions (`OrderRepository.save(order, total)` and `Notifier.send(email, text)`) and inject implementations through the constructor: `OrderProcessor(pricing, repository, notifier)`. The processor then only coordinates, and tests pass in fakes.
+rubric: Identifies at least three real violations (mixed responsibilities, the type chain, hard-wired collaborators) and names the correct principle for each.
+rubric: The redesign names concrete classes or interfaces and states which responsibility each takes.
+rubric: Shows injected dependencies in a constructor signature, so the high-level class depends on abstractions and not on the database or mail client.
+
+@quiz code
+prompt: Write a class `Pricing` that keeps a list of discount rules. `add_rule(rule)` registers a function that takes a price and returns a new price. `price(base)` applies the rules to `base` in the order they were added and returns the result. With no rules it returns `base` unchanged. New kinds of discount must need no change to `Pricing`.
+starter:
+```python
+class Pricing:
+    pass
+```
+tests:
+```python
+p = Pricing()
+assert p.price(100) == 100
+p.add_rule(lambda x: x * 0.5)
+assert p.price(100) == 50.0
+p.add_rule(lambda x: x - 5)
+assert p.price(100) == 45.0
+q = Pricing()
+q.add_rule(lambda x: x - 5)
+q.add_rule(lambda x: x * 2)
+assert q.price(20) == 30
+assert p.price(10) == 0.0
+```
+model:
+```python
+class Pricing:
+    def __init__(self):
+        self._rules = []
+
+    def add_rule(self, rule):
+        self._rules.append(rule)
+
+    def price(self, base):
+        result = base
+        for rule in self._rules:
+            result = rule(result)
+        return result
+```
+hint: Keep the rules in a private list and apply them one after another.
+solution: `Pricing` knows nothing about particular discounts; each rule is a function it simply calls, so a new discount is a new function and `Pricing` stays closed for modification. The order matters: halving then subtracting 5 gives `45.0`, but subtracting then doubling `20` gives `30`.
+
+@quiz mc
+prompt: A `Robot` class implements a `Worker` interface that declares `work()` and `eat()`. The robot's `eat()` just raises `NotImplementedError`. Which principle does this design break, and what is the fix?
+choice*: Interface Segregation: split the interface so that `eat()` belongs to a separate role that robots do not implement
+choice: Open/Closed: add an `if isinstance(worker, Robot)` check in the caller
+choice: Single Responsibility: merge `work()` and `eat()` into one method
+choice: Dependency Inversion: make `Robot` create its own `Worker`
+hint: Which clients are forced to depend on a method they cannot honor?
+solution: A fat interface forces implementers to support methods they cannot, which is the Interface Segregation violation; the fix is smaller role interfaces (`Workable`, `Eatable`). A type check in the caller adds a violation, merging methods makes the interface fatter, and creating its own `Worker` is the opposite of inversion.

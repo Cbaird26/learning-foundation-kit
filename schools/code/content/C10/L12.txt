@@ -1,0 +1,208 @@
+@lesson
+title: Recovery, NoSQL and distributed databases
+summary: Explain write-ahead logging and crash recovery, and compare NoSQL data models and the trade-offs of replication, sharding and distributed commit.
+objective: Explain write-ahead logging, steal/no-force buffering, and the redo and undo steps of recovery.
+objective: Describe the main NoSQL data models and when each fits.
+objective: Reason about replication, quorums, the CAP theorem and two-phase commit.
+reading: CMU 15-445/645 Database Systems, the lectures on database logging, recovery (ARIES), and distributed databases.
+@article
+Durability and atomicity must survive crashes. Main memory is lost when a machine fails, but the buffer pool holds modified pages that may not yet be on disk. **Recovery** restores a consistent state after a crash.
+
+### Buffer management policies
+
+Two policies decide what can be on disk at a crash. **Steal** allows a dirty page of an *uncommitted* transaction to be written to disk (to free buffer space); then recovery must be able to **undo** it. **No-force** means a transaction need not write its changed pages to disk at commit; then recovery must be able to **redo** committed work that never reached disk. Most systems use **steal and no-force** because it is the fastest, and rely on a log to repair the consequences.
+
+### Write-ahead logging
+
+The **log** is an append-only sequence of records on stable storage: `begin T`, update records `(T, item, old value, new value)`, `commit T` and `abort T`. The **write-ahead logging (WAL)** rule has two parts: a log record describing a change must reach disk **before** the changed data page does (so undo information exists), and all of a transaction's log records, including `commit`, must be on disk **before** commit is acknowledged (so redo information exists). Appending to a log is sequential and fast, while flushing scattered data pages is slow, so WAL makes commit cheap.
+
+### Recovery with the log
+
+After a crash the **ARIES** algorithm, the model for many real systems, runs three passes:
+
+1. **Analysis**: scan the log from the last checkpoint to find which transactions were active (the *losers*) and which pages may have been dirty.
+2. **Redo**: *repeat history*: reapply logged updates, including those of transactions that will be undone, to bring the database to its exact state at the crash. Each page stores the **log sequence number (LSN)** of its last applied update, so an already-applied update is skipped, which makes redo **idempotent**.
+3. **Undo**: roll back the losers by undoing their updates in reverse order, writing **compensation log records (CLRs)** so that a crash during recovery never undoes the same change twice.
+
+A **checkpoint** periodically records the active transactions and dirty pages so recovery need not read the whole log.
+
+### NoSQL data models
+
+"NoSQL" ("not only SQL") covers systems that relax parts of the relational model, usually to scale out across many machines or to fit a data shape better:
+
+- **Key-value stores**: a hash-table-like map from key to opaque value; simplest and fastest (caches, sessions).
+- **Document stores**: values are self-describing documents (JSON-like), queried by fields; flexible schema, good for nested data read as a unit.
+- **Wide-column stores**: rows with many sparse columns grouped in families, partitioned by key; built for huge write volumes.
+- **Graph databases**: nodes and edges are first-class, with traversal queries; fit relationship-heavy data.
+
+Many support limited joins and transactions. The trade is flexibility and horizontal scaling against ad hoc queries and strong guarantees. Relational systems have also adopted JSON columns, and "NewSQL" or distributed SQL systems provide SQL with ACID transactions across machines.
+
+### Distributing data
+
+**Replication** keeps copies on several machines for availability and read throughput. In **leader-follower** replication writes go to the leader and are shipped to followers, **synchronously** (the write waits, so no committed data is lost on failover but latency rises) or **asynchronously** (faster, but a leader failure can lose recent writes, and followers can serve stale reads, called **replication lag**). **Sharding** (partitioning) splits the data by key across machines, by **hash** (even load, poor range scans) or by **range** (good range scans, risk of hot spots).
+
+With $N$ replicas, a **quorum** system requires $W$ replicas to acknowledge a write and reads $R$ replicas. If $R + W > N$ every read quorum overlaps every write quorum, so a read sees the latest acknowledged write (given version numbers to choose the newest).
+
+The **CAP theorem** says that when a network **partition** occurs, a replicated system must choose between **consistency** (every read returns the latest write, as if there were one copy) and **availability** (every request to a working node gets an answer). Partitions cannot be ruled out in real networks, so the real choice is made during partitions; when the network is healthy there is still a trade-off between latency and consistency. **Eventual consistency** guarantees only that replicas converge if updates stop, the model behind **BASE** ("basically available, soft state, eventually consistent"), as opposed to ACID.
+
+### Distributed commit and consensus
+
+To commit one transaction across several machines, **two-phase commit (2PC)** uses a coordinator. In the **prepare** phase each participant makes its changes durable and votes yes or no. If all vote yes, the coordinator logs *commit* and tells everyone to commit; any no vote means abort. A participant that voted yes must wait for the decision, so if the coordinator crashes at that moment participants are **blocked** while holding locks. Replicated systems use **consensus protocols** such as Paxos and Raft to make a group of machines agree on a log of operations despite failures of a minority.
+
+@example
+title: Replaying a log after a crash
+problem: Log: begin T1; (T1, x, 0, 5); begin T2; (T2, y, 0, 7); commit T1; (T2, x, 5, 9). The crash happens before T2 commits. Give the recovered values of x and y.
+step: Analysis: T1 committed; T2 has no commit, so T2 is a loser.
+step: Redo repeats history: x = 5, y = 7, then x = 9.
+step: Undo T2 in reverse log order: the update (T2, x, 5, 9) is undone, so x = 5; then (T2, y, 0, 7) is undone, so y returns to 0.
+step: The result contains T1's committed change only.
+answer: x = 5 and y = 0.
+
+@example
+title: Choosing quorum sizes
+problem: A store has $N = 5$ replicas and writes need $W = 4$ acknowledgements. What is the smallest read quorum $R$ that guarantees reads see the latest write?
+step: The overlap condition is $R + W > N$.
+step: With $W = 4$ and $N = 5$ we need $R + 4 > 5$, so $R > 1$.
+step: The smallest integer is $R = 2$.
+answer: $R = 2$ (and a larger $W$ makes writes slower and less available).
+
+@mistakes
+- Believing that data pages must be written at commit; with no-force only the log must reach disk.
+- Undoing a loser's changes before redoing history; ARIES redoes everything first, then undoes losers.
+- Reading CAP as "choose any two of three"; partitions happen, so the choice is consistency or availability while one is happening.
+- Assuming eventual consistency means data may be permanently inconsistent; it means replicas converge when updates stop.
+
+@practice code
+prompt: Simulate crash recovery. The log is a list of tuples: `("begin", t)`, `("update", t, item, old, new)` and `("commit", t)`, where `old` or `new` may be `None`, meaning the item does not exist. Write `recover(log)` that starts from an empty dictionary (nothing reached disk), **redoes** every update in log order (setting `db[item] = new`, or deleting the item if `new` is `None`), then **undoes** in reverse log order every update of a transaction that has no `commit` record (setting `db[item] = old`, or deleting it if `old` is `None`). Return the final dictionary.
+starter:
+```python
+def recover(log):
+    pass
+```
+tests:
+```python
+log = [
+    ("begin", 1), ("update", 1, "x", None, 5),
+    ("begin", 2), ("update", 2, "y", None, 7),
+    ("commit", 1), ("update", 2, "x", 5, 9),
+]
+assert recover(log) == {"x": 5}
+done = [("begin", 1), ("update", 1, "a", None, 1), ("commit", 1),
+        ("begin", 2), ("update", 2, "a", 1, 2), ("commit", 2)]
+assert recover(done) == {"a": 2}
+assert recover([]) == {}
+lost = [("begin", 1), ("update", 1, "k", None, 1),
+        ("update", 1, "k", 1, 2)]
+assert recover(lost) == {}
+```
+model:
+```python
+def recover(log):
+    db = {}
+    committed = {rec[1] for rec in log if rec[0] == "commit"}
+    for rec in log:
+        if rec[0] == "update":
+            _, _, item, _, new = rec
+            if new is None:
+                db.pop(item, None)
+            else:
+                db[item] = new
+    for rec in reversed(log):
+        if rec[0] == "update" and rec[1] not in committed:
+            _, _, item, old, _ = rec
+            if old is None:
+                db.pop(item, None)
+            else:
+                db[item] = old
+    return db
+```
+hint: Find the set of committed transactions first.
+hint: Do two passes: a forward pass applying every `new` value, then a backward pass restoring `old` values for the transactions not in that set.
+solution: Redo applies all updates in order so the state equals the state at the crash. Undo then walks the log backwards restoring each loser's `old` values, which correctly unwinds several updates of the same item (`lost` ends with `k` removed).
+
+@practice code
+prompt: Write `quorum_read(responses, r)`. `responses` is a list of `(version, value)` pairs, one for each replica that answered a read. If fewer than `r` replicas answered (`len(responses) < r`), raise `ValueError`. Otherwise return the `value` of the response with the highest `version`. (Versions are distinct integers.)
+starter:
+```python
+def quorum_read(responses, r):
+    pass
+```
+tests:
+```python
+assert quorum_read([(3, "c"), (5, "e"), (4, "d")], 3) == "e"
+assert quorum_read([(1, "a")], 1) == "a"
+assert quorum_read([(2, "b"), (7, "g")], 2) == "g"
+assert raises(ValueError, quorum_read, [(1, "a")], 2)
+assert raises(ValueError, quorum_read, [], 1)
+```
+model:
+```python
+def quorum_read(responses, r):
+    if len(responses) < r:
+        raise ValueError("quorum not reached")
+    return max(responses)[1]
+```
+hint: First check that enough replicas answered.
+hint: `max` on tuples compares the version first, so `max(responses)` is the newest response.
+solution: A read quorum needs `r` answers, otherwise the read fails. Among the answers, the one with the largest version is the most recent write that any contacted replica holds, and with $R + W > N$ it is guaranteed to include the latest acknowledged write.
+
+@practice mc
+prompt: A replicated database loses network connectivity between two groups of its replicas. Both groups keep accepting writes. Which property has the system chosen over which other during the partition?
+choice*: Availability over consistency
+choice: Consistency over availability
+choice: Durability over atomicity
+choice: Partition tolerance over availability
+hint: If both sides accept writes independently, can a read still return the latest write everywhere?
+solution: Both sides keep answering requests (availability), but the replicas can diverge, so reads may miss writes accepted on the other side (consistency is given up). The system must tolerate the partition in either case, so partition tolerance is not what is traded away.
+
+@practice ms
+prompt: Under the SQL standard's definitions of the four isolation levels, which levels allow a non-repeatable read?
+choice*: READ UNCOMMITTED
+choice*: READ COMMITTED
+choice: REPEATABLE READ
+choice: SERIALIZABLE
+hint: Recall the table of anomalies per level; which levels prevent only dirty reads or nothing?
+solution: READ UNCOMMITTED and READ COMMITTED allow non-repeatable reads. REPEATABLE READ prevents them (it still allows phantoms by the standard's definition), and SERIALIZABLE prevents all three standard anomalies.
+
+@practice num
+prompt: A key-value store has $N = 5$ replicas and uses write quorum $W = 3$. What is the smallest read quorum $R$ for which $R + W > N$ holds?
+answer: 3
+check: min(r for r in range(1, 6) if r + 3 > 5)
+hint: Solve $R + 3 > 5$ for the smallest integer $R$.
+solution: $R + 3 > 5$ means $R > 2$, so the smallest integer is 3.
+
+@quiz code
+prompt: A recovery log is a list of tuples: `("begin", t)`, `("update", t, item, old, new)` and `("commit", t)`. Write `losers(log)` to return the sorted list of transaction ids that have a `begin` record but no `commit` record. Transactions appearing only in `update` records without a `begin` are ignored.
+starter:
+```python
+def losers(log):
+    pass
+```
+tests:
+```python
+log = [("begin", 2), ("begin", 1), ("update", 1, "x", None, 1),
+       ("commit", 1), ("update", 2, "y", None, 3), ("begin", 3)]
+assert losers(log) == [2, 3]
+assert losers([]) == []
+assert losers([("begin", 1), ("commit", 1)]) == []
+assert losers([("update", 9, "x", None, 1)]) == []
+```
+model:
+```python
+def losers(log):
+    begun = {rec[1] for rec in log if rec[0] == "begin"}
+    committed = {rec[1] for rec in log if rec[0] == "commit"}
+    return sorted(begun - committed)
+```
+hint: Build one set of started transactions and one of committed transactions.
+hint: Subtract the committed set from the started set and sort the result.
+solution: The losers are the started transactions minus the committed ones: set difference followed by `sorted`. These are the transactions the undo pass must roll back.
+
+@quiz mc
+prompt: In two-phase commit, a participant has voted yes in the prepare phase and then the coordinator crashes before sending its decision. What is the participant's situation?
+choice*: It is blocked: it cannot unilaterally commit or abort, and keeps holding its locks until the coordinator recovers or another process learns the decision.
+choice: It may safely abort, because the coordinator is down.
+choice: It may safely commit, because it voted yes.
+choice: It forgets the transaction and releases its locks immediately.
+hint: The participant has promised to follow the coordinator's decision, but does not know it.
+solution: After voting yes a participant must be able to commit if told to and cannot know whether others voted no, so it can neither commit nor abort alone. It waits holding locks, which is the blocking problem of two-phase commit.

@@ -1,0 +1,240 @@
+@project
+title: A RISC-V simulator with a cache model
+overview: You will write a Python simulator for a subset of RV32I (registers, memory, arithmetic, loads and stores, and branches), run the supplied assembly programs on it, and compare your results with the expected values. Then you will add a direct-mapped cache model that observes the data accesses of a run and reports hit rates, and use it to explain how block size and the number of sets affect performance.
+goal: Implement the instruction semantics of a RISC-V subset exactly, including 32-bit wraparound, signed and unsigned comparisons and little-endian memory.
+goal: Run and debug real assembly programs on your own simulator and verify them against expected results.
+goal: Model a direct-mapped cache on a memory-access trace and explain the hit rates in terms of locality and conflicts.
+step: Create a Python module `rvsim.py` with a function `assemble(text)` that returns a list of instructions and a dictionary of labels. Handle blank lines, `#` comments, labels (`name:` alone or before an instruction), register names in both `x0`-`x31` and ABI form (`zero`, `ra`, `sp`, `t0`-`t6`, `s0`-`s11`, `a0`-`a7`), decimal and `0x` immediates, and the `offset(register)` memory operand.
+step: Write a class `CPU` with 32 registers (register 0 is always 0), a byte-addressed memory (a dictionary or `bytearray`), a program counter in bytes, `run(max_steps)` and a counter of executed instructions. Implement the arithmetic and logic instructions first. After each instruction, mask results to 32 bits. Write small unit tests as you go, including the checks listed in the material.
+step: Add `lw`, `sw` (little-endian) and the branches `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu` (signed versus unsigned) and the pseudo-instructions `li`, `mv`, `j`, `beqz`, `bnez`, `nop`. The program stops when the PC moves past the last instruction; raise an error after 1,000,000 steps so that an infinite loop is reported rather than hanging.
+step: Run each supplied program with the given inputs and check the final registers, memory and instruction counts against the expected table in the material. Fix semantic bugs (most often signed versus unsigned comparisons, shifts and the offsets of branch targets).
+step: Add a `Cache` class that models a direct-mapped cache (block size and number of sets as parameters, as in the lessons) and have `lw` and `sw` report each data address to it. Count hits and misses (instruction fetches are not modelled), and compute the hit rate and the average memory access time for a given hit time and miss penalty.
+step: Run the two cache workloads from the material with the listed configurations and compare with the expected hit rates. Then explore: vary the block size (4, 8, 16, 32, 64 bytes) and the number of sets for both workloads and tabulate the hit rate.
+step: Write a one-page report that answers the questions in the material using your measured numbers: why does the sequential sum improve with larger blocks, why does the ping-pong workload get 0 hits at 8 sets and 48 hits at 16 sets, and which kind of miss was removed.
+material: **Supported instructions.** Register-register: `add`, `sub`, `and`, `or`, `xor`, `sll`, `srl`, `sra`, `slt`, `sltu`. Immediate: `addi`, `andi`, `ori`, `xori`, `slli`, `srli`, `srai`, `slti`. Memory: `lw rd, off(rs1)` and `sw rs2, off(rs1)`. Branches: `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu` with a label operand. Pseudo-instructions, each counted as **one** executed instruction: `li rd, imm` (any 32-bit value), `mv rd, rs`, `j label`, `beqz rs, label`, `bnez rs, label`, `nop`. Registers hold unsigned 32-bit values internally; `slt`, `slti`, `blt`, `bge` and `sra`/`srai` interpret them as signed. Shift amounts use the low 5 bits. A program can start with any registers and memory words preset by the test harness. Optional extensions: `lb`, `lbu`, `sb`, `jal`, `jalr` and `ret`.
+material: **Quick unit checks.** After `li t0, -1`, the value of `t0` is `0xFFFFFFFF`; after `srli t1, t0, 28`, `t1` is 15; after `srai t2, t0, 28`, `t2` is `0xFFFFFFFF`; after `slti t3, t0, 0`, `t3` is 1; `sltu t4, zero, t0` gives `t4 = 1`; writing to `x0` has no effect. After `li t0, 0x12345678`, `sw t0, 0(a0)` with `a0 = 0x1000`, the byte at address `0x1000` is `0x78` and the byte at `0x1003` is `0x12`.
+material: **Program 1, sum_to_n.** The input is `a0 = n`; the output is `a0 = 1 + 2 + ... + n`.
+
+```text
+    li   t0, 1
+    li   t1, 0
+    addi a0, a0, 1
+loop:
+    bge  t0, a0, done
+    add  t1, t1, t0
+    addi t0, t0, 1
+    j    loop
+done:
+    mv   a0, t1
+```
+
+Expected: `a0 = 10` gives `a0 = 55` after 45 instructions; `a0 = 1` gives 1 after 9; `a0 = 0` gives 0 after 5.
+material: **Program 2, array_max.** Inputs: `a0` is the address of an array of `a1` words (at least 1); the output is the largest signed value in `a0`.
+
+```text
+    lw   t0, 0(a0)
+    li   t1, 1
+loop:
+    bge  t1, a1, done
+    slli t2, t1, 2
+    add  t2, a0, t2
+    lw   t3, 0(t2)
+    bge  t0, t3, skip
+    mv   t0, t3
+skip:
+    addi t1, t1, 1
+    j    loop
+done:
+    mv   a0, t0
+```
+
+Expected: with the words `5, 3, 8, 1, 9, 2, 7, 4` at address `0x1000` and `a1 = 8`, the result is `a0 = 9` after 55 instructions. With the single word `-5` (stored as `0xFFFFFFFB`) at `0x1000` and `a1 = 1`, the result is `a0 = 0xFFFFFFFB` after 4 instructions.
+material: **Program 3, copy.** Inputs: `a0` source address, `a1` destination address, `a2` number of words; the program copies the words.
+
+```text
+loop:
+    beqz a2, done
+    lw   t0, 0(a0)
+    sw   t0, 0(a1)
+    addi a0, a0, 4
+    addi a1, a1, 4
+    addi a2, a2, -1
+    j    loop
+done:
+```
+
+Expected: with the eight words of Program 2 at `0x1000`, `a1 = 0x2000` and `a2 = 8`, the eight words at `0x2000` equal the source, the final registers are `a0 = 0x1020`, `a1 = 0x2020`, `a2 = 0`, and 57 instructions run.
+material: **Program 4, fib.** Input `a0 = n`; output `a0 = fib(n)` with `fib(0) = 0`, `fib(1) = 1`.
+
+```text
+    li   t0, 0
+    li   t1, 1
+loop:
+    beqz a0, done
+    add  t2, t0, t1
+    mv   t0, t1
+    mv   t1, t2
+    addi a0, a0, -1
+    j    loop
+done:
+    mv   a0, t0
+```
+
+Expected: `n = 10` gives 55 after 64 instructions; `n = 20` gives 6765 after 124; `n = 1` gives 1 after 10; `n = 0` gives 0 after 4.
+material: **Cache workload A, sum_array.** Inputs: `a0 = 0x1000`, `a1 = 64`, and the 64 words `1, 2, ..., 64` at `0x1000`. This performs 64 data loads in address order.
+
+```text
+    li   t0, 0
+    li   t1, 0
+loop:
+    bge  t1, a1, done
+    slli t2, t1, 2
+    add  t2, a0, t2
+    lw   t3, 0(t2)
+    add  t0, t0, t3
+    addi t1, t1, 1
+    j    loop
+done:
+    mv   a0, t0
+```
+
+Expected: `a0 = 2080` after 452 instructions and 64 data accesses. Direct-mapped hits and misses: 16-byte blocks with 8 sets give 48 hits and 16 misses; 32-byte blocks with 8 sets give 56 hits and 8 misses; 64-byte blocks with 4 sets give 60 hits and 4 misses.
+material: **Cache workload B, pingpong.** Inputs: `a0 = 0x1000` (array A with `A[i] = i`), `a1 = 0x1080` (array B with `B[i] = 2i`), `a2 = 32`. Each iteration loads `A[i]` and then `B[i]`: 64 data loads in total.
+
+```text
+    li   t0, 0
+    li   t1, 0
+loop:
+    bge  t1, a2, done
+    slli t2, t1, 2
+    add  t3, a0, t2
+    lw   t4, 0(t3)
+    add  t3, a1, t2
+    lw   t5, 0(t3)
+    add  t0, t0, t4
+    add  t0, t0, t5
+    addi t1, t1, 1
+    j    loop
+done:
+    mv   a0, t0
+```
+
+Expected: `a0 = 1488` after 324 instructions and 64 data accesses. With 16-byte blocks and 8 sets (a 128-byte cache) the cache gets 0 hits and 64 misses; with 16-byte blocks and 16 sets it gets 48 hits and 16 misses. For the AMAT with a 1-cycle hit time and a 50-cycle miss penalty: 13.5 cycles for a hit rate of 0.75 and 51 cycles for a hit rate of 0.
+material: **Report questions.** (1) For workload A, how many instructions per data access are executed, and what does the hit rate gain from larger blocks tell you about spatial locality? (2) In workload B, `B` starts exactly 128 bytes after `A`. Explain with the index calculation why, for a 128-byte direct-mapped cache with 16-byte blocks, `A[i]` and `B[i]` always map to the same set. (3) Which of the three Cs of misses does doubling the number of sets remove in workload B? (4) Would a 2-way set-associative cache with 8 sets, 16-byte blocks and LRU replacement (256 bytes in total) also remove the misses in workload B? Extend your cache class with a `ways` parameter, or reuse the LRU simulator from the lesson on caches, and compare.
+deliverable: The source files of the simulator (`rvsim.py`) and its unit tests, runnable with `python3` on your own computer, that reproduce every expected value in the material.
+deliverable: A table of the measured hit rates for workloads A and B for at least the five block sizes and two numbers of sets of your choice.
+deliverable: A one-page report answering the report questions with your numbers.
+rubric: Every program in the material produces the expected final registers, memory contents and instruction count.
+rubric: Signed and unsigned operations are correct on the unit checks, including shifts, `slt` versus `sltu` and negative immediates.
+rubric: The cache model reproduces the expected hit and miss counts for both workloads and reports hit rate and AMAT.
+rubric: The report explains the results using the index and tag computation, locality and conflict misses, with measured numbers.
+rubric: The code is organized in small, testable functions and is readable, with tests that fail when an instruction is broken.
+safety: Everything runs on your own computer inside Python; the simulator only interprets the supplied toy programs, so no special precautions are needed.
+tutor: My simulator gives the wrong answer for `blt` when a register holds a large unsigned value. How can I debug the signed comparison step by step?
+tutor: How can I check my cache model against a hand simulation of a short address trace, and what would a good test look like?
+tutor: Why does the ping-pong workload get no hits with 8 sets, and how do I convince myself with the tag and index arithmetic?
+
+@review
+## Week-by-week key ideas
+
+**Week 1, integers.** A bit pattern has no meaning without a representation. Unsigned $n$-bit values are $0$ to $2^n-1$; two's complement covers $-2^{n-1}$ to $2^{n-1}-1$, negation is invert and add 1, sign extension copies the top bit, and signed overflow means equal operand signs with a different result sign.
+
+**Week 2, floating point.** Binary32 has 1, 8 and 23 bits (bias 127); binary64 has 1, 11 and 52 (bias 1023). Normal values are $(-1)^s\,1.f\times2^{e-bias}$; exponent 0 gives zeros and subnormals; the all-ones exponent gives infinities and NaN. Results are rounded to nearest, ties to even, so arithmetic is approximate and not associative.
+
+**Week 3, Boolean algebra.** Truth tables, sum of products, the identities (especially De Morgan, absorption and combining), Karnaugh maps, and NAND as a universal gate.
+
+**Week 4, circuits.** Full adder, ripple-carry adder (delay linear in the width), subtraction as $A+\bar B+1$, multiplexers, decoders; SR latch, D flip-flop (edge triggered), registers with load enable, and the clock period as clock-to-Q plus critical path plus setup.
+
+**Week 5, ISA.** RV32I registers and ABI names, `x0` is zero, the R, I, S, B, U and J formats and how to encode and decode them.
+
+**Week 6, assembly.** Arithmetic, shifts, `slt` versus `sltu`, loads and stores with base plus offset, little-endian order, branches (signed and unsigned) and loops.
+
+**Week 7, functions.** `jal`/`ret`, argument and result registers, caller-saved versus callee-saved registers, prologue and epilogue, the downward-growing stack and recursion.
+
+**Week 8, C to assembly.** Statement patterns, array indexing with scaling, pointers, structure layout and padding.
+
+**Week 9, single-cycle datapath.** Components, control signals, instruction paths, and the clock period set by the slowest instruction (`lw`).
+
+**Week 10, pipelining.** Five stages, $k+n-1$ cycles, structural, data and control hazards, forwarding, the load-use stall and branch handling.
+
+**Week 11, caches.** Locality, tag, index and offset, direct-mapped versus set-associative caches, LRU, write policies, the three Cs, and AMAT.
+
+**Week 12, performance.** CPU time = IC x CPI x clock period, weighted CPI, Amdahl's law, misleading metrics and benchmarking.
+
+## Self-check
+
+- Can you convert between decimal, binary, hexadecimal and two's complement, and decode a binary32 pattern, without a computer?
+- Can you derive a sum of products from a truth table and simplify it?
+- Can you encode `add` and `addi` into machine words and decode them back?
+- Can you write a loop, a function with a frame, and a recursive function in RISC-V and trace the stack pointer?
+- Can you draw a pipeline diagram with forwarding and a load-use stall?
+- Can you split an address and simulate a small cache by hand?
+
+## Most common errors
+
+Forgetting the bias or the implicit 1 in floating point; mixing signed and unsigned branches; not scaling array indexes; not saving `ra` or callee-saved registers; unbalanced `sp`; forgetting the load-use stall; computing the tag without removing the index bits; and applying Amdahl's law with the wrong fraction.
+
+@exam code
+prompt: Write `disassemble_r(word)` that decodes a 32-bit R-type RISC-V instruction word (an integer; the opcode is always `0x33`) into text of the form `"add x5, x6, x7"`: the mnemonic, then `rd`, `rs1`, `rs2` as `x` followed by the register number. The mnemonic comes from `funct3` and `funct7`: `funct3` 0 is `add` (`funct7` 0) or `sub` (`funct7` `0x20`); 1 is `sll`; 2 is `slt`; 3 is `sltu`; 4 is `xor`; 5 is `srl` (`funct7` 0) or `sra` (`funct7` `0x20`); 6 is `or`; 7 is `and`.
+starter:
+```python
+def disassemble_r(word):
+    pass
+```
+tests:
+```python
+assert disassemble_r(0x007302B3) == "add x5, x6, x7"
+assert disassemble_r(0x403100B3) == "sub x1, x2, x3"
+assert disassemble_r(0x003150B3) == "srl x1, x2, x3"
+assert disassemble_r(0x403150B3) == "sra x1, x2, x3"
+assert disassemble_r(0x01FF7EB3) == "and x29, x30, x31"
+assert disassemble_r(0x003120B3) == "slt x1, x2, x3"
+assert disassemble_r(0x0062E233) == "or x4, x5, x6"
+assert disassemble_r(0x003130B3) == "sltu x1, x2, x3"
+```
+model:
+```python
+def disassemble_r(word):
+    rd = (word >> 7) & 0x1F
+    funct3 = (word >> 12) & 0x7
+    rs1 = (word >> 15) & 0x1F
+    rs2 = (word >> 20) & 0x1F
+    funct7 = word >> 25
+    names = {
+        (0, 0x00): "add", (0, 0x20): "sub", (1, 0x00): "sll",
+        (2, 0x00): "slt", (3, 0x00): "sltu", (4, 0x00): "xor",
+        (5, 0x00): "srl", (5, 0x20): "sra", (6, 0x00): "or",
+        (7, 0x00): "and",
+    }
+    return f"{names[(funct3, funct7)]} x{rd}, x{rs1}, x{rs2}"
+```
+hint: Extract the fields with shifts and masks: `rd` at bit 7, `funct3` at 12, `rs1` at 15, `rs2` at 20 and `funct7` at 25.
+hint: Look up the mnemonic in a dictionary keyed by `(funct3, funct7)`, then format the string with an f-string.
+solution: Slice the word into its fields as in the ISA lesson, map `(funct3, funct7)` to the mnemonic with a dictionary, and format the registers with `x` and their numbers. Only `add`/`sub` and `srl`/`sra` need `funct7` to be told apart.
+
+@exam num
+prompt: A program executes $2\times10^{9}$ instructions on a processor clocked at 2 GHz ($2\times10^{9}$ cycles per second). Without memory stalls the base CPI is 1.2. 35% of the instructions are loads or stores, 4% of those accesses miss in the cache, and each miss stalls the processor for 50 cycles (instruction fetches never stall). How many seconds does the program take? Give a decimal accurate to 0.001.
+answer: 1.9
+tol: 0.001
+check: 2e9 * (1.2 + 0.35 * 0.04 * 50) / 2e9
+hint: First compute the CPI including memory stalls: base CPI plus accesses per instruction times miss rate times penalty.
+hint: Then use time = instruction count x CPI / frequency.
+solution: Stall cycles per instruction are $0.35\times0.04\times50=0.7$, so the CPI is $1.2+0.7=1.9$. The time is $2\times10^9\times1.9/(2\times10^9)=1.9$ s.
+
+@exam self
+prompt: Consider `lw x6, 8(x5)` followed directly by `add x7, x6, x6` on the five-stage pipeline of the course with full forwarding. (a) Give the fields of the machine word for the `lw` (opcode, funct3, rd, rs1 and the immediate) and its hexadecimal value. (b) Say what happens in each of the five stages for the `lw`. (c) Explain why the `add` needs a stall even with forwarding, and draw the diagram of the two instructions with total cycles.
+solution: (a) `lw` is I-type with opcode `0x03`, funct3 `2`, rd `6`, rs1 `5` and immediate `8`, giving the word `0x0082A303`. (b) IF fetches the word at the PC. ID decodes it, reads `x5` and sign-extends the immediate 8. EX adds `x5 + 8` in the ALU to form the address. MEM reads the data memory at that address. WB writes the loaded value into `x6`. (c) The loaded data exists only at the end of MEM, but the `add` needs `x6` at the start of its EX stage, which would be one cycle too early, so the `add` stalls one cycle in ID and then receives the value by forwarding from the MEM/WB register:
+
+```text
+            1   2   3   4   5   6   7
+lw  x6,..   IF  ID  EX  MEM WB
+add x7,..       IF  ID  s   EX  MEM WB
+```
+
+The two instructions take 7 cycles: 6 for an ideal pipeline plus 1 stall.
+rubric: Gives the correct fields and the word `0x0082A303`.
+rubric: Describes each stage correctly, including the address calculation in EX and the memory read in MEM.
+rubric: Explains that load data arrives at the end of MEM, so one stall is needed even with forwarding.
+rubric: Draws the diagram with exactly one stall and a total of 7 cycles.
+hint: The I-type layout is imm, rs1, funct3, rd, opcode.
+hint: When is the loaded value first available, and when does the `add` first need it?

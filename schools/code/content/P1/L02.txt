@@ -1,0 +1,287 @@
+@lesson
+title: Unit tests in the pytest style
+summary: Write readable unit tests as plain functions with assert, use fixtures, parametrization and exception checks, and run them from the command line.
+objective: Write and name pytest-style tests as plain functions using bare assert.
+objective: Use parametrization to cover many cases and pytest.raises to test errors.
+objective: Explain how fixtures provide setup and teardown, and run tests from the command line.
+reading: Test-Driven Development with Python, the chapters on the first unit tests (Django and the unit-test cycle); for pytest itself, look up "How to write and report assertions in tests", "About fixtures" and "How to parametrize fixtures and test functions" in the pytest documentation.
+@article
+In most professional Python projects the test runner is **pytest**. It is a third-party package (`pip install pytest`), and its big idea is that a test is just a function with a plain `assert`. No classes to inherit from, no `self.assertEqual`. (The standard library's `unittest` does the same job in a more verbose style, and pytest can run `unittest` tests too, so you will meet both.) The lessons here run in the browser, so the exercises use plain `assert`, which is exactly what pytest uses; the examples below show the real pytest workflow you will use on your computer.
+
+### Discovery and naming
+
+Running `pytest` from your project folder collects files named `test_*.py` or `*_test.py`, and inside them functions whose names start with `test` (and methods named `test*` in classes named `Test*`). Name tests after behavior, not after the function:
+
+```python
+# test_pricing.py
+from pricing import apply_discount
+
+
+def test_ten_percent_off_reduces_price():
+    assert apply_discount(80.0, 10) == 72.0
+
+
+def test_zero_percent_leaves_price_unchanged():
+    assert apply_discount(80.0, 0) == 80.0
+```
+
+When an assert fails, pytest **rewrites** it to show the values on both sides, so you rarely need a custom message. Useful commands: `pytest -q` (quiet), `pytest -x` (stop at first failure), `pytest -k discount` (only tests whose names match), `pytest tests/test_pricing.py::test_zero_percent_leaves_price_unchanged` (one test), and `pytest --lf` (rerun last failures).
+
+### Testing exceptions
+
+If the correct behavior is to raise, say so with `pytest.raises`:
+
+```python
+import pytest
+from pricing import apply_discount
+
+
+def test_negative_percent_is_rejected():
+    with pytest.raises(ValueError):
+        apply_discount(80.0, -5)
+```
+
+The test fails if no exception, or a different one, is raised. Add `match="percent"` to also check the message with a regular expression.
+
+### Parametrization
+
+Several cases of the same behavior should not be copy-pasted. `@pytest.mark.parametrize` runs one test function once per row, and reports each row separately:
+
+```python
+@pytest.mark.parametrize("price, percent, expected", [
+    (100.0, 10, 90.0),
+    (100.0, 100, 0.0),
+    (19.99, 50, 9.99),
+])
+def test_discount_table(price, percent, expected):
+    assert apply_discount(price, percent) == expected
+```
+
+Use `pytest.approx` for floating-point comparisons: `assert total == pytest.approx(0.3)`.
+
+### Fixtures: setup and teardown
+
+A **fixture** is a function marked `@pytest.fixture` that builds something a test needs. A test asks for it by naming it as a parameter. Code before `yield` is setup; code after it is teardown, which runs even if the test fails:
+
+```python
+import pytest
+
+
+@pytest.fixture
+def cart():
+    c = Cart()
+    c.add("pen", 2)
+    yield c
+    c.clear()          # teardown
+
+
+def test_cart_counts_items(cart):
+    assert cart.count() == 2
+```
+
+Each test gets a **fresh** fixture by default (function scope), which keeps tests independent. Built-in fixtures include `tmp_path` (a temporary directory) and `monkeypatch` (temporarily replace attributes or environment variables). Shared fixtures live in a file called `conftest.py`, which pytest loads automatically.
+
+### Good unit-test habits
+
+One behavior per test, so a failure names the problem. A test name that reads as a sentence. No logic in tests (no loops and `if`s that could themselves be wrong); use parametrization instead. Tests that never depend on each other. And keep the tests next to the project structure: a `tests/` folder mirroring the package is the common convention. A test you cannot understand six months later, when it fails, is a liability, so spend your effort on clarity.
+
+@example
+title: From a bug report to a regression test
+problem: A bug report says `clamp(15, 0, 10)` returns `15` instead of `10`. Write the test first, then fix the function.
+
+```python
+def clamp(value, low, high):
+    if value < low:
+        return low
+    return value
+```
+step: Reproduce the bug as a test before touching the code. The test must fail now, for the right reason:
+
+```python
+def test_value_above_high_is_clamped_to_high():
+    assert clamp(15, 0, 10) == 10
+```
+step: Run it: the assert reports `assert 15 == 10`, which confirms the bug and that the test detects it.
+step: Fix the code by handling the upper bound:
+
+```python
+def clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+```
+step: Rerun: the new test passes. Keep it forever; it now guards against this regression.
+answer: The fix adds the `value > high` branch, and the regression test stays in the suite.
+
+@example
+title: How a yield fixture runs
+problem: Predict the order of events when a test uses a fixture written with `yield`.
+
+```python
+def make_db():
+    print("setup")
+    yield ["row1", "row2"]
+    print("teardown")
+```
+step: The runner calls `make_db()`, which creates a generator but runs nothing yet.
+step: The runner calls `next()` on it. The body runs up to `yield`, printing `setup`, and the yielded list is handed to the test.
+step: The test runs using the list.
+step: After the test, the runner calls `next()` again. Execution resumes after `yield`, prints `teardown` and the generator ends.
+answer: `setup`, then the test body, then `teardown`.
+
+@mistakes
+- Naming a file `pricing_tests_new.py` or a function `check_total`: pytest only collects `test_*.py` / `*_test.py` files and `test*` functions, so these tests silently never run.
+- Comparing floats with `==` (`0.1 + 0.2 == 0.3` is false): use `pytest.approx`.
+- Putting several unrelated assertions in one test, so the first failure hides the rest and the name no longer says what broke.
+- Sharing mutable state through a module-level variable instead of a fixture, so tests pass or fail depending on order.
+
+@practice mc
+prompt: A project has `tests/total_tests.py` containing `def check_total(): assert total([1, 2]) == 3`. Running `pytest` reports "no tests ran". Why?
+choice*: The file name does not match `test_*.py` or `*_test.py`, and the function name does not start with `test`.
+choice: pytest only runs tests inside classes.
+choice: The assert statement needs a message to be collected.
+choice: Tests must import `pytest` to be discovered.
+hint: Think about the naming conventions pytest uses to find tests.
+solution: pytest discovers files matching `test_*.py` or `*_test.py` and functions starting with `test`. This file ends in `_tests.py`, and the function is called `check_total`, so nothing is collected. Classes, messages and importing pytest are not required.
+
+@practice text
+prompt: What does this program print? It imitates how a runner drives a `yield` fixture. Type the output exactly.
+
+```python
+def make_db():
+    print("setup")
+    yield [1, 2]
+    print("teardown")
+
+
+g = make_db()
+data = next(g)
+print(len(data))
+next(g, None)
+```
+answer:
+```
+setup
+2
+teardown
+```
+check: run("def make_db():\n    print('setup')\n    yield [1, 2]\n    print('teardown')\n\n\ng = make_db()\ndata = next(g)\nprint(len(data))\nnext(g, None)\n")
+hint: Nothing in a generator body runs until the first `next()`.
+solution: The first `next(g)` runs up to the `yield`, printing `setup` and returning the list; `len(data)` prints `2`; the second `next(g, None)` resumes after the `yield`, prints `teardown` and the generator ends (the default `None` stops `StopIteration` from being raised).
+
+@practice code
+prompt: Write `clamp(value, low, high)` that returns `low` if `value` is below `low`, `high` if it is above `high`, otherwise `value`. If `low > high`, raise `ValueError`.
+starter:
+```python
+def clamp(value, low, high):
+    pass
+```
+tests:
+```python
+assert clamp(5, 0, 10) == 5
+assert clamp(-3, 0, 10) == 0
+assert clamp(15, 0, 10) == 10
+assert clamp(0, 0, 10) == 0
+assert clamp(10, 0, 10) == 10
+assert raises(ValueError, clamp, 1, 10, 0)
+```
+model:
+```python
+def clamp(value, low, high):
+    if low > high:
+        raise ValueError("low must not exceed high")
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+```
+hint: Check the invalid range first, before looking at `value`.
+hint: Two comparisons are enough: below `low`, above `high`; everything else is returned unchanged.
+solution: Validate `low > high` first and raise `ValueError`, then return `low` or `high` for out-of-range values and `value` otherwise. The boundary tests (`0` and `10`) check that values equal to a bound are returned unchanged.
+
+@practice ms
+prompt: Which statements about pytest fixtures and parametrization are true?
+choice*: Code after `yield` in a fixture runs as teardown, even when the test fails.
+choice*: A test requests a fixture by naming it as a function parameter.
+choice: A fixture with the default scope is created once and shared by every test in the session.
+choice*: `@pytest.mark.parametrize` reports each row of data as a separate test result.
+choice: `conftest.py` must be imported explicitly in each test file.
+hint: Default fixture scope is function: think about test independence.
+solution: Teardown after `yield` always runs; fixtures are injected by parameter name; and each parametrized row is its own result. The default scope is per test function (a fresh fixture each time), and `conftest.py` is loaded automatically by pytest without imports.
+
+@practice self
+prompt: Here is a function. Write the pytest tests you would add for it (real pytest syntax, as you would write it in a project): at least one parametrized test for normal cases and one test that uses `pytest.raises`.
+
+```python
+def percent_of(part, whole):
+    """Return part as a percentage of whole, rounded to 1 decimal."""
+    if whole == 0:
+        raise ZeroDivisionError("whole must not be zero")
+    return round(part / whole * 100, 1)
+```
+hint: Use a table of cases for the normal behavior, and a separate test for the error.
+solution: Use a table of cases plus an error test.
+
+```python
+import pytest
+from stats import percent_of
+
+
+@pytest.mark.parametrize("part, whole, expected", [
+    (1, 4, 25.0),
+    (0, 5, 0.0),
+    (5, 5, 100.0),
+    (1, 3, 33.3),
+    (-1, 4, -25.0),
+])
+def test_percent_of_normal_cases(part, whole, expected):
+    assert percent_of(part, whole) == expected
+
+
+def test_percent_of_zero_whole_raises():
+    with pytest.raises(ZeroDivisionError):
+        percent_of(3, 0)
+```
+The table covers an ordinary value, zero, the whole itself, a value that needs rounding and a negative part, and each row reports separately. Rounding is tested through the `33.3` row. The error case is a separate test because it checks different behavior.
+rubric: Uses `@pytest.mark.parametrize` with a table of several rows, including at least one edge value (zero, 100 percent, rounding or negative).
+rubric: Uses `with pytest.raises(...)` with the correct exception type for a zero whole.
+rubric: Test functions start with `test_`, have behavior-describing names and contain no loops or conditionals.
+
+@quiz code
+prompt: Write `normalize_name(name)` that strips leading and trailing whitespace, collapses every run of whitespace inside the name to a single space, and capitalizes each word with `str.title()`. `normalize_name("  ada   LOVELACE ")` returns `"Ada Lovelace"`. If the result would be empty, raise `ValueError`.
+starter:
+```python
+def normalize_name(name):
+    pass
+```
+tests:
+```python
+assert normalize_name("  ada   LOVELACE ") == "Ada Lovelace"
+assert normalize_name("grace") == "Grace"
+assert normalize_name("a\tb\nc") == "A B C"
+assert raises(ValueError, normalize_name, "   ")
+assert raises(ValueError, normalize_name, "")
+```
+model:
+```python
+def normalize_name(name):
+    result = " ".join(name.split()).title()
+    if not result:
+        raise ValueError("name must not be empty")
+    return result
+```
+hint: `str.split()` with no argument splits on any run of whitespace and drops empty pieces.
+hint: Join the pieces with a single space, apply `title()`, then check for an empty result.
+solution: `" ".join(name.split())` both strips and collapses whitespace in one step; `title()` capitalizes each word; an empty string after that means the input was blank, so raise `ValueError`. The tab-and-newline test checks that all kinds of whitespace are collapsed, not only spaces.
+
+@quiz mc
+prompt: Which test correctly checks that `parse_age("abc")` raises `ValueError` in pytest?
+choice: `def test_bad_age(): assert parse_age("abc") == ValueError`
+choice*: `def test_bad_age():` then `with pytest.raises(ValueError): parse_age("abc")`
+choice: `def test_bad_age(): try: parse_age("abc")`, `except ValueError: pass` (and nothing else)
+choice: `def test_bad_age(): assert raises(parse_age("abc"), ValueError)`
+hint: The call must happen inside something that expects the exception.
+solution: `pytest.raises` as a context manager fails the test if no `ValueError` is raised. Comparing the result to the class never works because the exception propagates first, a `try` with only `pass` passes even when nothing is raised, and `raises(parse_age("abc"), ...)` evaluates the call before pytest can catch anything.

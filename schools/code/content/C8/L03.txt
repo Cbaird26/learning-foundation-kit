@@ -1,0 +1,204 @@
+@lesson
+title: CPU scheduling policies
+summary: Compute turnaround and response times for FIFO, SJF, STCF and round robin, describe how a multi-level feedback queue and proportional-share schedulers work, and choose a policy for a workload.
+objective: Define turnaround time and response time and compute them for a workload.
+objective: Simulate FIFO, shortest job first, shortest time-to-completion first and round robin by hand and in code.
+objective: State the rules of a multi-level feedback queue and explain how it approximates SJF without knowing job lengths.
+reading: Operating Systems: Three Easy Pieces, the chapters "Scheduling: Introduction", "Scheduling: The Multi-Level Feedback Queue" and "Scheduling: Proportional Share".
+
+@article
+The **scheduler** decides which ready process runs next. The mechanism (the context switch) is separate from the **policy** (which job to pick), and the right policy depends on what you want to optimize. Two metrics matter most.
+
+- **Turnaround time** of a job is its completion time minus its arrival time: $T_{turnaround} = T_{completion} - T_{arrival}$. It measures batch performance.
+- **Response time** is the time from arrival until the job first runs: $T_{response} = T_{firstrun} - T_{arrival}$. It measures how interactive the system feels.
+
+Fairness (no job starved) often conflicts with both. To begin, assume all jobs arrive at time 0, run to completion without I/O, and have known lengths.
+
+### FIFO
+
+**First in, first out** runs jobs in arrival order. Suppose A, B and C arrive together with lengths 100, 10 and 10 and run in that order. Their completion times are 100, 110 and 120, so the average turnaround is $(100+110+120)/3 = 110$. The short jobs wait behind the long one: the **convoy effect**.
+
+### Shortest job first
+
+**SJF** runs the shortest job first. With the same workload it runs B, C, A, with completions 10, 20 and 120, an average turnaround of 50. When all jobs arrive together, SJF is **optimal** for average turnaround. It needs job lengths in advance, and once jobs arrive at different times it suffers the same convoy problem: if A is already running when B and C arrive, they must wait for A.
+
+### STCF
+
+**Shortest time-to-completion first** (also called preemptive SJF) lets the scheduler preempt the running job whenever a new job arrives with less remaining time than what is left of the current job. If A (length 100) arrives at time 0 and B and C (length 10) arrive at time 10, A runs until 10, B and C run to completion by 30, then A finishes at 120. The turnaround times are 120, 10 and 20, an average of 50.
+
+### Round robin
+
+**Round robin (RR)** runs each job for a fixed **time slice** (quantum), then moves it to the back of the ready queue. RR gives excellent response time: with three jobs and a 1 ms quantum, the jobs first run at 0, 1 and 2 ms. But turnaround is poor, because every job is stretched out. The quantum trades response against context-switch overhead (week 1), and RR is fair but, among policies, is among the worst for average turnaround.
+
+### Multi-level feedback queue
+
+Real systems do not know job lengths. The **multi-level feedback queue (MLFQ)** learns from behavior. It has several queues with different priority levels, and these rules:
+
+1. A job in a higher-priority queue runs before any job in a lower one.
+2. Jobs in the same queue run round robin.
+3. A new job starts at the highest priority.
+4. A job that uses up its time allotment at a level moves down one level; a job that gives up the CPU early (for I/O) stays.
+5. After some period, all jobs move back to the top (**priority boost**) so that long jobs do not starve and a job that changes behavior is treated fairly.
+
+Short and interactive jobs finish while still at high priority; long CPU-bound jobs sink. The allotment accounting in rule 4 (rather than counting each slice) stops a program from gaming the scheduler by issuing an I/O just before its slice ends.
+
+### Proportional share
+
+**Lottery scheduling** gives each job tickets; at each slice a random ticket is drawn and its holder runs, so a job with 25% of the tickets gets about 25% of the CPU over time. **Stride scheduling** achieves the same deterministically. Linux's default scheduler for ordinary tasks was the Completely Fair Scheduler (CFS), which tracks virtual runtime; since Linux 6.6 it has been replaced by EEVDF, an earliest-eligible-virtual-deadline-first scheduler.
+
+@example
+title: FIFO versus SJF on one workload
+problem: Jobs A, B and C arrive at time 0 with lengths 6, 2 and 4. Compute the average turnaround time under FIFO (order A, B, C) and under SJF.
+step: FIFO completion times: A at 6, B at 8, C at 12. Everything arrives at 0, so these are the turnaround times.
+step: FIFO average: $(6 + 8 + 12)/3 = 26/3 \approx 8.67$.
+step: SJF order by length: B (2), C (4), A (6). Completion times: 2, 6 and 12.
+step: SJF average: $(2 + 6 + 12)/3 = 20/3 \approx 6.67$. Shortest first is better.
+answer: FIFO 26/3, SJF 20/3
+
+@example
+title: Round robin with a quantum of 2
+problem: Jobs A, B and C (lengths 4, 2 and 3) arrive at time 0. Use round robin with quantum 2 in the order A, B, C. Give completion times.
+step: Time 0 to 2: A runs; 2 units remain. Queue: B, C, A.
+step: Time 2 to 4: B runs and finishes, completion 4. Queue: C, A.
+step: Time 4 to 6: C runs; 1 unit remains. Queue: A, C.
+step: Time 6 to 8: A runs and finishes, completion 8. Time 8 to 9: C runs and finishes, completion 9.
+answer: A 8, B 4, C 9
+
+@mistakes
+- Computing turnaround from time 0 instead of from the job's arrival time when jobs arrive later.
+- Saying SJF is optimal in general: it is optimal for average turnaround only when all jobs arrive together (and lengths are known).
+- Believing a small round-robin quantum always helps: it improves response time, but context-switch overhead grows and turnaround worsens.
+- Forgetting that STCF preempts: a short arriving job interrupts a longer running job.
+
+@practice mc
+prompt: All jobs arrive at time 0 and their lengths are known. Which non-preemptive policy gives the smallest possible average turnaround time?
+choice*: Shortest job first
+choice: First in, first out
+choice: Round robin with a small quantum
+choice: Longest job first
+hint: Jobs that finish early lower every later job's waiting time.
+solution: Running the shortest jobs first minimizes the total waiting time, so SJF is optimal here. Round robin delays every job, and FIFO suffers from the convoy effect when a long job arrives first.
+
+@practice code
+prompt: Write `avg_turnaround(bursts, policy)` for jobs that all arrive at time 0. `bursts` is a list of positive run times in arrival order. `policy` is `"fifo"` (run in the given order) or `"sjf"` (run in increasing order of burst). Return the average turnaround time as a float.
+starter:
+```python
+def avg_turnaround(bursts, policy):
+    pass
+```
+tests:
+```python
+assert avg_turnaround([100, 10, 10], "fifo") == 110.0
+assert avg_turnaround([100, 10, 10], "sjf") == 50.0
+assert avg_turnaround([10, 10, 10], "fifo") == 20.0
+assert avg_turnaround([7], "sjf") == 7.0
+assert abs(avg_turnaround([3, 1, 2], "sjf") - 10 / 3) < 1e-9
+assert abs(avg_turnaround([3, 1, 2], "fifo") - 13 / 3) < 1e-9
+```
+model:
+```python
+def avg_turnaround(bursts, policy):
+    order = sorted(bursts) if policy == "sjf" else list(bursts)
+    t = 0
+    total = 0
+    for b in order:
+        t += b
+        total += t
+    return total / len(order)
+```
+hint: Put the jobs in run order first; the completion time of each job is a running sum.
+solution: Order the bursts (sorted for SJF), keep a running clock `t`, add each completion time to `total`, and divide by the number of jobs. Since all arrivals are 0, completion time equals turnaround time.
+
+@practice num
+prompt: Three jobs of 3 ms each arrive at time 0 and are scheduled by round robin with a 1 ms quantum, ignoring context-switch cost. What is the average response time in ms?
+answer: 1
+check: sum(range(3)) / 3
+unit: ms
+hint: The jobs first run at times 0, 1 and 2.
+solution: Job 1 starts at 0, job 2 at 1 and job 3 at 2, so the average response time is $(0+1+2)/3 = 1$ ms.
+
+@practice code
+prompt: Write `round_robin(bursts, quantum)` for jobs that all arrive at time 0 and sit in the ready queue in list order. A job runs for `min(quantum, remaining)`; if it still has time left it goes to the back of the queue. Ignore context-switch cost. Return the list of completion times in the same order as `bursts`.
+starter:
+```python
+def round_robin(bursts, quantum):
+    pass
+```
+tests:
+```python
+assert round_robin([5, 3, 1], 2) == [9, 8, 5]
+assert round_robin([4], 3) == [4]
+assert round_robin([2, 2, 2], 5) == [2, 4, 6]
+assert round_robin([3, 3], 1) == [5, 6]
+assert round_robin([], 2) == []
+```
+model:
+```python
+from collections import deque
+
+
+def round_robin(bursts, quantum):
+    remaining = list(bursts)
+    done = [0] * len(bursts)
+    queue = deque(range(len(bursts)))
+    t = 0
+    while queue:
+        i = queue.popleft()
+        run = min(quantum, remaining[i])
+        t += run
+        remaining[i] -= run
+        if remaining[i] > 0:
+            queue.append(i)
+        else:
+            done[i] = t
+    return done
+```
+hint: Keep a queue of job indexes and a clock `t`.
+hint: Pop a job, run it for `min(quantum, remaining)`, advance the clock, then either record its completion time or append it to the back.
+solution: Simulate the queue directly. A job that finishes records the current clock as its completion time; an unfinished job goes to the back of the queue. With `[5, 3, 1]` and quantum 2, the finish times are 9, 8 and 5.
+
+@practice self
+prompt: An MLFQ scheduler has three queues. A long CPU-bound job and a stream of short interactive jobs share the machine. (a) Explain where each kind of job ends up and why. (b) Explain what could go wrong without a periodic priority boost.
+hint: Think about which jobs use up their allotment and which give up the CPU early.
+solution: (a) Every job starts in the top queue. The short interactive jobs finish, or give up the CPU for I/O, before using up their allotment, so they stay near the top and receive quick response. The long CPU-bound job uses its full allotment at each level and is demoted until it sits in the bottom queue, where it runs only when no higher queue has work. (b) Without a boost, if interactive jobs keep arriving, the CPU-bound job can starve in the bottom queue. A job that later changes to interactive behavior would also be stuck at low priority. A periodic boost to the top queue guarantees progress and lets the scheduler relearn each job's behavior.
+rubric: Says short and interactive jobs stay at high priority because they do not use up their allotment.
+rubric: Says the CPU-bound job is demoted to the lowest queue.
+rubric: Identifies starvation of low-priority jobs as the problem the boost solves.
+rubric: Notes the boost also corrects for jobs that change behavior.
+
+@quiz code
+prompt: Write `lottery_winner(tickets, draw)`. `tickets` is a list with the number of tickets held by each job (non-negative integers), and the tickets are numbered consecutively in job order: job 0 holds tickets `0` to `tickets[0] - 1`, job 1 the next `tickets[1]` numbers, and so on. Given a drawn ticket number `draw` (0 up to the total minus 1), return the index of the job holding it. A job with 0 tickets never wins.
+starter:
+```python
+def lottery_winner(tickets, draw):
+    pass
+```
+tests:
+```python
+assert lottery_winner([75, 25], 0) == 0
+assert lottery_winner([75, 25], 74) == 0
+assert lottery_winner([75, 25], 75) == 1
+assert lottery_winner([75, 25], 99) == 1
+assert lottery_winner([3, 0, 2], 3) == 2
+assert lottery_winner([0, 4], 0) == 1
+```
+model:
+```python
+def lottery_winner(tickets, draw):
+    counter = 0
+    for job, count in enumerate(tickets):
+        counter += count
+        if draw < counter:
+            return job
+    raise ValueError("draw out of range")
+```
+hint: Walk through the jobs, adding up their ticket counts as you go.
+hint: The winner is the first job whose running total is greater than `draw`.
+solution: Keep a running total of tickets. The first job at which `draw < total` holds the drawn ticket. A job with 0 tickets never changes the total, so the test is never first true for it.
+
+@quiz num
+prompt: Under STCF (preemptive shortest time-to-completion first), job A arrives at time 0 with length 50, job B arrives at time 10 with length 20 and job C arrives at time 20 with length 5. What is the average turnaround time of the three jobs?
+answer: 35
+check: ((75 - 0) + (35 - 10) + (25 - 20)) / 3
+hint: At time 10 compare B's length with A's remaining time; at time 20 compare C's length with B's remaining time.
+solution: A runs 0 to 10 (40 left). B (20) arrives and is shorter than A's remaining 40, so B runs from 10; at time 20 B has 10 left, and C (5) is shorter, so C runs 20 to 25. B finishes at 35 and A at 75. Turnaround times are 75, 25 and 5, so the average is $105/3 = 35$.

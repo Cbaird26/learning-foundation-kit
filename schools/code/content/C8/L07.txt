@@ -1,0 +1,251 @@
+@lesson
+title: Classic concurrency problems
+summary: Solve the bounded-buffer producer-consumer problem with semaphores, reason about readers-writers and dining philosophers, and classify common concurrency bugs.
+objective: Write the correct semaphore solution to the bounded buffer problem and explain the role of each semaphore.
+objective: Describe the readers-writers and dining philosophers problems and why naive solutions fail.
+objective: Classify non-deadlock concurrency bugs as atomicity violations or order violations.
+reading: Operating Systems: Three Easy Pieces, the chapters "Semaphores" (the producer/consumer and reader-writer sections, and dining philosophers) and "Common Concurrency Problems".
+
+@article
+A small set of problems recurs throughout systems programming. Learning their standard solutions gives you patterns that carry over to queues in web servers, pipes in the kernel and databases.
+
+### The bounded buffer
+
+**Producers** put items into a shared buffer of fixed capacity `MAX`; **consumers** take them out. A producer must wait when the buffer is full and a consumer must wait when it is empty. This is how a Unix pipe connects two programs.
+
+Use three semaphores:
+
+```c
+sem_t empty;   /* counts free slots,   initial value MAX */
+sem_t full;    /* counts filled slots, initial value 0   */
+sem_t mutex;   /* protects the buffer, initial value 1   */
+
+void *producer(void *arg) {
+    for (int i = 0; i < LOOPS; i++) {
+        sem_wait(&empty);      /* wait for a free slot */
+        sem_wait(&mutex);      /* then lock the buffer */
+        put(i);
+        sem_post(&mutex);
+        sem_post(&full);       /* one more filled slot */
+    }
+    return NULL;
+}
+
+void *consumer(void *arg) {
+    for (int i = 0; i < LOOPS; i++) {
+        sem_wait(&full);
+        sem_wait(&mutex);
+        int tmp = get();
+        sem_post(&mutex);
+        sem_post(&empty);
+    }
+    return NULL;
+}
+```
+
+`empty` and `full` are for **synchronization** (waiting for a condition); `mutex` is for **mutual exclusion**. With several producers, the mutex is required: otherwise two producers could pass `empty` together and write to the same slot. The order of the two waits matters: take the counting semaphore first and the mutex second. Swapping them can deadlock (next week). The buffer itself is usually a circular array with `fill` and `use` indexes, advancing modulo `MAX`.
+
+### Readers and writers
+
+Many threads may read a structure at once, but a writer needs exclusive access. The usual solution counts readers: the first reader to arrive locks out writers, the last to leave lets them in. The rules a state machine must follow: a reader may enter if no writer is active; a writer may enter only if no reader and no writer is active. This simple version favors readers: a stream of overlapping readers can **starve** a writer. Fairer variants block new readers when a writer is waiting. Operating systems provide this as a read-write lock (for example `pthread_rwlock_t`).
+
+### Dining philosophers
+
+Five philosophers sit at a round table with a fork between each pair. A philosopher needs both adjacent forks to eat. The naive protocol, "pick up the left fork, then the right", **deadlocks** if all five pick up their left fork at the same moment: each holds one fork and waits forever for the other. At most $\lfloor n/2 \rfloor$ philosophers can eat simultaneously, because each eater uses two forks and no two eaters can be adjacent.
+
+A standard fix is to **break the symmetry**: give every fork a number, and have each philosopher pick up the lower-numbered fork first. With forks numbered $0$ to $n-1$ and philosopher $i$ using forks $i$ and $(i+1) \bmod n$, the last philosopher picks up fork $0$ before fork $n-1$, which makes a circular wait impossible.
+
+### Studying real concurrency bugs
+
+Studies of real programs find that most non-deadlock bugs fall into two classes.
+
+- **Atomicity violation:** code assumed to execute without interruption is interrupted, such as `if (thd->info != NULL) use(thd->info->len);` while another thread sets `thd->info = NULL` between the test and the use. Fix: lock around both.
+- **Order violation:** one thread assumes another has already run something, such as using a variable before the thread that initializes it has started. Fix: enforce the order with a condition variable or a semaphore.
+
+@example
+title: Tracing the bounded buffer
+problem: `MAX = 2`. One producer puts items 10, 20 and 30; one consumer takes items. Show the values of `empty` and `full` and what blocks.
+step: Initially `empty = 2`, `full = 0`.
+step: Producer puts 10: `empty = 1`, `full = 1`. Producer puts 20: `empty = 0`, `full = 2`; the buffer is full.
+step: Producer tries to put 30: `sem_wait(&empty)` finds 0 and blocks.
+step: Consumer takes 10: `full = 1`, then `sem_post(&empty)` makes `empty = 1` and wakes the producer, which puts 30 (`empty = 0`, `full = 2`). Items come out in FIFO order: 10, 20, 30.
+
+@example
+title: Why the asymmetric rule works
+problem: With 5 philosophers, list which forks each one picks up first and second under the lower-numbered-first rule, and say why deadlock is impossible.
+step: Philosopher $i$ uses forks $i$ and $(i+1) \bmod 5$. Philosophers 0 to 3 use $(0,1)$, $(1,2)$, $(2,3)$, $(3,4)$, and philosopher 4 uses forks 4 and 0, so picks fork 0 first.
+step: A deadlock would need a cycle where each philosopher holds a fork and waits for one held by the next philosopher.
+step: Philosopher 4 would have to hold fork 4 and wait for fork 0, but by the rule it picks up fork 0 first, so it never holds fork 4 while waiting for fork 0. The cycle breaks.
+answer: Philosopher 4 takes fork 0 then fork 4; the others take left then right.
+
+@mistakes
+- Using a single mutex alone for the bounded buffer: the threads would have to busy-wait for space or items.
+- Forgetting the mutex when there are several producers or consumers, so two threads write or read the same slot.
+- Thinking a larger table fixes the philosophers' deadlock: the circular wait still exists when everyone grabs the same side first.
+- Fixing an order violation with a lock: a lock gives exclusion but does not make one thread wait for the other's event.
+
+@practice mc
+prompt: In the semaphore solution to the bounded buffer with capacity `MAX`, what are the correct initial values of `empty`, `full` and `mutex`?
+choice*: `empty = MAX`, `full = 0`, `mutex = 1`
+choice: `empty = 0`, `full = MAX`, `mutex = 1`
+choice: `empty = MAX`, `full = MAX`, `mutex = 0`
+choice: `empty = 1`, `full = 1`, `mutex = MAX`
+hint: At the start, every slot is free and no slot is filled.
+solution: All `MAX` slots start free, none is filled, and the mutex starts unlocked, so `empty` is `MAX`, `full` is 0 and `mutex` is 1.
+
+@practice code
+prompt: Write a class `BoundedBuffer(capacity)` that models a circular buffer in a single thread. `put(x)` stores `x` at the next free position and raises `IndexError` if the buffer is full. `get()` removes and returns the oldest item (first in, first out) and raises `IndexError` if the buffer is empty. The attribute `count` is the number of items currently stored. Use a fixed-size list with `fill` and `use` indexes that wrap around modulo the capacity.
+starter:
+```python
+class BoundedBuffer:
+    pass
+```
+tests:
+```python
+b = BoundedBuffer(2)
+assert b.count == 0
+assert raises(IndexError, b.get)
+b.put("a")
+b.put("b")
+assert b.count == 2
+assert raises(IndexError, b.put, "c")
+assert b.get() == "a"
+b.put("c")
+assert b.get() == "b"
+assert b.get() == "c"
+assert b.count == 0
+c = BoundedBuffer(3)
+for i in range(7):
+    c.put(i)
+    assert c.get() == i
+```
+model:
+```python
+class BoundedBuffer:
+    def __init__(self, capacity):
+        self.slots = [None] * capacity
+        self.capacity = capacity
+        self.fill = 0
+        self.use = 0
+        self.count = 0
+
+    def put(self, x):
+        if self.count == self.capacity:
+            raise IndexError("buffer full")
+        self.slots[self.fill] = x
+        self.fill = (self.fill + 1) % self.capacity
+        self.count += 1
+
+    def get(self):
+        if self.count == 0:
+            raise IndexError("buffer empty")
+        x = self.slots[self.use]
+        self.use = (self.use + 1) % self.capacity
+        self.count -= 1
+        return x
+```
+hint: `fill` is where the next item goes and `use` is where the next item comes from; both advance with `% capacity`.
+hint: The `count` tells you whether the buffer is full or empty, since `fill == use` is true in both cases.
+solution: Store the item at `fill`, advance `fill` modulo capacity and increase `count`; get reads at `use` and advances it. Wraparound lets the buffer reuse freed slots, and `count` distinguishes full from empty.
+
+@practice code
+prompt: Write a class `RWLock` that models the state of a readers-writer lock in a single thread. It has `readers` (number of active readers, initially 0) and `writing` (`True` while a writer is active, initially `False`). `try_read()` succeeds (increments `readers`, returns `True`) if no writer is active, else returns `False`. `try_write()` succeeds (sets `writing` to `True`, returns `True`) only if there are no readers and no writer, else returns `False`. `release_read()` decrements `readers`; `release_write()` sets `writing` to `False`.
+starter:
+```python
+class RWLock:
+    pass
+```
+tests:
+```python
+lock = RWLock()
+assert lock.try_read() is True
+assert lock.try_read() is True
+assert lock.readers == 2
+assert lock.try_write() is False
+lock.release_read()
+assert lock.try_write() is False
+lock.release_read()
+assert lock.try_write() is True
+assert lock.writing is True
+assert lock.try_read() is False
+assert lock.try_write() is False
+lock.release_write()
+assert lock.try_read() is True
+```
+model:
+```python
+class RWLock:
+    def __init__(self):
+        self.readers = 0
+        self.writing = False
+
+    def try_read(self):
+        if self.writing:
+            return False
+        self.readers += 1
+        return True
+
+    def try_write(self):
+        if self.writing or self.readers > 0:
+            return False
+        self.writing = True
+        return True
+
+    def release_read(self):
+        self.readers -= 1
+
+    def release_write(self):
+        self.writing = False
+```
+hint: Many readers may share the lock; a writer needs the lock to itself.
+solution: Readers are blocked only by an active writer. A writer is blocked by any reader or writer. Because new readers are admitted whenever no writer is active, this version favors readers and can starve a writer.
+
+@practice num
+prompt: Seven philosophers sit at a round table with seven forks, one between each pair of neighbors. A philosopher needs both adjacent forks to eat. What is the largest number who can eat at the same time?
+answer: 3
+check: 7 // 2
+hint: Each eater uses two forks, and no two eaters can sit next to each other.
+solution: Seven forks give at most $\lfloor 7/2 \rfloor = 3$ eaters at once, each using two forks, with one fork left over.
+
+@practice self
+prompt: A bounded buffer with several producers and consumers uses the semaphores `empty` and `full` but no `mutex`. Describe an interleaving in which the program goes wrong, and say what each of the three semaphores is for.
+solution: The semaphore `empty` blocks producers when no slot is free and `full` blocks consumers when no item is available: these are synchronization semaphores. Neither prevents two threads from being inside `put` at the same time. With two producers and an empty buffer, both pass `sem_wait(&empty)`. Both read `fill = 0`, both write their item into slot 0, and both then increment `fill`; one item is overwritten and lost, and `fill` points past an empty slot. A consumer will later read a stale or empty slot. The `mutex` (initial value 1) provides mutual exclusion on the buffer indexes and slots, so only one thread at a time runs `put` or `get`.
+hint: Think about the code of `put` as several steps, and about what the counting semaphores do and do not allow.
+rubric: Says `empty` and `full` are for synchronization (waiting for space or items) and `mutex` is for exclusion.
+rubric: Gives an interleaving in which two producers both pass `empty` and both use the same index.
+rubric: States the consequence: a lost item and an inconsistent index.
+
+@quiz code
+prompt: Philosopher `i` of `n` (with `n >= 2`) uses fork `i` (left) and fork `(i + 1) % n` (right). Write `fork_order(n)` that returns a list of `n` tuples `(first, second)`, the forks philosopher `i` picks up first and second under the rule "always pick up the lower-numbered fork first".
+starter:
+```python
+def fork_order(n):
+    pass
+```
+tests:
+```python
+assert fork_order(2) == [(0, 1), (0, 1)]
+assert fork_order(3) == [(0, 1), (1, 2), (0, 2)]
+assert fork_order(5) == [(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)]
+assert all(a < b for a, b in fork_order(8))
+```
+model:
+```python
+def fork_order(n):
+    order = []
+    for i in range(n):
+        left, right = i, (i + 1) % n
+        order.append((min(left, right), max(left, right)))
+    return order
+```
+hint: Compute the two fork numbers and put the smaller first.
+solution: For every philosopher, take `min` and `max` of the two fork numbers. Only the last philosopher differs from "left then right": its right fork is 0, which is lower than its left fork `n - 1`.
+
+@quiz mc
+prompt: Thread A executes `if (node->data != NULL) { use(node->data->size); }`. Thread B sometimes sets `node->data = NULL`. Occasionally A crashes. What kind of bug is this, and what is the fix?
+choice*: An atomicity violation: hold the same lock around A's check and use and around B's assignment
+choice: An order violation: add a condition variable so that B runs before A
+choice: A deadlock: acquire locks in a fixed order
+choice: A livelock: add a random delay before A's check
+hint: A's check and use were meant to happen as one uninterrupted step.
+solution: B can run between A's test and A's use, so the code assumed atomicity that it does not have. A lock held across the test and use (and across B's write) restores it. Nothing here waits for an event or holds two locks, so neither an order violation nor a deadlock is involved.

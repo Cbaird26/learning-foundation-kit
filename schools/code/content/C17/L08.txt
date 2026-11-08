@@ -1,0 +1,200 @@
+@lesson
+title: Access control and authorization
+summary: Model access-control policies (ACLs, capabilities, Unix permissions, RBAC, Bell-LaPadula), enforce them in code, and prevent broken access control.
+objective: Explain access-control matrices, ACLs and capabilities, and the DAC, MAC, RBAC and ABAC models.
+objective: Evaluate Unix permission bits and write role-based and path checks that deny by default.
+objective: Recognize broken access control, such as insecure direct object references, and fix it with server-side checks.
+reading: UC Berkeley CS 161 textbook, the chapters on access control and on operating-system security (look up "access control matrix", "least privilege" and "confused deputy").
+@article
+Authorization decides whether an authenticated **principal** (user, process, service) may perform an **action** (read, write, execute, delete) on an **object**. **Broken Access Control** is OWASP **A01** in the 2025 Top 10: the most common serious weakness in web applications.
+
+### Models
+
+Conceptually, a policy is an **access control matrix** with principals as rows, objects as columns and permitted actions as cells. Systems store it in one of two ways:
+
+- **Access control lists (ACLs)** store each column with the object: "who may use this file?". Easy to review per object, and to revoke for an object.
+- **Capabilities** store each row with the principal: unforgeable tokens that grant a right to an object. Easy to delegate and to limit to what a task needs; a file descriptor is a capability.
+
+Policy models differ in who sets the rules:
+
+- **Discretionary access control (DAC)**: the owner of an object decides who may access it (Unix file permissions).
+- **Mandatory access control (MAC)**: a central policy that owners cannot override, for example security labels such as Unclassified, Secret and Top Secret. In the **Bell-LaPadula** confidentiality model a subject may **not read up** and may **not write down**; the **Biba** integrity model reverses this.
+- **Role-based access control (RBAC)**: permissions attach to **roles**; users get roles. Administration scales, and it matches job functions.
+- **Attribute-based access control (ABAC)**: rules over attributes of the user, object and context ("doctors may read records of their own department during working hours").
+
+### Unix permissions
+
+Each file has an owner, a group and nine permission bits, shown as three octal digits: read is 4, write is 2 and execute is 1. In mode `0o640` the owner has 6 (read and write), the group 4 (read) and everyone else 0. The kernel picks **one class only**: if the user is the owner, the owner bits decide; otherwise, if the user is in the file's group, the group bits decide; otherwise the "other" bits do. An owner with `0o040` therefore cannot read their own file, even though the group could. Directories use read to list, write to create or remove entries and execute to enter. A **setuid** program runs with its owner's privileges, which is why such programs must be small and careful.
+
+### Enforcing policy in applications
+
+- **Deny by default**: an action is allowed only when a rule explicitly grants it.
+- **Check on the server, on every request** (complete mediation). Hiding a button is not access control.
+- **Check ownership of the object**, not just that the user is logged in. An **insecure direct object reference** (IDOR, also called broken object-level authorization) is a URL such as `/invoices/1041` that returns the invoice to any logged-in user because the code never checks that it belongs to them.
+- **Validate file paths**. A path like `../../etc/passwd` supplied by a user must not escape the intended directory.
+- Beware the **confused deputy**: a privileged program tricked into using its own authority on behalf of someone who lacks it. Passing capabilities, not names, avoids it.
+
+Here is the pattern next to its fix (the first function is the bug to recognize):
+
+```python
+def get_invoice_bad(db, user_id, invoice_id):   # BUG: no ownership check
+    return db[invoice_id]
+
+def get_invoice(db, user_id, invoice_id):
+    invoice = db.get(invoice_id)
+    if invoice is None or invoice["owner"] != user_id:
+        raise PermissionError("not found")       # same error for both cases
+    return invoice
+```
+
+Returning the same error whether the object is missing or merely forbidden avoids leaking which ids exist. Log denied attempts; repeated denials are an attack signal.
+
+@example
+title: Evaluating a Unix permission
+problem: A file has mode `0o640`, owner uid 1000 and group gid 100. May a user with uid 2000 who belongs to group 100 write to it? May uid 1000 execute it?
+step: Mode `0o640` means owner 6 = rw-, group 4 = r--, others 0 = ---.
+step: uid 2000 is not the owner, but belongs to group 100, so the group bits (4, read only) apply. Write needs bit 2, which is missing: denied.
+step: uid 1000 is the owner, so the owner bits (6) apply. Execute needs bit 1, and 6 = 4 + 2 has no 1: denied.
+answer: Neither is allowed
+@example
+title: Fixing an IDOR
+problem: An endpoint `/notes/<id>` returns note `id` for any logged-in user. Describe the fix.
+step: Identify the object's owner: the note stores an `owner` field.
+step: Compare it with the authenticated user's id taken from the server-side session, never from a request parameter.
+step: If they differ, or the note does not exist, return the same not-found response. Add a test that user B cannot read user A's note.
+step: As defense in depth, use hard-to-guess identifiers, but never as a substitute for the check.
+answer: Check ownership on the server for every request and return a uniform error
+@mistakes
+- Checking that a user is logged in but not that they own, or may access, the specific object.
+- Enforcing rules only in the user interface or in client-side code.
+- Reading the user's identity from a form field or URL parameter that the user can change.
+- Applying the wrong Unix class: an owner is judged by the owner bits only, even if the group bits are more permissive.
+@practice code
+prompt: Write `can_access(mode, owner, group, uid, gids, want)` using Unix rules. `mode` is an integer such as `0o640`; `owner` is the file's owner uid; `group` is its group id; `uid` is the user's id; `gids` is a set of the user's group ids; `want` is `"r"`, `"w"` or `"x"` (bits 4, 2, 1). Use the owner bits if `uid == owner`; otherwise the group bits if `group in gids`; otherwise the other bits. Return a bool. Ignore the superuser.
+starter:
+```python
+def can_access(mode, owner, group, uid, gids, want):
+    pass
+```
+tests:
+```python
+assert can_access(0o640, 1000, 100, 1000, {100}, "w") is True
+assert can_access(0o640, 1000, 100, 1000, {100}, "x") is False
+assert can_access(0o640, 1000, 100, 2000, {100}, "r") is True
+assert can_access(0o640, 1000, 100, 2000, {100}, "w") is False
+assert can_access(0o640, 1000, 100, 3000, {5}, "r") is False
+assert can_access(0o604, 1000, 100, 3000, {5}, "r") is True
+assert can_access(0o040, 1000, 100, 1000, {100}, "r") is False
+```
+model:
+```python
+def can_access(mode, owner, group, uid, gids, want):
+    bit = {"r": 4, "w": 2, "x": 1}[want]
+    if uid == owner:
+        bits = (mode >> 6) & 7
+    elif group in gids:
+        bits = (mode >> 3) & 7
+    else:
+        bits = mode & 7
+    return bool(bits & bit)
+```
+hint: Pick exactly one class of bits, in the order owner, group, other.
+hint: `(mode >> 6) & 7` is the owner digit, `(mode >> 3) & 7` the group digit and `mode & 7` the other digit.
+solution: Choose the first matching class and test the requested bit in that digit only. The last test shows that an owner is not rescued by more permissive group bits.
+@practice code
+prompt: Write `is_allowed(user_roles, role_perms, permission)` for role-based access control. `user_roles` is a list of role names, `role_perms` is a dict mapping a role name to a set of permission strings, and `permission` is a string. Return `True` only if at least one of the user's roles grants the permission. Unknown roles grant nothing (deny by default).
+starter:
+```python
+def is_allowed(user_roles, role_perms, permission):
+    pass
+```
+tests:
+```python
+perms = {
+    "viewer": {"read"},
+    "editor": {"read", "write"},
+    "admin": {"read", "write", "delete"},
+}
+assert is_allowed(["viewer"], perms, "read") is True
+assert is_allowed(["viewer"], perms, "write") is False
+assert is_allowed(["viewer", "editor"], perms, "write") is True
+assert is_allowed(["ghost"], perms, "read") is False
+assert is_allowed([], perms, "read") is False
+```
+model:
+```python
+def is_allowed(user_roles, role_perms, permission):
+    for role in user_roles:
+        if permission in role_perms.get(role, set()):
+            return True
+    return False
+```
+hint: Look up each role with `role_perms.get(role, set())` so unknown roles give an empty set.
+solution: A user holds the union of their roles' permissions. Return `True` as soon as one role grants it, and `False` otherwise, which is deny by default.
+@practice text
+prompt: Give the three-digit octal mode for a file that its owner may read and write, its group may only read, and everyone else may not access. Type the digits only.
+answer: 640
+check: format(4 + 2 + 0, "d") + format(4, "d") + format(0, "d")
+hint: Read is 4, write is 2 and execute is 1; add them for each of owner, group and others.
+solution: Owner read plus write is 4 + 2 = 6, group read is 4, others have 0, so the mode is `640`.
+@practice mc
+prompt: The endpoint `GET /orders/<id>` returns an order to any logged-in user, so changing the number in the URL shows other customers' orders. What is the correct fix?
+choice*: On the server, load the order and check that it belongs to the authenticated user, returning a uniform not-found error otherwise.
+choice: Replace the sequential ids with random ones and keep the code the same.
+choice: Hide the order links from other users in the page.
+choice: Require users to log in again before each request.
+hint: Where must the authorization decision be made, and about which object?
+solution: The decision belongs on the server, against the specific object, on every request. Random ids make guessing harder but do not enforce access, hidden links are not security, and logging in again does not check ownership.
+@practice self
+prompt: Design password storage for a new web application that will have a few hundred thousand users. Specify what you store per user, the algorithm and parameters, how the salt is generated, how login verification works, how you would raise the cost later, and what you do about leaked-password reuse.
+hint: Think about what an attacker holding a stolen copy of the table can do, then design each field to slow or block that.
+solution: Store per user: the algorithm identifier, its parameters (memory, iterations, parallelism or work factor), a unique random salt of at least 16 bytes from the operating system's secure random generator, and the hash output, typically in one encoded string. Use Argon2id (or scrypt or bcrypt; PBKDF2 only if compliance requires it) tuned so one verification takes tens to hundreds of milliseconds on the real servers. On login, look up the record, recompute with the stored parameters and salt, and compare in constant time; return one generic error for unknown user and wrong password, and rate limit attempts. To raise cost, store parameters per record, and on a successful login rehash with stronger parameters and replace the record. Optionally add a pepper held outside the database. For passwords, follow NIST guidance: minimum length of 15 characters (8 with MFA), allow 64 or more characters, no composition rules or forced rotation, and check new passwords against a blocklist of compromised ones. Offer MFA, preferably passkeys.
+rubric: Names a slow, purpose-built hash (Argon2id, scrypt, bcrypt or PBKDF2), not a fast hash.
+rubric: Uses a unique random salt per user stored with the hash, and stores parameters so cost can be raised.
+rubric: Describes constant-time verification, rate limiting and generic error messages.
+rubric: Mentions a blocklist check or MFA as protection against reused leaked passwords.
+@quiz code
+prompt: Write `safe_path(user_path)` that turns a user-supplied relative path into a normalized path inside a base directory. Split on `/`; ignore empty parts and `.`; a `..` removes the previous part. Return the parts joined with `/`. Raise `ValueError` if `user_path` starts with `/`, or if a `..` would go above the base directory (when there is no previous part). The empty path returns the empty string.
+starter:
+```python
+def safe_path(user_path):
+    pass
+```
+tests:
+```python
+assert safe_path("a/b.txt") == "a/b.txt"
+assert safe_path("./a//b.txt") == "a/b.txt"
+assert safe_path("a/../b.txt") == "b.txt"
+assert safe_path("") == ""
+assert raises(ValueError, safe_path, "../secret")
+assert raises(ValueError, safe_path, "a/../../secret")
+assert raises(ValueError, safe_path, "/etc/passwd")
+```
+model:
+```python
+def safe_path(user_path):
+    if user_path.startswith("/"):
+        raise ValueError("absolute path")
+    parts = []
+    for part in user_path.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                raise ValueError("path escapes base directory")
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
+```
+hint: Keep a list of parts as a stack: push normal names, pop on `..`.
+hint: Popping an empty stack means the path tried to escape, so raise `ValueError` there.
+solution: Process the parts with a stack. A `..` with an empty stack would leave the base directory, so reject it; absolute paths are rejected up front.
+@quiz mc
+prompt: In the Bell-LaPadula confidentiality model with levels Unclassified < Secret < Top Secret, which action is forbidden?
+choice*: A Secret-level subject writing to an Unclassified file (write down)
+choice: A Secret-level subject reading an Unclassified file
+choice: A Secret-level subject writing to a Top Secret file
+choice: A Secret-level subject reading a Secret file
+hint: The model prevents secrets flowing to lower levels: no read up, no write down.
+solution: Bell-LaPadula forbids reading objects above your level and writing to objects below it, since that could leak secrets downward. Reading down, writing up and same-level access are allowed.

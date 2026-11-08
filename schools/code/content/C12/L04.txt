@@ -1,0 +1,270 @@
+@lesson
+title: Evaluating expressions: a calculator interpreter
+summary: Evaluate an abstract syntax tree by recursion, combine tokenizer, parser and evaluator into a calculator, and compare tree evaluation with a stack machine.
+objective: Write a recursive evaluator that gives meaning to each kind of AST node.
+objective: Assemble tokenize, parse and evaluate into a working calculator and decide how it reports errors.
+objective: Evaluate postfix expressions with a stack and relate that to tree evaluation.
+reading: Crafting Interpreters, Chapter 7 "Evaluating Expressions".
+
+@article
+A tree is just data until something gives it **meaning**. An **interpreter** gives meaning to a program by *executing* it directly. For expressions, the simplest design is a **tree-walking interpreter**: a function that looks at the kind of a node and computes its value, recursing into the children first.
+
+### The evaluator
+
+The value of a node depends only on the values of its children, which is the defining property of **structural recursion** on a tree:
+
+```python
+import operator
+
+OPS = {
+    "+": operator.add,
+    "-": operator.sub,
+    "*": operator.mul,
+    "/": operator.truediv,
+}
+
+
+def evaluate(node):
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "neg":
+        return -evaluate(node[1])
+    if kind == "bin":
+        left = evaluate(node[2])
+        right = evaluate(node[3])
+        return OPS[node[1]](left, right)
+    raise ValueError(f"unknown node kind {kind!r}")
+```
+
+The evaluator is a **post-order traversal**: it needs both operand values before it can apply the operator. With $n$ nodes, evaluation takes $O(n)$ time, since each node is visited once, and uses stack space proportional to the height of the tree.
+
+Notice that the evaluator never looks at tokens, precedence or parentheses. The parser already encoded all of that in the shape of the tree. This **separation of concerns** is the reason compilers are built in stages: the evaluator can be tested with hand-built trees, and the parser without any evaluator.
+
+### Putting it together
+
+A complete calculator chains the three stages:
+
+```python
+def calc(source):
+    return evaluate(parse(tokenize(source)))
+```
+
+`calc("2 * (3 + 4)")` gives `14`. Each stage reports its own kind of error: `tokenize` raises `ValueError` for a bad character, `parse` raises `SyntaxError` for a malformed expression, and `evaluate` can fail at run time: `calc("1 / 0")` raises `ZeroDivisionError`. A good interpreter distinguishes *when* an error is found (lexical, syntax, runtime) and explains it to the user.
+
+Language design decisions hide in the evaluator. Does `/` on two integers give a float (`7 / 2` is `3.5`) or an integer (`3`)? What is `-7 / 2` under integer division? Python's `//` rounds toward negative infinity and gives `-4`, while C rounds toward zero. A language reference must state the choice, because it is part of the **semantics**.
+
+Never implement a calculator by passing user text to Python's built-in `eval`. That executes arbitrary Python code, not just arithmetic. Parsing and evaluating the input yourself restricts it to exactly the language you defined.
+
+### A stack machine
+
+Postfix notation needs no parser, only a stack. Scan the tokens left to right. A number is pushed. An operator pops two values (the right operand first, then the left), applies the operation and pushes the result. At the end the stack holds exactly one value. For `3 4 + 2 *` the stack goes `[3]`, `[3, 4]`, `[7]`, `[7, 2]`, `[14]`.
+
+This is the idea behind **bytecode virtual machines**: a compiler walks the tree once and emits a linear list of instructions such as `PUSH 3`, `PUSH 4`, `ADD`, and a small loop executes them quickly. Tree walking and stack machines compute the same values; they differ in speed and in how easy they are to build.
+
+@example
+title: Evaluating a tree
+problem: Evaluate `("bin", "-", ("bin", "*", ("num", 6), ("num", 2)), ("neg", ("num", 3)))`.
+step: The root is a `bin` node with operator `-`. Evaluate its left child first.
+step: The left child is `6 * 2`. Both operands are numbers, so it evaluates to `12`.
+step: The right child is `("neg", ("num", 3))`, which evaluates to `-3`.
+step: Apply the root operator: `12 - (-3) = 15`.
+answer: `15`
+
+@example
+title: A stack machine trace
+problem: Evaluate the postfix tokens `["8", "3", "-", "2", "-"]`.
+step: Push 8 and 3: the stack is `[8, 3]`.
+step: `-` pops `b = 3` then `a = 8`, computes `a - b = 5` and pushes it: `[5]`.
+step: Push 2: `[5, 2]`. The second `-` pops `b = 2` and `a = 5` and pushes `3`.
+step: One value remains, so the result is `3`. The order of the pops matters: the right operand comes off first.
+answer: `3`
+
+@mistakes
+- Applying the operator to the operands in the wrong order in a stack machine (`b - a` instead of `a - b`).
+- Using Python's `eval` for the calculator, which runs arbitrary code from the user's input.
+- Evaluating a node without recursing into its children, or recursing with the wrong child indexes.
+- Not stating division semantics, so integer and float results are mixed unpredictably.
+
+@practice mc
+prompt: Why must an evaluator for `("bin", op, left, right)` evaluate both children before applying `op`?
+choice: Because Python evaluates the arguments of a function from right to left
+choice*: Because the value of the node depends on the values of its two operands
+choice: Because the parser has not yet checked precedence
+choice: Because operators are only allowed on numbers, never on expressions
+hint: What does the operator need as input?
+solution: The operator works on values, so each operand subtree must first be reduced to a value. This is a post-order traversal. Precedence has already been resolved by the shape of the tree.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+import operator
+
+def evaluate(node):
+    if node[0] == "num":
+        return node[1]
+    ops = {"+": operator.add, "/": operator.truediv}
+    return ops[node[1]](evaluate(node[2]), evaluate(node[3]))
+
+print(evaluate(("bin", "/", ("bin", "+", ("num", 3), ("num", 4)), ("num", 2))))
+```
+answer: 3.5
+check: run("import operator\n\ndef evaluate(node):\n    if node[0] == 'num':\n        return node[1]\n    ops = {'+': operator.add, '/': operator.truediv}\n    return ops[node[1]](evaluate(node[2]), evaluate(node[3]))\n\nprint(evaluate(('bin', '/', ('bin', '+', ('num', 3), ('num', 4)), ('num', 2))))\n")
+hint: Evaluate the inner sum first.
+solution: The left child is `3 + 4 = 7`, and `7 / 2` uses true division, so the result is the float `3.5`.
+
+@practice code
+prompt: Write `evaluate(node)` for AST nodes `("num", n)`, `("neg", child)` and `("bin", op, left, right)` with `op` one of `"+"`, `"-"`, `"*"`, `"/"`. `/` is true division (`7 / 2` is `3.5`). Division by zero should raise `ZeroDivisionError` (Python does this for you). Any other node kind raises `ValueError`.
+starter:
+```python
+def evaluate(node):
+    pass
+```
+tests:
+```python
+assert evaluate(("num", 4)) == 4
+assert evaluate(("neg", ("num", 4))) == -4
+t = ("bin", "+", ("num", 1), ("bin", "*", ("num", 2), ("num", 3)))
+assert evaluate(t) == 7
+t2 = ("bin", "-", ("bin", "-", ("num", 10), ("num", 4)), ("num", 3))
+assert evaluate(t2) == 3
+assert evaluate(("bin", "/", ("num", 7), ("num", 2))) == 3.5
+assert raises(ZeroDivisionError, evaluate,
+              ("bin", "/", ("num", 1), ("num", 0)))
+assert raises(ValueError, evaluate, ("var", "x"))
+```
+model:
+```python
+def evaluate(node):
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "neg":
+        return -evaluate(node[1])
+    if kind == "bin":
+        left = evaluate(node[2])
+        right = evaluate(node[3])
+        op = node[1]
+        if op == "+":
+            return left + right
+        if op == "-":
+            return left - right
+        if op == "*":
+            return left * right
+        if op == "/":
+            return left / right
+    raise ValueError(f"cannot evaluate {node!r}")
+```
+hint: Check `node[0]` to see which kind of node you have, and handle each kind in turn.
+hint: For `bin`, evaluate `node[2]` and `node[3]` first, then combine the two values using `node[1]`.
+solution: Recurse into the children and combine their values; numbers are the base case. Falling off the end of the function, for an unknown node kind, raises `ValueError`.
+
+@practice code
+prompt: Write `rpn_eval(tokens)` that evaluates a postfix expression given as a list of strings. Each token is either a string of digits (an integer) or one of `"+"`, `"-"`, `"*"`, `"/"`; `/` is true division. Use a stack: an operator pops the right operand and then the left operand. If an operator finds fewer than two values, or the final stack does not hold exactly one value, raise `ValueError`. Example: `rpn_eval(["3", "4", "+", "2", "*"])` is `14`.
+starter:
+```python
+def rpn_eval(tokens):
+    pass
+```
+tests:
+```python
+assert rpn_eval(["3", "4", "+", "2", "*"]) == 14
+assert rpn_eval(["8", "3", "-", "2", "-"]) == 3
+assert rpn_eval(["1", "2", "3", "*", "+"]) == 7
+assert rpn_eval(["6", "4", "/"]) == 1.5
+assert rpn_eval(["5"]) == 5
+assert raises(ValueError, rpn_eval, ["1", "+"])
+assert raises(ValueError, rpn_eval, ["1", "2"])
+assert raises(ValueError, rpn_eval, [])
+```
+model:
+```python
+def rpn_eval(tokens):
+    stack = []
+    for t in tokens:
+        if t in ("+", "-", "*", "/"):
+            if len(stack) < 2:
+                raise ValueError("missing operand")
+            b = stack.pop()
+            a = stack.pop()
+            if t == "+":
+                stack.append(a + b)
+            elif t == "-":
+                stack.append(a - b)
+            elif t == "*":
+                stack.append(a * b)
+            else:
+                stack.append(a / b)
+        else:
+            stack.append(int(t))
+    if len(stack) != 1:
+        raise ValueError("malformed expression")
+    return stack[0]
+```
+hint: Use a Python list as the stack, with `append` to push and `pop()` to pop.
+hint: Pop `b` first and then `a`, and apply the operator as `a op b`; check the stack size before popping and after the loop.
+solution: Push each number; for an operator pop `b` then `a` and push `a op b`. Check for too few operands during the scan and for a final stack size other than 1, and raise `ValueError` in both cases.
+
+@practice num
+prompt: What number does the expression `2 - 3 * -4` evaluate to, when `*` binds tighter than `-` and unary minus applies to the number that follows it?
+answer: 14
+check: int(run("print(2 - 3 * -4)\n"))
+hint: Do the multiplication first, remembering that the second operand is negative.
+solution: `3 * -4 = -12`, and `2 - (-12) = 14`.
+
+@quiz code
+prompt: Write `simplify(node)` for nodes `("num", n)`, `("var", name)`, `("neg", child)` and `("bin", op, left, right)`. It returns a new tree in which constant subexpressions are folded: simplify the children first; a `neg` of a number becomes `("num", -n)`; a `bin` whose simplified children are both numbers and whose operator is `+`, `-` or `*` becomes `("num", value)`. Leave `/` nodes and anything containing a `var` unfolded (but still with simplified children). Example: `x + 2 * 3` becomes `x + 6`.
+starter:
+```python
+def simplify(node):
+    pass
+```
+tests:
+```python
+assert simplify(("num", 3)) == ("num", 3)
+assert simplify(("var", "x")) == ("var", "x")
+t = ("bin", "+", ("var", "x"), ("bin", "*", ("num", 2), ("num", 3)))
+assert simplify(t) == ("bin", "+", ("var", "x"), ("num", 6))
+assert simplify(("neg", ("num", 5))) == ("num", -5)
+assert simplify(("neg", ("var", "y"))) == ("neg", ("var", "y"))
+d = ("bin", "/", ("bin", "+", ("num", 1), ("num", 1)), ("num", 2))
+assert simplify(d) == ("bin", "/", ("num", 2), ("num", 2))
+t2 = ("bin", "-", ("num", 10), ("bin", "-", ("num", 4), ("num", 3)))
+assert simplify(t2) == ("num", 9)
+```
+model:
+```python
+def simplify(node):
+    kind = node[0]
+    if kind in ("num", "var"):
+        return node
+    if kind == "neg":
+        child = simplify(node[1])
+        if child[0] == "num":
+            return ("num", -child[1])
+        return ("neg", child)
+    op = node[1]
+    left = simplify(node[2])
+    right = simplify(node[3])
+    if op != "/" and left[0] == "num" and right[0] == "num":
+        a, b = left[1], right[1]
+        if op == "+":
+            return ("num", a + b)
+        if op == "-":
+            return ("num", a - b)
+        return ("num", a * b)
+    return ("bin", op, left, right)
+```
+hint: Simplify the children first (post-order), then look at what they became.
+hint: A node can be folded only when its simplified children are both `("num", ...)` nodes and its operator is not `/`.
+solution: Recurse into the children, then fold when the simplified children are numbers. Because folding happens bottom-up, `10 - (4 - 3)` first becomes `10 - 1` and then `9`.
+
+@quiz mc
+prompt: A tree-walking evaluator runs on an AST with $n$ nodes, where each node is visited once and does a constant amount of work other than recursing. What is its time complexity?
+choice: $O(\log n)$
+choice*: $O(n)$
+choice: $O(n^2)$
+choice: $O(2^n)$
+hint: Count how many times each node is visited.
+solution: Each node is evaluated exactly once and does constant work besides its recursive calls, so the total is $O(n)$.

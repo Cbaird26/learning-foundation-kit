@@ -1,0 +1,363 @@
+@lesson
+title: Composition over inheritance
+summary: Replace brittle class hierarchies with objects that are assembled from small, swappable parts, and know when inheritance is still the right tool.
+objective: Explain why inheritance couples a subclass tightly to its parent and where it breaks down.
+objective: Refactor a hierarchy into composition with delegation and injected strategies.
+objective: Decide when an inheritance relationship is appropriate.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 13 on dependency injection and bootstrapping (composing objects from parts); also look up "composition over inheritance" and "fragile base class problem".
+@article
+Inheritance is the first reuse tool most of us learn, and in a first job it is the one that most often gets teams into trouble. This week's principle is a default, not a ban: **prefer composition over inheritance**. Build an object by giving it other objects that do parts of its job (**has-a**), instead of making it a specialization of a parent class (**is-a**).
+
+### What goes wrong with inheritance
+
+**Tight coupling.** A subclass depends on the parent's implementation, not only its interface. The parent cannot change how its methods call each other without possibly breaking every subclass. This is the **fragile base class problem**:
+
+```python
+class Bag:
+    def __init__(self):
+        self.items = []
+
+    def add(self, x):
+        self.items.append(x)
+
+    def add_all(self, xs):
+        for x in xs:
+            self.add(x)
+
+class CountingBag(Bag):
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    def add(self, x):
+        self.count += 1
+        super().add(x)
+
+    def add_all(self, xs):
+        self.count += len(xs)
+        super().add_all(xs)
+```
+
+Adding three items with `add_all` counts six, because `Bag.add_all` calls `self.add`, which the subclass overrides. The author of `CountingBag` had to know a private fact about `Bag`. If `Bag` is later changed to not call `add`, the count suddenly becomes right, and nothing flagged it.
+
+**Combinatorial explosion.** Imagine `Employee` with subclasses `Manager` and `Contractor`. Product asks for a contractor who manages: `ManagerContractor`. Then "paid weekly" and "paid monthly" variants. Each independent trait multiplies the number of classes. Traits that vary independently do not belong on one hierarchy axis.
+
+**Inflexibility.** The parent is chosen when the code is written. You cannot change an object's behavior at runtime, for example switching a game character from walking to flying.
+
+**Substitutability traps.** Subclasses inherit every public method, including ones that make no sense (last week's `Stack(list)`).
+
+### Composition and delegation
+
+With composition, the object holds a reference to a collaborator and **delegates** to it:
+
+```python
+class CountingBag:
+    def __init__(self):
+        self._bag = Bag()
+        self.count = 0
+
+    def add(self, x):
+        self.count += 1
+        self._bag.add(x)
+
+    def add_all(self, xs):
+        for x in xs:
+            self.add(x)
+```
+
+Now `CountingBag` controls exactly which calls happen and exposes only the methods it chooses. The count is correct no matter how `Bag` is written internally.
+
+### Strategies: composing behavior
+
+Pull out the part that varies and inject it. A character that can walk or fly:
+
+```python
+class Walk:
+    def move(self, pos):
+        return pos + 1
+
+class Fly:
+    def move(self, pos):
+        return pos + 3
+
+class Creature:
+    def __init__(self, mover):
+        self.mover = mover
+        self.pos = 0
+
+    def step(self):
+        self.pos = self.mover.move(self.pos)
+```
+
+New behaviors are new small classes (or even plain functions), they are testable alone, and `Creature` can swap movers at runtime with `creature.mover = Fly()`. For the employee example, make pay and role independent parts: `Employee(name, role, pay_policy)` instead of a class for every combination. This is the **Strategy** pattern, which you will meet formally in week 6.
+
+### So when is inheritance right?
+
+Inheritance is appropriate when:
+
+- the relationship is a true, stable **is-a** and the subclass honors the parent's whole contract (Liskov), and
+- the parent is **designed for extension**: it documents which methods may be overridden, or it is an abstract base class whose only job is to define an interface and a template.
+
+Typical good cases: implementing an abstract base class or `Protocol`; framework classes meant to be subclassed (`Exception` hierarchies, `unittest.TestCase`, an admin view class); and small, shallow hierarchies you control entirely. A second guideline: a mixin that adds one narrow capability is acceptable, but a deep chain of mixins that rely on each other's attributes is composition done badly.
+
+### Refactoring a hierarchy: the recipe
+
+1. List what varies independently (pay type, role, notification channel).
+2. For each axis, define the smallest interface (one or two methods).
+3. Create one small class per variant.
+4. Give the main class those parts through its constructor.
+5. Delete the subclasses and move their tests onto the parts.
+
+@example
+title: Fixing the double counting
+problem: `CountingBag` (a subclass of `Bag`) reports `count == 6` after `add_all([1, 2, 3])`. Refactor so it reports 3, whatever `Bag` does inside.
+step: Understand the cause. `Bag.add_all` calls `self.add`, which resolves to the subclass's override, so each item is counted by `add` and counted again by `add_all`.
+step: Stop inheriting. `CountingBag` holds a `Bag` in a private attribute: `self._bag = Bag()`.
+step: Make `add` count and delegate: `self.count += 1` then `self._bag.add(x)`.
+step: Make `add_all` loop over its own `add`, so the counting happens in exactly one place:
+
+```python
+def add_all(self, xs):
+    for x in xs:
+        self.add(x)
+```
+step: After `add_all([1, 2, 3])`, `add` ran three times and `count` is 3. The behavior no longer depends on how `Bag` implements `add_all`.
+answer: Use a private `Bag` and delegate; count only in `add`.
+
+@example
+title: Replacing a subclass explosion with parts
+problem: You have `Employee`, `Manager`, `Contractor` and `ManagerContractor`, and each pay type needs its own variant. Redesign.
+step: Identify the independent axes: the **role** (title, permissions) and the **pay policy** (how monthly pay is computed).
+step: Give pay a tiny interface, `monthly(hours)`, with two implementations, `Salaried(amount)` and `Hourly(rate)`.
+step: Give the employee both parts:
+
+```python
+class Employee:
+    def __init__(self, name, role, pay):
+        self.name = name
+        self.role = role
+        self._pay = pay
+
+    def monthly_pay(self, hours):
+        return self._pay.monthly(hours)
+```
+step: Now a "manager paid hourly" is `Employee("Ana", "manager", Hourly(40))`, with no new class. Adding a pay type adds one class; adding a role adds one string or object.
+step: Replace the old four classes and their tests by tests of `Salaried`, `Hourly` and `Employee`.
+answer: Compose `role` and `pay` into one `Employee`.
+
+@mistakes
+- Using inheritance only to reuse a few lines, then discovering you inherit methods that break your invariants. Delegate to a private helper instead.
+- Making wrappers that expose every method of the inner object (or using `__getattr__` to forward everything), which recreates the inheritance coupling without the checks.
+- Overriding a method and calling `super()` without knowing which other parent methods call it (the fragile base class problem).
+- Banning inheritance outright. Abstract base classes, `Protocol` implementations and framework hooks are fine uses.
+
+@practice mc
+prompt: In which situation is subclassing the best choice?
+choice: A `Stack` that extends `list` to reuse `append` and `pop`
+choice: A `ManagerContractor` that extends both `Manager` and `Contractor`
+choice*: A class `PaymentError` that extends `Exception`, so callers can catch it with `except`
+choice: A `Car` that extends `Engine` so it can call `start()` directly
+hint: Look for a stable is-a relationship that the framework is designed around.
+solution: A custom exception that extends `Exception` is a true is-a relationship and the exception machinery is designed for it. `Stack(list)` exposes methods that break the stack contract, `Car(Engine)` is a has-a relationship, and the combined manager-contractor class is the start of a hierarchy explosion.
+
+@practice code
+prompt: Write two strategy classes, `Walk` and `Fly`, each with `move(pos)` that returns the new position (`Walk` adds 1, `Fly` adds 3). Then write a class `Creature(mover)` that starts at position 0, has `step()` (moves using the current mover) and lets callers replace the mover through an attribute named `mover`.
+starter:
+```python
+class Creature:
+    pass
+```
+tests:
+```python
+c = Creature(Walk())
+c.step()
+c.step()
+assert c.pos == 2
+c.mover = Fly()
+c.step()
+assert c.pos == 5
+d = Creature(Fly())
+d.step()
+assert d.pos == 3
+assert c.pos == 5
+
+class Teleport:
+    def move(self, pos):
+        return 100
+
+e = Creature(Teleport())
+e.step()
+assert e.pos == 100
+```
+model:
+```python
+class Walk:
+    def move(self, pos):
+        return pos + 1
+
+class Fly:
+    def move(self, pos):
+        return pos + 3
+
+class Creature:
+    def __init__(self, mover):
+        self.mover = mover
+        self.pos = 0
+
+    def step(self):
+        self.pos = self.mover.move(self.pos)
+```
+hint: `Creature` should hold its mover and ask it for the next position.
+solution: The behavior that varies lives in `Walk` and `Fly`; `Creature` just delegates to whichever mover it holds. Replacing the `mover` attribute changes behavior at runtime, and the `Teleport` class in the tests works with no change to `Creature`.
+
+@practice text
+prompt: What does this program print? Type the number.
+
+```python
+class Bag:
+    def __init__(self):
+        self.items = []
+
+    def add(self, x):
+        self.items.append(x)
+
+    def add_all(self, xs):
+        for x in xs:
+            self.add(x)
+
+class CountingBag(Bag):
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    def add(self, x):
+        self.count += 1
+        super().add(x)
+
+    def add_all(self, xs):
+        self.count += len(xs)
+        super().add_all(xs)
+
+b = CountingBag()
+b.add_all([1, 2, 3])
+print(b.count)
+```
+answer: 6
+check: run("class Bag:\n    def __init__(self):\n        self.items = []\n\n    def add(self, x):\n        self.items.append(x)\n\n    def add_all(self, xs):\n        for x in xs:\n            self.add(x)\n\nclass CountingBag(Bag):\n    def __init__(self):\n        super().__init__()\n        self.count = 0\n\n    def add(self, x):\n        self.count += 1\n        super().add(x)\n\n    def add_all(self, xs):\n        self.count += len(xs)\n        super().add_all(xs)\n\nb = CountingBag()\nb.add_all([1, 2, 3])\nprint(b.count)\n")
+hint: `super().add_all(xs)` runs `Bag.add_all`, and inside it `self.add` resolves to the subclass.
+solution: `CountingBag.add_all` adds 3 to the count, then `Bag.add_all` calls `self.add` three times, which is the overridden method and adds 1 each time. The total is 6. The subclass depends on a hidden detail of its parent, the fragile base class problem.
+
+@practice code
+prompt: Rewrite `CountingBag` with composition. It must not subclass `Bag`. It holds a private `Bag`, has `add(x)`, `add_all(xs)`, a `count` attribute that counts each item exactly once, and `contents()` that returns a new list of the items added so far.
+starter:
+```python
+class Bag:
+    def __init__(self):
+        self.items = []
+
+    def add(self, x):
+        self.items.append(x)
+
+class CountingBag:
+    pass
+```
+tests:
+```python
+b = CountingBag()
+b.add_all([1, 2, 3])
+assert b.count == 3
+b.add(4)
+assert b.count == 4
+assert b.contents() == [1, 2, 3, 4]
+b.contents().append(99)
+assert b.contents() == [1, 2, 3, 4]
+assert CountingBag().count == 0
+assert not issubclass(CountingBag, Bag)
+```
+model:
+```python
+class Bag:
+    def __init__(self):
+        self.items = []
+
+    def add(self, x):
+        self.items.append(x)
+
+class CountingBag:
+    def __init__(self):
+        self._bag = Bag()
+        self.count = 0
+
+    def add(self, x):
+        self.count += 1
+        self._bag.add(x)
+
+    def add_all(self, xs):
+        for x in xs:
+            self.add(x)
+
+    def contents(self):
+        return list(self._bag.items)
+```
+hint: Keep a `Bag` in `self._bag` and call its `add`.
+hint: Count in `add` only, and make `add_all` call `self.add` for each item.
+solution: Counting happens in exactly one place (`add`), and `add_all` reuses it, so each item is counted once. `contents()` returns a copy so callers cannot change the inner bag.
+
+@practice self
+prompt: This hierarchy came from a real codebase pattern. Refactor it to use composition. Describe the parts (classes and their methods), show the constructor of the main class, and explain how you would create "a contractor who is also a manager paid weekly".
+
+```python
+class Employee: ...
+class Manager(Employee): ...
+class Contractor(Employee): ...
+class ManagerContractor(Manager, Contractor): ...
+class WeeklyPaidManager(Manager): ...
+class WeeklyPaidContractor(Contractor): ...
+class WeeklyPaidManagerContractor(ManagerContractor): ...
+```
+hint: List the traits that vary independently, then give each its own small class.
+solution: The independent axes are the role (employee, manager), the contract type (permanent, contractor) and the pay schedule (monthly, weekly). Give each its own small interface and variants: `PaySchedule` with `monthly`/`weekly` implementations offering `periods_per_year`, `ContractTerms` with `Permanent`/`Contractor` (notice period, benefits), and a role with `Staff`/`Manager` (permissions, reports). One class composes them: `class Employee: def __init__(self, name, role, contract, schedule): ...`. The employee delegates `can_approve()` to `role`, `benefits()` to `contract` and `next_payday(today)` to `schedule`. A contractor who is also a manager paid weekly is `Employee("Ana", Manager(), Contractor(), Weekly())`: no new class. The seven subclasses disappear, each trait is tested alone, and a new schedule (biweekly) is one new class.
+rubric: Identifies at least two independent axes of variation that caused the class explosion (role, contract, pay schedule).
+rubric: Defines a small interface and variants for each axis, and has the main class receive them in its constructor.
+rubric: Shows the requested combination as an object assembled from parts, with no new subclass, and says what is deleted.
+
+@quiz code
+prompt: Write a class `Logger(formatter, sink)`. Its `log(message)` method calls `formatter(message)` to produce a line and passes the line to `sink(line)`. Both are plain callables passed to the constructor. `Logger` must not print or open files itself.
+starter:
+```python
+class Logger:
+    pass
+```
+tests:
+```python
+lines = []
+log = Logger(lambda m: "[info] " + m, lines.append)
+log.log("started")
+log.log("done")
+assert lines == ["[info] started", "[info] done"]
+other = []
+Logger(str.upper, other.append).log("quiet")
+assert other == ["QUIET"]
+assert len(lines) == 2
+```
+model:
+```python
+class Logger:
+    def __init__(self, formatter, sink):
+        self._formatter = formatter
+        self._sink = sink
+
+    def log(self, message):
+        self._sink(self._formatter(message))
+```
+hint: Store both callables in the constructor and combine them in `log`.
+solution: `Logger` is assembled from two parts, so a new format or destination needs no subclass. Compare the inheritance alternative, `JsonFileLogger`, `TextConsoleLogger` and so on, which multiplies classes for every pairing.
+
+@quiz mc
+prompt: Which is the strongest reason to prefer composition when objects of one class need different behavior on one axis?
+choice: Composition always runs faster than inheritance
+choice*: The behavior can be chosen and swapped at runtime, and the parts can be tested in isolation
+choice: Composition removes the need for interfaces
+choice: Python does not allow inheritance from more than one class
+hint: Think about what a constructor argument can do that a base class cannot.
+solution: Injected parts can differ per object and change while the program runs, and each part is a small unit to test. Composition has no inherent speed advantage, still benefits from a clear interface, and Python does allow multiple inheritance.

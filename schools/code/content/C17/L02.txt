@@ -1,0 +1,222 @@
+@lesson
+title: Memory safety: buffer overflows and defenses
+summary: Explain how out-of-bounds writes corrupt memory in C, recognize the bug pattern in code, and describe the language, compiler and operating-system defenses.
+objective: Describe the layout of a stack frame and how an unchecked copy can overwrite adjacent data.
+objective: Recognize unsafe C patterns and replace them with bounded versions.
+objective: Explain stack canaries, non-executable memory, ASLR and memory-safe languages, and what each does and does not prevent.
+reading: UC Berkeley CS 161 textbook, the chapters on memory safety vulnerabilities and on defenses (look up "buffer overflow", "stack canaries" and "ASLR").
+@article
+Languages such as C and C++ let a program read and write any address it can name, and they do not check array bounds. A **memory-safety bug** is any access outside the object a pointer is meant to refer to. These bugs are consequential because the damage is not limited to one wrong answer: the program's own control data lives next to its variables.
+
+### The stack frame
+
+Each function call gets a **stack frame** holding its local variables, saved registers and the **return address**, which says where to continue when the function returns. On common architectures the stack grows toward lower addresses, while arrays are filled toward higher addresses, so an array written past its end runs toward the saved registers and return address of its own frame.
+
+```text
+higher addresses
+  | return address       |
+  | saved frame pointer  |
+  | char buf[16]         |   writes to buf[16], buf[17], ... go upward
+lower addresses
+```
+
+A **buffer overflow** is a write past the end of such a buffer. Since 1988 this has been a leading cause of serious vulnerabilities, because overwritten control data can change what the program does. In C the behavior is **undefined**, so a compiler may assume it never happens.
+
+### The pattern, and its fix
+
+Here is the classic pattern next to a bounded version. The first function is shown only so you can recognize it; never use it.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+void greet_bad(const char *name) {      /* UNSAFE: no length check */
+    char buf[16];
+    strcpy(buf, name);                  /* writes strlen(name)+1 bytes */
+    printf("Hello, %s\n", buf);
+}
+
+void greet_ok(const char *name) {       /* bounded */
+    char buf[16];
+    snprintf(buf, sizeof buf, "%s", name);   /* never writes > 16 bytes */
+    printf("Hello, %s\n", buf);
+}
+```
+
+`snprintf(buf, n, ...)` writes at most `n` bytes including the terminating NUL, and always terminates when `n > 0`. Beware `strncpy`: it does not add a NUL when the source is too long. Other classic sources of bugs are `gets` (removed from C11), `sprintf` and `scanf("%s")` without a width. Related bugs include **integer overflow** in a size computation (`count * size` wraps and a too-small buffer is allocated), **use-after-free**, **double free** and **format-string** bugs.
+
+### Defenses
+
+No single defense is complete, which is defense in depth at work.
+
+- **Memory-safe languages** (Python, Java, Go, Rust, and others) check bounds or prove them at compile time. This removes the whole class, except in explicitly unsafe code. Moving new code to such languages is the most effective fix.
+- **Bounds-checked library use and static analysis**: safer APIs, compiler warnings, sanitizers (AddressSanitizer) and fuzzing find bugs during development.
+- **Stack canaries**: the compiler places a secret value between the buffer and the return address and checks it before returning. A linear overflow changes the canary and the program aborts instead of returning.
+- **Non-executable memory** (NX or DEP, "write xor execute"): data pages cannot be run as code, so injected bytes cannot be executed. It does not stop attacks that reuse code already present, such as return-oriented programming.
+- **ASLR** (address space layout randomization): the stack, heap and libraries load at random addresses, so an attacker cannot rely on knowing where things are. An information leak can undo it.
+- **Control-flow integrity** and hardware features limit where jumps may go.
+
+Each defense raises the cost of exploitation; none replaces writing correct code.
+
+### A toy model you can run
+
+The Python below models memory as a list of bytes, with a buffer followed by a canary. It lets you study checks safely: nothing here touches real memory.
+
+```python
+mem = [0] * 8 + [0xDE, 0xAD, 0xBE, 0xEF]   # 8-byte buffer, 4-byte canary
+```
+
+@example
+title: How many bytes spill over?
+problem: A function has `char buf[16]` and copies a 24-character string with `strcpy`. How many bytes are written past the end of the buffer?
+step: `strcpy` copies the characters plus the terminating NUL, so it writes 24 + 1 = 25 bytes.
+step: The buffer holds 16, so 25 - 16 = 9 bytes land outside it.
+step: Those 9 bytes overwrite whatever is adjacent: possibly other locals, a canary, a saved frame pointer. A canary check would detect the changed canary before the function returns.
+answer: 9
+@example
+title: Why the multiplication is checked
+problem: A program computes `total = count * size` in 32-bit unsigned arithmetic with `count = 65536` and `size = 65537`, allocates `total` bytes and then copies `count` records of `size` bytes. What goes wrong?
+step: The true product is 65536 × 65537 = 4295032832, above $2^{32} - 1 = 4294967295$.
+step: 32-bit unsigned arithmetic wraps modulo $2^{32} = 4294967296$, so `total` is 4295032832 - 4294967296 = 65536.
+step: The allocation is 65536 bytes, yet the copy writes over four billion bytes: a heap overflow caused by an unchecked size computation.
+step: The fix is to check before multiplying (for example, reject when `size != 0 && count > UINT32_MAX / size`) or to use checked-arithmetic helpers.
+answer: The product wraps to 65536, so a tiny buffer receives a huge copy.
+@mistakes
+- Using `strncpy` as if it were a safe `strcpy`: it can leave the destination without a terminating NUL.
+- Passing the wrong size to a bounded function, such as `sizeof(ptr)` (the pointer's size) instead of the buffer's size.
+- Believing one defense is enough: a canary does not stop an out-of-bounds write that skips over it, and ASLR does not help if an address leaks.
+- Checking a length after the multiplication that already overflowed, instead of before it.
+@practice mc
+prompt: Which statement about `snprintf(buf, sizeof buf, "%s", s)` is correct when `buf` is a 16-byte array and `s` is longer than 15 characters?
+choice*: It writes at most 15 characters of `s` plus a terminating NUL byte.
+choice: It writes all of `s`, then a NUL, overflowing the array.
+choice: It writes 16 characters of `s` and no NUL.
+choice: It aborts the program with an error.
+hint: The size argument counts the terminating NUL.
+solution: `snprintf` truncates so that the total written, including the NUL, never exceeds the size given. That is 15 characters plus a NUL here.
+@practice text
+prompt: What does this C program print? Type the output exactly.
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    char buf[8];
+    snprintf(buf, sizeof buf, "%s", "abcdefghij");
+    printf("%s\n", buf);
+    return 0;
+}
+```
+answer: abcdefg
+check: run_c('#include <stdio.h>\n\nint main(void) {\n    char buf[8];\n    snprintf(buf, sizeof buf, "%s", "abcdefghij");\n    printf("%s\\n", buf);\n    return 0;\n}\n').strip()
+hint: The buffer has 8 bytes, one of which must hold the NUL.
+solution: At most 7 characters fit alongside the terminating NUL, so the output is the first seven characters, `abcdefg`.
+@practice code
+prompt: The model memory is a list of ints (bytes). Write two functions. `unchecked_copy(mem, start, data)` writes the ints of the list `data` into `mem` beginning at index `start` with no check against any buffer size (like `strcpy`), and raises `IndexError` only if the write would go past the end of the whole list `mem`. `checked_copy(mem, start, size, data)` copies only if `len(data) <= size`; otherwise it raises `ValueError` and leaves `mem` unchanged.
+starter:
+```python
+def unchecked_copy(mem, start, data):
+    pass
+
+
+def checked_copy(mem, start, size, data):
+    pass
+```
+tests:
+```python
+m = [0] * 6
+unchecked_copy(m, 1, [7, 8])
+assert m == [0, 7, 8, 0, 0, 0]
+m = [0] * 4
+assert raises(IndexError, unchecked_copy, m, 2, [1, 2, 3])
+m = [0] * 6
+checked_copy(m, 0, 4, [1, 2, 3, 4])
+assert m == [1, 2, 3, 4, 0, 0]
+m = [9] * 6
+assert raises(ValueError, checked_copy, m, 0, 4, [1, 2, 3, 4, 5])
+assert m == [9] * 6
+```
+model:
+```python
+def unchecked_copy(mem, start, data):
+    if start + len(data) > len(mem):
+        raise IndexError("write past end of memory")
+    for i, byte in enumerate(data):
+        mem[start + i] = byte
+
+
+def checked_copy(mem, start, size, data):
+    if len(data) > size:
+        raise ValueError("data larger than buffer")
+    unchecked_copy(mem, start, data)
+```
+hint: A loop over `enumerate(data)` writes each byte at `start + i`.
+hint: In `unchecked_copy`, check against `len(mem)` before writing anything, so a failed call changes nothing.
+solution: `unchecked_copy` writes every byte regardless of any buffer, which is exactly why it is dangerous. `checked_copy` compares the data length with the buffer size first and rejects before modifying memory.
+@practice code
+prompt: In the toy model, memory is `[buffer bytes..., canary bytes...]`. Write `canary_intact(mem, buf_size, canary)` that returns `True` when the bytes `mem[buf_size:buf_size + len(canary)]` equal the list `canary`, and `False` otherwise. This is the check a compiler inserts before a function returns.
+starter:
+```python
+def canary_intact(mem, buf_size, canary):
+    pass
+```
+tests:
+```python
+canary = [0xDE, 0xAD, 0xBE, 0xEF]
+mem = [0] * 8 + canary
+assert canary_intact(mem, 8, canary) is True
+mem[3] = 65
+assert canary_intact(mem, 8, canary) is True
+mem[8] = 0x41
+assert canary_intact(mem, 8, canary) is False
+mem = [1] * 8 + canary[:3]
+assert canary_intact(mem, 8, canary) is False
+```
+model:
+```python
+def canary_intact(mem, buf_size, canary):
+    return mem[buf_size:buf_size + len(canary)] == canary
+```
+hint: Slicing a list gives a list that you can compare with `==`.
+hint: A shorter slice (memory ended early) is simply not equal.
+solution: Slice the canary region out of memory and compare it with the expected canary. A write that stays inside the buffer leaves it intact; a write that reaches the canary changes it and the check fails.
+@practice self
+prompt: Threat-model this supplied application. "QuickNotes" is a small service. A mobile app sends notes over HTTPS to an API server written in C, which parses the note title into a fixed 64-byte buffer, stores notes in a database and lets users share a note by a link. The server runs as the system administrator account. List the assets, two trust boundaries, three STRIDE threats (naming the memory-safety one) and a mitigation for each, then recommend two changes to the design.
+hint: Ask what an attacker controls (the request) and what the C parser does with the title.
+solution: Assets: users' note contents, account credentials, the server's integrity. Boundaries: mobile app/internet to API server (all fields untrusted), API server to database. Threats: (1) Tampering or Elevation of privilege: an oversized title overflows the 64-byte buffer in the C parser; mitigation is bounds-checked parsing, a length limit, sanitizers and fuzzing, and ideally a memory-safe language for the parser. (2) Information disclosure: guessable share links; mitigation is long random link tokens and expiry. (3) Denial of service: huge or numerous requests; mitigation is size limits and rate limiting. Design changes: run the server as an unprivileged account (least privilege) so a compromise is contained, and separate the parsing component into a sandboxed process.
+rubric: Names the assets and two trust boundaries correctly.
+rubric: Identifies the fixed-size buffer as a memory-safety risk and labels it with a correct STRIDE category.
+rubric: Mitigations are specific (length limits, bounded functions, memory-safe language, unprivileged account), not generic.
+@quiz code
+prompt: Simulate the size check from the lesson. Write `checked_total(count, size)` that models 32-bit unsigned arithmetic: if `count * size` is greater than `2**32 - 1` raise `ValueError`; otherwise return the product. Both arguments are non-negative integers.
+starter:
+```python
+def checked_total(count, size):
+    pass
+```
+tests:
+```python
+assert checked_total(10, 20) == 200
+assert checked_total(0, 5) == 0
+assert checked_total(65535, 65537) == 4294967295
+assert raises(ValueError, checked_total, 65536, 65537)
+assert raises(ValueError, checked_total, 2**32, 2)
+```
+model:
+```python
+def checked_total(count, size):
+    total = count * size
+    if total > 2**32 - 1:
+        raise ValueError("size computation would overflow")
+    return total
+```
+hint: Python integers do not wrap, so compute the exact product and compare it with the 32-bit limit.
+solution: Compute the exact product (Python never overflows) and reject anything above $2^{32}-1$. In C you must check before multiplying, because the real product would already have wrapped.
+@quiz mc
+prompt: A system uses non-executable stack memory (NX) and ASLR. Which attack remains possible in principle, which is why defense in depth and fixing the bug still matter?
+choice*: Reusing code already in memory, if an address is leaked, by redirecting control flow with a corrupted return address
+choice: Running attacker-supplied bytes directly from the stack
+choice: Guessing the exact address of a library, which ASLR makes the same on every run
+choice: Overflowing the buffer, which NX makes impossible
+hint: NX only controls what can be executed, not what can be written or which existing code can be called.
+solution: NX blocks executing injected data and ASLR hides addresses, but neither removes the overflow. If the layout leaks, the overflow can still redirect control into code that is already present. Removing the bug, or using a memory-safe language, closes the hole.

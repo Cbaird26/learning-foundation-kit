@@ -1,0 +1,271 @@
+@lesson
+title: Shortest paths: Dijkstra's algorithm and Bellman–Ford
+summary: Compute single-source shortest paths with Dijkstra's algorithm (non-negative weights) and the Bellman–Ford algorithm (negative weights allowed), and know which to use.
+objective: Define shortest-path distance and the relaxation operation.
+objective: Implement Dijkstra's algorithm with a binary heap and state its running time and correctness argument.
+objective: Implement Bellman–Ford, detect negative cycles, and explain why Dijkstra fails with negative edges.
+reading: Erickson, Algorithms, the chapter on shortest paths (Dijkstra's algorithm and the Bellman–Ford algorithm).
+
+@article
+In a weighted directed graph, the **weight** of a path is the sum of its edge weights, and $\delta(s, v)$ is the minimum weight of a path from $s$ to $v$ ($\infty$ if there is none). The **single-source shortest-path** problem asks for $\delta(s, v)$ for every $v$. With unit weights, BFS suffices; with arbitrary weights we need more.
+
+### Relaxation
+
+Every algorithm here keeps an estimate `dist[v]` that is always the weight of some real path from $s$ (or $\infty$), so it never goes below $\delta(s, v)$. To **relax** an edge $(u, v)$ of weight $w$:
+
+```text
+if dist[u] + w < dist[v]:
+    dist[v] = dist[u] + w
+```
+
+Algorithms differ only in the order in which they relax edges. The basic fact is the **triangle inequality**: $\delta(s,v) \le \delta(s,u) + w(u,v)$, and if $u$ is on a shortest path to $v$ with $\text{dist}[u] = \delta(s,u)$, relaxing $(u,v)$ makes $\text{dist}[v] = \delta(s,v)$.
+
+### Dijkstra's algorithm (non-negative weights)
+
+Keep a **min-heap** of candidate vertices keyed by `dist`. Repeatedly extract the vertex $u$ with the smallest estimate, declare it **final**, and relax its outgoing edges.
+
+```python
+import heapq
+
+def dijkstra(graph, s):
+    """graph maps each vertex to a list of (neighbor, weight) pairs."""
+    dist = {s: 0}
+    heap = [(0, s)]
+    done = set()
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in done:
+            continue              # stale heap entry
+        done.add(u)
+        for v, w in graph[u]:
+            nd = d + w
+            if v not in dist or nd < dist[v]:
+                dist[v] = nd
+                heapq.heappush(heap, (nd, v))
+    return dist
+```
+
+Python's `heapq` has no decrease-key operation, so we push a new entry whenever an estimate improves and skip outdated entries when they are popped (**lazy deletion**). The heap then holds at most $E$ entries, each pushed and popped once at cost $O(\log E) = O(\log V)$, so the total time is $O((V + E)\log V)$, which is $O(E \log V)$ when every vertex is reachable. A binary heap is the standard choice; Fibonacci heaps give $O(E + V\log V)$ in theory.
+
+**Why it is correct.** Claim: when $u$ is extracted, $\text{dist}[u] = \delta(s, u)$. Suppose not, and let $u$ be the first vertex for which it fails. Take a shortest path to $u$ and let $y$ be the first vertex on it that has not yet been extracted, with predecessor $x$ already extracted. Since $x$ was correct and $(x, y)$ was relaxed, $\text{dist}[y] = \delta(s, y)$. Weights are non-negative, so $\delta(s,y) \le \delta(s,u) < \text{dist}[u]$ (if $y = u$ this is already a contradiction). But then $y$ would have been extracted before $u$, a contradiction. **Non-negative weights are essential**: with a negative edge, a vertex that was declared final can still be improved later.
+
+### Bellman–Ford (negative weights allowed)
+
+Relax **every** edge, and repeat $V - 1$ times:
+
+```text
+repeat V - 1 times:
+    for each edge (u, v, w):
+        relax (u, v)
+```
+
+After round $i$, `dist[v]` is at most the weight of the shortest path to $v$ that uses at most $i$ edges (induction on $i$). A shortest path without repeated vertices has at most $V - 1$ edges, so $V - 1$ rounds suffice when there is no negative cycle. A further round that still improves some distance proves that a **negative cycle** (total weight below 0) is reachable from $s$; then shortest paths are not defined for the vertices it can reach. The time is $\Theta(VE)$. Stopping early when a round changes nothing helps in practice.
+
+### Choosing
+
+| Situation | Algorithm | Time |
+|---|---|---|
+| Unit weights | BFS | $\Theta(V + E)$ |
+| Non-negative weights | Dijkstra with a binary heap | $O((V+E)\log V)$ |
+| DAG, any weights | relax edges in topological order | $\Theta(V + E)$ |
+| Negative edges | Bellman–Ford | $\Theta(VE)$ |
+
+@example
+title: Tracing Dijkstra
+problem: Run Dijkstra from $S$ on the edges $S \to A\ (7)$, $S \to B\ (2)$, $B \to A\ (3)$, $A \to C\ (1)$, $B \to C\ (8)$, $C \to T\ (2)$, $A \to T\ (9)$.
+step: Extract $S$ (distance 0): relax to get $A = 7$ and $B = 2$.
+step: Extract $B$ (2): relax $B \to A$ to get $\min(7, 5) = 5$ and $B \to C$ to get $10$.
+step: Extract $A$ (5): relax $A \to C$ to get $\min(10, 6) = 6$ and $A \to T$ to get $14$. The old heap entry $(7, A)$ is now stale.
+step: Extract $C$ (6): relax $C \to T$ to get $\min(14, 8) = 8$. Then the stale entries are skipped, and $T$ is extracted with distance 8.
+answer: $S = 0$, $B = 2$, $A = 5$, $C = 6$, $T = 8$.
+
+@example
+title: Bellman–Ford with a negative edge
+problem: Edges in this order: $(s, a, 4)$, $(s, b, 5)$, $(b, a, -3)$. Find the distances from $s$.
+step: Start with $\text{dist}[s] = 0$ and $\infty$ elsewhere.
+step: Round 1: relax $(s,a,4)$ to get $a = 4$; relax $(s,b,5)$ to get $b = 5$; relax $(b,a,-3)$ to get $a = \min(4, 2) = 2$.
+step: Round 2 changes nothing, so the distances are final. A third check round (the $V$-th) also changes nothing, so there is no negative cycle.
+step: Dijkstra would extract $a$ with distance 4 before $b$ and never revisit it; that is why it fails here.
+answer: $a = 2$, $b = 5$.
+
+@mistakes
+- Using Dijkstra when a graph has a negative edge. It can return wrong distances even when no negative cycle exists.
+- Checking `dist[v]` against the heap entry's key but forgetting to skip stale entries, which does extra work or corrupts the result.
+- Initializing every distance to a large finite number and then adding to it (overflow in other languages, or comparing "unreachable" with real distances). Use infinity or leave unreachable vertices out of the dictionary.
+- Running Bellman–Ford for $V - 1$ rounds and never doing the extra check round, so negative cycles go undetected.
+
+@practice num
+prompt: A directed graph has edges $S \to A\ (7)$, $S \to B\ (2)$, $B \to A\ (3)$, $A \to C\ (1)$, $B \to C\ (8)$, $C \to T\ (2)$ and $A \to T\ (9)$. What is the weight of a shortest path from $S$ to $T$?
+answer: 8
+check: int(run("edges = [('S', 'A', 7), ('S', 'B', 2), ('B', 'A', 3), ('A', 'C', 1), ('B', 'C', 8), ('C', 'T', 2), ('A', 'T', 9)]\ninf = float('inf')\nd = {v: inf for v in 'SABCT'}\nd['S'] = 0\nfor _ in range(5):\n    for u, v, w in edges:\n        if d[u] + w < d[v]:\n            d[v] = d[u] + w\nprint(d['T'])\n"))
+hint: Find the shortest distance to $A$ and $C$ first.
+solution: The best route to $A$ is $S \to B \to A$ with weight 5, then $A \to C$ gives 6 and $C \to T$ gives 8. The direct edge $A \to T$ would give 14.
+
+@practice code
+prompt: Signals travel in a directed network with nodes `1..n`. The list `edges` holds `(u, v, w)` triples: a signal sent along `u -> v` takes `w >= 0` time units. A signal starts at node `k` at time 0. Write `network_delay(n, edges, k)` that returns the time at which **all** nodes have received it (the largest shortest-path distance from `k`), or `-1` if some node never receives it. For `n = 4`, edges `[(2, 1, 1), (2, 3, 1), (3, 4, 1)]` and `k = 2` the answer is `2`.
+starter:
+```python
+def network_delay(n, edges, k):
+    pass
+```
+tests:
+```python
+assert network_delay(4, [(2, 1, 1), (2, 3, 1), (3, 4, 1)], 2) == 2
+assert network_delay(2, [(1, 2, 1)], 2) == -1
+assert network_delay(1, [], 1) == 0
+assert network_delay(3, [(1, 2, 5), (1, 3, 1), (3, 2, 1)], 1) == 2
+assert network_delay(3, [(1, 2, 2), (2, 3, 2), (1, 3, 9)], 1) == 4
+assert network_delay(3, [(1, 2, 0), (2, 3, 0)], 1) == 0
+```
+model:
+```python
+import heapq
+
+
+def network_delay(n, edges, k):
+    graph = {v: [] for v in range(1, n + 1)}
+    for u, v, w in edges:
+        graph[u].append((v, w))
+    dist = {k: 0}
+    heap = [(0, k)]
+    done = set()
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in done:
+            continue
+        done.add(u)
+        for v, w in graph[u]:
+            if v not in dist or d + w < dist[v]:
+                dist[v] = d + w
+                heapq.heappush(heap, (d + w, v))
+    if len(dist) < n:
+        return -1
+    return max(dist.values())
+```
+hint: Build an adjacency list, then run Dijkstra's algorithm from `k`.
+hint: If fewer than `n` nodes have a distance, return `-1`; otherwise return the largest distance.
+solution: Dijkstra from `k` with a heap gives every reachable node's shortest time. The signal reaches all nodes at the time of the farthest one, so return the maximum distance, unless some node is unreachable. Time $O((n + m)\log n)$.
+
+@practice mc
+prompt: A graph has edges $s \to a$ of weight 2, $s \to b$ of weight 3 and $b \to a$ of weight $-2$. Dijkstra's algorithm extracts a vertex from the heap and treats its distance as final, never changing it afterwards. What happens for vertex $a$?
+choice*: It is extracted with distance 2 and treated as final, but its true shortest distance is 1 (via $b$)
+choice: It is extracted with distance 1, which is correct
+choice: It is extracted with distance 2, which is correct because the negative edge never helps
+choice: It is extracted with distance 3 and never improved
+hint: Compare the weight of the path $s \to a$ with that of $s \to b \to a$.
+solution: The estimate for $a$ is 2 when it is extracted, before $b$ (distance 3) is processed. Only when $b$ is processed does the path $s \to b \to a$ of weight $3 - 2 = 1$ appear, but $a$ is already final. The true distance is 1, so Dijkstra's invariant fails with negative edges.
+
+@practice code
+prompt: Write `bellman_ford(n, edges, s)` for vertices `0..n-1` and a list `edges` of `(u, v, w)` triples (directed, weights may be negative). Return a list `dist` of length `n` with the shortest-path weights from `s`, using `float("inf")` for unreachable vertices. If a negative cycle is reachable from `s`, return `None` instead.
+starter:
+```python
+def bellman_ford(n, edges, s):
+    pass
+```
+tests:
+```python
+inf = float("inf")
+assert bellman_ford(3, [(0, 1, 4), (0, 2, 5), (2, 1, -3)], 0) == [0, 2, 5]
+assert bellman_ford(3, [(0, 1, 1), (1, 2, -1), (2, 1, -1)], 0) is None
+assert bellman_ford(3, [(0, 1, 2)], 0) == [0, 2, inf]
+assert bellman_ford(4, [(0, 1, 1), (2, 3, -1), (3, 2, -1)], 0) == [0, 1, inf, inf]
+assert bellman_ford(1, [], 0) == [0]
+assert bellman_ford(2, [(0, 1, -5)], 1) == [inf, 0]
+```
+model:
+```python
+def bellman_ford(n, edges, s):
+    inf = float("inf")
+    dist = [inf] * n
+    dist[s] = 0
+    for _ in range(n - 1):
+        changed = False
+        for u, v, w in edges:
+            if dist[u] != inf and dist[u] + w < dist[v]:
+                dist[v] = dist[u] + w
+                changed = True
+        if not changed:
+            break
+    for u, v, w in edges:
+        if dist[u] != inf and dist[u] + w < dist[v]:
+            return None
+    return dist
+```
+hint: Relax every edge, `n - 1` times, skipping edges whose tail is still unreachable.
+hint: After the rounds, make one more pass: if any edge can still be relaxed, a reachable negative cycle exists.
+solution: After $n - 1$ rounds all distances are final when no reachable negative cycle exists. A further improvement shows a negative cycle reachable from `s`. Edges whose tail has infinite distance are skipped, so a negative cycle that `s` cannot reach is correctly ignored. Time $\Theta(nm)$.
+
+@practice self
+prompt: Prove the key step of Dijkstra's algorithm: if all edge weights are non-negative, then when a vertex $u$ is extracted from the priority queue, $\text{dist}[u] = \delta(s, u)$. Say exactly where non-negativity is used.
+solution: Suppose for contradiction that $u$ is the first extracted vertex with $\text{dist}[u] \ne \delta(s,u)$. Since $\text{dist}[u]$ is always the weight of an actual path, $\text{dist}[u] > \delta(s, u)$. So $u \ne s$ (as $\text{dist}[s] = 0$ is correct). Let $S$ be the set of vertices extracted before $u$, and consider a shortest path $P$ from $s$ to $u$. Let $y$ be the first vertex of $P$ not in $S$ and $x$ its predecessor on $P$, so $x \in S$. By the choice of $u$, $\text{dist}[x] = \delta(s,x)$ when $x$ was extracted, and the edge $(x, y)$ was relaxed then. Because $P$ is a shortest path, its prefix to $y$ is a shortest path, so $\text{dist}[y] \le \delta(s,x) + w(x,y) = \delta(s,y)$, hence $\text{dist}[y] = \delta(s,y)$. Now non-negativity is used: the rest of $P$ from $y$ to $u$ has weight at least 0, so $\delta(s, y) \le \delta(s, u) < \text{dist}[u]$. Then $\text{dist}[y] < \text{dist}[u]$ and $y$ is in the queue, so the algorithm would extract $y$ before $u$, contradicting that $u$ is extracted now (if $y = u$ then $\text{dist}[u] = \delta(s,u)$ directly, also a contradiction). Hence no such $u$ exists.
+rubric: Argues by contradiction using the first vertex that is extracted with a wrong distance.
+rubric: Identifies the first unextracted vertex $y$ on a shortest path and shows $\text{dist}[y] = \delta(s,y)$ using relaxation of the edge from its predecessor.
+rubric: Uses non-negative weights to conclude $\delta(s,y) \le \delta(s,u)$, so $y$ would have been extracted first.
+hint: Look at a shortest path to $u$ and the first vertex on it that has not been extracted yet.
+hint: Non-negative weights imply that a prefix of a shortest path is no longer than the whole path.
+
+@quiz code
+prompt: Write `shortest_path(graph, s, t)` where `graph` maps every vertex to a list of `(neighbor, weight)` pairs with non-negative weights. Return a pair `(distance, path)` where `path` is the list of vertices of a shortest route from `s` to `t` (including both ends). If `t` is unreachable return `(None, [])`. When `s == t` the result is `(0, [s])`. (Tests use graphs where the shortest path is unique.)
+starter:
+```python
+def shortest_path(graph, s, t):
+    pass
+```
+tests:
+```python
+g = {
+    "a": [("b", 1), ("c", 4)],
+    "b": [("c", 2), ("d", 6)],
+    "c": [("d", 3)],
+    "d": [],
+}
+assert shortest_path(g, "a", "d") == (6, ["a", "b", "c", "d"])
+assert shortest_path(g, "a", "a") == (0, ["a"])
+assert shortest_path(g, "d", "a") == (None, [])
+assert shortest_path(g, "b", "c") == (2, ["b", "c"])
+h = {1: [(2, 1)], 2: [(3, 1)], 3: [(4, 1)], 4: [(1, 1)], 5: []}
+assert shortest_path(h, 1, 4) == (3, [1, 2, 3, 4])
+assert shortest_path(h, 1, 5) == (None, [])
+```
+model:
+```python
+import heapq
+
+
+def shortest_path(graph, s, t):
+    dist = {s: 0}
+    parent = {s: None}
+    heap = [(0, s)]
+    done = set()
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in done:
+            continue
+        done.add(u)
+        if u == t:
+            break
+        for v, w in graph[u]:
+            if v not in dist or d + w < dist[v]:
+                dist[v] = d + w
+                parent[v] = u
+                heapq.heappush(heap, (d + w, v))
+    if t not in done:
+        return (None, [])
+    path = []
+    node = t
+    while node is not None:
+        path.append(node)
+        node = parent[node]
+    path.reverse()
+    return (dist[t], path)
+```
+hint: Run Dijkstra and remember, for each vertex, the vertex from which its best distance came.
+hint: Walk the parent pointers from `t` back to `s` and reverse the list.
+solution: Whenever a relaxation improves `dist[v]`, record `parent[v] = u`. After `t` is extracted its parent chain is a shortest path, so follow it back to `s` and reverse it. If `t` is never extracted it is unreachable.
+
+@quiz num
+prompt: Plain Bellman–Ford (no early exit) on a graph with $V = 100$ vertices and $E = 300$ edges performs $V - 1$ rounds, each relaxing every edge once. How many edge relaxations does it perform in those rounds?
+answer: 29700
+check: (100 - 1) * 300
+hint: Multiply the number of rounds by the number of edges per round.
+solution: There are $99$ rounds of $300$ relaxations each, so $99 \times 300 = 29700$ (the detection pass would add 300 more).

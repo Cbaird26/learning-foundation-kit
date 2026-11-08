@@ -1,0 +1,372 @@
+@lesson
+title: Databases, templates and forms
+summary: Store data in a relational database with parameterized SQL, render it with escaped templates, and process HTML forms safely with server-side validation.
+objective: Create tables and run parameterized queries from Python with `sqlite3`, and explain how SQL injection arises and is prevented.
+objective: Render HTML with Jinja2 templates, template inheritance and automatic escaping.
+objective: Handle form submissions with validation and the Post/Redirect/Get pattern.
+reading: MDN Web Docs: Learn web development, "Server-side website programming" (the Django tutorial parts on models, templates and forms show the same ideas) and "Your first form" and "How to structure a web form" in the HTML forms guide; also the Flask documentation on templates and on using SQLite.
+@article
+A web application must remember things between requests and after restarts. That requires **persistent storage**, almost always a relational database (SQLite for small apps, PostgreSQL or MySQL for larger ones). The server turns the data into HTML (or JSON) with **templates**, and accepts new data through **forms**.
+
+### SQL and sqlite3
+
+A relational database stores data in **tables** of rows and columns; a **primary key** identifies each row and a **foreign key** refers to a row of another table. SQLite is a database in a single file, accessed from Python through the standard `sqlite3` module:
+
+```python
+import sqlite3
+
+db = sqlite3.connect("books.db")
+db.row_factory = sqlite3.Row            # rows behave like dictionaries
+db.execute(
+    "CREATE TABLE IF NOT EXISTS books ("
+    " id INTEGER PRIMARY KEY,"
+    " title TEXT NOT NULL,"
+    " author TEXT NOT NULL DEFAULT '')"
+)
+db.execute("INSERT INTO books (title, author) VALUES (?, ?)", ("Dune", "Herbert"))
+db.commit()                             # make the change permanent
+rows = db.execute("SELECT id, title FROM books ORDER BY title").fetchall()
+db.close()
+```
+
+Changes are made permanent by `commit()`. In SQLite, foreign keys are enforced only if each connection runs `PRAGMA foreign_keys = ON`.
+
+### SQL injection and parameters
+
+**Vulnerable** (do not write this):
+
+```python
+# VULNERABLE: user input is pasted into the SQL text
+db.execute("SELECT * FROM books WHERE author = '" + author + "'")
+```
+
+If `author` contains a quote character, it ends the string literal early and the remainder is parsed as SQL: the user's data has become part of the program. **Fixed**: pass values separately, so the database never parses them as SQL:
+
+```python
+db.execute("SELECT * FROM books WHERE author = ?", (author,))
+```
+
+Use placeholders (`?` in `sqlite3`; `%s` or `:name` styles in other drivers) for *every* value. Placeholders cannot stand for table or column names; if those vary, choose them from a fixed allow-list. Injection is item A05 of the OWASP Top 10:2025.
+
+### Templates
+
+Building HTML by string concatenation is error-prone and unsafe. Flask uses the **Jinja2** template engine. Templates live in the `templates` folder and are rendered with `render_template`:
+
+```html
+{% extends "base.html" %}
+{% block content %}
+  <h1>Books</h1>
+  <ul>
+    {% for book in books %}
+      <li>{{ book["title"] }} by {{ book["author"] }}</li>
+    {% else %}
+      <li>No books yet.</li>
+    {% endfor %}
+  </ul>
+{% endblock %}
+```
+
+`{{ ... }}` prints a value, `{% ... %}` is a statement (`for`, `if`), and `{% extends %}` with `{% block %}` lets pages share a layout defined once in `base.html`. In Flask, **autoescaping is on** for templates ending in `.html`: `{{ value }}` converts `<`, `>`, `&` and quotes to entities, so `<script>` in data is displayed as text. The `|safe` filter turns escaping off; use it only for HTML you wrote yourself, never for user data.
+
+### Forms
+
+```html
+<form method="post" action="/books">
+  <label for="title">Title</label>
+  <input id="title" name="title" required>
+  <button>Add book</button>
+</form>
+```
+
+The browser sends the fields that have a `name` as `title=Dune&author=...`, URL-encoded, with `Content-Type: application/x-www-form-urlencoded` (or `multipart/form-data` when files are included). In Flask they appear in `request.form`. Use `GET` for forms that only read (a search box: the URL is shareable) and `POST` for forms that change data.
+
+**Validate on the server.** Attributes such as `required`, `type="email"` and `maxlength` give quick feedback, but anyone can send a request without a browser, so they are never a security measure. When data is invalid, re-render the form with status `400` or `422`, show specific error messages next to the fields and keep what the user typed. When it is valid, perform the change and **redirect** to a page that displays the result: **Post/Redirect/Get**. Otherwise, pressing Reload re-submits the form and creates a duplicate.
+
+@example
+title: Why parameters matter
+problem: Explain what goes wrong with `"SELECT * FROM books WHERE title = '" + title + "'"` for the title `It's`, and fix it.
+step: The text becomes `... WHERE title = 'It's'`. The apostrophe in the data closes the string literal, leaving `s'` as invalid SQL, so the query raises an error.
+step: A deliberately crafted value can do worse than raise an error: it can change the meaning of the query, which is why this is a security flaw as well as a bug.
+step: Replace the concatenation by a placeholder and pass the value separately:
+
+```python
+db.execute("SELECT * FROM books WHERE title = ?", (title,))
+```
+step: Now the SQL text is fixed, `It's` is treated as a value, and the query finds the book titled `It's`.
+
+@example
+title: The life of a form submission
+problem: A user submits the "Add book" form with the title `Dune`. List what the server and browser do.
+step: The browser sends `POST /books` with the body `title=Dune`.
+step: The view reads `request.form.get("title", "").strip()`, finds it non-empty and runs `INSERT ... VALUES (?, ?)`, then `db.commit()`.
+step: The view returns `redirect(url_for("index"), code=303)`, so the browser requests `GET /` and shows the list including the new book.
+step: Reloading now repeats the harmless `GET`, not the `POST`.
+
+@mistakes
+- Building SQL with string concatenation or f-strings instead of placeholders.
+- Forgetting `commit()`, so an insert disappears when the connection closes.
+- Disabling escaping with `|safe` for user-supplied text, which creates a cross-site scripting hole.
+- Relying on browser-side validation only, or answering a successful `POST` with a rendered page, so Reload re-submits the form.
+
+@practice mc
+prompt: Which call safely looks up a user by a name taken from a web form?
+choice: `db.execute("SELECT * FROM users WHERE name = '" + name + "'")`
+choice: `db.execute(f"SELECT * FROM users WHERE name = '{name}'")`
+choice*: `db.execute("SELECT * FROM users WHERE name = ?", (name,))`
+choice: `db.execute("SELECT * FROM users WHERE name = '%s'" % name)`
+hint: Three of the choices put the value into the SQL text before the database sees it.
+solution: A placeholder with the value passed separately means the value is never parsed as SQL. Concatenation, f-strings and `%` formatting all build the SQL text from user input.
+
+@practice num
+prompt: Given this schema, data and query, how many rows does the query return? Give just the number.
+
+```sql
+CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author TEXT, pages INTEGER);
+INSERT INTO books (title, author, pages) VALUES
+  ('Dune', 'Herbert', 612), ('Emma', 'Austen', 474),
+  ('Persuasion', 'Austen', 249), ('Ulysses', 'Joyce', 730);
+
+SELECT author FROM books GROUP BY author HAVING SUM(pages) > 700;
+```
+answer: 2
+check: len(sql("CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author TEXT, pages INTEGER); INSERT INTO books (title, author, pages) VALUES ('Dune', 'Herbert', 612), ('Emma', 'Austen', 474), ('Persuasion', 'Austen', 249), ('Ulysses', 'Joyce', 730);", "SELECT author FROM books GROUP BY author HAVING SUM(pages) > 700"))
+hint: Compute the total pages per author, then keep only the totals above 700.
+solution: Herbert has 612 pages, Austen has $474 + 249 = 723$ and Joyce has 730, so Austen and Joyce pass `HAVING SUM(pages) > 700`: two rows.
+
+@practice code
+prompt: Write `parse_form(body)` that parses a URL-encoded form body (as sent by a browser with `method="post"`) into a dictionary mapping each field name to its **first** value, as a decoded string. `+` means a space and `%XX` sequences are decoded as UTF-8. A field with an empty value is kept with the value `""`. An empty body gives `{}`. Use `urllib.parse`.
+starter:
+```python
+from urllib.parse import parse_qs
+
+
+def parse_form(body):
+    pass
+```
+tests:
+```python
+body1 = "name=Ada+Lovelace&age=36"
+body2 = "q=a%26b%3Dc"
+body3 = "t=1&t=2"
+body4 = "flag="
+body5 = "city=Z%C3%BCrich"
+assert parse_form(body1) == {"name": "Ada Lovelace", "age": "36"}
+assert parse_form(body2) == {"q": "a&b=c"}
+assert parse_form(body3) == {"t": "1"}
+assert parse_form(body4) == {"flag": ""}
+assert parse_form("") == {}
+assert parse_form(body5) == {"city": "Z\u00fcrich"}
+```
+model:
+```python
+from urllib.parse import parse_qs
+
+
+def parse_form(body):
+    fields = parse_qs(body, keep_blank_values=True)
+    return {name: values[0] for name, values in fields.items()}
+```
+hint: `parse_qs` returns a dictionary of lists; by default it drops fields with empty values.
+hint: Pass `keep_blank_values=True`, then take `values[0]` for each name.
+solution: `parse_qs` already decodes `+` and percent-escapes. Keep blank values explicitly, and reduce each list of values to its first element with a dictionary comprehension.
+
+@practice code
+prompt: Write a tiny template engine `render(template, context)` that replaces each placeholder `{{ name }}` (a name made of letters, digits and underscores, with optional spaces inside the braces) by `context[name]` converted with `str` and **HTML-escaped** with `html.escape`. A placeholder written `{{ name|safe }}` (optional spaces around `|`) inserts the value unescaped. A name missing from `context` is replaced by the empty string. Text produced by a replacement must not be scanned for placeholders again.
+starter:
+```python
+import html
+import re
+
+
+def render(template, context):
+    pass
+```
+tests:
+```python
+assert render("<p>{{ name }}</p>", {"name": "Ada"}) == "<p>Ada</p>"
+assert render("<p>{{ name }}</p>", {"name": "<b>Ada</b>"}) == (
+    "<p>&lt;b&gt;Ada&lt;/b&gt;</p>")
+assert render("{{ markup|safe }}", {"markup": "<b>x</b>"}) == "<b>x</b>"
+assert render("{{ markup | safe }}!", {"markup": "<i>"}) == "<i>!"
+assert render("[{{ missing }}]", {}) == "[]"
+assert render("{{a}}-{{ b }}-{{ n }}", {"a": "x", "b": "y", "n": 5}) == "x-y-5"
+assert render("{{ a }}", {"a": "{{ b }}", "b": "X"}) == "{{ b }}"
+assert render("no placeholders", {"a": 1}) == "no placeholders"
+```
+model:
+```python
+import html
+import re
+
+PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*(\|\s*safe\s*)?\}\}")
+
+
+def render(template, context):
+    def replace(match):
+        text = str(context.get(match.group(1), ""))
+        if match.group(2):
+            return text
+        return html.escape(text)
+    return PLACEHOLDER.sub(replace, template)
+```
+hint: `re.sub` with a function computes each replacement from its match, and scans the template only once.
+hint: A regular expression with an optional group for `|safe` tells you which placeholders to leave unescaped.
+solution: One pass of `re.sub` replaces each placeholder with the (escaped unless `|safe`) value; because the substitution scans only the original template, a value that looks like a placeholder is inserted as plain text. Escaping by default is the same safe-by-default design that Jinja2 uses.
+
+@practice self
+prompt: Write a Flask application (`app.py` and the template `index.html`) for a book list stored in SQLite. `GET /` lists all books ordered by title; `POST /books` adds a book from the form fields `title` (required) and `author`. Use a helper that opens one connection per request, parameterized queries, template autoescaping, an error message with status `400` when the title is empty, and Post/Redirect/Get on success. The table is created by an `init_db()` function.
+hint: Start with `get_db()` using Flask's `g` object and a teardown function that closes the connection; then write `index()` and `add_book()`, with `add_book()` validating first.
+solution: A model answer:
+
+```python
+import sqlite3
+
+from flask import Flask, g, redirect, render_template, request, url_for
+
+app = Flask(__name__)
+DATABASE = "books.db"
+
+
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DATABASE)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(error):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    db = sqlite3.connect(DATABASE)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS books ("
+        " id INTEGER PRIMARY KEY,"
+        " title TEXT NOT NULL,"
+        " author TEXT NOT NULL DEFAULT '')"
+    )
+    db.commit()
+    db.close()
+
+
+def all_books():
+    return get_db().execute(
+        "SELECT id, title, author FROM books ORDER BY title"
+    ).fetchall()
+
+
+@app.get("/")
+def index():
+    return render_template("index.html", books=all_books(), error=None)
+
+
+@app.post("/books")
+def add_book():
+    title = request.form.get("title", "").strip()
+    author = request.form.get("author", "").strip()
+    if not title:
+        page = render_template(
+            "index.html", books=all_books(), error="Title is required")
+        return page, 400
+    db = get_db()
+    db.execute(
+        "INSERT INTO books (title, author) VALUES (?, ?)", (title, author))
+    db.commit()
+    return redirect(url_for("index"), code=303)
+```
+
+And `templates/index.html`:
+
+```html
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Books</title></head>
+<body>
+  <h1>Books</h1>
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+  <ul>
+    {% for book in books %}
+      <li>{{ book["title"] }} by {{ book["author"] }}</li>
+    {% else %}
+      <li>No books yet.</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('add_book') }}">
+    <label for="title">Title</label>
+    <input id="title" name="title" required>
+    <label for="author">Author</label>
+    <input id="author" name="author">
+    <button>Add book</button>
+  </form>
+</body>
+</html>
+```
+rubric: Uses `?` placeholders for every value and commits after the insert.
+rubric: Validates the title on the server and returns status `400` with an error shown in the template.
+rubric: Uses `redirect(url_for("index"))` after a successful `POST`.
+rubric: Template relies on autoescaping (no `|safe` on user data) and each form control has a label.
+
+@quiz code
+prompt: Write `validate_signup(form)` for a signup form given as a dictionary of strings (a missing key counts as `""`). It returns a dictionary mapping each invalid field name to a non-empty error message, or `{}` if everything is valid. Rules: `username` must be 3 to 20 characters, each an ASCII letter, a digit or an underscore; `email` must match the regular expression `[^@\s]+@[^@\s]+\.[^@\s]+` completely (something, an `@`, something, a dot, something, with no whitespace and no extra `@`); `quantity` must be a whole number from 1 to 10 written with ASCII digits only (surrounding spaces are ignored, signs and decimals are not allowed).
+starter:
+```python
+import re
+
+
+def validate_signup(form):
+    pass
+```
+tests:
+```python
+ok = {"username": "ada_99", "email": "ada@example.com", "quantity": " 3 "}
+assert validate_signup(ok) == {}
+bad = {"username": "a!", "email": "ada@example", "quantity": "0"}
+errors = validate_signup(bad)
+assert set(errors) == {"username", "email", "quantity"}
+assert all(isinstance(m, str) and m for m in errors.values())
+assert set(validate_signup({})) == {"username", "email", "quantity"}
+assert set(validate_signup({**ok, "quantity": "11"})) == {"quantity"}
+assert set(validate_signup({**ok, "quantity": "1.5"})) == {"quantity"}
+assert set(validate_signup({**ok, "quantity": "-2"})) == {"quantity"}
+assert validate_signup({**ok, "quantity": "10"}) == {}
+assert set(validate_signup({**ok, "username": "x" * 21})) == {"username"}
+assert validate_signup({**ok, "username": "abc"}) == {}
+assert set(validate_signup({**ok, "username": "\u00e9da"})) == {"username"}
+assert set(validate_signup({**ok, "quantity": "\u0663"})) == {"quantity"}
+assert set(validate_signup({**ok, "email": "a b@example.com"})) == {"email"}
+```
+model:
+```python
+import re
+
+
+def validate_signup(form):
+    errors = {}
+    username = form.get("username", "")
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", username):
+        errors["username"] = "Use 3-20 letters, digits or underscores."
+    email = form.get("email", "")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        errors["email"] = "Enter an address like name@example.com."
+    quantity = form.get("quantity", "").strip()
+    if not (re.fullmatch(r"[0-9]+", quantity) and 1 <= int(quantity) <= 10):
+        errors["quantity"] = "Enter a whole number from 1 to 10."
+    return errors
+```
+hint: `re.fullmatch` requires the whole string to match, so the length and character rules can be one pattern each.
+hint: For `quantity`, check that it is all digits before converting with `int`, then check the range.
+solution: Validate each field independently and collect messages in a dictionary. Use `fullmatch` with explicit character classes, and for the quantity test the digits first so that `int()` never sees a sign, a decimal point or text. An empty dictionary means the form is valid.
+
+@quiz ms
+prompt: Which statements about forms, templates and databases in a web application are true?
+choice*: After a successful `POST`, redirecting to a `GET` page (Post/Redirect/Get) prevents a page reload from submitting the form again.
+choice*: Browser-side checks such as `required` improve usability, but the server must still validate every submitted value.
+choice*: Jinja2 templates in Flask escape `{{ value }}` automatically, so `<` in a value is shown as text.
+choice: Placeholders in SQL can be used for table names and column names as well as for values.
+choice: Using `|safe` on a user's comment is fine, because the database already cleaned the data.
+hint: Think about who controls each input and where escaping and validation happen.
+solution: Post/Redirect/Get avoids duplicate submissions, server-side validation is required because requests need not come from your form, and autoescaping protects against injected markup. Placeholders work only for values (names must come from an allow-list), and `|safe` disables the protection, so it must never be applied to user data.

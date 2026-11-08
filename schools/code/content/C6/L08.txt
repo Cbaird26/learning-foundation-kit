@@ -1,0 +1,301 @@
+@lesson
+title: From C to assembly
+summary: Translate C statements, arrays, pointers, structures and functions into RISC-V assembly, and compute data layouts including alignment padding.
+objective: Translate assignments, conditionals, loops, array accesses and function calls from C into RISC-V instructions.
+objective: Compute the size, alignment and field offsets of a C structure, including padding.
+objective: Read compiler output and relate each instruction to the source construct that produced it.
+reading: Dive into Systems, Chapter 6 on how C programs are compiled to assembly, together with the sections on arrays, structs and pointers in the assembly chapters; also look up the `-S` option of your compiler.
+
+@article
+A compiler translates C into assembly by a handful of systematic patterns. Knowing them lets you read compiler output, understand what your code costs, and explain bugs such as buffer overflows. Everything below uses the 32-bit **ILP32** model of RV32 (`int`, `long` and pointers are 4 bytes, `short` is 2, `char` is 1). On 64-bit RISC-V (**LP64**) `long` and pointers are 8 bytes.
+
+### Statements
+
+- **Assignment and arithmetic**: values live in registers, so `x = a + b * 2;` becomes a few register instructions (`slli`, `add`) and the variable `x` is just a register, unless it must be in memory.
+- **`if` / `else`**: test the opposite condition and branch around the `then` part, with a jump over the `else` part.
+- **`while` and `for`**: a label at the top, a conditional branch out of the loop, a `j` back to the top.
+- **Function calls**: arguments into `a0`-`a7`, `jal ra, f`, result in `a0`, as in the previous lesson.
+
+For example, `int max2(int a, int b) { if (b > a) a = b; return a; }` becomes:
+
+```text
+max2:
+    bge  a0, a1, .L1     # if a >= b, keep a
+    mv   a0, a1          # a = b
+.L1:
+    ret
+```
+
+### Arrays and pointers
+
+In C, `a[i]` is defined as `*(a + i)`: pointer arithmetic scales by the size of the element. For `int *a`, the address of `a[i]` is `a + 4 * i`, so the compiler emits a shift, an add and a load (`slli`, `add`, `lw`). For `char` data no scaling is needed and a `lbu` or `lb` is used. A loop over a string:
+
+```c
+int my_strlen(const char *s) {
+    int n = 0;
+    while (s[n] != '\0')
+        n++;
+    return n;
+}
+```
+
+```text
+my_strlen:
+    li   t0, 0           # n = 0
+loop:
+    add  t1, a0, t0      # address of s[n]
+    lbu  t2, 0(t1)       # t2 = s[n]
+    beqz t2, done        # stop at '\0'
+    addi t0, t0, 1       # n++
+    j    loop
+done:
+    mv   a0, t0
+    ret
+```
+
+Pointer subtraction and addition also scale: if `p` and `q` point into an `int` array, `q - p` counts elements, while the byte difference is four times larger.
+
+### Structures and alignment
+
+A C `struct` stores its fields in memory in declaration order. Each field is placed at the next offset that is a multiple of its own **alignment** (normally equal to its size for the basic types), and the whole structure's size is rounded up to a multiple of the largest field alignment, so that arrays of structures keep every element aligned. The gaps are **padding**. For
+
+```c
+struct s { char c; int x; short t; };
+```
+
+`c` is at offset 0, `x` at 4 (3 padding bytes), `t` at 8, and the size is 12 (2 bytes of trailing padding). Declaring the fields largest first (`int x; short t; char c;`) gives offsets 0, 4, 6 and size 8. Access `p->x` is a single load with a constant offset: if `p` is in `a0`, then `lw t0, 4(a0)`. (This describes the common ABI rules; the language leaves layout to the implementation.)
+
+### Reading compiler output
+
+Compile with a RISC-V cross compiler (for example `riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O1 -S file.c`) or in an online compiler explorer. Without optimization (`-O0`) every variable lives in memory and the code is long; with `-O1` or `-O2` variables stay in registers, loops are tightened and small functions may be inlined. Learn to find the loop labels, the loads and stores, and the prologue and epilogue.
+
+### Typical translations at a glance
+
+| C | RISC-V idea |
+|---|---|
+| `x = y;` | `mv` |
+| `x = *p;` | `lw` (or `lb`/`lbu`) |
+| `*p = x;` | `sw` |
+| `p->f` | load or store at constant offset |
+| `a[i]` | scale index, add base, load |
+| `if (a < b) S` | `bge a, b, skip` then `S` |
+| function call | arguments in `a0`..., `jal ra, f` |
+
+@example
+title: Translating a function with a branch
+problem: Translate `int abs_diff(int a, int b) { if (a > b) return a - b; else return b - a; }` into RISC-V.
+step: The arguments arrive in `a0` (`a`) and `a1` (`b`), and the result goes back in `a0`.
+step: The `if` tests `a > b`; the else part runs when `a <= b`. We may jump to the else part when `a < b` only, using `blt a0, a1, else_`, because the case `a == b` can safely fall into the then part (both subtractions give 0).
+step: The then-part is `sub a0, a0, a1` followed by `ret`.
+step: The else-part, after the label, is `sub a0, a1, a0` followed by `ret`.
+
+```text
+abs_diff:
+    blt  a0, a1, else_
+    sub  a0, a0, a1
+    ret
+else_:
+    sub  a0, a1, a0
+    ret
+```
+answer: the code above; for `a = 3, b = 8` it takes the branch and returns 5
+
+@example
+title: Structure layout and reordering
+problem: Compute the offsets and size of `struct s { char c; int x; short t; };`, and of the same fields declared in the order `int x; short t; char c;`.
+step: First order: `c` is at 0 (size 1). `x` needs alignment 4, so it goes at offset 4 (3 padding bytes). `t` has alignment 2, so it goes at 8.
+step: The end of the last field is 10. The largest alignment is 4, so the size rounds up to 12.
+step: Second order: `x` at 0, `t` at 4 (already aligned to 2), `c` at 6. The end is 7, rounded up to a multiple of 4: size 8.
+step: Reordering saved 4 bytes per structure, which matters in a large array.
+answer: offsets 0, 4, 8 and size 12; reordered offsets 0, 4, 6 and size 8
+
+@mistakes
+- Forgetting to scale the index by the element size when computing an array address.
+- Assuming a structure's size is the sum of its field sizes, ignoring padding.
+- Branching on the same condition as the C `if` instead of its negation to skip the body.
+- Using `lw` for `char` data, which reads four bytes and mixes neighbouring elements.
+
+@practice text
+prompt: What does this C program print? Type the number only.
+
+```c
+#include <stdio.h>
+
+struct s {
+    char c;
+    int x;
+    short t;
+};
+
+int main(void) {
+    printf("%zu\n", sizeof(struct s));
+    return 0;
+}
+```
+answer: 12
+check: run_c('#include <stdio.h>\n\nstruct s {\n    char c;\n    int x;\n    short t;\n};\n\nint main(void) {\n    printf("%zu\\n", sizeof(struct s));\n    return 0;\n}\n')
+hint: Work out the offset of each field using its alignment, then round the total.
+solution: `c` is at offset 0, `x` at 4, `t` at 8, so the fields end at 10; the structure is padded to a multiple of 4, giving 12.
+
+@practice code
+prompt: Write `struct_layout(fields)` where `fields` is a list of `(name, size, alignment)` tuples in declaration order. Return a tuple `(offsets, total)`: `offsets` is a dictionary mapping each name to its byte offset, where each field is placed at the lowest offset at or after the end of the previous field that is a multiple of its alignment, and `total` is the structure size, the end of the last field rounded up to a multiple of the largest alignment (an empty list gives `({}, 0)`). Example: `[("c", 1, 1), ("x", 4, 4), ("s", 2, 2)]` gives `({"c": 0, "x": 4, "s": 8}, 12)`.
+starter:
+```python
+def struct_layout(fields):
+    pass
+```
+tests:
+```python
+assert struct_layout([("c", 1, 1), ("x", 4, 4), ("s", 2, 2)]) == (
+    {"c": 0, "x": 4, "s": 8}, 12)
+assert struct_layout([("x", 4, 4), ("s", 2, 2), ("c", 1, 1)]) == (
+    {"x": 0, "s": 4, "c": 6}, 8)
+assert struct_layout([("a", 1, 1), ("b", 1, 1)]) == ({"a": 0, "b": 1}, 2)
+assert struct_layout([("d", 8, 8), ("c", 1, 1)]) == ({"d": 0, "c": 8}, 16)
+assert struct_layout([]) == ({}, 0)
+```
+model:
+```python
+def struct_layout(fields):
+    offsets = {}
+    end = 0
+    biggest = 1
+    for name, size, align in fields:
+        end = (end + align - 1) // align * align
+        offsets[name] = end
+        end += size
+        biggest = max(biggest, align)
+    return offsets, (end + biggest - 1) // biggest * biggest
+```
+hint: Keep a running `end` offset. Before placing a field, round `end` up to the field's alignment.
+hint: Round up with `(end + align - 1) // align * align`. After the loop, round the total up to the largest alignment (at least 1).
+solution: For each field round the current end up to its alignment, record that offset, and advance by the field's size while tracking the largest alignment. Finally round the end up to that largest alignment so array elements stay aligned.
+
+@practice mc
+prompt: In RV32 assembly, `a0` holds the address of an `int` array `a` and `a1` holds the index `i`. Which sequence loads `a[i]` into `t2`?
+choice: `add t0, a0, a1` then `lw t2, 0(t0)`
+choice*: `slli t0, a1, 2` then `add t0, a0, t0` then `lw t2, 0(t0)`
+choice: `slli t0, a1, 2` then `lw t2, 0(a0)`
+choice: `lw t2, 0(a1)` then `add t2, t2, a0`
+hint: Each `int` occupies 4 bytes, so the byte offset of element `i` is `4 * i`.
+solution: The index must be scaled by 4 (`slli` by 2), added to the base address, and then used as the address of the load. Without the scaling the address points into the middle of an element; the other sequences ignore the base or the index.
+
+@practice self
+prompt: Translate this C function into RISC-V assembly (RV32, standard calling convention, no stack frame needed), with a comment on each line, and then trace it for `a = {3, -1, 0, -7}`, `n = 4`.
+
+```c
+int count_neg(const int *a, int n) {
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (a[i] < 0)
+            count++;
+    }
+    return count;
+}
+```
+solution: One translation (`a0` = `a`, `a1` = `n`):
+
+```text
+count_neg:
+    li   t0, 0           # count = 0
+    li   t1, 0           # i = 0
+loop:
+    bge  t1, a1, done    # leave when i >= n
+    slli t2, t1, 2       # t2 = 4 * i
+    add  t2, a0, t2      # t2 = &a[i]
+    lw   t3, 0(t2)       # t3 = a[i]
+    bge  t3, x0, skip    # if a[i] >= 0, do not count
+    addi t0, t0, 1       # count++
+skip:
+    addi t1, t1, 1       # i++
+    j    loop
+done:
+    mv   a0, t0          # return count
+    ret
+```
+
+Trace: `a[0] = 3` is not negative; `a[1] = -1` gives `count = 1`; `a[2] = 0` is not negative; `a[3] = -7` gives `count = 2`; then `i = 4 >= 4` and the function returns 2.
+rubric: Uses a loop with the index scaled by 4 and a `lw` from the computed address.
+rubric: Branches around the increment on the opposite condition (`a[i] >= 0`), and increments the counter otherwise.
+rubric: Returns the count in `a0` with `ret`, and the trace gives 2.
+hint: Keep `count` and `i` in temporary registers; a leaf function needs no frame.
+hint: The test `a[i] < 0` becomes a branch that skips the increment when `a[i] >= 0`; compare with `x0`.
+
+@practice num
+prompt: What does this C program print, as an integer?
+
+```c
+#include <stdio.h>
+#include <stddef.h>
+
+struct u {
+    char a;
+    short b;
+    int c;
+    char d;
+};
+
+int main(void) {
+    printf("%zu\n", offsetof(struct u, d));
+    return 0;
+}
+```
+answer: 8
+check: int(run_c('#include <stdio.h>\n#include <stddef.h>\n\nstruct u {\n    char a;\n    short b;\n    int c;\n    char d;\n};\n\nint main(void) {\n    printf("%zu\\n", offsetof(struct u, d));\n    return 0;\n}\n'))
+hint: Place `a`, then `b` (alignment 2), then `c` (alignment 4), then `d`.
+solution: `a` is at 0, `b` at 2 (aligned to 2), `c` at 4 (aligned to 4) and ends at 8, so `d` is at offset 8.
+
+@quiz code
+prompt: A structure's size depends on the order of its fields. Write `best_order_size(fields)` that takes a list of `(name, size, alignment)` tuples (at most 6 fields) and returns the smallest structure size achievable over all orderings of the fields, using the usual rules: each field at the next multiple of its alignment, and the total rounded up to the largest alignment. Example: `[("c", 1, 1), ("x", 4, 4), ("s", 2, 2)]` gives `8`.
+starter:
+```python
+def best_order_size(fields):
+    pass
+```
+tests:
+```python
+assert best_order_size([("c", 1, 1), ("x", 4, 4), ("s", 2, 2)]) == 8
+assert best_order_size([("a", 1, 1), ("b", 8, 8), ("c", 1, 1),
+                        ("d", 4, 4), ("e", 2, 2)]) == 16
+assert best_order_size([("a", 1, 1)]) == 1
+assert best_order_size([("a", 2, 2), ("b", 2, 2)]) == 4
+```
+model:
+```python
+from itertools import permutations
+
+
+def size_of(order):
+    end = 0
+    biggest = 1
+    for _name, size, align in order:
+        end = (end + align - 1) // align * align + size
+        biggest = max(biggest, align)
+    return (end + biggest - 1) // biggest * biggest
+
+
+def best_order_size(fields):
+    return min(size_of(p) for p in permutations(fields))
+```
+hint: Try every ordering with `itertools.permutations` and compute the size of each.
+hint: Write a helper that computes the size for one ordering, then take the `min` over the permutations.
+solution: With at most 6 fields there are at most 720 orderings, so brute force is fast. Compute each ordering's size with the placement rule and return the minimum. (Sorting fields by decreasing alignment achieves the minimum, which the brute force confirms.)
+
+@quiz num
+prompt: What integer does this C program print? (An `int` is 4 bytes.)
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int a[4] = {0};
+    int *p = a;
+    int *q = p + 3;
+    printf("%d\n", (int)((char *)q - (char *)p));
+    return 0;
+}
+```
+answer: 12
+check: int(run_c('#include <stdio.h>\n\nint main(void) {\n    int a[4] = {0};\n    int *p = a;\n    int *q = p + 3;\n    printf("%d\\n", (int)((char *)q - (char *)p));\n    return 0;\n}\n'))
+hint: `p + 3` moves by three elements. How many bytes is that for `int`?
+solution: Adding 3 to an `int *` advances the address by $3\times4=12$ bytes. Casting both pointers to `char *` makes the subtraction count bytes, so the result is 12.

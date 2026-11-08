@@ -1,0 +1,237 @@
+@lesson
+title: The Unix process model and system calls
+summary: Explain how Unix creates and runs processes with fork, exec and wait, and use system calls to write a program that launches other programs.
+objective: Describe a process, its file descriptors and its exit status.
+objective: Use `fork`, `execvp` and `waitpid` correctly, including error handling.
+objective: Explain redirection and pipes in terms of `open`, `dup2` and `pipe`.
+objective: Outline the structure of a small shell and parse a command line into arguments.
+reading: Beej's Guide to C Programming, the chapter on the outside environment (command-line arguments, exit status); for processes, look up "fork", "exec" and "wait" in the Linux man pages (section 2 of the manual) and in an operating systems text.
+@article
+A **process** is a running program: it has its own address space (code, globals, heap, stack), a process ID (**PID**), and a table of open **file descriptors**. A file descriptor is a small non-negative integer naming an open file, pipe or terminal; by convention 0 is standard input, 1 is standard output and 2 is standard error. The `FILE *` streams of week 10 are buffered wrappers around descriptors.
+
+### System calls
+
+A **system call** is a request from your program to the operating system kernel: `open`, `read`, `write`, `close`, `fork`, `execve`, `waitpid`, `pipe`, `dup2`, `_exit`. Library functions such as `printf`, `fopen` and `exit` are built on them (`printf` buffers and eventually calls `write`; `exit` flushes the stdio buffers and then calls `_exit`). The POSIX calls are declared in `<unistd.h>`, `<fcntl.h>` and `<sys/wait.h>`. They report failure by returning `-1` and setting `errno`; check every result and use `perror` to print the reason. They are POSIX, not ISO C, and are not available on every platform.
+
+### fork, exec and wait
+
+- `pid_t fork(void)` creates a new process that is a copy of the caller. It is called once and **returns twice**: `0` in the child, the child's PID in the parent, and `-1` in the parent if it failed. Both processes continue after the call with separate copies of the memory (copy-on-write in practice) and shared open files.
+- `int execvp(const char *file, char *const argv[])` **replaces** the current program with a new one, searching `PATH`. `argv[0]` is the program name and the array must end with `NULL`. On success it never returns; it returns `-1` only on failure (command not found), so the next line should report an error and `_exit`.
+- `pid_t waitpid(pid_t pid, int *status, int options)` waits for a child to finish and stores its **status**. The macros `WIFEXITED(status)` and `WEXITSTATUS(status)` tell whether it exited normally and with which code (0 to 255); `WIFSIGNALED(status)` and `WTERMSIG(status)` tell whether a signal killed it. A child that has finished but has not been waited for is a **zombie**: it holds a process-table entry until the parent collects its status. A parent that exits first leaves **orphans**, which the system adopts.
+
+```c
+pid_t pid = fork();
+if (pid < 0) {
+    perror("fork");
+    return 1;
+}
+if (pid == 0) {                       /* child */
+    char *argv[] = {"ls", "-l", NULL};
+    execvp(argv[0], argv);
+    perror("execvp");                 /* reached only if exec failed */
+    _exit(127);
+}
+int status;
+if (waitpid(pid, &status, 0) < 0) {   /* parent */
+    perror("waitpid");
+}
+else if (WIFEXITED(status)) {
+    printf("exit code %d\n", WEXITSTATUS(status));
+}
+```
+
+`exit` flushes stdio buffers and runs cleanup; `_exit` ends the process immediately. In a child after a failed `exec`, use `_exit` so buffered data that was copied from the parent is not flushed twice. For the same reason, call `fflush(stdout)` before `fork`.
+
+### Redirection and pipes
+
+Descriptors survive `exec`, which is how a shell implements `cmd > out.txt`: in the child, `open` the file (getting, say, descriptor 3), call `dup2(3, 1)` to make descriptor 1 refer to the same file, `close(3)`, then `execvp`. The program writes to "standard output" without knowing it is a file. `pipe(int fds[2])` creates a pipe: bytes written to `fds[1]` can be read from `fds[0]`. For `a | b` the shell creates the pipe, forks twice, makes the first child's descriptor 1 the pipe's write end and the second child's descriptor 0 the read end with `dup2`, closes the unused ends in every process, and waits for both. If a write end stays open somewhere, the reader never sees end of file.
+
+### Structure of a shell
+
+A minimal shell loops: print a prompt, read a line with `fgets`, **tokenize** it into an `argv` array (splitting on whitespace, optionally honoring quotes), handle **built-in commands** itself, otherwise `fork`, `execvp` in the child and `waitpid` in the parent. Commands like `cd` and `exit` must be built in: `chdir` changes the working directory of the process that calls it, so running `cd` in a forked child would leave the shell's own directory unchanged. Free any memory you allocated for the tokens after each command. Real shells also handle signals (such as `Ctrl-C`, which sends `SIGINT` to the foreground processes), job control and environment variables.
+
+@example
+title: Counting processes
+problem: How many processes exist (counting the original) after `for (int i = 0; i < 3; i++) { fork(); }` has run in every process?
+step: Before the loop there is 1 process. Each `fork` doubles the number of processes that execute the rest of the code, because parent and child both continue.
+step: After iteration 0 there are 2 processes; both run iteration 1, so after it there are 4; after iteration 2 there are 8.
+step: The count is $2^3 = 8$ processes, including the original. (Each child inherits the loop variable's current value, so a child created in iteration 1 only runs iteration 2.)
+
+@example
+title: Why cd is a built-in
+problem: A shell runs every command with `fork` and `execvp`. Explain why `cd /tmp` typed into it would not work as an external program.
+step: `fork` creates a child with a copy of the shell's state, including its current directory.
+step: A `cd` program would call `chdir("/tmp")` inside that child, changing only the child's directory.
+step: The child then exits. The parent shell's directory is unchanged, so the next command still runs in the old directory.
+step: Therefore the shell must call `chdir` itself, in its own process, when it sees `cd`.
+
+@mistakes
+- Forgetting that `fork` returns in both processes, so code after it runs twice unless the branches are separated by the return value.
+- Not calling `waitpid`, which leaves zombie processes behind.
+- Continuing after a failed `execvp` (the child then runs the parent's code); report the error and `_exit`.
+- Not terminating the `argv` array with `NULL`.
+- Leaving pipe ends open, so a reader waits forever for end of file.
+- Printing before `fork` without flushing, so the buffered text appears twice.
+
+@practice text
+prompt: What does this program print? Type the output exactly (two lines).
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        printf("child\n");
+        exit(3);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    printf("parent %d\n", WEXITSTATUS(status));
+    return 0;
+}
+```
+answer:
+```
+child
+parent 3
+```
+check: run_c('#include <stdio.h>\n#include <stdlib.h>\n#include <sys/wait.h>\n#include <unistd.h>\n\nint main(void) {\n    pid_t pid = fork();\n    if (pid == 0) {\n        printf("child\\n");\n        exit(3);\n    }\n    int status;\n    waitpid(pid, &status, 0);\n    printf("parent %d\\n", WEXITSTATUS(status));\n    return 0;\n}\n')
+hint: The parent calls `waitpid` before it prints.
+solution: `fork` returns `0` in the child, which prints `child` and exits with status `3`. The parent waits for it, then `WEXITSTATUS(status)` is `3`, so it prints `parent 3` afterwards.
+
+@practice code
+prompt: On Linux, the `status` filled in by `waitpid` encodes how the child ended: if the child exited normally, the low 7 bits are 0 and the exit code is in bits 8 to 15; if a signal killed it, the signal number is in the low 7 bits (bit 7, value 128, is set when a core dump was written). Write `decode_status(status)` returning `("exited", code)` or `("signaled", signal_number)` for these two cases. (Portable C code uses the macros `WIFEXITED` and `WEXITSTATUS`; the layout is a Linux detail.)
+starter:
+```python
+def decode_status(status):
+    pass
+```
+tests:
+```python
+assert decode_status(0) == ("exited", 0)
+assert decode_status(3 << 8) == ("exited", 3)
+assert decode_status(255 << 8) == ("exited", 255)
+assert decode_status(9) == ("signaled", 9)
+assert decode_status(11 | 128) == ("signaled", 11)
+```
+model:
+```python
+def decode_status(status):
+    if status & 0x7F == 0:
+        return "exited", (status >> 8) & 0xFF
+    return "signaled", status & 0x7F
+```
+hint: Test the low seven bits with `status & 0x7F`.
+hint: If they are zero, the exit code is `(status >> 8) & 0xFF`; otherwise the low seven bits are the signal number.
+solution: Mask the low 7 bits: zero means a normal exit, with the code taken from bits 8 to 15; nonzero means termination by that signal. A status of `139` is `11 | 128`: signal 11 (segmentation fault) with a core dump.
+
+@practice mc
+prompt: A simple shell forks a child for every command it reads. Why must `cd` be implemented inside the shell process instead of being run as a separate program?
+choice: Because `execvp` cannot find a program named `cd` on `PATH` on any system.
+choice*: Because a process's working directory belongs to that process, so `chdir` in a forked child would change only the child's directory and leave the shell's unchanged.
+choice: Because `fork` does not copy the current directory to the child.
+choice: Because `chdir` needs superuser permission when called from a child process.
+hint: Which process's state does `chdir` change?
+solution: The current directory is per-process state. A child changes its own copy and then exits, so the parent shell stays where it was. Commands that must change the shell's own state (`cd`, `exit`, setting variables) are therefore built-ins. (Some systems also install a separate `cd` executable, but it is useless for this reason.)
+
+@practice code
+prompt: Write `tokenize(line)` that splits a shell command line into a list of arguments. Arguments are separated by runs of spaces or tabs. A double quote starts and ends a quoted section in which spaces and tabs are kept as ordinary characters; the quote characters themselves are removed, and a quoted section may be adjacent to other text (`a"b c"d` is the single argument `ab cd`). An empty pair of quotes (`""`) gives an empty-string argument. An unterminated quote extends to the end of the line. There are no escape characters.
+starter:
+```python
+def tokenize(line):
+    pass
+```
+tests:
+```python
+assert tokenize("ls -l /tmp") == ["ls", "-l", "/tmp"]
+assert tokenize('echo "hello world" x') == ["echo", "hello world", "x"]
+assert tokenize("  a   b ") == ["a", "b"]
+assert tokenize('echo ""') == ["echo", ""]
+assert tokenize('a"b c"d') == ["ab cd"]
+assert tokenize("") == []
+assert tokenize('say "unfinished one') == ["say", "unfinished one"]
+```
+model:
+```python
+def tokenize(line):
+    tokens = []
+    current = []
+    in_quote = False
+    started = False
+    for ch in line:
+        if ch == '"':
+            in_quote = not in_quote
+            started = True
+        elif ch in " \t" and not in_quote:
+            if started:
+                tokens.append("".join(current))
+                current = []
+                started = False
+        else:
+            current.append(ch)
+            started = True
+    if started:
+        tokens.append("".join(current))
+    return tokens
+```
+hint: Scan one character at a time, keeping the current argument, a flag for being inside quotes, and a flag for whether an argument has started.
+hint: A quote toggles the flag (and starts an argument even if it stays empty); a space or tab outside quotes ends the current argument if one has started; any other character is appended.
+solution: This is the state machine a small shell uses: the `started` flag is what distinguishes the empty argument `""` from the gap between arguments, and it also stops runs of spaces from creating empty tokens. In C, the same loop would write into a buffer and record the start of each token in an `argv` array.
+
+@practice num
+prompt: A program runs `for (int i = 0; i < 4; i++) { fork(); }` and every process, including the original, executes the loop completely. How many processes exist at the end, counting the original?
+answer: 16
+check: 2**4
+hint: Each `fork` doubles the number of running processes.
+solution: One `fork` per iteration doubles the count each time: $2^4 = 16$.
+
+@quiz code
+prompt: Write `split_pipeline(tokens)` for a shell parser. `tokens` is a list of strings already produced by a tokenizer; the string `"|"` separates the commands of a pipeline. Return a list of commands, each a list of its argument tokens: `["ls", "|", "wc", "-l"]` gives `[["ls"], ["wc", "-l"]]`. An empty token list gives `[]`. Raise `ValueError` if any command would be empty (a leading, trailing or doubled `"|"`).
+starter:
+```python
+def split_pipeline(tokens):
+    pass
+```
+tests:
+```python
+assert split_pipeline(["ls", "|", "wc", "-l"]) == [["ls"], ["wc", "-l"]]
+assert split_pipeline(["ls", "-l"]) == [["ls", "-l"]]
+assert split_pipeline([]) == []
+assert split_pipeline(["a", "|", "b", "|", "c", "d"]) == [["a"], ["b"], ["c", "d"]]
+assert raises(ValueError, split_pipeline, ["|", "x"])
+assert raises(ValueError, split_pipeline, ["a", "|", "|", "b"])
+assert raises(ValueError, split_pipeline, ["a", "|"])
+```
+model:
+```python
+def split_pipeline(tokens):
+    if not tokens:
+        return []
+    commands = [[]]
+    for tok in tokens:
+        if tok == "|":
+            if not commands[-1]:
+                raise ValueError("empty command")
+            commands.append([])
+        else:
+            commands[-1].append(tok)
+    if not commands[-1]:
+        raise ValueError("empty command")
+    return commands
+```
+hint: Start a new command list each time you see `"|"`.
+hint: Before starting a new command, and at the end, check that the command you are leaving is not empty.
+solution: Each pipe token closes the current command, which must contain at least one token, and opens the next. Checking the last command after the loop catches a trailing `|`. A real shell would then create `len(commands) - 1` pipes and fork one child per command.
+
+@quiz mc
+prompt: In a program that calls `execvp("ls", argv)` successfully in a child process, which statement is true?
+choice: `execvp` returns `0` in the child, and the next statement runs after `ls` finishes.
+choice*: `execvp` does not return in the child: the process image is replaced by `ls`, which keeps the same PID.
+choice: `execvp` creates a new process for `ls` and returns its PID to the caller.
+choice: The parent's memory is shared with `ls`, so `ls` can read the parent's variables.
+hint: Compare with `fork`, which creates processes: what does `exec` do instead?
+solution: The `exec` family replaces the program, stack, heap and globals of the calling process with a new program; the PID and open file descriptors remain. That is why a failed `exec` is the only case in which it returns, and why `fork` and `exec` are used together to start a new program.

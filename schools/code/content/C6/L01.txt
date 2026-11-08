@@ -1,0 +1,207 @@
+@lesson
+title: Binary integers and two's complement
+summary: Convert between decimal, binary and hexadecimal, represent negative integers in two's complement, and detect overflow when adding fixed-width integers.
+objective: Convert unsigned integers among binary, hexadecimal and decimal, and state the range of an n-bit unsigned or two's complement integer.
+objective: Encode and decode negative integers in n-bit two's complement, including negation by "invert and add one" and sign extension.
+objective: Add fixed-width integers and decide whether signed overflow or unsigned carry-out occurred.
+reading: Dive into Systems, Chapter 4 "Binary and Data Representation" (integer representation, two's complement and arithmetic on integers).
+
+@article
+A computer stores everything as patterns of bits, so the first question of computer organization is: *which number does a given bit pattern mean?* The answer depends on the **representation**, the agreed rule that maps patterns to values. For integers there are two standard rules: unsigned and two's complement.
+
+### Unsigned binary and hexadecimal
+
+An $n$-bit pattern $b_{n-1}\dots b_1 b_0$ read as an **unsigned** integer has the value
+
+$$\sum_{i=0}^{n-1} b_i\, 2^i .$$
+
+So `1011` is $8+2+1 = 11$. An $n$-bit unsigned integer ranges over $0$ to $2^n-1$; for $n=8$ that is 0 to 255. **Hexadecimal** (base 16) is shorthand for binary: each hex digit is exactly four bits, so `0xD3` is `1101 0011`. Python writes these as `0b11010011` and `0xD3`; `bin`, `hex` and `int(text, base)` convert.
+
+### Two's complement
+
+To represent negative numbers in a fixed width, **two's complement** gives the top bit a *negative* weight:
+
+$$\text{value} = -b_{n-1}\,2^{n-1} + \sum_{i=0}^{n-2} b_i\, 2^i .$$
+
+With $n=8$, `1000 0000` is $-128$, and `1111 1111` is $-128+127=-1$. The range is $-2^{n-1}$ to $2^{n-1}-1$, so 8 bits give $-128$ to $127$. There is one zero, and exactly one more negative value than positive. The top bit is the **sign bit**: it is 1 exactly when the value is negative.
+
+Equivalently, a negative value $-x$ is stored as the unsigned pattern $2^n - x$. That is why **negation** is "invert every bit, then add 1": inverting gives $(2^n-1)-x$, and adding 1 gives $2^n-x$. Negating the most negative value, $-2^{n-1}$, gives itself back, because $+2^{n-1}$ does not fit.
+
+The design pays off in hardware: one adder serves signed and unsigned addition, since both are addition modulo $2^n$. RISC-V's `add` neither knows nor cares which interpretation you intend.
+
+### Sign extension
+
+To widen a two's complement number, copy the sign bit into the new high bits: 8-bit `1111 0110` ($-10$) becomes 16-bit `1111 1111 1111 0110`, still $-10$. Widening an unsigned number instead pads with zeros. RISC-V's `lb` sign-extends a loaded byte, while `lbu` zero-extends it.
+
+### Overflow
+
+Adding two $n$-bit integers can produce a result that needs more than $n$ bits, and the hardware keeps only the low $n$. Two different events are possible:
+
+- **Unsigned carry-out**: the sum exceeds $2^n-1$; a carry leaves the top bit.
+- **Signed overflow**: the true sum lies outside $-2^{n-1}\dots 2^{n-1}-1$. This happens exactly when both operands have the same sign and the result has the opposite sign. Adding operands of different signs can never overflow.
+
+The same bit pattern can carry out as unsigned yet not overflow as signed (`1111 1111 + 0000 0001` is a carry but $-1+1=0$ is fine).
+
+### In Python
+
+Python integers have unlimited size, so to imitate $n$-bit hardware you mask: `x & ((1 << n) - 1)` keeps the low $n$ bits of any integer, and for a negative `x` it yields the two's complement pattern as an unsigned number.
+
+@example
+title: Encoding -45 in 8-bit two's complement
+problem: Write -45 as an 8-bit two's complement pattern, and check it by decoding.
+step: Write the magnitude, $45 = 32+8+4+1$, in 8 bits: `0010 1101`.
+step: Invert every bit: `1101 0010`.
+step: Add 1: `1101 0010 + 1 = 1101 0011`, which is `0xD3`.
+step: Check by decoding: the unsigned reading of `0xD3` is 211, and $211 - 256 = -45$. Or by weights: $-128+64+16+2+1=-45$.
+answer: `1101 0011`
+
+@example
+title: Detecting signed overflow
+problem: In 8-bit two's complement, add 100 and 50. What bit pattern results, what value does it represent, and did signed overflow occur?
+step: In binary, $100 = $ `0110 0100` and $50 = $ `0011 0010`.
+step: Add them: `0110 0100 + 0011 0010 = 1001 0110`. No carry leaves the top bit, so there is no unsigned carry-out.
+step: Read the result as two's complement: $-128+16+4+2 = -106$, not the true sum 150.
+step: Both operands have sign bit 0 but the result has sign bit 1, so signed overflow occurred. The true sum 150 exceeds the maximum 127.
+answer: pattern `1001 0110`, value $-106$, signed overflow occurred
+
+@mistakes
+- Forgetting that a bit pattern has no meaning until the representation is chosen: `0xF6` is 246 unsigned but $-10$ in 8-bit two's complement.
+- Negating by only inverting the bits (that is one's complement, which has two zeros) and forgetting to add 1.
+- Believing the range is symmetric: $n$-bit two's complement is $-2^{n-1}$ to $2^{n-1}-1$, so 8 bits cannot hold $+128$.
+- Confusing unsigned carry-out with signed overflow; they are separate conditions and can occur independently.
+
+@practice num
+prompt: What integer does the 8-bit two's complement pattern `11110110` represent?
+answer: -10
+check: int("11110110", 2) - 256
+hint: The top bit is 1, so the value is negative: it equals the unsigned reading minus $2^8$.
+hint: The unsigned reading is $128+64+32+16+4+2 = 246$.
+solution: The unsigned reading is 246. Since the sign bit is 1, subtract $2^8 = 256$: $246-256=-10$.
+
+@practice code
+prompt: Write `to_twos(value, bits)` that returns the `bits`-bit two's complement representation of the integer `value` as a string of exactly `bits` characters, each `0` or `1`. If `value` does not fit in `bits` bits (it is outside $-2^{bits-1} \dots 2^{bits-1}-1$), raise `ValueError`. Example: `to_twos(-45, 8)` returns `"11010011"`.
+starter:
+```python
+def to_twos(value, bits):
+    pass
+```
+tests:
+```python
+assert to_twos(-45, 8) == "11010011"
+assert to_twos(5, 4) == "0101"
+assert to_twos(-8, 4) == "1000"
+assert to_twos(0, 8) == "00000000"
+assert raises(ValueError, to_twos, 8, 4)
+assert raises(ValueError, to_twos, -9, 4)
+```
+model:
+```python
+def to_twos(value, bits):
+    low = -(1 << (bits - 1))
+    high = (1 << (bits - 1)) - 1
+    if not low <= value <= high:
+        raise ValueError("value does not fit")
+    return format(value & ((1 << bits) - 1), f"0{bits}b")
+```
+hint: Check the range first: the smallest value is $-2^{bits-1}$ and the largest is $2^{bits-1}-1$.
+hint: Masking with `(1 << bits) - 1` turns a negative Python integer into its two's complement pattern as a non-negative number; `format(x, "08b")` pads a binary string with zeros.
+solution: Validate the range, then mask the value to `bits` bits and format it in binary, zero-padded to the width. For a negative `value` the mask yields $2^{bits} + value$, exactly the two's complement pattern.
+
+@practice code
+prompt: Write `from_twos(pattern)` that takes a string of `0` and `1` characters (its length is the width) and returns the integer it represents in two's complement. Example: `from_twos("11010011")` returns `-45`, and `from_twos("0101")` returns `5`.
+starter:
+```python
+def from_twos(pattern):
+    pass
+```
+tests:
+```python
+assert from_twos("11010011") == -45
+assert from_twos("0101") == 5
+assert from_twos("1000") == -8
+assert from_twos("1") == -1
+assert from_twos("0") == 0
+assert from_twos("01111111") == 127
+```
+model:
+```python
+def from_twos(pattern):
+    value = int(pattern, 2)
+    if pattern[0] == "1":
+        value -= 1 << len(pattern)
+    return value
+```
+hint: First read the pattern as an unsigned number with `int(pattern, 2)`.
+hint: If the first character is `"1"`, the value is negative: subtract $2^{n}$, where $n$ is the length of the pattern.
+solution: The unsigned reading is correct when the sign bit is 0. When it is 1, the pattern stands for the unsigned reading minus $2^n$. A one-bit pattern `"1"` is $1-2=-1$.
+
+@practice mc
+prompt: What is the range of integers representable in 12-bit two's complement?
+choice: $-2047$ to $2047$
+choice*: $-2048$ to $2047$
+choice: $-2048$ to $2048$
+choice: $0$ to $4095$
+hint: The range has $2^{12}=4096$ patterns, and zero takes one of the non-negative ones.
+solution: The range is $-2^{11}$ to $2^{11}-1$, that is $-2048$ to $2047$: 4096 values with one zero, so there is one more negative value than positive. The range $0$ to $4095$ is the unsigned range.
+
+@practice code
+prompt: Hardware detects signed overflow from sign bits alone. Write `add_overflows(a, b, bits)` where `a` and `b` are integers that fit in `bits`-bit two's complement. Compute the `bits`-bit wrapped sum `(a + b) & mask`, and return `True` exactly when `a` and `b` have the same sign and the sign bit of the wrapped sum differs from it; otherwise `False`. Do not compare against the numeric range limits.
+starter:
+```python
+def add_overflows(a, b, bits):
+    pass
+```
+tests:
+```python
+assert add_overflows(100, 50, 8) is True
+assert add_overflows(-100, -50, 8) is True
+assert add_overflows(100, -50, 8) is False
+assert add_overflows(127, 1, 8) is True
+assert add_overflows(-128, -1, 8) is True
+assert add_overflows(-128, 127, 8) is False
+assert add_overflows(4, 4, 4) is True
+assert add_overflows(3, 4, 4) is False
+```
+model:
+```python
+def add_overflows(a, b, bits):
+    mask = (1 << bits) - 1
+    top = 1 << (bits - 1)
+    a_neg = bool(a & mask & top)
+    b_neg = bool(b & mask & top)
+    r_neg = bool((a + b) & mask & top)
+    return a_neg == b_neg and r_neg != a_neg
+```
+hint: The sign bit of an `n`-bit pattern is the bit with value `1 << (n - 1)`; test it with `&` after masking.
+hint: Overflow needs equal operand signs and a different result sign. Return a real `bool`.
+solution: Extract the three sign bits (operand a, operand b, wrapped result). Overflow is `a_neg == b_neg and r_neg != a_neg`. For 4 + 4 in 4 bits the wrapped result is `1000`: both operands are non-negative but the result has sign bit 1, so it overflows, while 3 + 4 = 7 fits.
+
+@quiz code
+prompt: Write `sign_extend(pattern, width)` that takes a string of `0`/`1` characters and an integer `width` at least as large as the length of the string, and returns the string widened to `width` characters by repeating its first character on the left. Example: `sign_extend("1010", 8)` returns `"11111010"`.
+starter:
+```python
+def sign_extend(pattern, width):
+    pass
+```
+tests:
+```python
+assert sign_extend("1010", 8) == "11111010"
+assert sign_extend("0110", 8) == "00000110"
+assert sign_extend("1", 4) == "1111"
+assert sign_extend("101", 3) == "101"
+```
+model:
+```python
+def sign_extend(pattern, width):
+    return pattern[0] * (width - len(pattern)) + pattern
+```
+hint: How many extra characters are needed? It is `width - len(pattern)`.
+hint: Repeat the first character that many times using string multiplication.
+solution: Copy the sign bit into the new high positions: `pattern[0] * (width - len(pattern))` placed before the original pattern. The value is unchanged: `1010` is $-6$ and `11111010` is also $-6$.
+
+@quiz num
+prompt: In 8-bit two's complement, negate $-128$ by inverting all bits and adding 1 (discarding any carry out of bit 7). What signed integer does the resulting pattern represent?
+answer: -128
+check: ((~(-128 & 255) + 1) & 255) - 256
+hint: $-128$ is `1000 0000`. Invert it, then add 1 and keep only 8 bits.
+solution: Inverting `1000 0000` gives `0111 1111`; adding 1 gives `1000 0000`, which is $-128$ again. The value $+128$ does not fit in 8 bits, so the most negative number is its own negation.

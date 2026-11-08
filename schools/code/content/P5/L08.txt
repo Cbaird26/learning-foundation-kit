@@ -1,0 +1,237 @@
+@lesson
+title: Continuous delivery and rollbacks
+summary: Automate releases so the same tested artifact is promoted from staging to production, and plan for fast, safe rollbacks.
+objective: Distinguish continuous integration, continuous delivery and continuous deployment.
+objective: Design a pipeline that builds once, tags the artifact immutably and promotes it through environments.
+objective: Use semantic versioning, feature flags and gradual rollouts, and perform a rollback.
+reading: The Twelve-Factor App, the "Build, release, run" factor (V) and the "Disposability" factor (IX).
+
+@article
+You can now build and deploy by hand. **Continuous delivery (CD)** turns that into a button, or better, no button: every change that passes the pipeline is automatically packaged and ready to release. **Continuous deployment** goes one step further and ships every passing change to production automatically. Continuous *integration* (week 4) is the checking part; delivery is the releasing part. Most teams do delivery with a human approval for production, and deployment for low-risk services.
+
+### Build once, promote everywhere
+
+The golden rule: **build the artifact once and promote that exact artifact** through the environments. If you rebuild for production, the thing you deploy is not the thing you tested. Tag the container image with the Git commit hash (a tag you never move to another image; many registries can enforce this) and with the release version. Environments differ only in configuration (week 5).
+
+A typical flow: merge to `main` → CI builds and tests → push image tagged with the commit → deploy to **staging** automatically → run smoke tests → manual approval → deploy the same image to **production** → run smoke tests again.
+
+### A release workflow
+
+Here is the shape of a release workflow in GitHub Actions; the `deploy.sh` script stands for whatever your chosen platform needs (a CLI call or an API request):
+
+```yaml
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7
+      - name: Deploy to staging
+        run: ./scripts/deploy.sh staging "${GITHUB_REF_NAME}"
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+      - name: Smoke test
+        run: ./scripts/smoke.sh staging
+
+  production:
+    needs: staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - name: Deploy to production
+        run: ./scripts/deploy.sh production "${GITHUB_REF_NAME}"
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+      - name: Smoke test
+        run: ./scripts/smoke.sh production
+```
+
+`on.push.tags` triggers the workflow when you push a tag such as `v1.2.0`. `needs` makes production wait for staging. The `environment` keys let you attach secrets and a **required reviewer** to production in the repository settings, so a human approves the promotion. The secret is read from the secrets store, never written in the file.
+
+### Semantic versioning
+
+**Semantic Versioning** numbers releases `MAJOR.MINOR.PATCH`: increase MAJOR for incompatible changes, MINOR for backwards-compatible features and PATCH for backwards-compatible fixes. Compare versions numerically, field by field, never as text (`1.10.0` is newer than `1.9.0`). Combined with Conventional Commits, `feat` suggests a minor bump, `fix` a patch, and `!` a major.
+
+### Deployment strategies
+
+- **Rolling:** replace instances a few at a time; simple and usually the platform's default.
+- **Blue-green:** run the new version beside the old one, switch traffic when it is healthy, and switch back to roll back.
+- **Canary:** send a small share of traffic (say 5 percent) to the new version, watch metrics, then increase.
+- **Feature flags:** ship the code turned off and enable the feature gradually or for some users. A flag separates *deploying* code from *releasing* a feature, which makes releases boring, which is what you want.
+
+### Rollbacks
+
+Every release needs a rehearsed way back. The fastest rollback is **redeploying the previous known-good image tag**, which only works if old images are kept and configuration is compatible. The hard part is the database: a migration that deletes or renames a column cannot be undone by redeploying code. Use the **expand and contract** pattern: first *expand* (add the new column, keep the old), deploy code that works with both, migrate data, and only in a later release *contract* (remove the old column). Then the previous version always still runs against the current schema.
+
+Decide the rollback trigger in advance ("error rate above 2 percent for five minutes after a deploy"), practice it once in staging, and write it in a runbook (week 11).
+
+@example
+title: Comparing versions correctly
+problem: Is `1.10.0` newer or older than `1.9.3`? How should code decide?
+step: As text, `"1.10.0" < "1.9.3"` is true, because the character `1` comes before `9`. That is the wrong answer.
+step: Split on dots and convert each part to an integer: `(1, 10, 0)` and `(1, 9, 3)`.
+step: Compare the tuples from left to right: major 1 equals 1, minor 10 is greater than 9, so `1.10.0` is newer.
+answer: `1.10.0` is newer; compare numeric fields, not strings.
+
+@example
+title: Rolling back a bad release
+problem: Version `v1.4.0` shipped. Five minutes later the error rate is 6 percent. The release added a nullable column. What do you do?
+step: Follow the pre-agreed trigger: error rate above the limit means rollback. Do not debug in production first.
+step: Redeploy the previous image tag, `v1.3.2`, using the same pipeline or the platform's rollback command.
+step: Because the migration only *added* a nullable column (expand), the old code still runs, so no schema rollback is needed.
+step: Run the smoke test, confirm the error rate falls, then investigate from logs and write up the incident for the retrospective.
+answer: Redeploy `v1.3.2`; the additive migration is compatible, so the service recovers without touching the database.
+
+@mistakes
+- Rebuilding the image for production, so the artifact that runs is not the one that was tested.
+- Using `latest` or a moving tag for deployments, which makes it impossible to say what is running or to roll back precisely.
+- Writing a migration that drops or renames a column in the same release as the code that stops using it, which makes rollback impossible.
+- Comparing version strings as text instead of comparing the numbers.
+
+@practice mc
+prompt: Which statement describes the best practice for moving a release from staging to production?
+choice: Rebuild the image from the same commit for production, because rebuilding is cleaner.
+choice*: Deploy the exact image that passed the staging tests, changing only the configuration.
+choice: Copy the source files to the production server by hand.
+choice: Deploy the `latest` tag so production is always current.
+hint: What you tested must be what you ship.
+solution: Promoting the same immutable artifact guarantees that production runs what was tested. A rebuild can differ, and `latest` is a moving target.
+
+@practice code
+prompt: Write `compare_versions(a, b)` for strings of the form `MAJOR.MINOR.PATCH` (each a non-negative integer; an optional leading `v` is allowed). Return `-1` if `a` is older than `b`, `0` if they are equal and `1` if `a` is newer. Compare numerically.
+starter:
+```python
+def compare_versions(a, b):
+    pass
+```
+tests:
+```python
+assert compare_versions("1.2.3", "1.2.4") == -1
+assert compare_versions("1.10.0", "1.9.3") == 1
+assert compare_versions("v2.0.0", "2.0.0") == 0
+assert compare_versions("0.9.9", "1.0.0") == -1
+assert compare_versions("1.2.3", "1.2.3") == 0
+assert compare_versions("10.0.0", "9.99.99") == 1
+```
+model:
+```python
+def _parse(version):
+    text = version[1:] if version.startswith("v") else version
+    return tuple(int(part) for part in text.split("."))
+
+
+def compare_versions(a, b):
+    left, right = _parse(a), _parse(b)
+    if left < right:
+        return -1
+    if left > right:
+        return 1
+    return 0
+```
+hint: Convert each version into a tuple of three integers.
+hint: Tuples compare field by field from the left, which is exactly the rule you need.
+solution: Strip an optional `v`, split on dots and convert to ints, then compare the tuples; Python's tuple ordering is the major-then-minor-then-patch rule.
+
+@practice code
+prompt: `deploys` is a list of dicts, oldest first, each `{"version": "...", "healthy": True or False}`; the last one is the version running now. Write `rollback_target(deploys)` that returns the version string of the most recent **earlier** deploy that is healthy, or `None` if there is none. An empty list or a single deploy also gives `None`.
+starter:
+```python
+def rollback_target(deploys):
+    pass
+```
+tests:
+```python
+history = [
+    {"version": "1.0.0", "healthy": True},
+    {"version": "1.1.0", "healthy": False},
+    {"version": "1.2.0", "healthy": True},
+    {"version": "1.3.0", "healthy": False},
+]
+assert rollback_target(history) == "1.2.0"
+assert rollback_target(history[:2]) == "1.0.0"
+assert rollback_target(history[1:2]) is None
+assert rollback_target([]) is None
+assert rollback_target([{"version": "1.0.0", "healthy": False},
+                        {"version": "1.1.0", "healthy": True}]) is None
+```
+model:
+```python
+def rollback_target(deploys):
+    for deploy in reversed(deploys[:-1]):
+        if deploy["healthy"]:
+            return deploy["version"]
+    return None
+```
+hint: The current deploy is the last one; skip it with `deploys[:-1]`.
+hint: Walk the earlier ones from newest to oldest with `reversed` and return the first healthy one.
+solution: Exclude the running (last) deploy, scan the rest from newest to oldest, and return the first healthy version, or `None` if none is found.
+
+@practice ms
+prompt: Which of these make a database migration safe to roll back with a code rollback? Select all that apply.
+choice*: Adding a new nullable column and keeping the old one for now.
+choice*: Deploying code that works with both the old and the new schema before removing anything.
+choice: Dropping a column in the same release as the code that stops using it.
+choice*: Removing the old column only in a later release, after the new code is proven.
+choice: Renaming a column in place with no transition period.
+hint: The old code must still work against the new schema.
+solution: The expand-and-contract steps (add, support both, remove later) keep the previous release working. Dropping or renaming a column in place breaks the old code and prevents rollback.
+
+@practice self
+prompt: Write the release and rollback runbook for your capstone: how a release is triggered, what the pipeline does in order, what is checked after deploying to production, the exact rollback trigger and rollback steps, and how you will handle a release that needs a database column to be renamed.
+hint: Use the expand and contract pattern for the rename.
+solution: Trigger: I tag `main` with `v1.4.0` after CI is green, which starts the release workflow. Pipeline: build the image once and tag it with the commit hash and `v1.4.0`; deploy to staging; run the smoke test; wait for my approval on the `production` environment; deploy the same image to production; run the smoke test. After deploying: check `/health`, watch the error rate and latency dashboards for 15 minutes, and test the main user path. Rollback trigger: error rate above 2 percent for five minutes, or the smoke test failing. Rollback steps: redeploy the previous image tag (for example `v1.3.2`) with the same deploy script, run the smoke test, announce it, then investigate from logs. Rename of a column `owner` to `member_id`: release 1 adds `member_id` and writes to both columns; release 2 backfills existing rows and reads from `member_id`; release 3, after it has been stable, drops `owner`. At every step the previous release still works with the current schema, so a rollback never needs a schema rollback.
+rubric: The pipeline builds once and promotes the same tagged artifact, with a smoke test and an approval step.
+rubric: States a specific, measurable rollback trigger and exact rollback steps, not just "redeploy if broken".
+rubric: Handles the rename with expand and contract across at least two releases and explains why that allows rollback.
+rubric: Includes what to watch after the deploy and how the incident will be reviewed.
+
+@quiz code
+prompt: Write `in_rollout(user_id, flag, percent)` for a gradual feature rollout. Compute a bucket from 0 to 99 as `int(sha256(f"{flag}:{user_id}".encode()).hexdigest(), 16) % 100` using `hashlib.sha256`, and return `True` when the bucket is less than `percent`. A given user and flag must always give the same answer, 0 percent enables nobody and 100 percent enables everybody.
+starter:
+```python
+def in_rollout(user_id, flag, percent):
+    pass
+```
+tests:
+```python
+users = [f"user-{i}" for i in range(200)]
+assert not any(in_rollout(u, "new-ui", 0) for u in users)
+assert all(in_rollout(u, "new-ui", 100) for u in users)
+assert in_rollout("user-7", "new-ui", 50) == in_rollout("user-7", "new-ui", 50)
+at30 = {u for u in users if in_rollout(u, "new-ui", 30)}
+at60 = {u for u in users if in_rollout(u, "new-ui", 60)}
+assert at30 <= at60
+assert 70 <= len(at60) <= 170
+```
+model:
+```python
+import hashlib
+
+
+def in_rollout(user_id, flag, percent):
+    key = f"{flag}:{user_id}".encode()
+    bucket = int(hashlib.sha256(key).hexdigest(), 16) % 100
+    return bucket < percent
+```
+hint: Hash the text `flag:user_id`, convert the hex digest to an integer and take it modulo 100.
+hint: Because the bucket never changes for a user, raising the percentage only adds users.
+solution: A stable hash gives each user a fixed bucket from 0 to 99, so the same user always gets the same answer. Comparing `bucket < percent` makes 0 percent enable nobody, 100 percent everybody, and any increase only adds users.
+
+@quiz mc
+prompt: A team wants to release a risky change to a small share of traffic first and watch the error rate before sending everyone to it. Which strategy is this?
+choice: Blue-green deployment
+choice*: Canary release
+choice: A big-bang rewrite
+choice: Rolling back
+hint: The name comes from the early-warning bird in a mine.
+solution: A canary release sends a small share of traffic to the new version and increases it only if the metrics stay healthy. Blue-green switches all traffic between two full environments at once.

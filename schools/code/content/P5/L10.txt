@@ -1,0 +1,248 @@
+@lesson
+title: Performance, security and accessibility review
+summary: Review your application for slow queries, common security weaknesses and accessibility barriers, then fix the highest-impact issues you find.
+objective: Find performance problems by measuring, including N+1 queries, and fix them with indexes, pagination and caching.
+objective: Review an application against the OWASP Top 10:2025 and apply defensive fixes such as parameterized queries, access checks and rate limits.
+objective: Check an interface against WCAG 2.2 basics such as contrast, keyboard use, labels and target size.
+reading: The Twelve-Factor App, the "Dev/prod parity" (X) and "Backing services" (IV) factors, plus the OWASP Top 10 project page for the 2025 list.
+
+@article
+Before you call something done, review it three ways. This week's deliverable is practical: find real issues, fix at least three, and record what you changed. Review is a skill, so use a checklist and write down findings.
+
+### Performance: measure first
+
+Do not guess where time goes: measure. Use your framework's debug toolbar or request timing logs from last week, and a profiler (`cProfile` in Python) on the slow path. Typical capstone problems:
+
+- **N+1 queries:** loading a list of 50 reservations, then running one query per row to fetch the tool name: 51 queries instead of one join. Look for queries inside loops and fix them with a join or a batched `IN` query.
+- **Missing indexes:** a filter or sort on an unindexed column scans the whole table. Add an index on columns you filter or join by, and check the query plan (`EXPLAIN`).
+- **No pagination:** returning every row. Cap page sizes and paginate.
+- **Repeated work:** cache results that are expensive and change rarely, with a clear expiry, and remember the old joke that cache invalidation is hard.
+- **Large payloads and assets:** compress responses and optimize images.
+
+Set a target ("p95 under 300 ms on the main page") so you know when to stop.
+
+### Security review (defensive)
+
+Walk the OWASP Top 10:2025 against your application: A01 Broken Access Control, A02 Security Misconfiguration, A03 Software Supply Chain Failures, A04 Cryptographic Failures, A05 Injection, A06 Insecure Design, A07 Authentication Failures, A08 Software or Data Integrity Failures, A09 Security Logging and Alerting Failures, A10 Mishandling of Exceptional Conditions. The highest-value checks for a small app:
+
+- **Access control (A01):** every endpoint checks *who* is asking and *whether they may* touch *this* record. A user who changes `/reservations/41` to `/reservations/42` in the address bar must get a denial for someone else's data. Deny by default.
+- **Injection (A05):** never build SQL by pasting strings. The vulnerable pattern, shown only so you can recognize it, next to the fix:
+
+```python
+# VULNERABLE: user text becomes part of the SQL statement
+query = "SELECT * FROM tools WHERE name = '" + name + "'"
+cursor.execute(query)
+
+# FIXED: a parameterized query keeps data separate from SQL
+cursor.execute("SELECT * FROM tools WHERE name = ?", (name,))
+```
+
+(The placeholder style, `?` or `%s`, depends on the database driver.) Also escape output in templates, which modern frameworks do by default.
+- **Misconfiguration (A02):** turn debug mode off in production, remove default accounts, and send security headers such as a Content-Security-Policy and `Strict-Transport-Security` (HSTS, sent over HTTPS only, which tells browsers to use HTTPS for your site for a `max-age` period; start with a short value and lengthen it once everything works). Serve everything over HTTPS.
+- **Supply chain (A03):** pin dependencies, run your ecosystem's dependency audit in CI (for Python, a tool such as `pip-audit`), keep the base image updated and enable automated dependency update pull requests.
+- **Authentication (A07) and cryptography (A04):** if you have passwords, follow NIST SP 800-63B Revision 4: at least 15 characters when a password is the only factor, allow at least 64 characters, impose no composition rules and no forced periodic changes, check against a list of compromised passwords, and store them salted and hashed with a slow, purpose-built function (such as Argon2, scrypt or bcrypt). Better still, delegate login to a vetted library or provider.
+- **Rate limiting:** limit login attempts and expensive endpoints to blunt guessing and abuse (see the exercise).
+- **Exceptional conditions (A10):** handle errors explicitly, never fail open (an error in an authorization check must deny), and do not show stack traces to users.
+
+### Accessibility review
+
+Build to **WCAG 2.2**, the current W3C recommendation. High-impact checks:
+
+- **Keyboard:** everything works without a mouse, in a logical tab order, with a visible focus indicator that is not hidden behind other content (WCAG 2.2 added *Focus Not Obscured*).
+- **Names and labels:** every form field has a visible `<label>`; images have meaningful `alt` text (empty `alt=""` when decorative); use real headings and landmarks.
+- **Contrast:** normal text needs a contrast ratio of at least 4.5:1 against its background; large text and interface components need 3:1.
+- **Target size:** WCAG 2.2 requires pointer targets of at least 24 by 24 CSS pixels (with some exceptions); larger is kinder.
+- **Do not rely on color alone** to convey meaning, and make errors clear in text near the field.
+- **Zoom and reflow:** the page stays usable at 200 percent zoom.
+
+Test with the keyboard only, with the browser's accessibility audit, and with a screen reader at least once.
+
+### Triage: fix three things
+
+You will find more than you can fix. Rank findings by **severity** (impact times likelihood), fix the top few, and write the rest into the backlog with reasons. Recording a known issue honestly is professional; hiding it is not.
+
+@example
+title: Fixing an N+1 query
+problem: A page lists 50 reservations. The code loops over them and runs `SELECT name FROM tools WHERE id = ?` for each one. The page takes 900 ms. Fix it.
+step: Count the queries: one to list the reservations plus 50 inside the loop is 51 queries. Each round trip to the database costs time, so the total grows with the list.
+step: Replace the loop with one join: `SELECT r.id, r.start_date, t.name FROM reservations r JOIN tools t ON t.id = r.tool_id ORDER BY r.start_date LIMIT 50`.
+step: Add an index on `reservations(tool_id)` if the plan shows a full scan, and check with `EXPLAIN`.
+step: Measure again against the target. Add a test that asserts the query count stays constant, so the problem cannot silently return.
+answer: One joined query (plus an index if needed), verified by measurement and a regression test.
+
+@example
+title: Checking a color pair for contrast
+problem: Body text is gray `#777777` on white. Does it meet WCAG 2.2 for normal text?
+step: Compute the relative luminance of each color from its sRGB values; white has luminance 1.0 and `#777777` has about 0.184.
+step: The contrast ratio is `(lighter + 0.05) / (darker + 0.05)`, which is `(1.0 + 0.05) / (0.184 + 0.05)`, about 4.48.
+step: Normal text needs at least 4.5, so 4.48 narrowly fails.
+step: Darken the gray slightly to `#767676`, which has a ratio of about 4.54 and passes.
+answer: `#777777` on white is about 4.48:1 and fails; `#767676` passes at about 4.54:1.
+
+@mistakes
+- Optimizing by intuition instead of measuring, so you speed up code that was never slow.
+- Building SQL by concatenating user input, or trusting that a hidden form field or URL id cannot be changed.
+- Checking access only in the user interface (hiding a button) rather than on the server for every request.
+- Treating accessibility as a last-minute polish, or relying on color alone to show errors.
+
+@practice mc
+prompt: A logged-in user changes the number in `/reservations/41` to `42` and sees another member's reservation. Which OWASP Top 10:2025 category does this belong to, and what is the fix?
+choice: Injection; escape quotes in the id.
+choice*: Broken Access Control; the server must verify that the current user is allowed to access that specific record, and deny by default.
+choice: Cryptographic Failures; encrypt the id in the URL.
+choice: Security Logging Failures; log the page view.
+hint: The problem is who may see which record.
+solution: This is broken access control: the server did not check ownership of the record. The fix is an authorization check on every request for that object. Hiding or encrypting the id does not enforce permission.
+
+@practice code
+prompt: Write a class `TokenBucket(capacity, refill_per_second)` for rate limiting. It starts full with `capacity` tokens. The method `allow(now)` takes the current time in seconds as a number (so tests control the clock). First add `(now - last_time) * refill_per_second` tokens, never exceeding `capacity`, then, if at least 1 token is available, remove 1 and return `True`; otherwise return `False`. The first call sets the starting `last_time` to its own `now`.
+starter:
+```python
+class TokenBucket:
+    def __init__(self, capacity, refill_per_second):
+        pass
+
+    def allow(self, now):
+        pass
+```
+tests:
+```python
+b = TokenBucket(3, 1)
+assert [b.allow(0), b.allow(0), b.allow(0), b.allow(0)] == [True, True, True, False]
+assert b.allow(0.5) is False
+assert b.allow(1) is True
+assert b.allow(1) is False
+assert b.allow(100) is True
+assert [b.allow(100), b.allow(100), b.allow(100)] == [True, True, False]
+slow = TokenBucket(1, 0.5)
+assert slow.allow(10) is True
+assert slow.allow(11) is False
+assert slow.allow(12) is True
+```
+model:
+```python
+class TokenBucket:
+    def __init__(self, capacity, refill_per_second):
+        self.capacity = capacity
+        self.refill = refill_per_second
+        self.tokens = capacity
+        self.last = None
+
+    def allow(self, now):
+        if self.last is not None:
+            gained = (now - self.last) * self.refill
+            self.tokens = min(self.capacity, self.tokens + gained)
+        self.last = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+```
+hint: Store `tokens` and the time of the last call; refill before deciding.
+hint: Cap the refill with `min(capacity, ...)`. The first call has no previous time, so it adds nothing.
+solution: Keep a token count and the last timestamp. On each call add the tokens earned since the last call (capped at capacity), then spend one token if at least one is available. Bursts up to `capacity` pass, and sustained traffic is limited to the refill rate.
+
+@practice code
+prompt: Write `contrast_ratio(fg, bg)` for two colors given as strings like `"#rrggbb"` (lowercase or uppercase hex). Compute each color's relative luminance: convert each channel to `c = value / 255`, then use `c / 12.92` if `c <= 0.04045`, else `((c + 0.055) / 1.055) ** 2.4`; luminance is `0.2126 * R + 0.7152 * G + 0.0722 * B`. The ratio is `(lighter + 0.05) / (darker + 0.05)`. Return it rounded to 2 decimal places.
+starter:
+```python
+def contrast_ratio(fg, bg):
+    pass
+```
+tests:
+```python
+assert contrast_ratio("#000000", "#ffffff") == 21.0
+assert contrast_ratio("#ffffff", "#000000") == 21.0
+assert contrast_ratio("#777777", "#ffffff") == 4.48
+assert contrast_ratio("#767676", "#FFFFFF") == 4.54
+assert contrast_ratio("#336699", "#ffffff") == 6.0
+assert contrast_ratio("#ffffff", "#ffffff") == 1.0
+```
+model:
+```python
+def _luminance(color):
+    color = color.lstrip("#")
+    channels = []
+    for i in (0, 2, 4):
+        c = int(color[i:i + 2], 16) / 255
+        if c <= 0.04045:
+            channels.append(c / 12.92)
+        else:
+            channels.append(((c + 0.055) / 1.055) ** 2.4)
+    r, g, b = channels
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(fg, bg):
+    first, second = _luminance(fg), _luminance(bg)
+    lighter, darker = max(first, second), min(first, second)
+    return round((lighter + 0.05) / (darker + 0.05), 2)
+```
+hint: Write a helper that turns one hex color into its luminance, then call it twice.
+hint: Use `max` and `min` so the order of the two arguments does not matter.
+solution: Parse the three channels with `int(..., 16)`, apply the gamma formula to each, weight them into a luminance, then divide the lighter luminance plus 0.05 by the darker plus 0.05 and round. Black on white gives 21.
+
+@practice ms
+prompt: Which of these are WCAG 2.2 or accessibility practices that you should check in a review? Select all that apply.
+choice*: Normal-size text has a contrast ratio of at least 4.5:1.
+choice*: Every feature can be used with the keyboard, and the focus indicator is visible.
+choice: Errors are shown only by turning the field border red.
+choice*: Every form field has a programmatically associated label.
+choice: Small icon buttons of 10 by 10 pixels are fine because they are tidy.
+hint: Think about people who cannot see color, use a mouse, or have limited dexterity.
+solution: Contrast, keyboard operation with visible focus, and labelled fields are core requirements. Color alone is not enough to show an error, and WCAG 2.2 expects pointer targets of at least 24 by 24 CSS pixels.
+
+@practice self
+prompt: Review your own capstone (or the tool library app described in week 1). Write a findings table with at least six findings across performance, security and accessibility (two each): the issue, how you would detect it, the severity, and the fix. Then say which three you fix first and why.
+hint: Use the OWASP Top 10:2025 list for the security findings, and the golden signals for performance.
+solution: Findings: (1) Performance, N+1 query on the reservation list: detected by logging the query count per request (51 queries); high severity because the main page is slow; fix with a join and a regression test on the query count. (2) Performance, no index on `reservations(tool_id)`: detected with `EXPLAIN` showing a full table scan; medium; fix by adding an index in a migration. (3) Security, a reservation can be read by any logged-in user through its id (A01 Broken Access Control): detected by requesting another member's id with a test account; high; fix by checking ownership on the server and adding a test that expects a 403. (4) Security, debug mode on in production (A02 Security Misconfiguration): detected by triggering an error and seeing a stack trace; high; fix by reading `DEBUG` from configuration with a default of off. (5) Accessibility, gray text on white at 4.3:1: detected with a contrast checker; medium; fix by darkening the color to pass 4.5:1. (6) Accessibility, form fields with placeholders but no labels: detected by tabbing through with a screen reader; medium; fix by adding labels. First three: the access control flaw (data exposure), debug mode (information leak) and the N+1 query (user-visible slowness), because they have the highest impact for the least effort; the rest go into the backlog with their severity.
+rubric: At least six findings, two from each area, each with a detection method, severity and a concrete fix.
+rubric: Security findings use correct OWASP Top 10:2025 categories and defensive fixes (parameterized queries, server-side access checks, safe configuration).
+rubric: Accessibility findings reference real WCAG 2.2 checks such as contrast, labels, keyboard or target size.
+rubric: Chooses three to fix first with a reason based on severity, and records the remainder in the backlog.
+
+@quiz code
+prompt: Write `paginate(items, page, per_page)` that returns a dict `{"items": [...], "page": page, "pages": total_pages}`. Pages are numbered from 1; `pages` is the number of pages needed for all items (0 when there are no items); a page past the end returns an empty `"items"` list. Raise `ValueError` if `page < 1` or `per_page < 1`.
+starter:
+```python
+def paginate(items, page, per_page):
+    pass
+```
+tests:
+```python
+data = list(range(1, 8))
+assert paginate(data, 1, 3) == {"items": [1, 2, 3], "page": 1, "pages": 3}
+assert paginate(data, 3, 3) == {"items": [7], "page": 3, "pages": 3}
+assert paginate(data, 4, 3) == {"items": [], "page": 4, "pages": 3}
+assert paginate([], 1, 10) == {"items": [], "page": 1, "pages": 0}
+assert paginate(data, 1, 7)["pages"] == 1
+assert raises(ValueError, paginate, data, 0, 3)
+assert raises(ValueError, paginate, data, 1, 0)
+```
+model:
+```python
+import math
+
+
+def paginate(items, page, per_page):
+    if page < 1 or per_page < 1:
+        raise ValueError("page and per_page must be at least 1")
+    start = (page - 1) * per_page
+    return {
+        "items": items[start:start + per_page],
+        "page": page,
+        "pages": math.ceil(len(items) / per_page),
+    }
+```
+hint: The first item of page `page` has index `(page - 1) * per_page`.
+hint: Slicing past the end of a list gives an empty list, so no special case is needed.
+solution: Validate the numbers, slice `per_page` items starting at `(page - 1) * per_page`, and compute the page count with `math.ceil(len(items) / per_page)`. A slice beyond the end is empty automatically.
+
+@quiz mc
+prompt: A search feature builds its SQL as `"SELECT * FROM tools WHERE name = '" + term + "'"`. What is the correct defensive fix?
+choice: Remove single quotes from the search term with a replace call.
+choice: Make the search term shorter than 20 characters.
+choice*: Use a parameterized query with a placeholder and pass the term as a separate argument.
+choice: Run the query as the database administrator so it never fails.
+hint: Keep the data separate from the SQL text.
+solution: A parameterized query sends the SQL and the value separately, so the value can never change the structure of the statement. Stripping characters or limiting length is incomplete, and running as administrator makes any flaw worse.

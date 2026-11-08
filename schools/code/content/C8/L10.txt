@@ -1,0 +1,206 @@
+@lesson
+title: Virtual memory: TLBs and page replacement
+summary: Compute effective access time with a TLB and with page faults, and simulate FIFO, LRU and optimal page replacement on reference strings.
+objective: Explain how a TLB caches translations and compute the effective access time from the hit rate.
+objective: Describe demand paging, page faults and the roles of the present, dirty and reference bits.
+objective: Simulate FIFO, LRU and the optimal policy on a reference string and recognize Belady's anomaly.
+reading: Operating Systems: Three Easy Pieces, the chapters "Paging: Faster Translations (TLBs)", "Beyond Physical Memory: Mechanisms" and "Beyond Physical Memory: Policies".
+
+@article
+Paging makes every memory reference two: one to read the page table entry and one for the data (more with multi-level tables). Two ideas fix the cost and also let programs use more memory than the machine has.
+
+### The TLB
+
+The **translation lookaside buffer (TLB)** is a small, fast, hardware cache of recent VPN-to-PFN translations. On each reference the hardware first looks in the TLB. A **hit** gives the PFN immediately. A **miss** requires a page table walk (extra memory accesses), after which the translation is cached. The TLB works because of **locality**: **temporal locality** (a recently used item is likely to be used again) and **spatial locality** (nearby items are used together). Walking an array touches the same page many times, so almost every reference after the first on a page hits.
+
+x86 hardware walks the page table itself on a miss; some architectures (such as classic MIPS) trap to the OS, which fills the TLB in software. On a **context switch** the TLB's translations belong to the old process, so the OS either flushes the TLB or tags each entry with an **address-space identifier (ASID)** so that entries of different processes can coexist.
+
+With TLB lookup time $t$, memory access time $m$, hit rate $h$ and a single-level page table, the **effective access time** is
+
+$$\text{EAT} = h\,(t + m) + (1 - h)\,(t + 2m).$$
+
+For $t = 10$ ns, $m = 100$ ns, $h = 0.9$: $0.9 \times 110 + 0.1 \times 210 = 120$ ns.
+
+### Demand paging and page faults
+
+A process's pages need not all be in RAM. A PTE's **present bit** says whether the page is in memory. A reference to a non-present page causes a **page fault**, a trap to the OS, which finds the page on disk (swap space or the program file), picks a free frame, reads the page in, updates the PTE and restarts the instruction. This is **demand paging**: pages are loaded only when used. Disk access takes millions of nanoseconds, so even a tiny fault rate hurts. If a fault costs $f$ ns and happens with probability $p$ per reference, $\text{EAT} = (1-p)\,m + p\,f$. With $m = 100$ ns, $f = 8$ ms $= 8{,}000{,}000$ ns and $p = 0.001$, the EAT is $99.9 + 8000 = 8099.9$ ns: about 81 times slower.
+
+### Page replacement
+
+When RAM is full, a fault requires choosing a **victim** page to evict. If the victim is **dirty** (modified), it must first be written to disk; a clean page can simply be discarded. The goal is to minimize faults. We evaluate policies on a **reference string** (the sequence of page numbers accessed).
+
+- **FIFO:** evict the page that has been resident longest. Simple, but it can evict a heavily used page.
+- **LRU (least recently used):** evict the page unused for the longest time, betting that the past predicts the future. LRU is a **stack algorithm**: giving it more frames never increases faults.
+- **OPT (optimal, Belady's algorithm):** evict the page whose next use is farthest in the future. It needs knowledge of the future, so it is unimplementable in a real system but is the benchmark against which others are measured.
+- **Clock:** an approximation of LRU. Frames are arranged in a circle with a hand. Each page has a reference bit that the hardware sets on use. On a fault, the hand sweeps: if the bit is 1 it is cleared and the hand moves on; the first page with bit 0 is evicted.
+
+**Belady's anomaly:** for FIFO, adding frames can increase the number of faults. On the reference string 1 2 3 4 1 2 5 1 2 3 4 5, FIFO has 9 faults with 3 frames and 10 faults with 4. LRU and OPT never behave this way.
+
+When processes together demand more pages than RAM holds, they fault constantly and the CPU waits for the disk: **thrashing**. The remedy is to give each process enough frames for its **working set** (the pages it currently uses) or to run fewer processes.
+
+@example
+title: FIFO versus LRU
+problem: Three frames, empty at the start. Reference string 3 1 2 3 4 1 3. Count faults under FIFO and under LRU.
+step: References 3, 1, 2 each fault (frames fill with 3, 1, 2). Reference 3 is a hit.
+step: Reference 4 faults. FIFO evicts 3, the oldest in memory (frames 1, 2, 4). LRU evicts 1, which has not been used since the earliest (frames 2, 3, 4).
+step: FIFO: reference 1 is a hit; reference 3 faults, evicting 1. Total FIFO faults: 3, 1, 2, 4, 3 = 5.
+step: LRU: reference 1 faults, evicting 2 (frames 3, 4, 1); reference 3 is a hit. Total LRU faults: 3, 1, 2, 4, 1 = 5.
+answer: FIFO 5 faults, LRU 5 faults
+
+@example
+title: Effective access time with a TLB
+problem: TLB lookup 20 ns, memory access 80 ns, TLB hit rate 95%, single-level page table. Find the EAT.
+step: A hit costs one TLB lookup plus one memory access: 20 + 80 = 100 ns.
+step: A miss costs a lookup, a page-table access and the data access: 20 + 80 + 80 = 180 ns.
+step: EAT = 0.95 × 100 + 0.05 × 180 = 95 + 9 = 104 ns.
+answer: 104 ns
+
+@mistakes
+- Believing more memory always reduces FIFO faults: Belady's anomaly shows it can increase them.
+- Treating OPT as a practical policy: it needs the future reference string and serves as a bound.
+- Forgetting that a TLB miss is not a page fault: the page may be in RAM, and the walk simply refills the TLB.
+- Ignoring the dirty bit: evicting a dirty page costs a disk write as well as the read of the new page.
+
+@practice mc
+prompt: Which page replacement policy can show Belady's anomaly, that is, more page faults with more frames on the same reference string?
+choice*: FIFO
+choice: LRU
+choice: OPT
+choice: None: more frames never increase faults for any policy
+hint: LRU and OPT are stack algorithms.
+solution: FIFO is not a stack algorithm: with more frames the resident set is not always a superset of the resident set with fewer frames. Reference string 1 2 3 4 1 2 5 1 2 3 4 5 gives 9 faults with 3 frames and 10 with 4.
+
+@practice code
+prompt: Write `fifo_faults(refs, frames)` that returns the number of page faults when the reference string `refs` (a list of page numbers) is run with `frames` physical frames (at least 1) using FIFO replacement. Memory starts empty.
+starter:
+```python
+def fifo_faults(refs, frames):
+    pass
+```
+tests:
+```python
+assert fifo_faults([], 3) == 0
+assert fifo_faults([1, 1, 1], 1) == 1
+assert fifo_faults([3, 1, 2, 3, 4, 1, 3], 3) == 5
+assert fifo_faults([1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5], 3) == 9
+assert fifo_faults([1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5], 4) == 10
+assert fifo_faults([1, 2, 3, 4, 1, 2, 3, 4], 3) == 8
+```
+model:
+```python
+from collections import deque
+
+
+def fifo_faults(refs, frames):
+    resident = deque()
+    faults = 0
+    for page in refs:
+        if page in resident:
+            continue
+        faults += 1
+        if len(resident) == frames:
+            resident.popleft()
+        resident.append(page)
+    return faults
+```
+hint: A queue of resident pages: new pages join at the back, victims leave from the front.
+hint: A hit does not change the queue under FIFO.
+solution: On a miss, count a fault, evict the oldest page (front of the queue) if memory is full, and append the new page. On a hit nothing changes. The Belady string gives 9 faults with 3 frames and 10 with 4.
+
+@practice code
+prompt: Write `lru_faults(refs, frames)` that returns the number of page faults under LRU replacement with `frames` frames (at least 1), starting with empty memory.
+starter:
+```python
+def lru_faults(refs, frames):
+    pass
+```
+tests:
+```python
+assert lru_faults([], 2) == 0
+assert lru_faults([3, 1, 2, 3, 4, 1, 3], 3) == 5
+assert lru_faults([1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5], 3) == 10
+assert lru_faults([1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5], 4) == 8
+assert lru_faults([1, 2, 3, 4, 1, 2, 3, 4], 3) == 8
+assert lru_faults([1, 2, 1, 3, 1, 2], 2) == 4
+```
+model:
+```python
+def lru_faults(refs, frames):
+    resident = []  # least recently used first
+    faults = 0
+    for page in refs:
+        if page in resident:
+            resident.remove(page)
+        else:
+            faults += 1
+            if len(resident) == frames:
+                resident.pop(0)
+        resident.append(page)
+    return faults
+```
+hint: Keep the resident pages in order of last use, oldest first.
+hint: On every reference (hit or miss), move the page to the most-recent end; on a miss with full memory, remove the front.
+solution: Unlike FIFO, a hit refreshes the page's position, so the list is ordered by recency of use. On a miss with full memory, evict the front (the least recently used). For `[1, 2, 1, 3, 1, 2]` with 2 frames: 1 and 2 fault, the second 1 hits, 3 faults and evicts 2, the next 1 hits, and 2 faults and evicts 3, so there are 4 faults.
+
+@practice num
+prompt: A TLB lookup takes 10 ns, a memory access takes 100 ns, and the TLB hit rate is 80%. With a single-level page table (a miss costs one extra memory access), what is the effective access time in ns?
+answer: 130
+check: 0.8 * (10 + 100) + 0.2 * (10 + 100 + 100)
+tol: 0.01
+unit: ns
+hint: Compute the hit and miss costs separately and weight them.
+solution: A hit costs 110 ns and a miss costs 210 ns, so EAT = $0.8 \times 110 + 0.2 \times 210 = 88 + 42 = 130$ ns.
+
+@practice num
+prompt: A program references pages in the order 1 2 3 4 1 2 5 1 2 3 4 5 with 4 physical frames and FIFO replacement, starting with empty memory. How many page faults occur?
+answer: 10
+check: int(run("from collections import deque\nrefs = [1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5]\nq = deque()\nn = 0\nfor p in refs:\n    if p not in q:\n        n += 1\n        if len(q) == 4:\n            q.popleft()\n        q.append(p)\nprint(n)\n"))
+hint: Trace the queue: the first four references fill the frames; then 1 and 2 hit.
+solution: Faults: 1, 2, 3, 4 (four), hits on 1 and 2, then 5 evicts 1, then 1 evicts 2, 2 evicts 3, 3 evicts 4, 4 evicts 5, and 5 evicts 1: a total of 10. The same string has 9 faults with 3 frames (Belady's anomaly).
+
+@quiz code
+prompt: Write `opt_faults(refs, frames)` that returns the number of page faults under the optimal policy: on a fault with full memory, evict the resident page whose next use is farthest in the future (a page never used again is the best victim). Memory starts empty; `frames` is at least 1.
+starter:
+```python
+def opt_faults(refs, frames):
+    pass
+```
+tests:
+```python
+assert opt_faults([], 2) == 0
+assert opt_faults([3, 1, 2, 3, 4, 1, 3], 3) == 4
+assert opt_faults([2, 3, 2, 1, 5, 2, 4, 5, 3, 2, 5, 2], 3) == 6
+assert opt_faults([1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5], 3) == 7
+assert opt_faults([1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5], 4) == 6
+```
+model:
+```python
+def opt_faults(refs, frames):
+    resident = []
+    faults = 0
+    for i, page in enumerate(refs):
+        if page in resident:
+            continue
+        faults += 1
+        if len(resident) == frames:
+            def next_use(p):
+                for j in range(i + 1, len(refs)):
+                    if refs[j] == p:
+                        return j
+                return len(refs)
+            resident.remove(max(resident, key=next_use))
+        resident.append(page)
+    return faults
+```
+hint: For each resident page, find the position of its next use after the current index.
+hint: Evict the page with the largest next-use position; use the length of the string if it never appears again.
+solution: On a fault with full memory, scan forward in `refs` to find each resident page's next use and evict the page used farthest away (or never). OPT never does worse than any other policy on the same string.
+
+@quiz num
+prompt: Memory access takes 200 ns and a page fault takes 10 ms (10,000,000 ns). One reference in 2000 causes a page fault. What is the effective access time in ns?
+answer: 5199.9
+check: (1 - 1 / 2000) * 200 + (1 / 2000) * 10_000_000
+tol: 0.01
+unit: ns
+hint: Weight the normal access and the fault by their probabilities.
+solution: $\text{EAT} = 0.9995 \times 200 + 0.0005 \times 10{,}000{,}000 = 199.9 + 5000 = 5199.9$ ns. The rare faults dominate the average.

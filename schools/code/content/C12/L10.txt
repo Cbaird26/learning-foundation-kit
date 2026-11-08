@@ -1,0 +1,334 @@
+@lesson
+title: Type checking and type inference
+summary: Write a type checker for a tiny language using typing rules, and explain how type inference with type variables and unification works.
+objective: Read a typing rule and turn a set of rules into a recursive type-checking function with a type environment.
+objective: Explain what type inference is and compute a most general type by unification.
+objective: Describe soundness, the limits of static checking and the role of annotations versus inference.
+reading: Crafting Interpreters has no chapter on static types, so see Chapter 11 "Resolving and Binding" for how a pass over the AST before execution works; for type inference, look up "Hindley-Milner type inference" and "unification" in a programming-language-theory text.
+
+@article
+A **static type checker** is a program that walks the AST *before* the program runs and decides whether every expression has a consistent type. If it finds a violation, the program is rejected. It is structurally the same as the evaluator: a recursive function over the tree, except that it computes a *type* instead of a *value*.
+
+### Typing rules
+
+We specify a checker with **typing rules**. The judgment $\Gamma \vdash e : T$ reads "in the type environment $\Gamma$, expression $e$ has type $T$". $\Gamma$ maps variable names to types. A rule gives the premises above the line and the conclusion below:
+
+$$\frac{\Gamma \vdash e_1 : \text{int} \qquad \Gamma \vdash e_2 : \text{int}}{\Gamma \vdash e_1 + e_2 : \text{int}} \qquad \frac{\Gamma \vdash c : \text{bool} \quad \Gamma \vdash t : T \quad \Gamma \vdash f : T}{\Gamma \vdash \text{if } c \text{ then } t \text{ else } f : T}$$
+
+For our tiny language (integers and booleans), the rules are:
+
+- A number literal has type `int`, and `true` and `false` have type `bool`.
+- A variable has the type recorded for it in $\Gamma$.
+- `+`, `-`, `*` take two `int` operands and give `int`; `<` takes two `int` operands and gives `bool`.
+- `==` takes two operands of the same type and gives `bool`; `and` takes two `bool` operands and gives `bool`.
+- `if c then t else f` needs `c : bool`, and `t` and `f` must have the *same* type, which is the type of the whole expression.
+- `let x = v in b` checks `v` to get its type $T$, then checks `b` in $\Gamma$ extended with `x : T`.
+
+Each rule becomes one branch of the function:
+
+```python
+def typecheck(node, env):
+    kind = node[0]
+    if kind == "num":
+        return "int"
+    if kind == "if":
+        if typecheck(node[1], env) != "bool":
+            raise TypeError("condition must be bool")
+        t = typecheck(node[2], env)
+        if typecheck(node[3], env) != t:
+            raise TypeError("branches differ")
+        return t
+    ...
+```
+
+The checker runs in time linear in the size of the tree. It is a **conservative** analysis: a **sound** type system never accepts a program that can commit a type error at run time, and this usually means it must reject some programs that would actually run fine. For example `if false then 1 + true else 2` is rejected even though the bad branch never executes, since the checker does not run the program.
+
+### Annotations and inference
+
+In a language with **type annotations**, the programmer writes types and the checker verifies them: `def f(x: int) -> bool`. With **type inference**, the compiler works the types out itself. Many languages mix the two: Rust and Go infer local variable types, TypeScript infers most types it can, and Python tools like mypy infer types of locals from assignments.
+
+The classic algorithm is **Hindley-Milner** inference, used by ML-family languages and Haskell. It introduces a fresh **type variable** (written `'a`, `'b`) for each unknown, collects equalities between types as it walks the tree, and solves them by **unification**: finding a **substitution** (a mapping from type variables to types) that makes two types identical.
+
+Types here include function types, written `T1 -> T2`. Unifying `'a -> bool` with `int -> 'b` forces `'a = int` and `'b = bool`. Unifying `int` with `bool` fails: a type error. Unifying `'a` with `'a -> int` also fails by the **occurs check**: the answer would be an infinite type.
+
+For `fun x -> x + 1`, give `x` the variable `'a`. The rule for `+` requires `'a = int`, and the result is `int`, so the function has type `int -> int`; no annotation was needed. For `fun x -> x`, nothing constrains `'a`, so the type is `'a -> 'a`: the **most general type**, which works for every type. Hindley-Milner also supports **let-polymorphism**, where such a function can be used at several types in the same program.
+
+Inference is fast in practice (nearly linear on real programs, though contrived programs can make the worst case exponential), and it gives you the safety of static types with much less notation. It does not make a language dynamic: every expression still has one static type.
+
+@example
+title: Checking an expression
+problem: Check `if 1 < 2 then 3 else 4`.
+step: The condition `1 < 2` is a `<` node with two `int` operands, so by the `<` rule it has type `bool`.
+step: The two branches `3` and `4` both have type `int`, so they agree.
+step: The `if` rule gives the whole expression the type of the branches: `int`.
+step: Now try `if 1 < 2 then 3 else true`. The branches have types `int` and `bool`, which differ, so the checker raises a type error.
+answer: `int`
+
+@example
+title: Unifying function types
+problem: Unify `'a -> int` with `bool -> 'b`.
+step: Both types are function types, so unify their parts pairwise: first the argument types, then the result types.
+step: Arguments: `'a` against `bool`. A variable unifies with any type that does not contain it, so record `'a = bool`.
+step: Results: `int` against `'b`. Record `'b = int`.
+step: Applying the substitution `{'a: bool, 'b: int}` turns both types into `bool -> int`, so they are equal.
+answer: The substitution `'a = bool`, `'b = int`; both types become `bool -> int`.
+
+@mistakes
+- Letting both branches of an `if` have different types because "only one runs"; a static checker must give the expression one type.
+- Forgetting to extend the type environment inside `let`, so the variable is reported undefined in the body.
+- Skipping the occurs check, which lets unification build an infinite type.
+- Assuming type inference means the language is dynamically typed. The types are still computed before the program runs.
+
+@practice mc
+prompt: A checker follows these rules: the condition of `if` must be `bool`, and both branches must have the same type. Which expression does it reject?
+choice: `if 1 < 2 then 3 else 4`
+choice: `if true then false else true`
+choice*: `if 1 < 2 then 3 else true`
+choice: `if 3 == 4 then 5 else 6`
+hint: Compare the types of the two branches in each expression.
+solution: The branches of `if 1 < 2 then 3 else true` have types `int` and `bool`, which are different. The other expressions have a `bool` condition and two branches of the same type.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+def f(x: int) -> int:
+    return x
+
+print(f("a"))
+```
+answer: a
+check: run("def f(x: int) -> int:\n    return x\n\nprint(f('a'))\n")
+hint: Does the Python interpreter enforce type hints while the program runs?
+solution: The hints are only checked by external tools such as mypy. At run time the function simply returns its argument, so it prints `a`; a static checker would report the call as an error before running.
+
+@practice code
+prompt: Write `typecheck(node)` for nodes `("num", n)` (type `"int"`), `("bool", b)` (type `"bool"`), `("bin", op, left, right)` and `("if", cond, then, other)`. For `op` in `+`, `-`, `*` both operands must be `"int"` and the result is `"int"`; for `<` both must be `"int"` and the result is `"bool"`. An `if` needs a `"bool"` condition and two branches of the same type, which is the result type. Return the type as a string. Raise `TypeError` for any violation.
+starter:
+```python
+def typecheck(node):
+    pass
+```
+tests:
+```python
+assert typecheck(("num", 3)) == "int"
+assert typecheck(("bool", True)) == "bool"
+assert typecheck(("bin", "+", ("num", 1), ("num", 2))) == "int"
+assert typecheck(("bin", "<", ("num", 1), ("num", 2))) == "bool"
+cond = ("bin", "<", ("num", 1), ("num", 2))
+assert typecheck(("if", cond, ("num", 3), ("num", 4))) == "int"
+assert typecheck(("if", cond, ("bool", True), ("bool", False))) == "bool"
+assert raises(TypeError, typecheck,
+              ("bin", "+", ("num", 1), ("bool", True)))
+assert raises(TypeError, typecheck,
+              ("if", ("num", 1), ("num", 2), ("num", 3)))
+assert raises(TypeError, typecheck,
+              ("if", cond, ("num", 2), ("bool", True)))
+assert raises(TypeError, typecheck,
+              ("bin", "<", ("bool", True), ("num", 1)))
+```
+model:
+```python
+def typecheck(node):
+    kind = node[0]
+    if kind == "num":
+        return "int"
+    if kind == "bool":
+        return "bool"
+    if kind == "bin":
+        op = node[1]
+        left = typecheck(node[2])
+        right = typecheck(node[3])
+        if left != "int" or right != "int":
+            raise TypeError(f"{op} needs two ints")
+        return "bool" if op == "<" else "int"
+    if kind == "if":
+        if typecheck(node[1]) != "bool":
+            raise TypeError("condition must be bool")
+        then_type = typecheck(node[2])
+        if typecheck(node[3]) != then_type:
+            raise TypeError("branches must have the same type")
+        return then_type
+    raise TypeError(f"unknown node {kind!r}")
+```
+hint: Compute the type of each child first, then apply the rule for the node.
+hint: For `bin`, both child types must be `"int"`; the operator decides whether the result is `"int"` or `"bool"`.
+solution: The checker has the same recursive shape as an evaluator, but returns type names. Each rule becomes a check on the child types followed by a result type; a violation raises `TypeError`.
+
+@practice code
+prompt: Extend the checker to `typecheck(node, env)` where `env` is a dictionary mapping variable names to type strings. Nodes: `("num", n)`, `("bool", b)`, `("var", name)`, `("bin", op, left, right)`, `("if", cond, then, other)` and `("let", name, value, body)`. For `op`: `+ - *` take two ints and give `"int"`; `<` takes two ints and gives `"bool"`; `==` takes two operands of the same type and gives `"bool"`; `and` takes two bools and gives `"bool"`. A `let` checks `value`, then checks `body` with the name bound to that type in a new dictionary, leaving `env` unchanged. An unbound variable raises `NameError`; every other violation raises `TypeError`.
+starter:
+```python
+def typecheck(node, env):
+    pass
+```
+tests:
+```python
+num = lambda n: ("num", n)
+var = lambda x: ("var", x)
+assert typecheck(("var", "x"), {"x": "bool"}) == "bool"
+assert raises(NameError, typecheck, var("y"), {})
+let = ("let", "x", num(5), ("bin", "+", var("x"), num(1)))
+assert typecheck(let, {}) == "int"
+eq = ("bin", "==", ("bool", True), ("bool", False))
+assert typecheck(eq, {}) == "bool"
+assert raises(TypeError, typecheck, ("bin", "==", num(1), ("bool", True)), {})
+both = ("bin", "and", ("bin", "<", num(1), num(2)), ("bool", True))
+assert typecheck(both, {}) == "bool"
+assert raises(TypeError, typecheck, ("bin", "and", num(1), num(2)), {})
+shadow = ("let", "x", ("bool", True),
+          ("let", "x", num(3), ("bin", "*", var("x"), num(2))))
+assert typecheck(shadow, {}) == "int"
+leak = ("bin", "+", ("let", "x", num(1), var("x")), var("x"))
+assert raises(NameError, typecheck, leak, {})
+env = {"k": "int"}
+typecheck(("let", "k", ("bool", True), var("k")), env)
+assert env == {"k": "int"}
+```
+model:
+```python
+def typecheck(node, env):
+    kind = node[0]
+    if kind == "num":
+        return "int"
+    if kind == "bool":
+        return "bool"
+    if kind == "var":
+        if node[1] not in env:
+            raise NameError(f"undefined variable {node[1]!r}")
+        return env[node[1]]
+    if kind == "let":
+        value_type = typecheck(node[2], env)
+        inner = dict(env)
+        inner[node[1]] = value_type
+        return typecheck(node[3], inner)
+    if kind == "if":
+        if typecheck(node[1], env) != "bool":
+            raise TypeError("condition must be bool")
+        then_type = typecheck(node[2], env)
+        if typecheck(node[3], env) != then_type:
+            raise TypeError("branches must have the same type")
+        return then_type
+    if kind == "bin":
+        op = node[1]
+        left = typecheck(node[2], env)
+        right = typecheck(node[3], env)
+        if op in ("+", "-", "*", "<"):
+            if left != "int" or right != "int":
+                raise TypeError(f"{op} needs two ints")
+            return "bool" if op == "<" else "int"
+        if op == "==":
+            if left != right:
+                raise TypeError("== needs operands of one type")
+            return "bool"
+        if op == "and":
+            if left != "bool" or right != "bool":
+                raise TypeError("and needs two bools")
+            return "bool"
+        raise TypeError(f"unknown operator {op!r}")
+    raise TypeError(f"unknown node {kind!r}")
+```
+hint: This is last week's environment idea applied to types: the environment maps names to types instead of values.
+hint: For `let`, check the value, copy the environment, add the name with that type and check the body in the copy.
+solution: Use a dictionary of types as the environment, extend a copy for `let` so the binding does not leak, and give `==` the rule that both operand types must be equal. Unbound variables raise `NameError`, and all other violations raise `TypeError`.
+
+@practice ms
+prompt: Select every true statement about static type checking and inference.
+choice*: A sound type system never accepts a program that can have a type error at run time.
+choice*: Type inference can determine that `fun x -> x + 1` has type `int -> int` without annotations.
+choice: A sound static checker accepts exactly the programs that run without type errors.
+choice*: Unifying `'a` with `'a -> int` fails because of the occurs check.
+choice: Inferred types are checked at run time, so inference makes a language dynamically typed.
+hint: A conservative checker may reject programs that would in fact run correctly.
+solution: Soundness means no accepted program has a run-time type error. Inference derives `int -> int` from the use of `+`, and the occurs check forbids infinite types. A sound checker rejects some safe programs, and inferred types are still static.
+
+@quiz code
+prompt: Write `unify(a, b, subst=None)` for types that are either a string constant (`"int"`, `"bool"`), a type variable (a string starting with `'`, such as `"'a"`), or a function type `("fn", arg, result)`. It returns a dictionary mapping type variables to types, extending a copy of `subst` (an empty dictionary by default), so that both types become equal when the dictionary is applied repeatedly. A variable may map to a type that still mentions other bound variables. Raise `TypeError` if the types cannot be unified, including when a variable would have to equal a type containing itself.
+starter:
+```python
+def unify(a, b, subst=None):
+    pass
+```
+tests:
+```python
+def apply(s, t):
+    if isinstance(t, str):
+        return apply(s, s[t]) if t in s else t
+    return (t[0], apply(s, t[1]), apply(s, t[2]))
+
+assert unify("int", "int") == {}
+s = unify("'a", "int")
+assert apply(s, "'a") == "int"
+fa = ("fn", "'a", "bool")
+fb = ("fn", "int", "'b")
+s = unify(fa, fb)
+assert apply(s, "'a") == "int"
+assert apply(s, "'b") == "bool"
+assert apply(s, fa) == apply(s, fb) == ("fn", "int", "bool")
+s = unify(("fn", "'a", "'a"), ("fn", "int", "'b"))
+assert apply(s, "'b") == "int"
+s = unify("'a", "'b")
+assert apply(s, "'a") == apply(s, "'b")
+assert raises(TypeError, unify, "int", "bool")
+assert raises(TypeError, unify, ("fn", "int", "int"), "int")
+assert raises(TypeError, unify, "'a", ("fn", "'a", "int"))
+assert raises(TypeError, unify, ("fn", "'a", "'a"), ("fn", "int", "bool"))
+```
+model:
+```python
+def _is_var(t):
+    return isinstance(t, str) and t.startswith("'")
+
+
+def _resolve(t, s):
+    while _is_var(t) and t in s:
+        t = s[t]
+    return t
+
+
+def _occurs(v, t, s):
+    t = _resolve(t, s)
+    if t == v:
+        return True
+    if isinstance(t, tuple):
+        return _occurs(v, t[1], s) or _occurs(v, t[2], s)
+    return False
+
+
+def unify(a, b, subst=None):
+    s = {} if subst is None else dict(subst)
+
+    def go(x, y):
+        x = _resolve(x, s)
+        y = _resolve(y, s)
+        if x == y:
+            return
+        if _is_var(x):
+            if _occurs(x, y, s):
+                raise TypeError("infinite type")
+            s[x] = y
+        elif _is_var(y):
+            if _occurs(y, x, s):
+                raise TypeError("infinite type")
+            s[y] = x
+        elif isinstance(x, tuple) and isinstance(y, tuple):
+            go(x[1], y[1])
+            go(x[2], y[2])
+        else:
+            raise TypeError(f"cannot unify {x!r} with {y!r}")
+
+    go(a, b)
+    return s
+```
+hint: Handle the cases in order: already equal, a variable on either side, two function types, and anything else is an error.
+hint: Before binding a variable, resolve both sides through the substitution so far, and run the occurs check on the type you are about to bind it to.
+solution: Resolve both sides using the current substitution, then: equal types need nothing; a variable is bound to the other type after an occurs check; two function types are unified part by part (argument, then result); everything else is a mismatch. Unifying the types `'a -> 'a` and `int -> bool` binds `'a` to `int`, and then `int` against `bool` fails, because the second part is resolved through the first binding.
+
+@quiz mc
+prompt: What type does type inference give to `fun x -> if x then 1 else 2`?
+choice: `int -> bool`
+choice*: `bool -> int`
+choice: `'a -> int` for every type `'a`
+choice: It is a type error because `x` has no annotation
+hint: Look at how `x` is used, and then at the types of the branches.
+solution: The condition of `if` must be `bool`, so `x` has type `bool`, and both branches are `int`, so the result is `int`. The function therefore has type `bool -> int`, with no annotation needed.

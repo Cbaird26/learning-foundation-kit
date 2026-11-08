@@ -1,0 +1,253 @@
+@lesson
+title: Testing code with dependencies: files, time and networks
+summary: Make code that touches the filesystem, the clock and the network testable by injecting those dependencies and by using temporary files and fake clients.
+objective: Inject a clock so time-dependent code is deterministic.
+objective: Test file-handling code with temporary directories or in-memory streams.
+objective: Test network-calling code with injected clients, fakes and error cases, without real requests.
+reading: Test-Driven Development with Python, the material on mocking external dependencies and on isolating tests; look up "tmp_path" and "monkeypatch" in the pytest documentation, and "unittest.mock.patch" in the Python documentation ("where to patch").
+@article
+Three dependencies cause most flaky tests: the **clock**, the **filesystem** and the **network**. Each is global, shared and not under your control. The cure is the same each time: make the dependency a thing the test can control, then test the rest of the logic in isolation and keep a few tests that touch the real thing.
+
+### Time: pass it in
+
+Code that calls `datetime.now()` inside a function gives a different answer every second, so you cannot write a simple assertion. The most robust fix is to take the time as a parameter:
+
+```python
+from datetime import datetime, timedelta
+
+
+def is_expired(created_at, now, ttl):
+    return now >= created_at + ttl
+
+
+def test_token_expires_after_ttl():
+    created = datetime(2026, 1, 1, 12, 0, 0)
+    ttl = timedelta(hours=1)
+    assert not is_expired(created, datetime(2026, 1, 1, 12, 59, 59), ttl)
+    assert is_expired(created, datetime(2026, 1, 1, 13, 0, 0), ttl)
+```
+
+The production caller passes `datetime.now(timezone.utc)`. When the code needs the time deep inside a call chain, inject a clock object or a function (`clock=time.time` as a default argument, replaced in tests by `lambda: 1000.0`). If you cannot change the code, libraries such as `freezegun` or `time-machine` freeze the clock for a test, and `unittest.mock.patch` can replace a name, but injection needs no extra tools and survives refactors. Prefer UTC and timezone-aware datetimes inside the system, and test a daylight-saving change and a month-end boundary when you care about calendars.
+
+Also avoid `time.sleep` in tests. Waiting for real time makes the suite slow; pass a fake sleep function or a fake clock instead.
+
+### Files: temporary directories and streams
+
+Do not let tests write into your repository or depend on a file you happen to have. In pytest, the built-in `tmp_path` fixture gives each test a fresh temporary directory:
+
+```python
+def test_counts_error_lines(tmp_path):
+    log = tmp_path / "app.log"
+    log.write_text("INFO start\nERROR boom\nERROR again\n")
+
+    assert count_errors(str(log)) == 2
+```
+
+Even better, split the logic from the file I/O. A function that takes an iterable of lines (`count_errors_in(lines)`) can be tested with a plain list, and a thin wrapper opens the file. That is the "functional core, imperative shell" shape: most of the logic is pure, and only a tiny shell touches the disk. For text streams, `io.StringIO` behaves like an open file and needs no directory. `monkeypatch.setenv` and `monkeypatch.chdir` handle environment variables and the working directory, and undo themselves after the test.
+
+### Networks: never call the real service in a unit test
+
+A real HTTP call makes a test slow, flaky and dependent on someone else's server. Layer it:
+
+1. **Wrap the HTTP call** in a small function or class (a *client*) that you own, so the rest of the code asks `get_user(user_id)` instead of building URLs.
+2. **Inject the client** and replace it with a fake or stub in unit tests. Test that your code handles a successful response, a missing field, a timeout, a server error (5xx) and a malformed body.
+3. **Test the client itself** against a recorded or simulated server: libraries such as `responses` (for `requests`), `respx` or `httpx.MockTransport` (for `httpx`), or a local test server, check the URL, headers and parsing.
+4. Keep a small number of **contract or smoke tests** against the real service (or its sandbox) that run separately, for example nightly, so you learn when the real API drifts from your fake.
+
+Always set a **timeout** on real network calls; a request with no timeout can hang forever, and a test should exercise the timeout path with a fake that raises `TimeoutError` or `ConnectionError`.
+
+### Randomness and other hidden inputs
+
+The same idea covers random numbers (inject a `random.Random(seed)` or a function), environment variables, the current working directory and process-wide state. Whenever a result depends on something other than the arguments, make that thing an argument, or isolate it behind a seam you can substitute.
+
+### Where to patch
+
+If you must use `patch`, patch the name **where the code under test looks it up**. If `billing.py` does `from time import time`, patch `billing.time`, not `time.time`. Using `autospec=True` keeps the replacement honest about the real function's signature.
+
+@example
+title: A function that uses the clock and an API
+problem: `greeting(clock, fetch_name)` returns `"Good morning, <name>"` before noon and `"Good afternoon, <name>"` from noon on. It gets the hour from `clock()` (a datetime) and the name from `fetch_name()`. Write the tests without a real clock or network.
+step: Provide a fixed clock and a stubbed fetcher: `clock = lambda: datetime(2026, 5, 1, 9, 30)` and `fetch = lambda: "Ada"`.
+step: Assert the morning greeting: `greeting(clock, fetch) == "Good morning, Ada"`.
+step: Test the boundary: `datetime(2026, 5, 1, 11, 59)` is still morning, and `datetime(2026, 5, 1, 12, 0)` is afternoon.
+step: Test the failure path with a fetcher that raises: `def broken(): raise ConnectionError`, and assert whatever the contract says (for example that `ConnectionError` propagates, using `pytest.raises`).
+answer: Injected functions make time and network deterministic, and the noon boundary gets its own tests.
+
+@example
+title: Separating logic from file I/O
+problem: `count_errors(path)` opens a log file and counts lines starting with `ERROR`. How do you make most of it testable without disk?
+step: Extract the logic into a function over lines:
+
+```python
+def count_errors_in(lines):
+    return sum(1 for line in lines if line.startswith("ERROR"))
+```
+step: Keep a thin shell that does the I/O:
+
+```python
+def count_errors(path):
+    with open(path, encoding="utf-8") as f:
+        return count_errors_in(f)
+```
+step: Unit-test the logic with a list: `count_errors_in(["INFO a", "ERROR b"]) == 1`, plus empty input and lines with leading spaces.
+step: Write one test with `tmp_path` for the shell. Two small tests now cover what one slow, fragile test would have covered.
+answer: Logic in a pure function over lines, one small `tmp_path` test for the file wrapper.
+
+@mistakes
+- Calling `datetime.now()` or `time.time()` inside the logic and then asserting with sleeps or loose tolerances.
+- Writing test files into the working directory or relying on files that exist only on your machine.
+- Letting a "unit" test make a real HTTP request, so it fails when the network or the other service is down.
+- Patching `time.time` when the module imported `time` by name with `from time import time`, so the replacement is never seen.
+
+@practice mc
+prompt: Which change most directly makes `def is_expired(created): return datetime.now() > created + TTL` easy to test?
+choice: Wrap the function body in a `try` block.
+choice*: Pass `now` in as a parameter (or inject a clock) instead of calling `datetime.now()` inside.
+choice: Call `time.sleep` in the test until the token expires.
+choice: Compare using `==` instead of `>`.
+hint: The test needs to choose what time it is.
+solution: Taking the current time as a parameter lets the test supply any moment it likes, including the exact boundary. Sleeping makes the test slow and flaky, and the other changes do not give the test control over time.
+
+@practice text
+prompt: What does this program print? Type the output exactly, one line per print.
+
+```python
+from unittest.mock import patch
+import math
+
+with patch("math.sqrt", return_value=3):
+    print(math.sqrt(100))
+print(math.sqrt(100))
+```
+answer:
+```
+3
+10.0
+```
+check: run("from unittest.mock import patch\nimport math\n\nwith patch('math.sqrt', return_value=3):\n    print(math.sqrt(100))\nprint(math.sqrt(100))\n")
+hint: `patch` replaces the name only while the `with` block runs.
+solution: Inside the block `math.sqrt` is a mock returning `3`, so the first print shows `3`. When the block ends the original function is restored, so the second print shows the real result, `10.0`.
+
+@practice code
+prompt: Write `is_expired(created_at, now, ttl)` where `created_at` and `now` are `datetime` objects and `ttl` is a `timedelta`. It returns `True` when `now` is at or after `created_at + ttl`, otherwise `False`.
+starter:
+```python
+from datetime import datetime, timedelta
+
+
+def is_expired(created_at, now, ttl):
+    pass
+```
+tests:
+```python
+from datetime import datetime, timedelta
+
+created = datetime(2026, 1, 31, 23, 0, 0)
+hour = timedelta(hours=1)
+assert is_expired(created, datetime(2026, 1, 31, 23, 59, 59), hour) is False
+assert is_expired(created, datetime(2026, 2, 1, 0, 0, 0), hour) is True
+assert is_expired(created, datetime(2026, 2, 1, 5, 0, 0), hour) is True
+assert is_expired(created, created, timedelta(0)) is True
+assert is_expired(created, created, hour) is False
+```
+model:
+```python
+from datetime import datetime, timedelta
+
+
+def is_expired(created_at, now, ttl):
+    return now >= created_at + ttl
+```
+hint: Compute the expiry moment as `created_at + ttl`.
+hint: The boundary counts as expired, so compare with `>=`.
+solution: The token expires at `created_at + ttl`, and from that exact moment on it is expired, so return `now >= created_at + ttl`. The tests use a month-end time so the arithmetic crosses a date boundary, and a zero TTL to hit the boundary itself.
+
+@practice code
+prompt: Write `count_error_lines(path)` that opens the text file `path` and returns how many of its lines start with `"ERROR"`. An empty file gives `0`. Use `with open(path) as f`.
+starter:
+```python
+def count_error_lines(path):
+    pass
+```
+tests:
+```python
+write_file("app.log", "INFO start\nERROR boom\nERROR again\nINFO end\n")
+assert count_error_lines("app.log") == 2
+write_file("empty.log", "")
+assert count_error_lines("empty.log") == 0
+write_file("mixed.log", "  ERROR indented\nerror lower\nERROR last")
+assert count_error_lines("mixed.log") == 1
+```
+model:
+```python
+def count_error_lines(path):
+    count = 0
+    with open(path) as f:
+        for line in f:
+            if line.startswith("ERROR"):
+                count += 1
+    return count
+```
+hint: Iterate over the file object; each item is one line.
+hint: Use `line.startswith("ERROR")`: an indented `ERROR` or a lowercase `error` must not count.
+solution: Open the file with `with`, loop over its lines, and count those that start with `ERROR`. The last line of `mixed.log` has no trailing newline, which `startswith` handles without special cases.
+
+@practice self
+prompt: A function `weather_summary(city, fetch, now)` calls `fetch(city)`, which returns a dictionary such as `{"temp_c": 18, "updated": <datetime>}`, and returns `"<temp>C (fresh)"` when the data is less than 30 minutes older than `now`, `"<temp>C (stale)"` otherwise, or `"unavailable"` when `fetch` raises `TimeoutError`. Design the unit tests: list the cases, say how each dependency is controlled, and name one test you would run against the real API separately.
+hint: Decide for each hidden input (time, network) what you will pass in instead.
+solution: Control the clock by passing `now` (for example `datetime(2026, 5, 1, 12, 0)`) and the network by passing a fake `fetch` function. Cases: data updated 10 minutes earlier returns `"18C (fresh)"`; data updated exactly 30 minutes earlier is the boundary: the specification says "less than 30 minutes", so it is stale (and test 29 minutes and 31 minutes, either side); data updated in the future (clock skew) is treated according to the contract, for example fresh; a fetch that raises `TimeoutError` returns `"unavailable"`; a fetch that raises another exception (for instance `ValueError` for a bad payload) propagates and is tested with `pytest.raises`; a response missing `temp_c` gives a defined result rather than a `KeyError` surprise. The fake can record the cities it was asked for, so one test asserts `fetch` was called once with the right city. Separately, a nightly smoke test calls the real API (or its sandbox) for one city and checks the response has the fields the code relies on, so a change in the real response shape is noticed even though the unit tests use a fake.
+rubric: Controls both time (a passed-in `now`) and the network (an injected fake `fetch`) instead of using real ones.
+rubric: Includes the 30-minute boundary and values on both sides of it.
+rubric: Tests the timeout path and at least one other failure or malformed-response case.
+rubric: Names a separate real-API smoke or contract test and says why it is needed.
+
+@quiz code
+prompt: Write `get_username(fetch, user_id)`. It calls `fetch(url)` with the URL `"https://api.example.test/users/<user_id>"` and expects a dictionary back. Return the dictionary's `"name"` value. Return `"unknown"` if `fetch` raises `ConnectionError` or the dictionary has no `"name"` key.
+starter:
+```python
+def get_username(fetch, user_id):
+    pass
+```
+tests:
+```python
+seen = []
+
+def good(url):
+    seen.append(url)
+    return {"name": "Ada", "id": 7}
+
+assert get_username(good, 7) == "Ada"
+assert seen == ["https://api.example.test/users/7"]
+
+def no_name(url):
+    return {"id": 8}
+
+assert get_username(no_name, 8) == "unknown"
+
+def offline(url):
+    raise ConnectionError("down")
+
+assert get_username(offline, 9) == "unknown"
+```
+model:
+```python
+def get_username(fetch, user_id):
+    url = f"https://api.example.test/users/{user_id}"
+    try:
+        data = fetch(url)
+    except ConnectionError:
+        return "unknown"
+    return data.get("name", "unknown")
+```
+hint: Build the URL with an f-string and pass it to the injected `fetch`.
+hint: Catch `ConnectionError` around the call only, and use `dict.get` with a default for the missing key.
+solution: Because `fetch` is a parameter, the tests supply a good response, a response missing the key and an offline stub, and the first test records the URL the code used. The function maps `ConnectionError` and a missing `"name"` to `"unknown"`.
+
+@quiz mc
+prompt: A module does `from datetime import datetime` and calls `datetime.now()` inside `make_token()`. A test wants to freeze the time with `unittest.mock.patch`. Which target is correct?
+choice: `datetime.datetime.now`, because that is where the class is defined
+choice*: `module_name.datetime`, because that is the name the module looks up
+choice: `time.time`, because all clocks use it
+choice: `make_token.now`, because it is called inside that function
+hint: Patch the name where the code under test looks it up, not where it was originally defined.
+solution: The module did `from datetime import datetime`, so it has its own name `datetime` and that is the one to patch (as `module_name.datetime`). Patching `datetime.datetime.now` does not even work, because `datetime` is a built-in type whose attributes cannot be replaced, and `time.time` is not what this code calls. Better still, make the time a parameter so no patching is needed.

@@ -1,0 +1,204 @@
+@lesson
+title: The single-cycle datapath
+summary: Trace instructions through a single-cycle RISC-V datapath, derive its control signals, and compute its clock period from component delays.
+objective: Name the datapath components (PC, instruction memory, register file, ALU, data memory, immediate generator, multiplexers) and describe what each does.
+objective: Determine the control signals for R-type, `addi`, `lw`, `sw` and `beq` instructions.
+objective: Compute the clock period of a single-cycle design from the delays of its components, and explain why it is inefficient.
+reading: Dive into Systems, Chapter 5 on computer architecture (the CPU, the datapath, the stages of instruction execution and the control unit).
+
+@article
+The **datapath** is the collection of hardware that moves and transforms data to execute instructions; the **control unit** tells it what to do. In a **single-cycle** design every instruction executes completely in one clock cycle, so the cycles per instruction (CPI) is exactly 1. It is the simplest correct processor and the baseline against which pipelining is understood.
+
+### Components
+
+- **Program counter (PC)**: a register holding the address of the current instruction.
+- **Instruction memory**: read-only during execution; given the PC, it outputs the 32-bit instruction.
+- **Adders**: one computes `PC + 4`, the next sequential address; another computes `PC + imm`, the branch target.
+- **Register file**: 32 registers with two read ports (`rs1`, `rs2`) and one write port (`rd`, with a write-enable `RegWrite`). Reading is combinational; a write takes effect at the clock edge. Register 0 always reads as zero.
+- **Immediate generator**: extracts the immediate from the instruction (I, S, B, U or J format) and sign-extends it to 32 bits.
+- **ALU**: adds, subtracts, ANDs, ORs and so on, and produces a `Zero` flag (result equals 0) used for branches.
+- **Data memory**: read by loads (`MemRead`) and written by stores (`MemWrite`).
+- **Multiplexers**: choose between alternatives, for example the second ALU operand (`rs2` or the immediate) and the value written back (ALU result or loaded data).
+
+### Executing instructions
+
+All instructions begin the same way: fetch from instruction memory at the PC and read `rs1` and `rs2`. They differ afterwards:
+
+- **R-type** (`add rd, rs1, rs2`): the ALU combines the two registers; the result is written to `rd`.
+- **`addi`**: the ALU adds `rs1` and the immediate; the result is written to `rd`.
+- **`lw rd, imm(rs1)`**: the ALU computes the address `rs1 + imm`; data memory is read there; the value is written to `rd`.
+- **`sw rs2, imm(rs1)`**: the ALU computes `rs1 + imm`; data memory is written with `rs2`. Nothing is written to a register. The immediate comes from the split S-type fields.
+- **`beq rs1, rs2, imm`**: the ALU subtracts `rs2` from `rs1`; if `Zero` is 1 the next PC is `PC + imm`, else `PC + 4`. The B-type immediate is a multiple of 2, with bit 0 implied as 0.
+
+### Control signals
+
+The control unit decodes the opcode and sets these signals (`X` means "don't care"; a program that must output a value for it can use 0 when no register is written):
+
+| instruction | RegWrite | ALUSrc | MemRead | MemWrite | MemToReg | Branch |
+|---|---|---|---|---|---|---|
+| R-type | 1 | 0 | 0 | 0 | 0 | 0 |
+| `addi` | 1 | 1 | 0 | 0 | 0 | 0 |
+| `lw` | 1 | 1 | 1 | 0 | 1 | 0 |
+| `sw` | 0 | 1 | 0 | 1 | X | 0 |
+| `beq` | 0 | 0 | 0 | 0 | X | 1 |
+
+`ALUSrc = 1` selects the immediate as the second ALU input. A small **ALU control** unit then picks the ALU operation: add for `lw`, `sw` and `addi`; subtract for `beq`; and for R-type instructions it looks at `funct3` and `funct7`. The next PC is `PC + imm` when `Branch` is 1 and `Zero` is 1 (the `PCSrc` signal is `Branch AND Zero`).
+
+### Timing and the clock period
+
+All state elements (PC, register file, memories) change on the clock edge; between edges the signals settle through combinational logic. The clock period must be at least the delay of the **longest path**, which is the slowest instruction, usually `lw`, since it uses every major component in sequence: instruction memory, register read, ALU, data memory and register write. With these delays:
+
+| component | delay (ps) |
+|---|---|
+| instruction memory | 200 |
+| register read | 100 |
+| ALU | 200 |
+| data memory | 200 |
+| register write | 100 |
+
+an R-type instruction needs $200+100+200+100=600$ ps, `sw` needs $200+100+200+200=700$ ps, `beq` needs $200+100+200=500$ ps, and `lw` needs $200+100+200+200+100=800$ ps. The period is therefore 800 ps even though most instructions are faster. This is the central weakness of the single-cycle design: the fast instructions wait for the slow one, and the same clock must also cover the worst possible instruction (for example, a floating-point divide would force an even longer period). Pipelining, the next lesson, overlaps instructions to fix it.
+
+@example
+title: Following a load through the datapath
+problem: `x5 = 0x100` and the word at address `0x108` is `0xABC`. Trace `lw x6, 8(x5)` and give the control values and the result.
+step: Fetch the instruction and read registers: `rs1 = x5` gives `0x100`. The immediate generator produces `8` (I-type, sign-extended).
+step: `ALUSrc = 1`, so the ALU adds `0x100 + 8 = 0x108`.
+step: `MemRead = 1`: data memory returns the word at `0x108`, which is `0xABC`.
+step: `MemToReg = 1` and `RegWrite = 1`: `0xABC` is written into `x6` at the clock edge. `PC` becomes `PC + 4` since `Branch = 0`.
+answer: `x6 = 0xABC`; signals RegWrite 1, ALUSrc 1, MemRead 1, MemWrite 0, MemToReg 1, Branch 0
+
+@example
+title: Following a branch
+problem: At `PC = 0x40`, `beq x5, x6, 8` executes with `x5 = x6 = 7`. What is the next PC? What if `x6 = 9`?
+step: The register file reads 7 and 7. `ALUSrc = 0`, so the ALU receives both registers and subtracts them.
+step: The difference is 0, so `Zero = 1`. With `Branch = 1`, `PCSrc = 1` selects the branch target `0x40 + 8 = 0x48`.
+step: If `x6 = 9` the ALU result is $-2$, `Zero = 0`, `PCSrc = 0`, and the next PC is `0x40 + 4 = 0x44`.
+step: No register is written and data memory is untouched in either case: `RegWrite = 0` and `MemWrite = 0`.
+answer: `0x48` when the registers are equal, `0x44` otherwise
+
+@mistakes
+- Thinking `sw` writes a register: it writes data memory, so `RegWrite = 0`.
+- Forgetting that the clock period is set by the slowest instruction, not the average one.
+- Using the first ALU input as the immediate: the immediate replaces the second operand (`rs2`), selected by `ALUSrc`.
+- Forgetting that the branch immediate is relative to the address of the branch itself and is a multiple of 2.
+
+@practice num
+prompt: A single-cycle processor has these component delays: instruction memory 200 ps, register read 100 ps, ALU 200 ps, data memory 200 ps, register write 100 ps. All other delays are negligible. The instructions it must support are R-type, `lw`, `sw` and `beq`. What is the shortest possible clock period, in picoseconds?
+answer: 800
+check: 200 + 100 + 200 + 200 + 100
+hint: The clock period is set by the instruction that passes through the most components in series.
+solution: `lw` uses all five components in sequence: $200+100+200+200+100=800$ ps. R-type needs 600, `sw` 700 and `beq` 500, so 800 ps is the minimum period.
+
+@practice code
+prompt: Write `imm_s(word)` that extracts the sign-extended immediate of an S-type (store) instruction word (an integer). The 12-bit immediate is `word[31:25]` as bits 11 to 5 and `word[11:7]` as bits 4 to 0. Return a (possibly negative) Python integer. Example: `imm_s(0x0062A423)` (`sw x6, 8(x5)`) returns `8`.
+starter:
+```python
+def imm_s(word):
+    pass
+```
+tests:
+```python
+assert imm_s(0x0062A423) == 8
+assert imm_s(0xFE62AE23) == -4
+assert imm_s(0x7E62AFA3) == 2047
+assert imm_s(0x8062A023) == -2048
+assert imm_s(0x0062A023) == 0
+```
+model:
+```python
+def imm_s(word):
+    imm = ((word >> 25) << 5) | ((word >> 7) & 0x1F)
+    if imm >= 2048:
+        imm -= 4096
+    return imm
+```
+hint: Combine `word >> 25` (the upper 7 bits, shifted up by 5) with `(word >> 7) & 0x1F` (the lower 5 bits).
+hint: The combined 12-bit value is negative if it is at least 2048; subtract 4096 then.
+solution: The upper seven bits come from bits 31-25 and become immediate bits 11-5; the lower five come from bits 11-7. Joining them gives a 12-bit number, which is sign-extended by subtracting 4096 when its top bit is set.
+
+@practice code
+prompt: Write `imm_b(word)` that extracts the sign-extended immediate of a B-type (branch) instruction word. The 13-bit immediate (bit 0 is always 0) is assembled as: bit 12 from `word[31]`, bit 11 from `word[7]`, bits 10 to 5 from `word[30:25]`, bits 4 to 1 from `word[11:8]`. Return a (possibly negative) Python integer. Example: `imm_b(0x00628463)` (`beq x5, x6, 8`) returns `8`.
+starter:
+```python
+def imm_b(word):
+    pass
+```
+tests:
+```python
+assert imm_b(0x00628463) == 8
+assert imm_b(0xFE628CE3) == -8
+assert imm_b(0xFE628AE3) == -12
+assert imm_b(0x7E628FE3) == 4094
+assert imm_b(0x80628063) == -4096
+assert imm_b(0x006280E3) == 2048
+```
+model:
+```python
+def imm_b(word):
+    imm = (((word >> 31) & 1) << 12) | (((word >> 7) & 1) << 11)
+    imm |= ((word >> 25) & 0x3F) << 5
+    imm |= ((word >> 8) & 0xF) << 1
+    if imm >= 4096:
+        imm -= 8192
+    return imm
+```
+hint: Build the immediate bit by bit: bit 12 from `word[31]`, bit 11 from `word[7]`, bits 10-5 from `word[30:25]`, bits 4-1 from `word[11:8]`.
+hint: The assembled value has 13 bits; it is negative when it is at least 4096, so subtract 8192.
+solution: Extract each group with a shift and mask, move it to its immediate position and OR them together. The result is a 13-bit signed value whose lowest bit is 0, so subtract $2^{13}=8192$ when bit 12 is set.
+
+@practice mc
+prompt: Which set of control signals is correct for a `sw` instruction in the single-cycle datapath?
+choice: `RegWrite = 1`, `ALUSrc = 0`, `MemWrite = 1`
+choice*: `RegWrite = 0`, `ALUSrc = 1`, `MemWrite = 1`
+choice: `RegWrite = 1`, `ALUSrc = 1`, `MemRead = 1`
+choice: `RegWrite = 0`, `ALUSrc = 0`, `Branch = 1`
+hint: A store computes `rs1 + imm` and writes memory, but not a register.
+solution: `sw` uses the ALU to add the base register and the immediate (`ALUSrc = 1`), writes `rs2` into data memory (`MemWrite = 1`), and writes no register (`RegWrite = 0`). The choice with `RegWrite = 1` and `MemRead = 1` describes `lw`, and the one with `Branch = 1` is `beq`.
+
+@practice ms
+prompt: Select every control signal that is asserted (equal to 1) when a `lw` instruction executes in the single-cycle datapath.
+choice*: `RegWrite`
+choice*: `ALUSrc`
+choice*: `MemRead`
+choice*: `MemToReg`
+choice: `MemWrite`
+hint: A load reads data memory, uses the immediate as the second ALU input, and writes a register with the loaded value.
+solution: `lw` asserts `RegWrite`, `ALUSrc` (immediate offset), `MemRead` and `MemToReg` (write back the loaded data). `MemWrite` is for stores and `Branch` for branches.
+
+@quiz code
+prompt: Write `control(name)` that returns the tuple `(RegWrite, ALUSrc, MemRead, MemWrite, MemToReg, Branch)` of 0/1 integers for the instruction `name`, which is one of `"add"`, `"addi"`, `"lw"`, `"sw"` or `"beq"`, following the control table of the single-cycle datapath (use 0 for `MemToReg` when no register is written).
+starter:
+```python
+def control(name):
+    pass
+```
+tests:
+```python
+assert control("add") == (1, 0, 0, 0, 0, 0)
+assert control("addi") == (1, 1, 0, 0, 0, 0)
+assert control("lw") == (1, 1, 1, 0, 1, 0)
+assert control("sw") == (0, 1, 0, 1, 0, 0)
+assert control("beq") == (0, 0, 0, 0, 0, 1)
+```
+model:
+```python
+def control(name):
+    table = {
+        "add": (1, 0, 0, 0, 0, 0),
+        "addi": (1, 1, 0, 0, 0, 0),
+        "lw": (1, 1, 1, 0, 1, 0),
+        "sw": (0, 1, 0, 1, 0, 0),
+        "beq": (0, 0, 0, 0, 0, 1),
+    }
+    return table[name]
+```
+hint: A dictionary from the instruction name to its tuple is the clearest representation.
+hint: Check each row against what the instruction does: which units it uses and whether it writes a register.
+solution: A control unit is a lookup from the opcode to a set of signals; a dictionary models it directly. `lw` is the only row with `MemRead` and `MemToReg`; `sw` the only one with `MemWrite`; `beq` the only one with `Branch`.
+
+@quiz num
+prompt: A single-cycle processor has a clock period of 800 ps and executes every instruction in exactly one cycle. How many microseconds does it take to execute 1,000,000 instructions?
+answer: 800
+check: 10**6 * 800 / 10**6
+hint: Time is the number of cycles times the period; convert picoseconds to microseconds ($1\ \mu s = 10^6$ ps).
+solution: $10^6$ cycles $\times\ 800$ ps $= 8\times10^{8}$ ps $= 800\ \mu s$.

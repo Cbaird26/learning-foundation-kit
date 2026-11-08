@@ -1,0 +1,178 @@
+@project
+title: A replicated key-value store under crashes and lost messages
+overview: Build, in Python, a simulation of a key-value store replicated across five servers with a simplified Raft-style leader election and replicated log. Inject server crashes and lost messages and demonstrate that committed writes are never lost, then explain your design and its limits in a short report.
+goal: Implement leader election with terms and the up-to-date log voting rule, and log replication with a majority commit rule.
+goal: Run the simulation under crashes, restarts and message loss, and check safety invariants automatically after every round.
+goal: Explain in a design report which guarantees the system gives, which it does not, and how they relate to consensus, consistency models and the CAP theorem.
+step: Read the supplied simulation framework (material "Network and node skeleton"), copy it into a folder, and write a `Node` class with persistent state (`term`, `voted_for`, `log`), volatile state (`role`, `commit_index`) and a `handle(msg)` method that dispatches on `msg["type"]`.
+step: Implement leader election following material "Protocol rules": election timeouts counted in simulation ticks, RequestVote messages, the one-vote-per-term rule and the log up-to-date test of Lesson 7. Test with no failures: exactly one leader per term, and a new leader appears after you crash the old one.
+step: Implement log replication: a client `put(key, value)` is sent to the leader, appended to its log, replicated with `append` messages that carry `prev_index` and `prev_term`, and committed when stored on a majority in the leader's current term. Followers reject mismatching `append` requests and the leader backs up and retries.
+step: Apply committed log entries in order to a dictionary on every server (the state machine) and implement `get(key)` served by the leader from committed state.
+step: Add fault injection: crash a server (it stops handling messages but keeps its persistent state, and restarts later), and a network `drop_rate`. Write the scenarios of material "Required scenarios" as automated tests, each with a fixed random seed so a failure can be reproduced.
+step: After every simulation round, run the safety checks of material "Invariants": at most one leader per term, no two servers with different entries at the same index and term, and every committed entry present in the log of every future leader. Make a deliberate mistake (for example, grant votes without the up-to-date test) and show that a scenario or invariant catches it.
+step: Write the design report (about 2 pages): the protocol as built, what is simplified compared with Raft (state what you left out, such as membership changes and log compaction), the evidence from your tests, your answers to the report questions, and the limitations.
+deliverable: The Python source of the simulation, including the scenario tests and invariant checks, runnable with one command and with fixed seeds.
+deliverable: A design report of about 2 pages containing the protocol description, test evidence (the scenarios and what each showed) and answers to the report questions.
+deliverable: A short transcript (copied output) of a run in which a leader crashes after a write was acknowledged as committed and the write is still readable from the new leader.
+rubric: Election is correct: one leader per term, the voting rule uses the term and index of the last log entry, and a crashed leader is replaced.
+rubric: Replication is correct: a write is acknowledged only after it is stored on a majority in the leader's current term, followers repair mismatching logs, and committed entries are applied in order.
+rubric: The tests inject crashes, restarts and message loss with fixed seeds, check invariants automatically, and include a mutation (a deliberately broken rule) that the checks detect.
+rubric: The report states honestly what is guaranteed (safety under crashes and message loss) and what is not (progress without a majority, behavior under network partitions with stale leaders, Byzantine faults).
+rubric: Code is readable, structured into small functions or classes with docstrings, and the report connects the design to CAP and to the consistency model the store provides.
+safety: This project simulates distributed systems entirely inside one Python process; do not run it against real networks or other people's machines.
+tutor: My leader keeps getting replaced even with no failures. How can I find out whether my election timeouts or my heartbeats are wrong?
+tutor: Explain in a concrete example why a leader must not commit an entry from an older term just by counting replicas.
+tutor: How do I design a mutation test that proves my invariant checks can actually fail?
+
+material: Network and node skeleton. A deterministic simulated network. Messages are Python dicts with a `"type"` key. Nodes are identified by integers 0 to 4. Time advances in discrete rounds: in each round you call `net.deliver_all(nodes)` once and then call `node.tick()` on every live node.
+
+```python
+import random
+
+
+class Network:
+    """Unreliable message queue with crashed nodes."""
+
+    def __init__(self, seed=0, drop_rate=0.0):
+        self.rng = random.Random(seed)
+        self.drop_rate = drop_rate
+        self.queue = []      # list of (dst, msg)
+        self.down = set()    # ids of crashed nodes
+
+    def send(self, dst, msg):
+        if self.rng.random() < self.drop_rate:
+            return           # the message is lost
+        self.queue.append((dst, msg))
+
+    def deliver_all(self, nodes):
+        """Deliver everything queued now, in order. Messages sent by
+        handlers wait for the next round. Crashed nodes receive nothing."""
+        batch, self.queue = self.queue, []
+        for dst, msg in batch:
+            if dst not in self.down:
+                nodes[dst].handle(msg)
+```
+
+Your `Node` needs: `__init__(self, node_id, peers, net, rng)`; `handle(self, msg)`; `tick(self)` (advance the election timer or send heartbeats); `client_put(self, key, value)` (returns `True` if this node is the leader and appended the entry, otherwise `False`); `crash()` and `restart()` helpers that set or clear the node in `net.down` and, on restart, reset volatile state (role `follower`, new election timer) while keeping `term`, `voted_for` and `log`.
+
+material: Protocol rules. Log entries are `{"term": t, "key": k, "value": v}` with 1-based indexes. Every message carries the sender's `term`. A node that sees a larger term in any message sets `term` to it, clears `voted_for` and becomes a follower. Messages with a smaller term are answered with a rejection carrying the receiver's term (or ignored for replies). Message types:
+
+- `request_vote`: `candidate`, `last_index`, `last_term`. Grant (`vote` message with `granted=True`) only if the term is current, `voted_for` is empty or equals the candidate, and the candidate's log is at least as up to date (last term higher, or equal with last index at least as large).
+- `append`: `leader`, `prev_index`, `prev_term`, `entries` (possibly empty, used as heartbeat), `leader_commit`. The follower replies `append_reply` with `success`, and `match_index` on success. It succeeds only if its log has an entry at `prev_index` with term `prev_term` (index 0 always matches); then, for each new entry, if its log already has an entry at that index with a different term, it deletes that entry and all that follow; it appends any new entries not already in its log, and sets `commit_index = min(leader_commit, last new index)`.
+- Election: a follower whose timer expires increments `term`, becomes a candidate, votes for itself and sends `request_vote` to all peers. Timers are random integers between 8 and 15 rounds drawn from the node's own `rng` (seeded per node, for example `random.Random(100 + node_id)`). A candidate with votes from a majority of all five nodes becomes leader and immediately sends `append` heartbeats; leaders send heartbeats every 3 rounds.
+- Commit: after each successful `append_reply` the leader updates `match_index[peer]`. It sets `commit_index` to the largest index `N` such that entry `N` has the leader's current term and more than half of all five nodes (counting itself) have `match_index >= N` (the rule of Lesson 7). Each node applies entries up to `commit_index` in order to its dictionary `state`.
+- Failure of a follower to match: on `success=False` the leader decrements `next_index[peer]` and retries on the next heartbeat.
+
+material: Required scenarios. Write each as a function that builds five nodes, runs rounds, and asserts. (1) No failures, no loss: within 40 rounds exactly one leader exists; a put of `("x", 1)` is committed on all five nodes. (2) Crash the leader after a write is committed: a new leader is elected among the other four, `get("x")` returns 1, and a second write commits. (3) Crash two servers (including the leader), then the survivors can still elect a leader and commit; crash a third server and show that no new write can commit (no majority) while the safety invariants still hold. (4) Message loss with `drop_rate=0.2` for several seeds: after the loss stops, all live servers converge to the same log. (5) A crashed follower misses 10 writes, restarts, and the leader repairs its log until it matches. (6) The mutation test: remove the up-to-date check from the voting rule and find a seed and a sequence of crashes under which the invariants fail or a committed write is lost.
+
+material: Invariants. Implement `check(nodes)` and call it after every round. (a) Election safety: for each term, at most one node ever has role `leader` in that term (record `(term, node)` pairs over the whole run). (b) Log matching: for any two nodes and any index at which both have an entry with the same term, their entries and all earlier entries are identical. (c) Leader completeness: whenever a node becomes leader, its log contains every entry that any node had already marked committed (keep a global list of committed `(index, term, key, value)` records). (d) State machine safety: no two nodes apply different entries at the same index.
+
+material: Report questions. (1) Which consistency model does `get` served by the leader provide, and what could go wrong if followers also served reads? (2) If the network is partitioned into groups of 3 and 2 servers, what can each group do, and what does this show about CAP? (3) Why can an acknowledged write never be lost while at least 3 of 5 servers are alive, and which assumption in your simulation does that argument depend on (persistent state surviving a crash)? (4) What would a real system need that you left out?
+
+@review
+**Week 1: partial failure.** Distributed systems fail partially and communication is unreliable. Failure models: crash, omission, timing, Byzantine. A timeout cannot tell a crash from a slow node or a lost reply. Availability of a chain multiplies ($p^n$); redundancy uses $1-(1-p)^n$.
+
+**Week 2: communication.** RPC stubs marshal arguments; semantics are at-most-once and at-least-once; exactly-once delivery is impossible, effectively-once processing uses request IDs and deduplication. Queues decouple sender and receiver in time; publish-subscribe fans messages out.
+
+**Week 3: time and order.** Happened-before, concurrent events. Lamport clocks: increment on local and send, $\max+1$ on receive; they respect causality one way only. Vector clocks: componentwise comparison characterizes causality exactly.
+
+**Week 4: coordination.** Mutual exclusion: centralized (3 messages), Ricart-Agrawala ($2(N-1)$, smaller $(t, \text{id})$ wins), token ring. Election: bully (highest live id wins), Chang-Roberts ring (between $2N-1$ and $N(N+1)/2$ messages).
+
+**Week 5: replication.** Primary-backup (synchronous versus asynchronous), state machine replication (same commands, same order, deterministic), chain replication, quorums with $R+W>N$.
+
+**Week 6: consistency models.** Linearizable, sequential, causal, eventual, and the session guarantees. Real-time order separates linearizability from sequential consistency.
+
+**Week 7: consensus.** Agreement, validity, termination; FLP; majorities intersect. Paxos prepare/accept and the highest-accepted-value rule. Raft: terms, one vote per term, up-to-date log rule, commit only current-term entries by counting.
+
+**Week 8: fault tolerance and CAP.** $2f+1$ for crash, $3f+1$ for Byzantine. CAP: during a partition choose consistency or availability; PACELC adds latency versus consistency otherwise.
+
+**Week 9: partitioning.** Range versus hash; modulo hashing remaps most keys; consistent hashing with virtual nodes moves about $K/N$ keys; replicas are the next distinct nodes clockwise.
+
+**Week 10: dataflow.** Map, shuffle, reduce; re-execution, combiners, skew; event time, windows, watermarks, checkpoints.
+
+**Week 11: cloud.** IaaS, PaaS, serverless, SaaS; shared responsibility; regions and zones; autoscaling formula; pricing models.
+
+**Week 12: operations.** Containers (namespaces, cgroups, layers), Kubernetes reconciliation, probes, metrics/logs/traces, percentiles, SLOs and error budgets.
+
+**Self-check.** Can you (1) classify a failure and say what the client can conclude, (2) assign Lamport and vector timestamps to a trace, (3) decide which consistency models allow a history, (4) trace a Raft election and a commit, (5) size a quorum or a Byzantine group, (6) place a key on a ring, (7) write a map and a reduce function, (8) design a multi-zone deployment with scaling and monitoring?
+
+**Common errors.** Reading a timeout as a crash; retrying non-idempotent calls; concluding causality from Lamport timestamps; confusing linearizable with sequential; choosing $R+W \le N$ and expecting fresh reads; comparing log length before last term in Raft; treating CAP as "pick two"; using `mod N` placement for a changing cluster; using averages instead of percentiles; assuming containers have their own kernel.
+
+@exam code
+prompt: Write `lamport_trace(events)`. `events` is a list of tuples in the global order they happen: `("local", p)` for a local event on process `p`, `("send", p, m)` for process `p` sending message `m`, and `("recv", p, m)` for process `p` receiving message `m` (always after the matching send). Every process's Lamport clock starts at 0. A local event or a send increments the process's clock by 1 (and the send's timestamp is the new value); a receive sets the clock to `max(clock, timestamp of m) + 1`. Return the list of timestamps, one per event, in the same order.
+starter:
+```python
+def lamport_trace(events):
+    pass
+```
+tests:
+```python
+ev1 = [("local", "A"), ("send", "A", "m1"), ("recv", "B", "m1"),
+       ("send", "B", "m2"), ("recv", "A", "m2")]
+assert lamport_trace(ev1) == [1, 2, 3, 4, 5]
+ev2 = [("local", "A"), ("local", "B"), ("send", "B", "x"),
+       ("recv", "A", "x")]
+assert lamport_trace(ev2) == [1, 1, 2, 3]
+assert lamport_trace([]) == []
+ev3 = [("send", "A", "a"), ("send", "A", "b"), ("recv", "B", "b"),
+       ("recv", "B", "a")]
+assert lamport_trace(ev3) == [1, 2, 3, 4]
+```
+model:
+```python
+def lamport_trace(events):
+    clock = {}
+    sent = {}
+    result = []
+    for event in events:
+        kind, p = event[0], event[1]
+        now = clock.get(p, 0)
+        if kind == "recv":
+            now = max(now, sent[event[2]]) + 1
+        else:
+            now += 1
+            if kind == "send":
+                sent[event[2]] = now
+        clock[p] = now
+        result.append(now)
+    return result
+```
+hint: Keep a dict of clocks per process and a dict from message name to its send timestamp.
+hint: For a send, record the new clock value under the message name; for a receive, look it up and apply `max(clock, ts) + 1`. A process not seen before has clock 0.
+solution: A per-process counter plus a table of send timestamps is all the state needed. In `ev3`, B receives `b` (timestamp 2) first: `max(0, 2) + 1 = 3`; then receives `a` (timestamp 1): `max(3, 1) + 1 = 4`, showing the clock never goes backward.
+
+@exam code
+prompt: A cluster has `n` servers numbered 0 to `n - 1`, running a majority-quorum replicated log. A write was acknowledged as committed after being stored on the servers in the set `acked` (a majority). Then the servers in the set `crashed` crash. Write `committed_survives(n, acked, crashed)`, which returns `True` if the cluster can still make progress (a strict majority of the `n` servers is alive) **and** at least one alive server holds the committed write, and `False` otherwise.
+starter:
+```python
+def committed_survives(n, acked, crashed):
+    pass
+```
+tests:
+```python
+assert committed_survives(5, {0, 1, 2}, {0, 1}) is True
+assert committed_survives(5, {0, 1, 2}, {0, 1, 2}) is False
+assert committed_survives(5, {0, 1, 2}, {3, 4}) is True
+assert committed_survives(3, {0, 1}, {2}) is True
+assert committed_survives(3, {0, 1}, {0, 1}) is False
+assert committed_survives(4, {0, 1, 2}, {1, 2}) is False
+assert committed_survives(4, {0, 1, 2}, {3}) is True
+```
+model:
+```python
+def committed_survives(n, acked, crashed):
+    alive = set(range(n)) - set(crashed)
+    return len(alive) > n // 2 and len(alive & set(acked)) > 0
+```
+hint: First work out the set of alive servers.
+hint: Progress needs `len(alive) > n // 2`; the write survives if the alive set and `acked` share a server.
+solution: If a majority is alive, it must intersect the acknowledging majority, so some alive server has the write; this is why Raft never loses committed entries while a majority is up. With `{1, 2}` crashed in a 4-server cluster only 2 servers remain, which is not a majority of 4.
+
+@exam self
+prompt: A company stores user shopping carts in a key-value store partitioned over many nodes. Design the storage layer using the course ideas, and answer these points in order. (a) How are keys placed on nodes, and what happens to data movement when a node is added? (b) How many replicas do you keep, how do you choose R and W, and what consistency do reads and writes get? (c) State what your system does for a cart update during a network partition, using the CAP vocabulary, and justify the choice for shopping carts. (d) When two replicas hold conflicting versions of a cart after a partition, how can you detect and then resolve the conflict? (e) Name two things you would monitor and one service level objective.
+solution: (a) Consistent hashing with virtual nodes: keys and nodes are hashed onto a ring and a key lives on the first node clockwise. Adding a node takes over only the keys between its predecessor and itself, about K/N of K keys, instead of remapping nearly all keys as `hash mod N` would; vnodes spread the load and let the newcomer take its share from many nodes. (b) Three replicas on the next three distinct physical nodes clockwise, with N=3, W=2, R=2 so R+W>N and a read overlaps the latest acknowledged write; one replica may fail for both reads and writes. Reads and writes are not linearizable (concurrent writes, sloppy quorums), but give read-your-writes in the common case with versions attached. (c) For carts availability matters more than perfect consistency: during a partition each side keeps accepting updates (AP behavior), accepting stale reads and conflicts; a lost add-to-cart costs money, a briefly different cart does not. A CP design would reject writes on the minority side. (d) Attach vector clocks (version vectors) to each cart version: if one vector dominates the other the older one is discarded; if they are concurrent there is a true conflict, resolved by merging (for carts the union of items, using a merge function or a CRDT-like set that also tracks removals) or by returning both versions to the application. (e) Monitor, for example, p99 read and write latency and the rate of failed or conflicting requests (or replica lag, saturation); an SLO such as 99.9% of cart reads and writes succeed within 200 ms over 30 days.
+hint: Walk through the parts in order: ring placement, quorums, CAP choice, conflict handling, monitoring.
+rubric: Uses consistent hashing (ideally with virtual nodes) and explains that adding a node moves only a small fraction of the keys.
+rubric: Chooses N, W and R with R+W>N, states the failures tolerated, and honestly states that quorums alone do not give linearizability.
+rubric: Makes and justifies an explicit CAP choice for the partition case, and describes vector clocks (or similar) for detecting concurrent versions and a merge strategy.
+rubric: Names appropriate metrics and a concrete SLO.

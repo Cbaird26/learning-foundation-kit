@@ -1,0 +1,180 @@
+@lesson
+title: Cloud computing: IaaS, PaaS and serverless
+summary: Distinguish the cloud service models and their shared responsibility, reason about regions, availability zones, elasticity and pricing, and size capacity and serverless costs.
+objective: Name the essential characteristics of cloud computing and compare IaaS, PaaS, SaaS and serverless (function-as-a-service).
+objective: Use regions and availability zones to design for availability, and compute the availability of redundant zones.
+objective: Compute autoscaling decisions and serverless costs from stated formulas.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 3 "Processes" (the section on virtualization); also look up cloud computing in the index, and NIST's definition of cloud computing.
+
+@article
+**Cloud computing** provides computing resources over a network, on demand, billed by use. The standard (NIST) definition lists five essential characteristics: **on-demand self-service**, **broad network access**, **resource pooling** (a provider serves many customers from shared hardware), **rapid elasticity** and **measured service**. Underneath, a provider runs huge data centers made of the distributed systems you have studied: replicated storage, consensus-based coordination, partitioned databases and schedulers.
+
+### Service models
+
+The models differ in *how much you manage*:
+
+| model | you get | you manage | example workload |
+|---|---|---|---|
+| **IaaS** (infrastructure) | virtual machines, networks, block and object storage | guest OS, runtime, application, data, scaling | lift-and-shift a legacy server |
+| **PaaS** (platform) | a managed runtime or managed database | application code, data and configuration | deploy a web app without patching servers |
+| **Serverless / FaaS** | functions triggered by events, billed per invocation | function code and configuration | event handler, image thumbnailer |
+| **SaaS** (software) | a finished application | your users and data in it | email, a ticketing system |
+
+**Serverless** does not mean there are no servers; it means you do not provision or manage them. Functions are typically **stateless** and short-lived with time and memory limits, **scale automatically, including to zero**, and are billed for the requests plus the memory-time they consume. A function that has not run recently suffers a **cold start**, extra latency while an execution environment is prepared. State must live in external services (databases, object storage, queues).
+
+The **shared responsibility model** divides security and operations: the provider secures the facility, hardware and virtualization layer ("security *of* the cloud"); the customer secures their data, identities, access policies and configuration ("security *in* the cloud"). Misconfigured access, not provider breaches, is a common cause of cloud incidents. How the split moves with the model: in IaaS you patch the guest OS; in PaaS the provider does; in SaaS you mostly manage identities and data.
+
+### Regions, zones and availability
+
+A **region** is a geographic area; each region has several **availability zones** (AZs), physically separate locations with independent power and networking, connected by low-latency links. Spreading replicas across AZs survives the loss of a whole zone; spreading across regions survives a regional disaster and puts data nearer users, at the cost of higher latency and the consistency trade-offs of Lessons 6 and 8. If two zones each have availability $a$ and fail independently, a service that works while either is up has availability $1-(1-a)^2$. Dependencies on shared components (one database, one control plane) limit the benefit.
+
+### Elasticity and pricing
+
+**Horizontal scaling** adds instances; **vertical scaling** makes an instance bigger. An autoscaler compares a metric with a target. A common rule is
+
+$$\text{desired} = \left\lceil \text{current} \times \frac{\text{metric}}{\text{target}} \right\rceil,$$
+
+clamped between a minimum and maximum. Pricing models include **on-demand** (pay as you go), **reserved or committed use** (discount for a commitment) and **spot or preemptible** (cheap capacity the provider can reclaim at short notice, suited to fault-tolerant batch work). Serverless is cheap for spiky or idle workloads and can be expensive for steady heavy load, where reserved instances win. Consider also **vendor lock-in**: managed services speed delivery but make leaving harder.
+
+```python
+import math
+
+def desired(current, metric, target, lo, hi):
+    return max(lo, min(hi, math.ceil(current * metric / target)))
+```
+
+@example
+title: Autoscaling decision
+problem: A service runs 4 instances at 90% average CPU. The target is 60%, the minimum is 2 instances and the maximum is 10. How many instances does the rule request?
+step: Apply the formula: $\lceil 4 \times 90 / 60 \rceil = \lceil 6 \rceil = 6$.
+step: Clamp to the limits: 6 is between 2 and 10, so it stays 6.
+step: If the metric rose to 300%, the formula would give $\lceil 4 \times 300/60 \rceil = 20$, clamped down to the maximum of 10.
+answer: 6 instances
+
+@example
+title: Cost of a serverless function
+problem: A function handles 2 million requests per month. Each runs 200 ms with 512 MB of memory. The price is 0.20 currency units per million requests plus 0.00002 per GB-second. What is the monthly cost?
+step: Request charge: $2 \times 0.20 = 0.40$.
+step: Compute: each request uses $0.2 \text{ s} \times 0.5 \text{ GB} = 0.1$ GB-seconds, so $2{,}000{,}000 \times 0.1 = 200{,}000$ GB-seconds.
+step: Compute charge: $200{,}000 \times 0.00002 = 4.00$.
+step: Total: $0.40 + 4.00 = 4.40$ units per month.
+answer: 4.40
+
+@mistakes
+- Assuming serverless means no servers or no operations; you still own code, configuration, security of access and cost.
+- Treating availability zones in one region as independent of shared dependencies such as a single database or control plane.
+- Thinking the provider is responsible for everything; customer data, identities and configuration remain the customer's job.
+- Using serverless for steady, heavy traffic without comparing cost, or ignoring cold-start latency for latency-critical paths.
+
+@practice mc
+prompt: A team wants to deploy a web application and have the provider handle operating system patching, runtime updates and scaling of the runtime, while the team manages only its code and data. Which service model fits best?
+choice: IaaS
+choice*: PaaS
+choice: SaaS, because the team writes the application
+choice: Bare-metal colocation
+hint: Which model manages the platform but lets you bring your own code?
+solution: PaaS manages the OS and runtime and runs your code. With IaaS you would patch the guest OS yourself, and SaaS provides a finished application rather than a place to run your own.
+
+@practice num
+prompt: A service runs in two availability zones. Each zone is available 99% of the time (0.99), failures are independent, and the service works if at least one zone is up. What is its availability? Give a decimal.
+answer: 0.9999
+check: 1 - (1 - 0.99) ** 2
+tol: 0.000001
+hint: The service is down only if both zones are down.
+solution: Both zones are down with probability $0.01^2 = 0.0001$, so availability is $1 - 0.0001 = 0.9999$.
+
+@practice code
+prompt: Write `desired_replicas(current, metric, target, lo, hi)` for an autoscaler. All arguments are positive integers (`metric` and `target` are percentages). Compute $\lceil \text{current} \times \text{metric} / \text{target} \rceil$ using integer arithmetic only (no floats, no `math`), then clamp it to the range from `lo` to `hi` inclusive and return it.
+starter:
+```python
+def desired_replicas(current, metric, target, lo, hi):
+    pass
+```
+tests:
+```python
+assert desired_replicas(4, 90, 60, 1, 10) == 6
+assert desired_replicas(4, 30, 60, 1, 10) == 2
+assert desired_replicas(4, 60, 60, 1, 10) == 4
+assert desired_replicas(4, 300, 60, 1, 10) == 10
+assert desired_replicas(4, 1, 60, 3, 10) == 3
+assert desired_replicas(3, 70, 60, 1, 10) == 4
+```
+model:
+```python
+def desired_replicas(current, metric, target, lo, hi):
+    need = -(-current * metric // target)
+    return max(lo, min(hi, need))
+```
+hint: Integer ceiling division of `a` by `b` is `-(-a // b)`.
+hint: Use that for `current * metric` divided by `target`, then apply `max(lo, min(hi, need))`.
+solution: `-(-a // b)` is ceiling division without floats. The result is then clamped between the allowed minimum and maximum, so a huge metric cannot exceed `hi` and a tiny one cannot drop below `lo`. For `(3, 70, 60)`: $3 \times 70 / 60 = 3.5$, rounded up to 4.
+
+@practice code
+prompt: Write `serverless_cost(requests, duration_ms, memory_mb, per_million, per_gb_second)` returning the monthly cost as a float. The cost is the request charge `requests / 1_000_000 * per_million` plus the compute charge, which is `requests * (duration_ms / 1000) * (memory_mb / 1024) * per_gb_second`.
+starter:
+```python
+def serverless_cost(requests, duration_ms, memory_mb, per_million, per_gb_second):
+    pass
+```
+tests:
+```python
+assert abs(serverless_cost(2_000_000, 200, 512, 0.20, 0.00002) - 4.4) < 1e-9
+assert serverless_cost(0, 200, 512, 0.20, 0.00002) == 0
+assert abs(serverless_cost(1_000_000, 1000, 1024, 0.5, 0.0001) - 100.5) < 1e-9
+assert abs(serverless_cost(500_000, 100, 256, 0.2, 0.00004) - 0.6) < 1e-9
+```
+model:
+```python
+def serverless_cost(requests, duration_ms, memory_mb, per_million,
+                    per_gb_second):
+    request_charge = requests / 1_000_000 * per_million
+    gb_seconds = requests * (duration_ms / 1000) * (memory_mb / 1024)
+    return request_charge + gb_seconds * per_gb_second
+```
+hint: There are two charges; compute each and add them.
+hint: GB-seconds is requests times seconds per request times gigabytes of memory; multiply that by the price per GB-second.
+solution: The request charge scales with the number of invocations and the compute charge with total GB-seconds. In the first test: request charge $2 \times 0.20 = 0.40$, GB-seconds $2{,}000{,}000 \times 0.2 \times 0.5 = 200{,}000$, compute charge $4.00$, total $4.40$.
+
+@practice ms
+prompt: Which responsibilities belong to the customer under the shared responsibility model when running virtual machines (IaaS)?
+choice*: Patching the guest operating system
+choice*: Configuring who may access the stored data
+choice: Physical security of the data center buildings
+choice: Maintaining the hypervisor and host hardware
+choice*: Protecting application secrets and user identities
+hint: In IaaS the provider stops at the virtualization layer.
+solution: The provider runs the facility, hardware and hypervisor. The customer owns everything inside the virtual machine and the access and data configuration: the guest OS, access policies, secrets and identities.
+
+@quiz code
+prompt: Write `instances_needed(peak_rps, rps_per_instance, headroom_pct)` returning the number of instances needed to serve `peak_rps` requests per second when each instance should be loaded to at most `(100 - headroom_pct)` percent of its capacity `rps_per_instance`. Use integer arithmetic only and round up. All arguments are non-negative integers with `rps_per_instance > 0` and `headroom_pct < 100`.
+starter:
+```python
+def instances_needed(peak_rps, rps_per_instance, headroom_pct):
+    pass
+```
+tests:
+```python
+assert instances_needed(1000, 100, 20) == 13
+assert instances_needed(800, 100, 20) == 10
+assert instances_needed(1, 100, 0) == 1
+assert instances_needed(0, 100, 20) == 0
+assert instances_needed(250, 50, 50) == 10
+```
+model:
+```python
+def instances_needed(peak_rps, rps_per_instance, headroom_pct):
+    usable = rps_per_instance * (100 - headroom_pct)
+    return -(-peak_rps * 100 // usable)
+```
+hint: Usable capacity per instance is `rps_per_instance * (100 - headroom_pct) / 100`.
+hint: To stay in integers, compute `peak_rps * 100` divided by `rps_per_instance * (100 - headroom_pct)`, rounding up with `-(-a // b)`.
+solution: With 20% headroom each instance of capacity 100 serves 80, so 1000 requests per second need $\lceil 1000/80 \rceil = 13$ instances. Multiplying numerator and denominator by 100 avoids fractions.
+
+@quiz mc
+prompt: A latency-sensitive API runs as a serverless function and is called only a few times per hour. Some calls are noticeably slower than others. What is the most likely cause?
+choice: The function scales to too many instances
+choice*: Cold starts: after idle periods a new execution environment must be created
+choice: Serverless functions cannot access the network quickly
+choice: The provider reserves all capacity for other customers
+hint: What happens to a function environment that has been idle for a while?
+solution: After idle periods the platform must create a new environment (download code, start the runtime), which adds latency to those calls. Mitigations include keeping instances warm, provisioned concurrency, or choosing a long-running service for latency-critical paths.

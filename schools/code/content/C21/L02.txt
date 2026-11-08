@@ -1,0 +1,221 @@
+@lesson
+title: Communication: RPC and message passing
+summary: Explain how remote procedure calls and message queues work, compare delivery semantics, and make operations safe under retries with request IDs.
+objective: Describe stubs, marshalling and the failure cases of a remote procedure call.
+objective: Compare at-most-once, at-least-once and exactly-once semantics and explain how deduplication gives effectively-once processing.
+objective: Distinguish synchronous request/reply from asynchronous messaging, queues and publish-subscribe.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 4 "Communication" (remote procedure call and message-oriented communication).
+
+@article
+Machines in a distributed system communicate only by sending messages. Two styles dominate: **remote procedure call** (RPC), which makes a remote request look like a function call, and **message passing**, in which components exchange messages through channels or queues.
+
+### Remote procedure call
+
+An RPC lets a client call `get_user(42)` as if it were local. A **client stub** (generated from an interface definition) **marshals** the arguments into bytes (serialization, for example JSON or Protocol Buffers), sends a request message over the network, and blocks. The server's **skeleton** unmarshals the request, calls the real procedure, and marshals the result into a reply. Modern frameworks such as gRPC follow this model.
+
+RPC hides the network but cannot hide its failures. A local call either returns or the program dies; a remote call can also **time out** with an unknown outcome (Lesson 1). Good RPC systems therefore expose **deadlines**, error codes and retry policies instead of pretending calls are local. Other differences: arguments are passed by value (pointers are meaningless on another machine), latency is orders of magnitude higher, and the two sides may run different versions of the code, so message formats need a compatibility plan (adding optional fields, never reusing field numbers).
+
+### Call semantics
+
+What does the caller know when the call returns or fails?
+
+- **At-most-once**: the procedure runs zero or one times. The client does not retry, or the server filters duplicates. A timeout leaves the outcome unknown.
+- **At-least-once**: the client retries until it gets a reply, so the procedure runs one or more times. Safe only for idempotent operations.
+- **Exactly-once** delivery is impossible in general over an unreliable network, because the sender cannot know whether a lost acknowledgment means the message was received. What systems achieve is **effectively-once processing**: at-least-once delivery plus **deduplication** on the receiver, using a unique request ID.
+
+```python
+class DedupServer:
+    def __init__(self):
+        self.balance = 0
+        self.done = {}             # request id -> cached reply
+
+    def deposit(self, req_id, amount):
+        if req_id in self.done:    # duplicate: replay the stored reply
+            return self.done[req_id]
+        self.balance += amount
+        self.done[req_id] = self.balance
+        return self.balance
+```
+
+The reply is cached so a retry gets the same answer. The server must eventually discard old IDs (for instance with per-client sequence numbers or an expiry window), which bounds the guarantee.
+
+### Message passing and queues
+
+In **synchronous** communication the sender waits for a reply (RPC, HTTP request/response). In **asynchronous** communication the sender continues after handing the message to a channel. A **message queue** (a broker) stores messages durably, which *decouples* sender and receiver in time: the consumer may be down when the message is sent. Consumers acknowledge a message after processing it; if no acknowledgment arrives, the broker redelivers, giving at-least-once delivery. A consumer that crashes after processing but before acknowledging will see the message again, so consumers should be idempotent.
+
+In **publish-subscribe**, publishers send to a *topic* and the system delivers each message to every subscriber of that topic; the publisher does not know who the subscribers are. A queue with competing consumers instead delivers each message to *one* consumer, sharing the work.
+
+Ordering is a design choice: a single queue or partition can preserve order, but order across many partitions is generally not guaranteed.
+
+@example
+title: A lost reply with and without deduplication
+problem: A client sends `deposit(req_id="r1", amount=10)` to a server whose balance is 0. The reply is lost and the client retries the same request. What balance results with the `DedupServer` above, and what would it be without the `done` table?
+step: First arrival: `"r1"` is not in `done`, so the balance becomes 10 and `done["r1"] = 10`. The reply is lost in transit.
+step: The client times out and resends the same ID `"r1"`.
+step: Second arrival: `"r1"` is in `done`, so the server returns the cached 10 without touching the balance. The balance stays 10.
+step: Without the table, the second arrival would add 10 again, giving 20: at-least-once delivery would become at-least-once execution.
+answer: 10 with deduplication, 20 without
+
+@example
+title: Choosing a semantics
+problem: Which call semantics fit (a) "charge the customer's card" and (b) "read the current temperature"?
+step: (b) is a read with no side effects, so it is idempotent. At-least-once with retries is fine.
+step: (a) has an external side effect that must not happen twice. Use a unique charge ID and have the payment service deduplicate on it, giving effectively-once processing.
+step: Plain at-most-once (never retry) is also possible for (a), but the client then may not know whether the charge happened. The ID makes retrying safe.
+
+@mistakes
+- Believing RPC makes a remote call equivalent to a local one; it adds latency, partial failure and version skew.
+- Claiming a network can provide exactly-once delivery; the realistic goal is effectively-once processing with deduplication.
+- Retrying a non-idempotent call without a request ID.
+- Acknowledging a queue message before processing it, so a crash after the acknowledgment loses the work.
+
+@practice mc
+prompt: A queue consumer processes each message and then sends an acknowledgment. The broker redelivers any message not acknowledged within a timeout. Which delivery guarantee results, and what must the consumer therefore be?
+choice: At-most-once; the consumer may skip the check for duplicates
+choice*: At-least-once; the consumer should be idempotent or deduplicate
+choice: Exactly-once; no extra care is needed
+choice: At-most-once; the consumer must be idempotent
+hint: What happens if the consumer crashes after finishing the work but before the acknowledgment?
+solution: Redelivery on a missing acknowledgment means a message can arrive more than once, which is at-least-once delivery. Because a duplicate may be delivered after the work was already done, the consumer must be idempotent or deduplicate.
+
+@practice code
+prompt: Write a class `DedupServer` with a `balance` attribute that starts at 0 and a method `deposit(req_id, amount)`. The first call with a given `req_id` adds `amount` to the balance and returns the new balance. A later call with a `req_id` already seen must not change the balance and must return the same value that the first call returned.
+starter:
+```python
+class DedupServer:
+    pass
+```
+tests:
+```python
+s = DedupServer()
+assert s.balance == 0
+assert s.deposit("a", 10) == 10
+assert s.deposit("b", 5) == 15
+assert s.deposit("a", 10) == 10
+assert s.balance == 15
+assert s.deposit("c", 1) == 16
+assert s.deposit("b", 999) == 15
+assert s.balance == 16
+```
+model:
+```python
+class DedupServer:
+    def __init__(self):
+        self.balance = 0
+        self.done = {}
+
+    def deposit(self, req_id, amount):
+        if req_id in self.done:
+            return self.done[req_id]
+        self.balance += amount
+        self.done[req_id] = self.balance
+        return self.balance
+```
+hint: Keep a dictionary from request ID to the reply that was returned.
+hint: Check the dictionary first; only update the balance for an unseen ID, and store the reply before returning. A duplicate returns the stored reply even if its `amount` differs.
+solution: Store each reply under its request ID. A repeated ID returns the stored reply and leaves the balance untouched, which is why `deposit("b", 999)` returns `15`.
+
+@practice code
+prompt: Write `send_with_retry(send, msg, max_tries)`. `send(msg)` simulates an unreliable network round trip: it returns the reply, or `None` if the message or reply was lost. Call `send(msg)` up to `max_tries` times, stopping at the first reply that is not `None`, and return that reply. If every attempt returns `None`, raise `TimeoutError`.
+starter:
+```python
+def send_with_retry(send, msg, max_tries):
+    pass
+```
+tests:
+```python
+log = []
+replies = [None, None, "pong"]
+def net(m):
+    log.append(m)
+    return replies[len(log) - 1]
+assert send_with_retry(net, "ping", 5) == "pong"
+assert log == ["ping", "ping", "ping"]
+count = []
+def lossy(m):
+    count.append(m)
+    return None
+assert raises(TimeoutError, send_with_retry, lossy, "x", 4)
+assert len(count) == 4
+assert send_with_retry(lambda m: m.upper(), "ok", 1) == "OK"
+assert send_with_retry(lambda m: 0, "x", 3) == 0
+assert raises(TimeoutError, send_with_retry, lambda m: None, "x", 0)
+```
+model:
+```python
+def send_with_retry(send, msg, max_tries):
+    for _ in range(max_tries):
+        reply = send(msg)
+        if reply is not None:
+            return reply
+    raise TimeoutError("no reply")
+```
+hint: Loop `max_tries` times, calling `send(msg)` each time.
+hint: Return as soon as a reply is not `None`; raise `TimeoutError` only after the loop ends. Compare with `is not None`, since a reply could be falsy.
+solution: A bounded loop that returns the first non-`None` reply and raises after the loop gives the required behavior. With `max_tries = 0` the loop never runs, so the error is raised immediately.
+
+@practice text
+prompt: A client sends a JSON request produced by this program. Type exactly what it prints.
+
+```python
+import json
+req = {"method": "add", "args": [2, 3], "id": 7}
+print(json.dumps(req, sort_keys=True, separators=(",", ":")))
+```
+answer: {"args":[2,3],"id":7,"method":"add"}
+check: run("import json\nreq = {'method': 'add', 'args': [2, 3], 'id': 7}\nprint(json.dumps(req, sort_keys=True, separators=(',', ':')))\n")
+hint: `sort_keys=True` orders the keys alphabetically; `separators` removes the spaces.
+solution: The keys sorted alphabetically are `args`, `id`, `method`. The compact separators `","` and `":"` remove all spaces, giving `{"args":[2,3],"id":7,"method":"add"}`.
+
+@practice self
+prompt: Block deliverable: classify the failures in these five scenarios. For each, name the failure type (crash, omission, timing or Byzantine), and say what a client can and cannot conclude. (1) A server process is killed by the operating system and never restarts. (2) A switch drops 3% of packets at random. (3) A database replica answers every query correctly but takes 30 seconds under load, against a 2 second deadline. (4) A faulty node tells half of its peers that it voted yes and the other half that it voted no. (5) A client's request reaches the server and is processed, but the reply is lost.
+hint: Ask for each scenario whether the node stopped, a message was lost, a response was late, or behavior was arbitrary.
+solution: (1) Crash failure: the server stops; clients see timeouts and cannot tell it from a slow server until it stays silent for long enough. (2) Omission failure of the network (link omission); retries usually succeed, but each lost message leaves its outcome unknown. (3) Timing (performance) failure: the answers are correct but late; the client may wrongly conclude a crash. (4) Byzantine failure: arbitrary, inconsistent behavior; crash-tolerant protocols are not enough. (5) Omission failure (a lost reply): the operation happened but the client sees a timeout, so retrying requires idempotence or deduplication.
+rubric: Names the correct type for all five scenarios (crash, omission, timing, Byzantine, omission).
+rubric: States for at least two scenarios what the client cannot distinguish (crash versus slow versus lost reply).
+rubric: Mentions that retrying after scenario 5 needs idempotence or request IDs.
+
+@quiz code
+prompt: Write `encode_call(method, args)` and `decode_call(text)`. `encode_call` returns the JSON text of the dict `{"method": method, "args": args}` produced by `json.dumps` with `sort_keys=True` and `separators=(",", ":")`. `decode_call` takes that text and returns the tuple `(method, args)`. Import `json` yourself.
+starter:
+```python
+import json
+
+def encode_call(method, args):
+    pass
+
+def decode_call(text):
+    pass
+```
+tests:
+```python
+assert encode_call("add", [1, 2]) == '{"args":[1,2],"method":"add"}'
+assert encode_call("ping", []) == '{"args":[],"method":"ping"}'
+assert decode_call('{"args":[1,2],"method":"add"}') == ("add", [1, 2])
+assert decode_call(encode_call("sum", [3, 4, 5])) == ("sum", [3, 4, 5])
+assert decode_call(encode_call("echo", ["hi"])) == ("echo", ["hi"])
+```
+model:
+```python
+import json
+
+def encode_call(method, args):
+    return json.dumps({"method": method, "args": args},
+                      sort_keys=True, separators=(",", ":"))
+
+def decode_call(text):
+    d = json.loads(text)
+    return d["method"], d["args"]
+```
+hint: Marshalling is `json.dumps`; unmarshalling is `json.loads`.
+hint: Build the dict with both keys, pass the two keyword arguments, and in `decode_call` return a tuple.
+solution: `encode_call` marshals a dict with `json.dumps` using sorted keys and compact separators, so the text is deterministic. `decode_call` unmarshals with `json.loads` and returns `(d["method"], d["args"])`.
+
+@quiz mc
+prompt: A payment service receives the same "charge 20 dollars, charge-id c9" request three times because a client retried. What design lets the customer be charged exactly once in effect?
+choice: Use at-most-once delivery and never let the client retry
+choice: Make the client wait longer before retrying
+choice*: Have the service record processed charge IDs and return the stored result for repeats
+choice: Switch from JSON to a binary encoding
+hint: The service needs to recognize that three arrivals are the same logical request.
+solution: Deduplicating on a unique charge ID gives effectively-once processing while still allowing safe retries. Never retrying leaves the outcome unknown after a timeout, waiting longer does not remove duplicates, and the encoding is irrelevant.

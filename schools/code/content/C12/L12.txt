@@ -1,0 +1,276 @@
+@lesson
+title: Memory management and garbage collection
+summary: Compare manual memory management, reference counting and tracing garbage collection, and simulate reference counting and a mark-and-sweep collector.
+objective: Describe the stack and the heap and the main strategies for reclaiming heap memory.
+objective: Explain why reference counting cannot reclaim cycles and how tracing collection handles them.
+objective: Implement reachability, reference counting and mark-and-sweep over a heap modeled as a graph.
+reading: Crafting Interpreters, Chapter 26 "Garbage Collection".
+
+@article
+Every running program needs memory for its data. Two regions matter. The **stack** holds the local variables and return addresses of active function calls; it grows when a function is called and shrinks when it returns, so it is managed automatically. The **heap** holds objects whose lifetime is not tied to one call: anything that outlives the function that created it, such as a closure's environment or a list that is returned. Someone must decide when heap memory can be reused. Languages answer this in three main ways.
+
+### Manual management
+
+In C, you call `malloc` to get heap memory and `free` to give it back. This is fast and predictable, and it puts the burden on the programmer. A forgotten `free` is a **memory leak**; using memory after freeing it is a **dangling pointer** (a use-after-free bug); freeing twice is a **double free**. These bugs are a leading source of security vulnerabilities. Rust keeps manual-style predictability but checks at compile time, through ownership and borrowing rules, that each value has one owner and is freed exactly once, with no garbage collector.
+
+### Reference counting
+
+Give each object a count of the references to it. Storing a reference increments the count; dropping one decrements it; at zero, the object is freed immediately. CPython uses reference counting as its main mechanism, and so does Swift (as automatic reference counting).
+
+Its strengths are that memory is reclaimed promptly and that costs are spread evenly through the run. Its weaknesses are the cost of updating counts on every assignment and, above all, **cycles**. If object `x` refers to `y` and `y` refers to `x`, each has count 1 even when nothing else can reach them, so neither is ever freed. CPython therefore adds a separate **cycle detector** that finds unreachable groups of objects and frees them.
+
+### Tracing garbage collection
+
+A **tracing collector** does not count. When memory runs low it determines which objects are **reachable** and frees all others. The starting points are the **roots**: global variables, the values on the stack and in registers. An object is reachable if it can be found by following references from a root. Anything else is garbage, since the program can no longer get to it.
+
+**Mark-and-sweep** works in two phases:
+
+1. **Mark**: starting from the roots, traverse the reference graph and mark every object visited. (Keep a worklist, and skip objects already marked, so cycles cannot cause an infinite loop.)
+2. **Sweep**: scan the whole heap and free every object that is not marked (and clear the marks for the next run).
+
+```python
+def mark(heap, roots):
+    marked = set()
+    work = list(roots)
+    while work:
+        name = work.pop()
+        if name not in marked:
+            marked.add(name)
+            work.extend(heap[name])
+    return marked
+```
+
+Marking costs time proportional to the number of *live* objects and their references; the sweep costs time proportional to the size of the *whole heap*. Cycles pose no problem, because reachability only asks whether a root can get there.
+
+Variations improve on the basic scheme. **Compacting** and **copying** collectors move live objects together to remove fragmentation. **Generational** collectors exploit the observation that most objects die young: they collect a small young region often and the old region rarely. Simple collectors **stop the world**, pausing the program during collection; **incremental** and **concurrent** collectors reduce the pauses at the cost of complexity.
+
+### Garbage collection and closures
+
+A closure keeps its captured environment reachable for as long as the closure is reachable; this is why a function returned from `make_counter` can still use `count` after `make_counter` has returned. It also means a long-lived closure, cache or global list can keep large objects alive unintentionally. A garbage collector frees only *unreachable* objects, so a **memory leak** in a managed language usually means an object that is still reachable but no longer needed.
+
+### Modeling a heap
+
+To experiment, represent the heap as a dictionary mapping each object's name to the list of names it refers to, and the roots as a list of names. For `heap = {"a": ["b"], "b": [], "c": ["c"]}` and `roots = ["a"]`, the objects `a` and `b` are reachable, while `c` refers only to itself and is garbage. Reference counting would never free `c`, since it has a count of 1, but a tracing collector would.
+
+@example
+title: Mark and sweep by hand
+problem: Run mark-and-sweep on `heap = {"a": ["b", "c"], "b": ["a"], "c": [], "d": ["e"], "e": ["d"]}` with `roots = ["b"]`.
+step: Mark phase: start the worklist with `b`. Visit `b`, mark it, and add its reference `a`.
+step: Visit `a`: mark it and add `b` and `c`. `b` is already marked and is skipped; visit `c`, mark it. The marked set is `{a, b, c}`.
+step: Sweep phase: scan all five objects. `a`, `b` and `c` are marked and survive; `d` and `e` are not marked.
+step: Free `d` and `e`. They refer to each other (a cycle), but no root reaches them, so they are garbage.
+answer: `d` and `e` are freed; `a`, `b` and `c` survive.
+
+@example
+title: Reference counting versus a cycle
+problem: In the heap `{"a": ["b", "c"], "b": ["a"], "c": [], "d": ["e"], "e": ["d"]}` with `roots = ["b"]`, why does reference counting fail to free `d` and `e`, when nothing else refers to them?
+step: Count the references to `d`: the only one is from `e`, so its count is 1. The count of `e` is 1, from `d`.
+step: A count of 1 is not zero, so reference counting does not free either object.
+step: Nothing outside the pair can reach them, so the program can never use them again: they are leaked.
+step: A tracing collector asks a different question (is the object reachable from a root?) and so frees both. CPython combines reference counting with a cycle detector for this reason.
+answer: Each has a count of 1 because of the cycle, so neither reaches zero.
+
+@mistakes
+- Believing a garbage collector prevents all memory leaks; objects that are still reachable but no longer needed are never freed.
+- Thinking reference counting frees cycles. Each member of an unreachable cycle keeps the others alive.
+- Forgetting to skip already marked objects during marking, so a cycle makes the loop run forever.
+- Mixing up the two phases: marking is proportional to live data, and sweeping to the whole heap.
+
+@practice mc
+prompt: Two objects refer to each other, and no variable or other object refers to either one. What happens under pure reference counting and under mark-and-sweep?
+choice: Both strategies free them
+choice: Neither strategy frees them
+choice*: Reference counting keeps them (a leak); mark-and-sweep frees them
+choice: Reference counting frees them; mark-and-sweep keeps them
+hint: Each object contributes to the other's count, but neither is reachable from a root.
+solution: Each object has a count of 1 from the other, so reference counting never reaches zero. Mark-and-sweep marks only what is reachable from the roots, so the pair stays unmarked and is swept.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+a = [1, 2]
+b = a
+del a
+print(b)
+```
+answer: [1, 2]
+check: run("a = [1, 2]\nb = a\ndel a\nprint(b)\n")
+hint: `del a` removes the name `a`, not the object.
+solution: `del a` deletes only the name. The list object still has another reference, `b`, so it stays alive (its reference count drops from 2 to 1) and `print(b)` shows `[1, 2]`.
+
+@practice code
+prompt: The heap is a dictionary mapping an object's name to the list of names it refers to; `roots` is a list of names. Write `reachable(heap, roots)` that returns the set of names reachable from the roots, including the roots themselves. It must terminate on cyclic references. Example: with `heap = {"a": ["b"], "b": [], "c": ["c"]}` and `roots = ["a"]`, the result is `{"a", "b"}`.
+starter:
+```python
+def reachable(heap, roots):
+    pass
+```
+tests:
+```python
+heap = {"a": ["b"], "b": [], "c": ["c"]}
+assert reachable(heap, ["a"]) == {"a", "b"}
+assert reachable(heap, []) == set()
+assert reachable(heap, ["c"]) == {"c"}
+cyc = {"x": ["y"], "y": ["z"], "z": ["x"], "w": []}
+assert reachable(cyc, ["x"]) == {"x", "y", "z"}
+assert reachable(cyc, ["w", "z"]) == {"w", "x", "y", "z"}
+assert heap == {"a": ["b"], "b": [], "c": ["c"]}
+```
+model:
+```python
+def reachable(heap, roots):
+    seen = set()
+    work = list(roots)
+    while work:
+        name = work.pop()
+        if name not in seen:
+            seen.add(name)
+            work.extend(heap[name])
+    return seen
+```
+hint: Use a worklist of names still to visit and a set of names already seen.
+hint: Skip a name that is already in the set before adding its references to the worklist; that stops cycles.
+solution: This is a graph traversal from the roots (the mark phase). The `seen` set guarantees each object is expanded once, so cycles terminate and the time is proportional to the reachable objects and their references.
+
+@practice code
+prompt: Write `refcounts(heap, roots)` that returns a dictionary giving, for every name in `heap`, its reference count: the number of times it appears in `roots` plus the number of times it appears in the reference lists of all objects in `heap`. An object nobody refers to has count `0`. Example: for `heap = {"a": ["b", "b"], "b": []}` and `roots = ["a"]`, the result is `{"a": 1, "b": 2}`.
+starter:
+```python
+def refcounts(heap, roots):
+    pass
+```
+tests:
+```python
+assert refcounts({"a": ["b", "b"], "b": []}, ["a"]) == {"a": 1, "b": 2}
+assert refcounts({}, []) == {}
+assert refcounts({"a": [], "b": []}, []) == {"a": 0, "b": 0}
+assert refcounts({"x": ["y"], "y": ["x"]}, []) == {"x": 1, "y": 1}
+assert refcounts({"s": ["s"]}, ["s", "s"]) == {"s": 3}
+assert refcounts({"a": ["b"], "b": ["c"], "c": []}, ["a"]) == {
+    "a": 1, "b": 1, "c": 1}
+```
+model:
+```python
+def refcounts(heap, roots):
+    counts = {name: 0 for name in heap}
+    for r in roots:
+        counts[r] += 1
+    for refs in heap.values():
+        for r in refs:
+            counts[r] += 1
+    return counts
+```
+hint: Start every object at count 0, then add 1 for each reference you find.
+hint: Loop over `roots`, and then over every reference list in `heap.values()`.
+solution: Initialize a zero count per object, then add one for each occurrence in the roots and in every object's reference list. Duplicate references count separately, which is why `b` has count 2 in the example.
+
+@practice code
+prompt: Write `mark_sweep(heap, roots)`. It marks every object reachable from `roots` (heap is a dictionary from names to lists of referenced names), then sweeps: it deletes every unmarked object from `heap` (modifying the dictionary in place) and returns the sorted list of the names it deleted. Objects that survive keep their reference lists unchanged.
+starter:
+```python
+def mark_sweep(heap, roots):
+    pass
+```
+tests:
+```python
+heap = {"a": ["b", "c"], "b": ["a"], "c": [], "d": ["e"], "e": ["d"]}
+assert mark_sweep(heap, ["b"]) == ["d", "e"]
+assert heap == {"a": ["b", "c"], "b": ["a"], "c": []}
+assert mark_sweep(heap, ["b"]) == []
+h2 = {"x": ["y"], "y": [], "z": ["x"]}
+assert mark_sweep(h2, []) == ["x", "y", "z"]
+assert h2 == {}
+h3 = {"r": ["s"], "s": [], "t": ["s"], "u": []}
+assert mark_sweep(h3, ["r"]) == ["t", "u"]
+assert h3 == {"r": ["s"], "s": []}
+h4 = {"c": ["c"], "k": []}
+assert mark_sweep(h4, ["k"]) == ["c"]
+assert h4 == {"k": []}
+```
+model:
+```python
+def mark_sweep(heap, roots):
+    marked = set()
+    work = list(roots)
+    while work:
+        name = work.pop()
+        if name not in marked:
+            marked.add(name)
+            work.extend(heap[name])
+    garbage = [name for name in heap if name not in marked]
+    for name in garbage:
+        del heap[name]
+    return sorted(garbage)
+```
+hint: First mark everything reachable from the roots, exactly as in a graph search.
+hint: Collect the unmarked names into a list before deleting anything, because you must not change a dictionary while looping over it.
+solution: Mark with a worklist and a `marked` set, then compute the list of unmarked names and delete them from the heap. Collecting the names first avoids modifying the dictionary during iteration. Self-referencing garbage such as `c` is removed because nothing marks it.
+
+@practice ms
+prompt: Select every true statement about memory management.
+choice*: Local variables of an active function call live on the stack, which is managed automatically.
+choice*: A tracing collector can free groups of objects that refer to each other, if they are unreachable.
+choice: Mark-and-sweep must scan only live objects, so its sweep cost is proportional to live data.
+choice*: In a garbage-collected language, an object that is still reachable but never used again is a leak the collector cannot fix.
+choice: Reference counting frees an unreachable cycle as soon as the last outside reference disappears.
+hint: Sweeping scans the whole heap, and counts inside a cycle never reach zero.
+solution: The stack is automatic, tracing handles cycles, and reachable-but-unused objects are never collected. The sweep phase visits the whole heap, not only live objects, and reference counting cannot reclaim cycles on its own.
+
+@quiz code
+prompt: Write `refcount_collect(heap, roots)` simulating pure reference counting. The reference count of an object is the number of times it appears in `roots` plus the number of times it appears in the reference lists of objects still in `heap`. Repeatedly free any object whose count is 0: remove it from `heap` and decrease the count of each name in its reference list (once per occurrence), which may free more objects. Return the sorted list of freed names. Objects in unreachable cycles are never freed.
+starter:
+```python
+def refcount_collect(heap, roots):
+    pass
+```
+tests:
+```python
+h = {"a": ["b"], "b": ["c"], "c": []}
+assert refcount_collect(h, []) == ["a", "b", "c"]
+assert h == {}
+h2 = {"a": ["b"], "b": ["c"], "c": []}
+assert refcount_collect(h2, ["a"]) == []
+assert len(h2) == 3
+h3 = {"x": ["y"], "y": ["x"], "z": ["x"]}
+assert refcount_collect(h3, []) == ["z"]
+assert h3 == {"x": ["y"], "y": ["x"]}
+h4 = {"s": ["s"]}
+assert refcount_collect(h4, []) == []
+h5 = {"p": ["q", "q"], "q": [], "r": []}
+assert refcount_collect(h5, ["r"]) == ["p", "q"]
+assert h5 == {"r": []}
+```
+model:
+```python
+def refcount_collect(heap, roots):
+    counts = {name: 0 for name in heap}
+    for r in roots:
+        counts[r] += 1
+    for refs in heap.values():
+        for r in refs:
+            counts[r] += 1
+    freed = []
+    work = [name for name in heap if counts[name] == 0]
+    while work:
+        name = work.pop()
+        freed.append(name)
+        for r in heap[name]:
+            counts[r] -= 1
+            if counts[r] == 0:
+                work.append(r)
+        del heap[name]
+    return sorted(freed)
+```
+hint: Compute all the counts first, then keep a worklist of objects whose count is 0.
+hint: When you free an object, decrement the count of everything it refers to, and add any object that reaches 0 to the worklist.
+solution: Compute counts, then free zero-count objects from a worklist. Freeing an object removes its outgoing references, so each target's count drops, possibly freeing a chain. In a cycle each member keeps a count of at least 1, so the cycle survives, which is the weakness of reference counting.
+
+@quiz mc
+prompt: In mark-and-sweep, what is the time cost of the **sweep** phase?
+choice: Proportional to the number of roots
+choice: Proportional to the number of live objects only
+choice*: Proportional to the size of the whole heap, live and dead objects
+choice: Constant, because freed objects are found through the marks
+hint: The sweeper has to look at every object to see whether it is marked.
+solution: Sweeping scans the entire heap and frees each unmarked object, so its cost grows with the heap size. Marking, in contrast, costs time proportional to the live objects and their references.

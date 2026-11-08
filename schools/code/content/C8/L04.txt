@@ -1,0 +1,245 @@
+@lesson
+title: Threads and the thread API
+summary: Explain what threads share and what they keep private, create and join threads, count their possible interleavings, and simulate a multi-level feedback queue on a workload.
+objective: Distinguish what threads of one process share (code, heap, globals, open files) from what each has privately (registers, stack).
+objective: Use the pthread create and join calls and avoid passing pointers to short-lived stack variables.
+objective: Count and enumerate interleavings of thread instructions and explain why results are nondeterministic.
+objective: Simulate FIFO, SJF, round robin and a multi-level feedback queue on a workload and compare their completion times.
+reading: Operating Systems: Three Easy Pieces, the chapters "Concurrency: An Introduction" and "Interlude: Thread API".
+
+@article
+A **thread** is a single flow of control inside a process. A process may have several threads, and all of them share one address space. Each thread has its own **program counter, registers and stack**; everything else is shared: the code, global and static variables, the **heap** and the open files. Switching between two threads of the same process is cheaper than switching processes, because the address space does not change.
+
+Threads serve two purposes. **Parallelism** lets a program use several cores at once (for example, summing parts of a large array). **Overlapping I/O** lets one thread continue while another waits on disk or the network.
+
+### The pthread API
+
+POSIX threads are created with `pthread_create` and collected with `pthread_join`. Compile with `-pthread`.
+
+```c
+#include <pthread.h>
+#include <stdio.h>
+
+void *worker(void *arg) {
+    int id = *(int *) arg;
+    printf("worker %d\n", id);
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t[2];
+    int ids[2] = {0, 1};
+    for (int i = 0; i < 2; i++)
+        pthread_create(&t[i], NULL, worker, &ids[i]);
+    for (int i = 0; i < 2; i++)
+        pthread_join(t[i], NULL);
+    return 0;
+}
+```
+
+`pthread_create` takes the thread handle, attributes (`NULL` for defaults), the function to run, and one `void *` argument. `pthread_join` waits for a thread to finish, like `waitpid` for processes. The two workers can print in either order: the scheduler decides.
+
+A classic bug is passing the address of a variable that dies. If the loop variable `i` itself were passed as `&i`, all workers would see whatever value `i` has when they happen to read it, and a pointer to a local variable of a function that has returned points to a dead stack frame. Pass the address of an array element, or allocate memory for each argument.
+
+### Why threads are tricky: interleavings
+
+Each thread's instructions run in order, but the OS may interleave the instructions of different threads in any way. If thread 1 runs instructions $a_1, a_2, a_3$ and thread 2 runs $b_1, b_2, b_3$, the possible executions are all merges of the two sequences that keep each thread's own order. There are $\binom{6}{3} = 20$ of them. In general, threads with $m$ and $n$ instructions have $\binom{m+n}{m}$ interleavings. If the instructions touch shared data, different interleavings can give different results. This is **nondeterminism**, and it is the source of the race conditions you will study next week.
+
+### Threads in Python
+
+CPython threads are real operating-system threads, created with the `threading` module. In the standard build, a **global interpreter lock (GIL)** lets only one thread run Python bytecode at a time, so CPU-bound Python code does not speed up with threads; Python 3.13 added an experimental free-threaded build without the GIL, and 3.14 made it officially supported. Threads still help with I/O waits. The pattern is the same as in C:
+
+```python
+import threading
+
+results = []
+
+def work(n):
+    results.append(n * n)
+
+threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(sorted(results))   # [0, 1, 4, 9]
+```
+
+The final list is sorted because the order in which the threads append is not fixed.
+
+### Putting scheduling and threads together
+
+A thread is the unit the scheduler schedules. The workload simulations from last week (FIFO, SJF, round robin and MLFQ) apply to threads just as to processes. The MLFQ simulation in this week's practice is a direct implementation of the rules you learned.
+
+@example
+title: Counting interleavings
+problem: Thread 1 executes three instructions and thread 2 executes two. How many different instruction interleavings exist, and what are they if thread 1 runs `a b` and thread 2 runs `x`?
+step: Of the five positions, choose which three belong to thread 1: $\binom{5}{3} = 10$ interleavings.
+step: For the small case `a b` and `x`, choose which of the three positions holds `x`: $\binom{3}{1} = 3$ interleavings.
+step: `x` first gives `x a b`; `x` in the middle gives `a x b`; `x` last gives `a b x`. In each, `a` precedes `b`.
+answer: 10 interleavings; the small case gives x a b, a x b, a b x
+
+@example
+title: Tracing a multi-level feedback queue
+problem: Three jobs of lengths 6, 2 and 1 arrive at time 0. The MLFQ has three levels with quanta 1, 2 and 4. A job that does not finish in its quantum moves down one level. Give completion times.
+step: Level 0 (quantum 1): job 0 runs 0 to 1 and drops to level 1 (5 left); job 1 runs 1 to 2 and drops to level 1 (1 left); job 2 runs 2 to 3 and finishes at 3.
+step: Level 1 (quantum 2): job 0 runs 3 to 5 and drops to level 2 (3 left).
+step: Job 1 runs 5 to 6 (only 1 left) and finishes at 6.
+step: Level 2 (quantum 4): job 0 runs 6 to 9 and finishes at 9.
+answer: Completion times 9, 6, 3 for the three jobs
+
+@mistakes
+- Thinking threads have separate heaps or global variables: only the stack and registers are private.
+- Passing the address of a local variable (such as the loop counter) to `pthread_create`, so the thread reads a value that has changed or a dead stack frame.
+- Assuming threads run in the order they were created, or that the output order is stable between runs.
+- Forgetting `pthread_join`, so `main` can return and end the whole process before the threads finish.
+
+@practice mc
+prompt: Two threads belong to the same process. Which of these do they share?
+choice*: The heap and global variables
+choice: The program counter
+choice: The stack
+choice: The set of CPU registers
+hint: A context switch between threads must save and restore the private state.
+solution: Threads share the address space (code, globals, heap) and the open files. Each has its own program counter, registers and stack, which is exactly the state saved at a thread switch.
+
+@practice num
+prompt: Thread 1 executes three instructions and thread 2 executes three instructions. How many distinct interleavings are there that preserve each thread's own instruction order?
+answer: 20
+check: comb(6, 3)
+hint: Choose which 3 of the 6 positions belong to thread 1.
+solution: $\binom{6}{3} = 20$.
+
+@practice text
+prompt: This program runs on CPython. Type exactly what it prints.
+
+```python
+import threading
+
+results = []
+
+def work(n):
+    results.append(n * n)
+
+threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(sorted(results))
+```
+answer: [0, 1, 4, 9]
+check: run("import threading\n\nresults = []\n\ndef work(n):\n    results.append(n * n)\n\nthreads = [threading.Thread(target=work, args=(i,)) for i in range(4)]\nfor t in threads:\n    t.start()\nfor t in threads:\n    t.join()\nprint(sorted(results))\n")
+hint: The threads finish before `print` because of `join`; sorting removes any dependence on their order.
+solution: The four workers append 0, 1, 4 and 9 in some order. After all are joined, `sorted` puts them in a fixed order, so the output is the same on every run.
+
+@practice code
+prompt: Write `interleavings(a, b)` that takes two lists and returns a list of all lists obtained by merging them while keeping the order of the items of each. For example `interleavings(["a"], ["x", "y"])` returns `[["a", "x", "y"], ["x", "a", "y"], ["x", "y", "a"]]` in some order. The input lists must not be modified. If both are empty, return `[[]]`.
+starter:
+```python
+def interleavings(a, b):
+    pass
+```
+tests:
+```python
+assert interleavings([], []) == [[]]
+assert interleavings(["a"], []) == [["a"]]
+assert sorted(interleavings(["a"], ["x", "y"])) == [
+    ["a", "x", "y"], ["x", "a", "y"], ["x", "y", "a"]]
+assert len(interleavings([1, 2, 3], [4, 5, 6])) == 20
+r = interleavings([1, 2], [3, 4])
+assert [1, 3, 4, 2] in r and [2, 1, 3, 4] not in r
+assert len({tuple(x) for x in r}) == 6
+```
+model:
+```python
+def interleavings(a, b):
+    if not a:
+        return [list(b)]
+    if not b:
+        return [list(a)]
+    first_a = [[a[0]] + rest for rest in interleavings(a[1:], b)]
+    first_b = [[b[0]] + rest for rest in interleavings(a, b[1:])]
+    return first_a + first_b
+```
+hint: The first item of any merge is either the first item of `a` or the first item of `b`.
+hint: Recurse: put `a[0]` first and merge `a[1:]` with `b`, then put `b[0]` first and merge `a` with `b[1:]`.
+solution: Base cases: when one list is empty, the only merge is the other list. Otherwise every interleaving starts with `a[0]` or with `b[0]`; recursion enumerates the rest. The count is $\binom{m+n}{m}$.
+
+@practice code
+prompt: Write `mlfq(bursts, quanta)` that simulates a multi-level feedback queue. All jobs arrive at time 0 and start in queue 0, in list order. `quanta[i]` is the time quantum of queue `i` (queue 0 has the highest priority). Repeatedly take the job at the front of the highest-priority non-empty queue and run it for `min(quanta[level], remaining)`. If it finishes, record the clock as its completion time; otherwise move it to the back of the next lower queue (a job in the lowest queue goes to the back of the same queue). There is no I/O and no priority boost. Return the completion times in the order of `bursts`.
+starter:
+```python
+def mlfq(bursts, quanta):
+    pass
+```
+tests:
+```python
+assert mlfq([5, 1], [2, 4]) == [6, 3]
+assert mlfq([3, 3], [1, 2, 4]) == [4, 6]
+assert mlfq([10, 1, 1], [1, 2, 4]) == [12, 2, 3]
+assert mlfq([4], [2]) == [4]
+assert mlfq([3, 3], [2]) == [5, 6]
+assert mlfq([], [1, 2]) == []
+```
+model:
+```python
+from collections import deque
+
+
+def mlfq(bursts, quanta):
+    levels = len(quanta)
+    queues = [deque() for _ in range(levels)]
+    queues[0].extend(range(len(bursts)))
+    remaining = list(bursts)
+    done = [0] * len(bursts)
+    t = 0
+    while any(queues):
+        level = next(i for i, q in enumerate(queues) if q)
+        job = queues[level].popleft()
+        run = min(quanta[level], remaining[job])
+        t += run
+        remaining[job] -= run
+        if remaining[job] == 0:
+            done[job] = t
+        else:
+            queues[min(level + 1, levels - 1)].append(job)
+    return done
+```
+hint: Keep one `deque` per level and a clock; always choose the lowest-numbered non-empty queue.
+hint: A job that does not finish has used its whole quantum, so demote it with `min(level + 1, levels - 1)`.
+solution: Each iteration picks the highest non-empty level, runs the front job for at most one quantum, and either records its completion or demotes it. Because jobs are demoted only when they use a full quantum, short jobs finish early: with bursts `[10, 1, 1]` the two short jobs finish at times 2 and 3.
+
+@quiz code
+prompt: Write `split_work(items, k)` that divides `items` among `k` worker threads by dealing them out round-robin: worker `i` receives the items at positions `i`, `i + k`, `i + 2k`, and so on, in order. Return a list of `k` lists (some may be empty). Do not modify `items`.
+starter:
+```python
+def split_work(items, k):
+    pass
+```
+tests:
+```python
+assert split_work([1, 2, 3, 4, 5], 2) == [[1, 3, 5], [2, 4]]
+assert split_work(list("abcdef"), 3) == [["a", "d"], ["b", "e"], ["c", "f"]]
+assert split_work([7], 3) == [[7], [], []]
+assert split_work([], 2) == [[], []]
+data = [1, 2, 3]
+split_work(data, 2)
+assert data == [1, 2, 3]
+```
+model:
+```python
+def split_work(items, k):
+    return [items[i::k] for i in range(k)]
+```
+hint: A slice with a step, `items[i::k]`, picks every `k`-th item starting at `i`.
+solution: Worker `i` gets `items[i::k]`. Slicing makes new lists, so the input is unchanged, and workers beyond the length of `items` receive empty lists.
+
+@quiz mc
+prompt: A function run by two threads of the same process declares a local variable `int x` and also uses a global variable `total`. Which description is correct?
+choice*: Each thread has its own copy of `x` on its own stack, while both threads access the same `total`
+choice: Both threads share one `x`, but each has its own copy of `total`
+choice: Both variables are private to each thread, because each thread has its own address space
+choice: Both variables are shared, because the two threads run the same code
+hint: Local variables live on the stack.
+solution: Locals live on each thread's private stack, so the two threads have separate copies of `x`. Globals live in the shared data segment, so there is one `total` (which is why unsynchronized updates to it race).

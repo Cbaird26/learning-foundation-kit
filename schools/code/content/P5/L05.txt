@@ -1,0 +1,250 @@
+@lesson
+title: Configuration, environments and secrets
+summary: Separate configuration from code, validate it at startup, and keep secrets out of the repository, the logs and the container image.
+objective: Explain why configuration comes from the environment and what counts as a secret.
+objective: Load and validate configuration at startup so the application fails fast.
+objective: Keep a `.env` file out of Git, provide a `.env.example`, and respond correctly when a secret leaks.
+reading: The Twelve-Factor App, the "Config" factor (III) and the "Dev/prod parity" factor (X).
+
+@article
+The same code runs on your laptop, in CI, in staging and in production. What differs is **configuration**: the database address, the port, the log level, the keys for outside services. The rule from The Twelve-Factor App is simple: *strict separation of config from code*. If you could open-source your repository tomorrow without leaking anything, you have done it right.
+
+### What is config, what is a secret
+
+**Config** is anything that varies between deploys: `DATABASE_URL`, `PORT`, `LOG_LEVEL`, `FEATURE_EXPORT_ENABLED`. A **secret** is config that grants access: passwords, API keys, signing keys, tokens. All secrets are config, but not all config is secret, and the distinction matters because secrets need extra care: restricted access, rotation and never appearing in logs.
+
+Constants that are the same everywhere (the number of items per page, a tax rate defined by law) are not config; keep them in code.
+
+### Environment variables
+
+The portable way to pass config is **environment variables**. Every language, container platform and CI service supports them, and they are never accidentally committed with your code. Read them in one place, at startup, into a typed object:
+
+```python
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    database_url: str
+    port: int
+    debug: bool
+
+
+def load_settings() -> Settings:
+    return Settings(
+        database_url=os.environ["DATABASE_URL"],   # required
+        port=int(os.environ.get("PORT", "8000")),  # optional default
+        debug=os.environ.get("DEBUG", "") == "1",
+    )
+```
+
+Two rules: **fail fast** (a missing required variable stops the app at startup with a clear message, not at 3 a.m. when the first request needs it) and **validate** (a port must be a number from 1 to 65535). Never scatter `os.environ` calls through the code, because you will lose track of what the app needs.
+
+### The .env file for local development
+
+Typing a dozen variables each time is tedious, so developers keep a local `.env` file of `NAME=value` lines and load it with a tool or library (many frameworks and tools support this; Docker Compose reads `env_file`). Two files go in the repository's root:
+
+```text
+# .env.example  (committed: names and safe placeholder values)
+DATABASE_URL=postgresql://app:change-me@localhost:5432/app
+DB_PASSWORD=change-me   # read by Docker Compose (week 6)
+PORT=8000
+DEBUG=1
+```
+
+and `.env` itself (real local values) which is **never** committed:
+
+```bash
+echo ".env" >> .gitignore
+git check-ignore -v .env    # prints the matching rule if ignored
+git status --short          # .env must not appear
+```
+
+The `.env.example` file documents every variable a newcomer needs, so setup is `cp .env.example .env`.
+
+### Environments
+
+Keep **dev, staging and production** as similar as you can (dev/prod parity), differing only in config. Never create code paths such as `if ENV == "production"`; instead, change a setting. Give each environment its own credentials: a leaked development key must not open production.
+
+### Where secrets live
+
+- **Never** in the repository, the workflow file, the Dockerfile, or the image. Anything baked into an image can be read by anyone who can pull it.
+- In your platform's **secrets store** (CI secrets, the host's environment settings, or a dedicated secrets manager), injected at runtime as environment variables or mounted files.
+- Never in logs, error messages or URLs. Redact them when you print configuration.
+
+### When a secret leaks
+
+If a secret is ever committed or pasted somewhere public, assume it is compromised, even if you delete it within seconds, because automated scanners harvest public repositories continuously. In order: **revoke or rotate** the secret at the provider, create the replacement and deploy it, check logs for misuse, and only then clean the history. Removing a file from the latest commit does not remove it from history. Turn on your host's secret scanning and push protection if it offers them, and add a pre-commit check as a second net.
+
+@example
+title: Failing fast on bad configuration
+problem: The app reads `PORT` as `int(os.environ.get("PORT", "8000"))`. A deploy sets `PORT=eighty`. What happens, and how do you improve it?
+step: `int("eighty")` raises `ValueError` at startup, so the app refuses to start. That is correct behavior: failing at boot is better than failing later.
+step: The message is poor ("invalid literal for int()"), so wrap it: catch the error and raise one that names the variable and the bad value.
+step: Also check the range: a port of `0` or `70000` parses but is not valid, so reject it with a clear message.
+step: Put all of this in `load_settings()` so every setting is checked once, in one place, before any request is served.
+answer: Fail at startup with a message naming `PORT`, and validate the range as well as the type.
+
+@example
+title: Responding to a committed key
+problem: You notice that last week you committed an API key for a payment sandbox in `settings.py`, and the repository is public. What do you do, in order?
+step: Revoke the key in the provider's dashboard now. Deleting the file does not help, because the key is in the history and may already have been copied.
+step: Create a new key and store it in the secrets store; update the deployed environment and redeploy.
+step: Review the provider's logs for use you do not recognize during the exposed period.
+step: Remove the key from the code (read it from the environment) and add the rule or scanner that would have caught it. Rewriting history is optional cleanup; rotation is what fixes the problem.
+answer: Revoke and rotate first, check for misuse, then fix the code and add prevention.
+
+@mistakes
+- Committing `.env` (or adding it to `.gitignore` after it was already tracked, which does nothing for tracked files).
+- Reading `os.environ` all over the code base instead of one validated settings object.
+- Believing that deleting a leaked secret from the repository makes it safe again.
+- Baking secrets into a Docker image with `ENV` or `COPY .env`, where anyone with the image can read them.
+
+@practice mc
+prompt: You discover that an API key was pushed to a public repository ten minutes ago. What is the first thing to do?
+choice: Delete the file and push again, then continue as normal.
+choice*: Revoke or rotate the key at the provider, because it must be treated as compromised.
+choice: Make the repository private and do nothing else.
+choice: Wait to see whether anyone uses it.
+hint: Assume the worst: automated scanners find public secrets within minutes.
+solution: Revoke or rotate immediately. Deleting the file or making the repository private does not undo any copy that was already taken.
+
+@practice code
+prompt: Write `parse_env(text)` for the contents of a `.env` file. Return a dict of names to values. Ignore blank lines and lines starting with `#` (after stripping spaces) and lines with no `=`. Split each line on the **first** `=`, strip spaces around the name and the value, and remove one pair of matching single or double quotes around the value if present.
+starter:
+```python
+def parse_env(text):
+    pass
+```
+tests:
+```python
+text = "# comment\nPORT=8000\n\nNAME = 'Demo App'\nURL=http://x/?a=b\nbroken line\n"
+assert parse_env(text) == {"PORT": "8000", "NAME": "Demo App", "URL": "http://x/?a=b"}
+assert parse_env("") == {}
+assert parse_env('KEY="quoted value"') == {"KEY": "quoted value"}
+assert parse_env("EMPTY=") == {"EMPTY": ""}
+assert parse_env("A='x\"") == {"A": "'x\""}
+```
+model:
+```python
+def parse_env(text):
+    result = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        result[name] = value
+    return result
+```
+hint: `line.split("=", 1)` splits only at the first equals sign, so values may contain `=`.
+hint: Remove quotes only when the first and last character are the same quote character.
+solution: Skip blank, comment and `=`-less lines, split once on `=`, strip both parts, and unwrap one pair of matching quotes. The test with mismatched quotes keeps them, because the first and last characters differ.
+
+@practice code
+prompt: Write `load_config(env)` that takes a dict of environment variables and returns a dict with `"database_url"` (string, required), `"port"` (int, from `PORT`, default 8000, must be from 1 to 65535) and `"debug"` (bool, from `DEBUG`: true when the lowercase value is `1`, `true` or `yes`, otherwise false; default false). Raise `ValueError` when `DATABASE_URL` is missing or empty, or when `PORT` is not an integer or is out of range.
+starter:
+```python
+def load_config(env):
+    pass
+```
+tests:
+```python
+base = {"DATABASE_URL": "postgresql://app@localhost/app"}
+assert load_config(base) == {
+    "database_url": "postgresql://app@localhost/app", "port": 8000, "debug": False,
+}
+cfg = load_config({**base, "PORT": "9000", "DEBUG": "Yes"})
+assert cfg["port"] == 9000 and cfg["debug"] is True
+assert load_config({**base, "DEBUG": "0"})["debug"] is False
+assert raises(ValueError, load_config, {})
+assert raises(ValueError, load_config, {"DATABASE_URL": ""})
+assert raises(ValueError, load_config, {**base, "PORT": "eighty"})
+assert raises(ValueError, load_config, {**base, "PORT": "70000"})
+assert raises(ValueError, load_config, {**base, "PORT": "0"})
+```
+model:
+```python
+def load_config(env):
+    url = env.get("DATABASE_URL", "")
+    if not url:
+        raise ValueError("DATABASE_URL is required")
+    try:
+        port = int(env.get("PORT", "8000"))
+    except ValueError:
+        raise ValueError("PORT must be an integer") from None
+    if not 1 <= port <= 65535:
+        raise ValueError("PORT must be between 1 and 65535")
+    debug = env.get("DEBUG", "").lower() in ("1", "true", "yes")
+    return {"database_url": url, "port": port, "debug": debug}
+```
+hint: Check the required value first, then convert and range-check the port.
+hint: `int()` raises `ValueError` itself for text such as `"eighty"`; the range check is a separate step.
+solution: Reject a missing or empty `DATABASE_URL`, convert `PORT` with `int` (letting bad text raise `ValueError`), check the range 1 to 65535, and compare the lowercased `DEBUG` text with the three true spellings.
+
+@practice ms
+prompt: Which of these are acceptable places to keep a production database password? Select all that apply.
+choice: A constant in `settings.py` in the repository.
+choice*: The hosting platform's secrets store, injected as an environment variable at runtime.
+choice: An `ENV` line in the Dockerfile.
+choice*: A dedicated secrets manager that the application reads at startup with limited permissions.
+choice: A comment in the README so the team can find it.
+hint: Anything stored in the repository or the image is readable by everyone who can read those.
+solution: A secrets store or a secrets manager keeps the value out of code and images and allows access control and rotation. A constant, a Dockerfile line and a README comment all put the secret where it can be copied.
+
+@practice self
+prompt: Your app needs `DATABASE_URL`, `SECRET_KEY`, `PORT` and `LOG_LEVEL`. Describe exactly how you will handle configuration: which file lists the variables, which are secrets, how `.env` stays out of Git (give the commands), where the production values live, and what the app does at startup if one is missing.
+hint: Separate the documentation file (committed) from the real values file (ignored).
+solution: A committed `.env.example` lists all four names with placeholder values (`SECRET_KEY=change-me`). `DATABASE_URL` (contains a password) and `SECRET_KEY` are secrets; `PORT` and `LOG_LEVEL` are plain config. Locally I run `cp .env.example .env`, edit it, and keep it out of Git with `echo ".env" >> .gitignore`, then confirm with `git check-ignore -v .env` and `git status --short`. If `.env` was ever tracked, `git rm --cached .env`. In production the values are set in the hosting platform's secrets store or environment settings, and in CI they are stored in the CI secrets store; different values are used for staging and production. At startup, a single `load_settings()` function reads the variables, checks that `DATABASE_URL` and `SECRET_KEY` exist and that `PORT` is a valid port, and raises an error naming the variable if not, so the app refuses to start. Printed configuration redacts `SECRET_KEY` and the password in the URL.
+rubric: Provides a committed example file and an ignored real file, with the commands to ignore and verify.
+rubric: Correctly identifies which variables are secrets and says production values live in a secrets store, not in code or the image.
+rubric: Describes failing fast at startup with a clear message naming the missing or invalid variable.
+rubric: Mentions separate credentials per environment or redaction in logs.
+
+@quiz code
+prompt: Write `redact(config)` that returns a new dict where the value is replaced by the string `"***"` for every key whose lowercase name contains `password`, `secret`, `token` or `key`. Other values are copied unchanged, and the original dict is not modified.
+starter:
+```python
+def redact(config):
+    pass
+```
+tests:
+```python
+cfg = {"PORT": "8000", "DB_PASSWORD": "hunter2", "api_key": "abc", "Token": "t"}
+expected = {
+    "PORT": "8000", "DB_PASSWORD": "***", "api_key": "***", "Token": "***",
+}
+assert redact(cfg) == expected
+assert cfg["DB_PASSWORD"] == "hunter2"
+assert redact({}) == {}
+out = redact({"SECRET_KEY": "x", "LOG_LEVEL": "info"})
+assert out == {"SECRET_KEY": "***", "LOG_LEVEL": "info"}
+```
+model:
+```python
+SENSITIVE = ("password", "secret", "token", "key")
+
+
+def redact(config):
+    return {
+        name: "***" if any(word in name.lower() for word in SENSITIVE) else value
+        for name, value in config.items()
+    }
+```
+hint: Lowercase the name once and test it against each sensitive word.
+hint: A dict comprehension builds a new dict, so the original is untouched.
+solution: Build a new dict with a comprehension, replacing the value with `"***"` when any sensitive word appears in the lowercased key. The original dictionary is never modified.
+
+@quiz mc
+prompt: Why is it a problem to have code such as `if ENV == "production": use_real_payments()` throughout an application?
+choice: It makes the application start more slowly.
+choice*: The code that runs in production differs from what you tested elsewhere, which defeats dev/prod parity; behavior should change through settings instead.
+choice: Environment variables cannot hold the word production.
+choice: It makes the repository larger.
+hint: Think about which code paths your tests and staging actually exercise.
+solution: Environment-specific code paths are never exercised before production. Keeping the code identical and varying only configuration preserves parity and makes staging a trustworthy rehearsal.

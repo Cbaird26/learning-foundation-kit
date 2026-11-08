@@ -1,0 +1,223 @@
+@lesson
+title: The relational model
+summary: Describe data as relations with attributes, tuples, domains and keys, and reason about NULL and referential integrity.
+objective: Define relation, attribute, tuple, domain, schema and instance, and state how a relation differs from a SQL table.
+objective: Identify superkeys, candidate keys, primary keys and foreign keys from a schema and an instance.
+objective: Evaluate comparisons that involve NULL using three-valued logic.
+reading: CMU 15-445/645 Database Systems, the lecture on the relational model and relational algebra (first lectures of the course).
+@article
+A database is an organized collection of data that many programs can share, query and update safely. The most widely used way to organize it is the **relational model**: all data is stored in **relations**, and every question is answered by combining relations. The model separates *what* the data means (the logical level) from *how* it is stored on disk (the physical level), so storage can change without rewriting queries. This separation is called **physical data independence**.
+
+### Relations, attributes and tuples
+
+A **relation** looks like a table. Each column is an **attribute** with a name and a **domain**, the set of allowed values (integers, strings, dates). Each row is a **tuple**. The **relation schema** lists the attributes and domains, for example `Student(id: INT, name: TEXT, major: TEXT)`. A **relation instance** is the set of tuples present at one moment. The schema rarely changes; the instance changes constantly.
+
+Two counts describe a relation: its **degree** (number of attributes) and its **cardinality** (number of tuples).
+
+In the formal model a relation is a **set** of tuples. Three consequences follow:
+
+- There is no order among tuples and no order among attributes (attributes are identified by name).
+- There are no duplicate tuples.
+- Every value is atomic, a single value from its domain (this is first normal form, revisited in week 8).
+
+A SQL table is *almost* a relation. SQL tables are **bags** (multisets): duplicate rows are allowed unless a key forbids them, and rows come back in no guaranteed order unless you ask for one with `ORDER BY`.
+
+### Keys
+
+A **superkey** is a set of attributes whose values uniquely identify a tuple: no two tuples of a valid instance agree on all of them. A **candidate key** is a *minimal* superkey: remove any attribute and it stops being a superkey. One candidate key is chosen as the **primary key**; its attributes may not be NULL. Keys are statements about the **schema** (every allowed instance), not about the current data. An instance can disprove a key (two rows share the value) but can never prove one.
+
+A **foreign key** is a set of attributes in one relation that refers to the primary key (or a candidate key) of another. In `Enrolled(student_id, course_id, grade)`, `student_id` is a foreign key to `Student(id)`. **Referential integrity** requires every non-NULL foreign-key value to appear in the referenced relation. **Entity integrity** requires primary-key attributes to be non-NULL.
+
+```sql
+CREATE TABLE Student (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL,
+    major TEXT
+);
+CREATE TABLE Enrolled (
+    student_id INTEGER REFERENCES Student(id),
+    course_id  TEXT,
+    grade      TEXT,
+    PRIMARY KEY (student_id, course_id)
+);
+```
+
+### NULL and three-valued logic
+
+`NULL` marks a missing or inapplicable value. It is not zero or the empty string. Any comparison with NULL yields a third truth value, **unknown**: `NULL = NULL` is unknown, and so is `NULL <> 5`. A query's `WHERE` clause keeps a row only when the condition is **true**, so unknown rows are dropped, just like false ones.
+
+| p | q | p AND q | p OR q |
+|---|---|---|---|
+| true | unknown | unknown | true |
+| false | unknown | false | unknown |
+| unknown | unknown | unknown | unknown |
+
+`NOT unknown` is unknown. To test for a missing value use `x IS NULL` or `x IS NOT NULL`, which always return true or false.
+
+@example
+title: Finding candidate keys in an instance
+problem: The instance below is a valid instance of `Course(code, title, room, slot)`. Which attribute sets of size 1 can still be candidate keys, and which are ruled out?
+
+| code | title | room | slot |
+|---|---|---|---|
+| CS101 | Intro | R1 | Mon |
+| CS102 | Intro | R2 | Mon |
+| CS201 | Data | R1 | Tue |
+step: A single attribute is a superkey of the instance only if all its values are distinct.
+step: `code` has three distinct values, so it survives. `title` repeats `Intro`, so it is ruled out.
+step: `room` repeats `R1` and `slot` repeats `Mon`, so both are ruled out.
+step: `(room, slot)` has pairs `(R1, Mon)`, `(R2, Mon)`, `(R1, Tue)`, all distinct, so it is a superkey of this instance and is minimal here, but the data alone cannot prove it is a key of the schema (two courses could one day share a room and slot).
+answer: Only `code` of the single attributes survives; `title`, `room` and `slot` are ruled out.
+
+@example
+title: Checking referential integrity
+problem: `Student` has ids 1, 2, 3. `Enrolled.student_id` contains 1, 2, 2, 7, NULL. Which values violate referential integrity?
+step: A foreign-key value is a violation only if it is non-NULL and absent from the referenced key.
+step: 1, 2 and 2 appear in `Student(id)`, so they are fine.
+step: 7 does not appear in `Student(id)`, so that row violates the constraint.
+step: NULL is not checked, so the row with NULL is allowed (to forbid it, declare the column `NOT NULL`).
+answer: Only the value `7` violates referential integrity.
+
+@mistakes
+- Treating a key found in the current data as proof that it is a key of the schema; keys are promises about all valid instances.
+- Writing `WHERE x = NULL` (always unknown, so it returns no rows) instead of `WHERE x IS NULL`.
+- Assuming `NOT (x > 3)` returns all rows that fail `x > 3`; rows where `x` is NULL are unknown both ways and are dropped.
+- Calling a superkey a candidate key; a candidate key must be minimal.
+
+@practice code
+prompt: Write `is_superkey(rows, attrs)`. `rows` is a list of dictionaries (tuples of a relation instance, all with the same keys) and `attrs` is a list of attribute names. Return `True` if no two rows have equal values on every attribute in `attrs`, otherwise `False`. With an empty `attrs` list all rows agree, so the result is `True` only when there is at most one row.
+starter:
+```python
+def is_superkey(rows, attrs):
+    pass
+```
+tests:
+```python
+rows = [
+    {"id": 1, "email": "a@x", "city": "Oslo"},
+    {"id": 2, "email": "b@x", "city": "Oslo"},
+    {"id": 3, "email": "c@x", "city": "Rome"},
+]
+assert is_superkey(rows, ["id"]) == True
+assert is_superkey(rows, ["city"]) == False
+assert is_superkey(rows, ["city", "email"]) == True
+assert is_superkey(rows, []) == False
+assert is_superkey(rows[:1], []) == True
+assert is_superkey([], ["id"]) == True
+```
+model:
+```python
+def is_superkey(rows, attrs):
+    seen = set()
+    for row in rows:
+        values = tuple(row[a] for a in attrs)
+        if values in seen:
+            return False
+        seen.add(values)
+    return True
+```
+hint: Build a tuple of the chosen attribute values for each row.
+hint: Keep a set of tuples already seen; a repeat means two rows agree on `attrs`.
+solution: Walk the rows, form `tuple(row[a] for a in attrs)` and return `False` as soon as a tuple repeats. If the loop ends, all projections were distinct. An empty `attrs` gives the empty tuple for every row, so the second row is already a repeat.
+
+@practice code
+prompt: Write `fk_violations(child_rows, fk, parent_rows, pk)`. `child_rows` and `parent_rows` are lists of dictionaries. Return a sorted list, without duplicates, of the values of attribute `fk` in the child rows that are not `None` and do not appear as the value of attribute `pk` in any parent row.
+starter:
+```python
+def fk_violations(child_rows, fk, parent_rows, pk):
+    pass
+```
+tests:
+```python
+parents = [{"id": 1}, {"id": 2}, {"id": 3}]
+kids = [{"dept": 1}, {"dept": 5}, {"dept": None}, {"dept": 5},
+        {"dept": 2}, {"dept": 9}]
+assert fk_violations(kids, "dept", parents, "id") == [5, 9]
+assert fk_violations([{"dept": None}], "dept", parents, "id") == []
+assert fk_violations([], "dept", parents, "id") == []
+assert fk_violations([{"dept": 1}], "dept", [], "id") == [1]
+```
+model:
+```python
+def fk_violations(child_rows, fk, parent_rows, pk):
+    valid = {row[pk] for row in parent_rows}
+    bad = {row[fk] for row in child_rows
+           if row[fk] is not None and row[fk] not in valid}
+    return sorted(bad)
+```
+hint: Collect the parent key values into a set so membership tests are fast.
+hint: A set comprehension over the children, skipping `None`, removes duplicates automatically.
+solution: Build the set of valid parent keys, then collect the child values that are non-`None` and not in that set, and return them sorted. The `None` check implements the rule that NULL foreign keys are not checked.
+
+@practice num
+prompt: A relation `R(A, B, C, D)` has exactly one candidate key, the single attribute `A`. How many superkeys does `R` have? (A superkey is any subset of the attributes that contains a key; the full set counts.)
+answer: 8
+check: sum(1 for mask in range(16) if mask & 1)
+hint: Every superkey must contain `A`.
+hint: Count the ways to include or exclude each of `B`, `C` and `D`.
+solution: A set of attributes is a superkey exactly when it contains `A`. Each of `B`, `C`, `D` is independently in or out, giving $2^3 = 8$ superkeys.
+
+@practice num
+prompt: A table `t` has one INTEGER column `x` holding the values 5, NULL, 7 and 5. How many rows does `SELECT COUNT(*) FROM t WHERE x <> 5` return as its count?
+answer: 1
+check: sql("CREATE TABLE t(x INT); INSERT INTO t VALUES (5), (NULL), (7), (5);", "SELECT COUNT(*) FROM t WHERE x <> 5")[0][0]
+hint: Evaluate `x <> 5` for each of the four rows, including the NULL row.
+solution: `5 <> 5` is false (twice), `NULL <> 5` is unknown, and `7 <> 5` is true. Only true rows pass `WHERE`, so the count is 1.
+
+@practice mc
+prompt: Which statement about the formal relational model is correct?
+choice*: A relation instance is a set of tuples, so it has no duplicate tuples and no meaningful tuple order.
+choice: The left-to-right order of the attributes is part of a relation's identity.
+choice: A candidate key must consist of exactly one attribute.
+choice: Every SQL table automatically rejects duplicate rows.
+hint: Think about what "set" means, and how SQL tables differ from sets.
+solution: A set has no duplicates and no order. SQL tables are bags and accept duplicate rows unless a key or `UNIQUE` constraint forbids them, attributes are identified by name, and candidate keys may use several attributes.
+
+@quiz code
+prompt: Write `candidate_keys(rows, attrs)`. `rows` is a list of dictionaries and `attrs` a list of attribute names. Return the list of candidate keys **of the instance**: non-empty tuples of attribute names (names in the same relative order as in `attrs`) that are superkeys of the rows and minimal, meaning no proper non-empty subset is also a superkey. List smaller keys first; keys of equal size follow the order produced by `itertools.combinations(attrs, size)`.
+starter:
+```python
+def candidate_keys(rows, attrs):
+    pass
+```
+tests:
+```python
+rows = [
+    {"id": 1, "email": "a", "city": "X", "zip": "1"},
+    {"id": 2, "email": "b", "city": "X", "zip": "2"},
+    {"id": 3, "email": "c", "city": "Y", "zip": "2"},
+]
+attrs = ["id", "email", "city", "zip"]
+assert candidate_keys(rows, attrs) == [("id",), ("email",), ("city", "zip")]
+pairs = [{"a": 1, "b": 1}, {"a": 1, "b": 2}, {"a": 2, "b": 1}]
+assert candidate_keys(pairs, ["a", "b"]) == [("a", "b")]
+assert candidate_keys(pairs, ["b", "a"]) == [("b", "a")]
+same = [{"a": 1}, {"a": 1}]
+assert candidate_keys(same, ["a"]) == []
+```
+model:
+```python
+from itertools import combinations
+
+
+def candidate_keys(rows, attrs):
+    keys = []
+    for size in range(1, len(attrs) + 1):
+        for combo in combinations(attrs, size):
+            if any(set(k) <= set(combo) for k in keys):
+                continue
+            values = [tuple(r[a] for a in combo) for r in rows]
+            if len(set(values)) == len(values):
+                keys.append(combo)
+    return keys
+```
+hint: Try attribute sets from size 1 upward, so smaller keys are found first.
+hint: Skip any set that contains a key already found; it is a superkey but not minimal.
+solution: For each size and each combination, skip it if it contains a previously found key; otherwise test uniqueness of its projection by comparing the number of distinct tuples with the number of rows. Duplicate rows make every set fail, so the last test returns an empty list.
+
+@quiz num
+prompt: A table `t` has one INTEGER column `x` holding 1, 3, 5, NULL and 9. How many rows does `SELECT x FROM t WHERE NOT (x > 3)` return?
+answer: 2
+check: len(sql("CREATE TABLE t(x INT); INSERT INTO t VALUES (1), (3), (5), (NULL), (9);", "SELECT x FROM t WHERE NOT (x > 3)"))
+hint: `NOT unknown` is still unknown.
+solution: `x > 3` is false for 1 and 3, true for 5 and 9, and unknown for NULL. Negating gives true for 1 and 3 only, so two rows are returned.

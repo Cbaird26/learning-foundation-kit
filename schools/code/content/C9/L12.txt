@@ -1,0 +1,202 @@
+@lesson
+title: Network security: TLS, firewalls and attacks
+summary: Explain how TLS 1.3 gives a connection confidentiality, integrity and server authentication, how firewalls filter traffic, and how common network attacks arise and are defended.
+objective: Describe the TLS 1.3 handshake and what each of its messages contributes.
+objective: Explain certificates, certificate authorities and hostname verification.
+objective: Distinguish stateless filters, stateful firewalls and proxies and apply first-match rules with a default deny.
+objective: Recognize denial of service, spoofing and routing attacks and name the matching defenses.
+reading: Computer Networks: A Systems Approach, Chapter 8 "Network Security", the sections on authentication protocols, handshake protocols (TLS), and firewalls.
+
+@article
+A network gives an attacker places to listen, alter, forge and flood. The goals of defense are **confidentiality** (only the endpoints can read the data), **integrity** (changes are detected), **authentication** (you know who you are talking to) and **availability** (the service keeps working). Cryptography supplies the first three: **symmetric ciphers** (AES) encrypt fast with a shared key; **key exchange** (such as elliptic-curve Diffie-Hellman) lets two parties agree on a shared key over a public channel; **digital signatures** let a party prove it holds a private key; **hashes and MACs** detect modification. Modern designs combine encryption and integrity in **AEAD** ciphers (AES-GCM, ChaCha20-Poly1305).
+
+### TLS 1.3
+
+**Transport Layer Security** (TLS 1.3 is RFC 8446) runs above TCP and protects HTTP (HTTPS, port 443), mail and many other protocols. HTTP/3 uses the TLS 1.3 handshake inside QUIC. A full TLS 1.3 handshake takes **one round trip**:
+
+1. **ClientHello**: the client lists its supported versions and cipher suites, the **server name** it wants (SNI), and a **key share**: the client's ephemeral public value for a key-exchange group such as X25519.
+2. **ServerHello**: the server picks the parameters and sends its own key share. Both sides now compute the same shared secret and derive encryption keys from it; **everything after ServerHello is encrypted**.
+3. The server sends its **Certificate** (a chain), **CertificateVerify** (a signature over the handshake transcript made with the private key matching the certificate, proving possession) and **Finished** (a MAC over the whole transcript, proving no one altered the handshake).
+4. The client checks the certificate, verifies the signature and Finished, and sends its own **Finished**. Application data then flows, protected by an AEAD cipher with fresh keys and per-record sequence numbers, so records cannot be modified, replayed or reordered unnoticed.
+
+Because the key exchange uses fresh ephemeral keys, TLS 1.3 provides **forward secrecy**: stealing the server's long-term private key later does not reveal past sessions. TLS 1.3 removed older weak features (RSA key transport, static Diffie-Hellman, compression, legacy ciphers). **Session resumption** lets a client reconnect quickly with a pre-shared key, and optional **0-RTT** data sends a request in the first flight, but it can be replayed by an attacker, so it is only safe for idempotent requests. TLS does not hide who talks to whom (IP addresses) or the sizes and timing of records; the SNI is visible unless the Encrypted Client Hello extension is used.
+
+**Post-quantum cryptography.** A large quantum computer could break the elliptic-curve key exchanges and signatures in use today. NIST published FIPS 203 (ML-KEM, key encapsulation), FIPS 204 (ML-DSA) and FIPS 205 (SLH-DSA), both signature standards, in August 2024. Deployments already combine a classical and a post-quantum key exchange in **hybrid** form, to defend against attackers who record traffic now to decrypt it later.
+
+### Certificates
+
+A **certificate** (X.509) binds a public key to a name. A **certificate authority (CA)** signs it. The server sends a chain: its leaf certificate, signed by an intermediate CA, signed by a **root CA** whose certificate is already in the client's **trust store**. The client must check that each signature is valid, that every certificate is within its validity dates, that the chain ends at a trusted root, that the certificate has not been revoked, and that the **name in the certificate matches the host** it intended to reach (names are in the Subject Alternative Name field). A wildcard such as `*.example.com` matches exactly one label (`www.example.com`, not `example.com` and not `a.b.example.com`). If any check fails the browser must refuse the connection. **HSTS** tells browsers to use only HTTPS for a site, and **Certificate Transparency** logs make mis-issued certificates detectable.
+
+### Firewalls
+
+A **firewall** sits between a network and the outside and applies a policy. A **stateless packet filter** looks at each packet's header (protocol, addresses, ports) against an ordered list of rules; the **first matching rule** applies and a safe policy ends with **default deny**. A **stateful firewall** also tracks connections: it allows an inbound packet only if it belongs to a connection started from inside. An **application gateway** (proxy) understands the application protocol and can inspect content. **Intrusion detection and prevention systems** look for suspicious patterns. A firewall cannot protect against threats that arrive over allowed traffic or from inside.
+
+### Attacks and defenses
+
+- **Denial of service (DoS, DDoS):** exhaust bandwidth or server resources. In a **SYN flood** the attacker sends many SYNs and never completes the handshakes, filling the server's table of half-open connections; **SYN cookies** encode the state in the server's initial sequence number so no memory is used until the final ACK. Other defenses: rate limiting, anycast and scrubbing services.
+- **Spoofing:** forging source addresses. **Ingress filtering** (BCP 38) at the edge drops packets whose source address does not belong to the network they come from.
+- **ARP spoofing:** false ARP replies redirect local traffic; switches can validate ARP against known bindings (dynamic ARP inspection).
+- **DNS cache poisoning:** forged DNS answers; defenses are random query IDs and source ports, and **DNSSEC** signatures.
+- **BGP hijacks and leaks:** defended with route filtering and **RPKI** origin validation.
+- **On-path eavesdropping and tampering:** defended by end-to-end encryption such as TLS.
+
+@example
+title: Timeline of an HTTPS request
+problem: RTT is 50 ms. A client opens a TCP connection and runs a full TLS 1.3 handshake before sending an HTTP request. When can it send the request, and when does it receive the first response byte (ignore processing and transmission times)?
+step: At time 0 the client sends SYN. The SYN-ACK returns at 50 ms. The client replies with ACK and ClientHello together.
+step: The server receives ClientHello at 75 ms and answers with ServerHello, Certificate, CertificateVerify and Finished; these reach the client at 100 ms.
+step: The client verifies, then sends Finished together with the HTTP request at 100 ms (2 RTT after the start).
+step: The server receives the request at 125 ms and its response arrives at 150 ms.
+answer: The request is sent at 100 ms and the response starts to arrive at 150 ms.
+
+@example
+title: First-match firewall rules
+problem: Rules in order: (1) allow tcp port 443, (2) allow tcp port 80, (3) deny everything. How is a tcp packet to port 443, a tcp packet to port 22 and a udp packet to port 53 treated?
+step: tcp port 443 matches rule 1: allowed. Evaluation stops.
+step: tcp port 22 matches neither rule 1 nor rule 2, so it reaches rule 3: denied.
+step: udp port 53 also falls through to rule 3: denied (so a DNS server behind this firewall would need an extra allow rule before the last one).
+answer: allowed; denied; denied
+
+@mistakes
+- Saying that TLS hides everything. IP addresses, packet sizes and timing remain visible, and the endpoints still see the data.
+- Thinking a valid signature chain is enough. The certificate's name must also match the host you meant to reach.
+- Putting a broad allow rule before a specific deny rule. Rules are evaluated in order and the first match wins.
+- Believing that a firewall makes a network secure by itself. It controls traffic between networks but cannot stop attacks over permitted traffic.
+
+@practice mc
+prompt: Which set of properties does a TLS 1.3 connection provide for application data when the server's certificate has been validated?
+choice*: Confidentiality, integrity and authentication of the server
+choice: Confidentiality only, because integrity needs a separate protocol
+choice: Anonymity: hiding the client and server IP addresses from observers
+choice: Protection of the server from denial-of-service attacks
+hint: TLS protects the content and who the server is; it does not hide the addresses packets are sent to.
+solution: TLS encrypts and authenticates the data in records (confidentiality and integrity) and authenticates the server by its certificate. It does not hide IP addresses and it does not prevent denial of service.
+
+@practice num
+prompt: A client must complete a TCP handshake (1 RTT) and then a TLS handshake before it can send its first HTTP request. TLS 1.2 needs 2 RTT for a full handshake and TLS 1.3 needs 1 RTT. With RTT = 60 ms, how many milliseconds earlier can the client send the request with TLS 1.3 than with TLS 1.2?
+answer: 60
+check: ((1 + 2) - (1 + 1)) * 60
+unit: ms
+hint: Compare the total RTTs before the request is sent in each case.
+solution: TLS 1.2 needs $1 + 2 = 3$ RTT and TLS 1.3 needs $1 + 1 = 2$ RTT, so TLS 1.3 saves one RTT, 60 ms.
+
+@practice code
+prompt: Write `hostname_matches(pattern, host)` for certificate names. Comparison ignores case. A pattern without `*` must equal the host. A pattern whose first label is exactly `*` (such as `*.example.com`) matches a host that has the same number of labels and the same remaining labels, so the `*` stands for exactly one label. A `*` anywhere else, or as part of a label (such as `a*.example.com`), never matches.
+starter:
+```python
+def hostname_matches(pattern, host):
+    pass
+```
+tests:
+```python
+assert hostname_matches("example.com", "example.com")
+assert hostname_matches("EXAMPLE.com", "example.COM")
+assert hostname_matches("*.example.com", "www.example.com")
+assert not hostname_matches("*.example.com", "example.com")
+assert not hostname_matches("*.example.com", "a.b.example.com")
+assert not hostname_matches("www.*.com", "www.x.com")
+assert not hostname_matches("a*.example.com", "ab.example.com")
+assert not hostname_matches("example.com", "www.example.com")
+```
+model:
+```python
+def hostname_matches(pattern, host):
+    p = pattern.lower().split(".")
+    h = host.lower().split(".")
+    if len(p) != len(h):
+        return False
+    if p[0] == "*":
+        return p[1:] == h[1:]
+    return p == h
+```
+hint: Split both names into labels and compare the number of labels first.
+hint: If the first pattern label is `*`, compare only the remaining labels; otherwise all labels must be equal.
+solution: Lower-case and split into labels. Different label counts never match. If the first pattern label is `*` the remaining labels must be equal; otherwise the whole lists must be equal. Wildcards elsewhere never match because the other labels are compared literally.
+
+@practice code
+prompt: Write a class `StatefulFirewall` that allows inbound packets only for connections started from inside. `outgoing(src, sport, dst, dport)` records a connection started by the inside host `src:sport` to the outside host `dst:dport`. `incoming(src, sport, dst, dport)` takes the addresses of an arriving packet and returns `True` only if it is a reply to a recorded connection, that is, if its source is the outside host and port that was contacted and its destination is the inside host and port that started it. `close(src, sport, dst, dport)` forgets a recorded connection (using the same arguments as `outgoing`, and doing nothing if it is unknown).
+starter:
+```python
+class StatefulFirewall:
+    pass
+```
+tests:
+```python
+fw = StatefulFirewall()
+fw.outgoing("10.0.0.5", 40000, "93.184.216.34", 443)
+assert fw.incoming("93.184.216.34", 443, "10.0.0.5", 40000) is True
+assert fw.incoming("93.184.216.34", 80, "10.0.0.5", 40000) is False
+assert fw.incoming("198.51.100.9", 443, "10.0.0.5", 40000) is False
+assert fw.incoming("93.184.216.34", 443, "10.0.0.5", 40001) is False
+fw.close("10.0.0.5", 40000, "93.184.216.34", 443)
+assert fw.incoming("93.184.216.34", 443, "10.0.0.5", 40000) is False
+fw.close("10.0.0.5", 1, "1.1.1.1", 1)
+```
+model:
+```python
+class StatefulFirewall:
+    def __init__(self):
+        self.connections = set()
+
+    def outgoing(self, src, sport, dst, dport):
+        self.connections.add((src, sport, dst, dport))
+
+    def incoming(self, src, sport, dst, dport):
+        return (dst, dport, src, sport) in self.connections
+
+    def close(self, src, sport, dst, dport):
+        self.connections.discard((src, sport, dst, dport))
+```
+hint: Store each outgoing connection as a four-tuple in a set.
+hint: An arriving packet is a reply when its tuple with source and destination swapped is in the set.
+solution: Keep a set of `(src, sport, dst, dport)` four-tuples for connections started inside. A packet arriving as `(src, sport, dst, dport)` is allowed only if `(dst, dport, src, sport)` is in the set. `discard` makes `close` safe for unknown connections.
+
+@practice self
+prompt: Explain how TLS 1.3 protects an HTTPS connection to `https://www.example.com`. Walk through the handshake in order, and say how the connection achieves confidentiality, integrity and authentication of the server, what a certificate chain and hostname check contribute, why forward secrecy holds, and one thing TLS does not protect.
+solution: The client sends ClientHello with its cipher suites, the server name and an ephemeral key share (for example X25519). The server answers with ServerHello and its own key share; both sides compute the same shared secret and derive keys, and every later handshake message is encrypted. The server sends its certificate chain, a CertificateVerify signature over the handshake transcript made with its private key, and Finished, a MAC over the transcript. The client checks that the chain leads to a trusted root CA, that the certificates are valid and unrevoked, and that the name www.example.com appears in the certificate; the signature proves the server holds the private key matching the certificate, so the client knows it is talking to the real server and not an on-path attacker. The Finished messages prove both sides saw the same handshake, so downgrades and tampering are detected. Application data then travels in records protected by an AEAD cipher (such as AES-GCM or ChaCha20-Poly1305): encryption gives confidentiality, the authentication tag and per-record sequence numbers give integrity and protect against reordering and replay. Because the keys come from ephemeral key shares that are discarded, stealing the server's long-term key later does not decrypt recorded sessions: forward secrecy. TLS does not hide the IP addresses, the timing and sizes of records, or (without Encrypted Client Hello) the server name, and it does not protect against a compromised endpoint or a denial of service.
+hint: Follow the messages in order: ClientHello, ServerHello, Certificate, CertificateVerify, Finished.
+hint: For each security property, name the mechanism that provides it.
+rubric: Describes the ephemeral key exchange in ClientHello and ServerHello and the derivation of shared encryption keys.
+rubric: Explains authentication of the server through the certificate chain, hostname check and the CertificateVerify signature.
+rubric: Explains confidentiality and integrity of the data through an AEAD cipher, and forward secrecy through ephemeral keys.
+rubric: Names at least one limitation, such as visible IP addresses or timing, or compromised endpoints.
+
+@quiz code
+prompt: Write `first_match(rules, packet)` for a stateless filter. `rules` is a list of `(action, protocol, port)` tuples where `action` is `"allow"` or `"deny"` and `protocol` and `port` are either a specific value or the string `"*"` (which matches anything). `packet` is a pair `(protocol, port)`. Return the action of the first rule that matches the packet, or `"deny"` if no rule matches.
+starter:
+```python
+def first_match(rules, packet):
+    pass
+```
+tests:
+```python
+web = [("allow", "tcp", 443), ("allow", "tcp", 80), ("deny", "*", "*")]
+assert first_match(web, ("tcp", 443)) == "allow"
+assert first_match(web, ("udp", 53)) == "deny"
+assert first_match([("deny", "tcp", 23), ("allow", "*", "*")], ("tcp", 23)) == "deny"
+assert first_match([("deny", "tcp", 23), ("allow", "*", "*")], ("tcp", 22)) == "allow"
+assert first_match([("allow", "*", "*"), ("deny", "tcp", 23)], ("tcp", 23)) == "allow"
+assert first_match([], ("tcp", 80)) == "deny"
+assert first_match([("allow", "udp", "*")], ("udp", 5353)) == "allow"
+```
+model:
+```python
+def first_match(rules, packet):
+    protocol, port = packet
+    for action, rule_protocol, rule_port in rules:
+        if rule_protocol in ("*", protocol) and rule_port in ("*", port):
+            return action
+    return "deny"
+```
+hint: Go through the rules in order and stop at the first one that matches both fields.
+hint: A field matches when the rule has `"*"` or the same value as the packet.
+solution: Iterate over the rules in order; return the action of the first rule whose protocol and port each equal the packet's value or are `"*"`; if the loop ends, return the default `"deny"`.
+
+@quiz mc
+prompt: A server's connection table fills up with half-open TCP connections because attackers send SYN segments and never complete the handshake. Which defense directly addresses this?
+choice*: SYN cookies, which encode connection state in the server's initial sequence number so no memory is allocated until the final ACK arrives
+choice: Raising the TCP retransmission timeout so half-open connections stay longer
+choice: Blocking all UDP traffic at the firewall
+choice: Using a larger MSS so that each SYN carries more data
+hint: The attack works because the server stores state for each SYN.
+solution: SYN cookies remove the need to store state for unconfirmed connections. A longer timeout would make the table fill faster, UDP is unrelated to the attack, and the MSS has no effect on half-open entries.

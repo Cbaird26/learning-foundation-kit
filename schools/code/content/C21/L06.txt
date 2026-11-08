@@ -1,0 +1,202 @@
+@lesson
+title: Consistency models
+summary: Define linearizability, sequential, causal and eventual consistency and session guarantees, and decide which models allow a given history of operations.
+objective: Define linearizability, sequential consistency, causal consistency and eventual consistency, and order them by strength.
+objective: Check small histories against these models and the session guarantees (read-your-writes, monotonic reads).
+objective: Explain the latency and availability trade-off that makes weaker models attractive.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 7 "Consistency and replication" (data-centric and client-centric consistency models).
+
+@article
+A **consistency model** is a contract between a replicated data store and its clients: it says which results of reads and writes are allowed when operations overlap and replicas disagree. Stronger models are easier to program against but cost latency and availability.
+
+Operations are described by an **invocation** time and a **response** time; two operations are **concurrent** if their intervals overlap. A **history** is the list of operations with their intervals and results. Below, a register $x$ starts at 0.
+
+### The models
+
+**Linearizability** (strong consistency). Every operation appears to take effect atomically at one instant between its invocation and its response, and the resulting order obeys real time: if operation $A$ responds before $B$ is invoked, $A$ is ordered before $B$. Formally, there must be a total order of all operations that (1) respects real-time precedence and (2) is a legal sequential execution (each read returns the latest preceding write). A read that starts after a write completed must therefore see that write or a later one.
+
+**Sequential consistency.** There is a total order of all operations that is a legal sequential execution and respects each *process's program order*, but it need **not** respect real time across processes. Every linearizable history is sequentially consistent, not conversely.
+
+**Causal consistency.** Writes that are causally related (the happened-before relation of Lesson 3: a process reads a value and then writes, or writes after earlier writes in its own session) must be seen in the same order by everyone. Concurrent writes may be seen in different orders by different processes.
+
+**Eventual consistency.** If no new writes occur, all replicas eventually converge to the same value. It says nothing about what reads return in the meantime; it is the weakest of these models and the cheapest to provide.
+
+Strength: linearizable $\Rightarrow$ sequential $\Rightarrow$ causal $\Rightarrow$ eventual (each implies the next).
+
+### Session guarantees
+
+Weaker stores often add per-client guarantees:
+
+- **Read-your-writes:** a client's read reflects its own earlier writes.
+- **Monotonic reads:** once a client has seen a value, it never later sees an older one.
+- **Monotonic writes:** a client's writes are applied in the order issued.
+- **Writes-follow-reads:** a write is ordered after the writes whose values the client read.
+
+```python
+def monotonic_reads_ok(versions):
+    return all(a <= b for a, b in zip(versions, versions[1:]))
+```
+
+### Checking a history
+
+To test linearizability of a small history, search for an order: repeatedly choose an operation that no other remaining operation must precede (no remaining operation *responded before it was invoked*), check that a read returns the current value, apply writes, and recurse. The problem is NP-complete in general, but checkers work well in practice for realistic histories.
+
+### Why weaker models exist
+
+Linearizability needs coordination on every operation, which costs round trips across replicas, and a minority partition cannot serve requests (Lesson 8). Geo-replicated and highly available stores choose weaker models to answer from the nearest replica with low latency, then reconcile later (with last-write-wins, vector clocks, or merge functions such as CRDTs). Applications then have to tolerate stale reads and conflicts.
+
+@example
+title: Is the history linearizable?
+problem: A register starts at 0. Client A writes 1 during the interval [0, 5]. Client B reads during [1, 2] and gets 0. Client C reads during [3, 4] and gets 1. Is the history linearizable?
+step: A's write overlaps both reads, so it may be ordered before or after either of them. The reads do not overlap each other: B's read (ends at 2) precedes C's read (starts at 3).
+step: Try the order: B's read (returns 0), then the write of 1, then C's read (returns 1). The order respects real time (B before C) and each read returns the latest preceding write (initial 0, then 1).
+step: Since a legal order exists, the history is linearizable.
+step: If C had read 0 instead, we would need the write after both reads; but then C reads 0 after B read 0 with the write still pending, which is also legal. A violation would be B reading 1 and then C reading 0, because after a read returns 1 the write must already have taken effect.
+answer: linearizable
+
+@example
+title: Sequential but not linearizable
+problem: Client A writes x=1 during [0, 2]. After A's write completed, client B reads x during [3, 4] and gets 0. Which models allow this?
+step: Linearizability: A's write finished (time 2) before B's read started (time 3), so any linearization places the write first, and the read must return 1. The history is not linearizable.
+step: Sequential consistency: only program order per process must be respected. Order B's read first (returns the initial 0), then A's write. Each process's own order is preserved, so it is sequentially consistent.
+step: Causal consistency: no causal link between the write and the read, so it is allowed; eventual consistency allows it too.
+answer: sequential, causal and eventual allow it; linearizable does not
+
+@mistakes
+- Confusing linearizability with sequential consistency: only the first respects real-time order across clients.
+- Thinking eventual consistency promises anything about reads before convergence.
+- Treating concurrent operations as "must be ordered by start time"; concurrent operations may take effect in either order.
+- Assuming a store that guarantees read-your-writes is also monotonic or causal; session guarantees are separate.
+
+@practice mc
+prompt: Client A completes a write x=1 at time 2. Client B starts a read of x at time 3 and the store returns the old value 0. Which model does this violate?
+choice: Eventual consistency
+choice: Causal consistency
+choice*: Linearizability
+choice: None; every model allows it
+hint: Which model requires that real-time order across different clients be respected?
+solution: The read began after the write completed, so linearizability requires it to see 1. Causal and eventual consistency allow the stale read, because nothing links the two clients causally and the replicas may not have converged yet.
+
+@practice mc
+prompt: Process A writes x=1. Process B reads x=1, then writes y=2. Process C reads y=2 and then reads x=0 (the initial value). Which model is violated?
+choice: Eventual consistency, because C saw an old value
+choice*: Causal consistency, because C saw a write without a write it depends on
+choice: None; C's reads are concurrent with the writes
+choice: Monotonic writes, because B wrote after reading
+hint: Which write did B's write y=2 causally depend on?
+solution: B read x=1 before writing y=2, so y=2 causally depends on x=1. C saw y=2 but then read x=0, so it saw the effect without its cause, violating causal consistency. Eventual consistency, which only promises convergence, is not violated.
+
+@practice code
+prompt: Write `monotonic_reads_ok(versions)`. `versions` is the list of version numbers that one client's successive reads returned, in the order it issued them. Return `True` if the versions never decrease (equal consecutive versions are fine), otherwise `False`. An empty or one-element list is fine.
+starter:
+```python
+def monotonic_reads_ok(versions):
+    pass
+```
+tests:
+```python
+assert monotonic_reads_ok([1, 1, 2, 5]) is True
+assert monotonic_reads_ok([3, 2]) is False
+assert monotonic_reads_ok([]) is True
+assert monotonic_reads_ok([4]) is True
+assert monotonic_reads_ok([1, 3, 2, 4]) is False
+```
+model:
+```python
+def monotonic_reads_ok(versions):
+    return all(a <= b for a, b in zip(versions, versions[1:]))
+```
+hint: Compare each version with the one after it.
+hint: `zip(versions, versions[1:])` gives consecutive pairs; every pair must satisfy `a <= b`.
+solution: Monotonic reads means a later read never returns an older version, so every consecutive pair must be non-decreasing. `all` over an empty sequence is `True`, which handles the short lists.
+
+@practice code
+prompt: Write `linearizable(history)` for a single register that starts at 0. `history` is a list of tuples `(start, end, kind, value)`, where `kind` is `"w"` (write `value`) or `"r"` (read that returned `value`), with `start < end` and all times distinct. Return `True` if there is a total order of all operations such that (1) if one operation's `end` is before another's `start`, the first comes first, and (2) every read returns the value of the latest write before it in the order (or 0 if there is none). Otherwise return `False`.
+starter:
+```python
+def linearizable(history):
+    pass
+```
+tests:
+```python
+assert linearizable([(0, 3, "w", 1), (4, 6, "r", 1)]) is True
+assert linearizable([(0, 3, "w", 1), (4, 6, "r", 0)]) is False
+assert linearizable([(0, 5, "w", 1), (1, 2, "r", 0), (3, 4, "r", 1)]) is True
+assert linearizable([(0, 5, "w", 1), (1, 2, "r", 1), (3, 4, "r", 0)]) is False
+assert linearizable([(0, 1, "w", 1), (2, 3, "w", 2), (4, 5, "r", 1)]) is False
+assert linearizable([(0, 1, "w", 1), (2, 3, "w", 2), (4, 5, "r", 2)]) is True
+assert linearizable([]) is True
+```
+model:
+```python
+def linearizable(history):
+    def search(remaining, state):
+        if not remaining:
+            return True
+        for i, (s, e, kind, v) in enumerate(remaining):
+            blocked = any(o[1] < s for j, o in enumerate(remaining)
+                          if j != i)
+            if blocked:
+                continue
+            if kind == "r" and v != state:
+                continue
+            new_state = v if kind == "w" else state
+            rest = remaining[:i] + remaining[i + 1:]
+            if search(rest, new_state):
+                return True
+        return False
+
+    return search(list(history), 0)
+```
+hint: Build the order one operation at a time with recursion, tracking the register's current value.
+hint: An operation may go next only if no other remaining operation ended before it started. A read may go next only if its value equals the current state; a write changes the state. Try every allowed choice and backtrack.
+solution: Backtracking search: at each step pick any remaining operation that nothing else must precede, check reads against the current value, update the state on writes, and recurse. If some branch consumes all operations, a legal order exists. The search is exponential in the worst case, fine for histories of a few operations.
+
+@practice self
+prompt: Block deliverable: decide which consistency models allow supplied histories. For each history below, state whether it is allowed by linearizability, sequential consistency, causal consistency and eventual consistency, with a one-sentence reason each. Register x and y start at 0. History 1: A writes x=1 in [0, 2]; B reads x in [3, 4] and gets 0. History 2: A writes x=1 in [0, 2]; then the same client A reads x in [3, 4] and gets 0. History 3: A writes x=1 in [0, 2]; B reads x=1 in [3, 4], then B writes y=2 in [5, 6]; C reads y=2 in [7, 8], then C reads x=0 in [9, 10].
+solution: History 1: not linearizable (the read starts after the write finished, so it must see 1); sequentially consistent (order B's read before A's write; no program order is violated); causal and eventual allowed. History 2: not linearizable and not sequentially consistent (A's own program order puts the write before the read, so the read must see 1 or a later value); not causally consistent either (violates read-your-writes within a session); eventual consistency alone allows it because it promises only convergence. History 3: not linearizable and not sequentially consistent (w(x=1) precedes B's read, then w(y=2), then C's read of y=2, so C's later read of x must see 1); not causal (y=2 depends on x=1 and C saw the effect without the cause); allowed by eventual consistency before convergence.
+hint: First look for real-time constraints (linearizability), then for per-process program order (sequential), then for cause-and-effect chains (causal).
+rubric: History 1 is correctly classified: only linearizability forbids it.
+rubric: History 2 is classified as forbidden by linearizability, sequential and causal consistency, allowed by eventual consistency alone.
+rubric: History 3 is identified as a causal violation (effect seen without cause), with the dependency chain written out.
+rubric: Gives a reason for each answer rather than only yes or no.
+
+@quiz code
+prompt: Write `read_your_writes_ok(ops)` for one client. `ops` is a list, in the order the client issued them, of `("w", version)` (the client wrote and the store assigned that version) and `("r", version)` (a read that returned that version). Return `True` if every read returns a version greater than or equal to the version of the client's most recent earlier write (reads before any write are always fine); otherwise `False`.
+starter:
+```python
+def read_your_writes_ok(ops):
+    pass
+```
+tests:
+```python
+assert read_your_writes_ok([("w", 3), ("r", 3)]) is True
+assert read_your_writes_ok([("w", 3), ("r", 2)]) is False
+assert read_your_writes_ok([("r", 1), ("w", 3), ("r", 5)]) is True
+assert read_your_writes_ok([("w", 3), ("w", 4), ("r", 3)]) is False
+assert read_your_writes_ok([]) is True
+```
+model:
+```python
+def read_your_writes_ok(ops):
+    last_write = 0
+    for kind, version in ops:
+        if kind == "w":
+            last_write = version
+        elif version < last_write:
+            return False
+    return True
+```
+hint: Remember the version of the latest write while scanning the operations in order.
+hint: Update `last_write` on each write; for a read, fail if its version is smaller than `last_write`.
+solution: Scan in order, keeping the version of the latest write. A read below that version means the client failed to see its own write. In the fourth test the latest write is version 4, so a read of 3 fails.
+
+@quiz ms
+prompt: Which statements are true?
+choice*: Every linearizable history is also sequentially consistent.
+choice: Sequential consistency respects the real-time order of operations by different clients.
+choice*: Eventual consistency guarantees only that replicas converge once writes stop.
+choice*: Causal consistency allows different clients to see concurrent writes in different orders.
+choice: Read-your-writes guarantees that all clients see a client's write immediately.
+hint: Recall which model adds real-time order and which only adds convergence.
+solution: Linearizability adds real-time order on top of sequential consistency. Sequential consistency does not order operations of different clients by real time. Causal consistency orders only causally related writes. Read-your-writes concerns only the writing client's own later reads.

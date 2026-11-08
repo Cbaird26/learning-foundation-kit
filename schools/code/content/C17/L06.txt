@@ -1,0 +1,200 @@
+@lesson
+title: Digital signatures, certificates and TLS
+summary: Explain how signatures and certificate chains authenticate servers, validate a chain in code, and trace the TLS 1.3 handshake.
+objective: Describe what a digital signature provides and how hash-and-sign works.
+objective: Explain certificates, chains of trust, hostname checks and revocation, and validate a simplified chain in Python.
+objective: Trace the messages of the TLS 1.3 handshake and state what each achieves.
+reading: UC Berkeley CS 161 textbook, the chapters on digital signatures, certificates and TLS (look up "certificate authority", "TLS handshake" and "forward secrecy").
+@article
+A **digital signature** scheme has three algorithms: key generation, **sign** (private key, message to signature) and **verify** (public key, message, signature to accept or reject). A valid signature shows that the holder of the private key approved exactly that message, and anyone can check it, so unlike a MAC it gives **non-repudiation**. Practical schemes sign a hash of the message (**hash-and-sign**). Current choices: RSA with PSS padding, ECDSA, and **EdDSA** (Ed25519); the post-quantum standards are ML-DSA (FIPS 204) and SLH-DSA (FIPS 205).
+
+### Certificates and chains of trust
+
+How does a browser know that a public key belongs to `shop.example`? A **certificate** (X.509) is a signed statement that binds a public key to names. It contains the subject's public key, the **subject alternative names** (the hostnames it is valid for), the issuer, a validity period (not-before and not-after dates) and the issuer's signature. A **certificate authority (CA)** issues certificates.
+
+Trust is built as a **chain**: a **leaf** certificate for the site, signed by an **intermediate** CA, signed by a **root** CA whose certificate is already in the client's trust store. A client accepts a chain only if all of these hold:
+
+1. every signature verifies against the next certificate's public key (and the last one chains to a trusted root);
+2. every certificate is within its validity period;
+3. each issuing certificate is allowed to act as a CA;
+4. the leaf's names match the host being contacted: an exact name, or a wildcard such as `*.example.com`, which matches one label (`www.example.com`) but not `example.com` or `a.b.example.com`;
+5. the certificate has not been revoked.
+
+**Revocation** is handled by lists (CRLs) and online status checks (OCSP), but is unreliable in practice, so ecosystems also rely on short certificate lifetimes. **Certificate Transparency** logs make every issued certificate publicly auditable, so a mis-issued one can be detected. **Certificate pinning** (accepting only expected keys or certificates) reduces dependence on CAs but creates an outage risk if the pin is not updated.
+
+### TLS 1.3
+
+**TLS 1.3** (RFC 8446) protects HTTPS and many other protocols. It runs over TCP; HTTP/3 uses QUIC (RFC 9000, RFC 9114), which embeds TLS 1.3 for its handshake. A full handshake takes **one round trip**:
+
+1. **ClientHello**: the client's random value, supported cipher suites, protocol versions, and a **key share**, its ephemeral (EC)DHE public value for one or more groups; also the server name (SNI) and the signature algorithms it accepts.
+2. **ServerHello**: the chosen cipher suite and the server's key share. Both sides now compute the shared (EC)DHE secret and derive **handshake traffic keys** with a key-derivation function (HKDF). Everything after this point is encrypted.
+3. Server flight, encrypted: **EncryptedExtensions**; **Certificate** (the chain); **CertificateVerify**, a signature over a hash of the handshake so far made with the certificate's private key, proving it holds that key; and **Finished**, a MAC over the whole handshake that proves the handshake was not altered.
+4. Client: checks the chain and hostname, the CertificateVerify signature and the Finished MAC, then sends its own **Finished** (optionally a client certificate first). Both derive **application traffic keys**, and data flows protected by an AEAD cipher.
+
+TLS 1.3 offers only AEAD cipher suites (such as `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384` and `TLS_CHACHA20_POLY1305_SHA256`) and every full handshake uses an ephemeral (EC)DHE key exchange, so those sessions have **forward secrecy** (a resumption that uses only a pre-shared key, without a fresh (EC)DHE exchange, does not). It removed static RSA key transport, CBC mode, compression and renegotiation. **Session resumption** with a pre-shared key is faster; "0-RTT" early data can be **replayed** by an attacker, so it must only carry requests that are safe to repeat.
+
+In code, always use a vetted library with certificate and hostname verification **on**; turning verification off "just for testing" is a classic way to ship a vulnerable client (OWASP A02 Security Misconfiguration).
+
+@example
+title: Validating a chain by hand
+problem: A client connects to `www.shop.example`. It receives the chain leaf (subject `www.shop.example`, issuer `Shop Issuing CA`), intermediate (subject `Shop Issuing CA`, issuer `Root One`, CA flag true). Its trust store contains `Root One`. Today lies inside every validity period. Accept?
+step: Name check: the leaf lists `www.shop.example`, which equals the requested host.
+step: Linkage: the leaf's issuer `Shop Issuing CA` equals the intermediate's subject, and the intermediate is allowed to be a CA.
+step: Trust anchor: the intermediate's issuer `Root One` is in the trust store, and all dates are valid.
+step: Every check passes (and the signatures verify), so the chain is accepted. If the leaf listed only `*.shop.example`, `www.shop.example` would still match, but `shop.example` would not.
+answer: Accept
+@example
+title: Counting round trips
+problem: Over TCP, how many round trips pass before the client can send its first encrypted HTTP request with a full TLS 1.3 handshake?
+step: TCP's handshake (SYN, SYN-ACK) takes 1 round trip before the client can send data.
+step: The TLS 1.3 handshake takes 1 more round trip: ClientHello out, server flight back.
+step: After receiving the server flight, the client sends Finished and can immediately send the request.
+step: The request is therefore sent after 1 + 1 = 2 round trips.
+answer: 2
+@mistakes
+- Disabling certificate or hostname verification in client code to "make the error go away".
+- Checking that a certificate is signed by a trusted CA but not that its names match the host being contacted.
+- Assuming the padlock means the site is trustworthy; it shows the connection is encrypted to the named host, not that the host is honest.
+- Treating 0-RTT early data as safe for requests that change state.
+@practice mc
+prompt: In the TLS 1.3 handshake, what does the server's CertificateVerify message prove?
+choice*: The server holds the private key matching the certificate's public key, bound to this handshake.
+choice: The certificate has not been revoked.
+choice: The client's key share was generated correctly.
+choice: The certificate's validity dates are correct.
+hint: It is a signature over the handshake transcript.
+solution: CertificateVerify is a signature over a hash of the handshake made with the private key for the certificate. It shows possession of that key for this handshake, which stops someone replaying a copied certificate chain. Revocation and dates are separate checks.
+@practice code
+prompt: Write `hostname_matches(pattern, host)` for certificate names. Compare case-insensitively. A pattern that starts with `*.` matches a host that has exactly one extra non-empty label in front of the rest of the pattern: `*.example.com` matches `www.example.com` but not `example.com` and not `a.b.example.com`. Any other pattern must equal the host.
+starter:
+```python
+def hostname_matches(pattern, host):
+    pass
+```
+tests:
+```python
+assert hostname_matches("*.example.com", "www.example.com") is True
+assert hostname_matches("*.example.com", "example.com") is False
+assert hostname_matches("*.example.com", "a.b.example.com") is False
+assert hostname_matches("Example.COM", "example.com") is True
+assert hostname_matches("*.example.com", ".example.com") is False
+assert hostname_matches("example.com", "www.example.com") is False
+```
+model:
+```python
+def hostname_matches(pattern, host):
+    pattern = pattern.lower()
+    host = host.lower()
+    if pattern.startswith("*."):
+        suffix = pattern[1:]
+        if not host.endswith(suffix):
+            return False
+        label = host[:-len(suffix)]
+        return label != "" and "." not in label
+    return pattern == host
+```
+hint: Lowercase both strings first. For a wildcard, the suffix is the pattern without its leading `*`.
+hint: Strip the suffix from the host; what remains must be non-empty and contain no dot.
+solution: For `*.example.com` the suffix is `.example.com`. The part of the host before that suffix is the wildcard label, which must be non-empty with no dots. Non-wildcard patterns need exact (case-insensitive) equality.
+@practice code
+prompt: Write `validate_chain(chain, roots, hostname, today)`; signature checking is abstracted away. `chain` is a list of dicts, leaf first, each with keys `subject`, `issuer`, `san` (list of name patterns), `not_before`, `not_after` (integers) and `is_ca` (bool). `roots` is a set of trusted root names. Return `True` only if all hold: the chain is not empty; the leaf's `san` contains a pattern that matches `hostname` (a name equals it, or `*.` wildcard matching exactly one label, case-insensitively); every certificate has `not_before <= today <= not_after`; for each certificate except the last, its `issuer` equals the next certificate's `subject` and the next certificate has `is_ca` true; and the last certificate's `issuer` is in `roots`.
+starter:
+```python
+def validate_chain(chain, roots, hostname, today):
+    pass
+```
+tests:
+```python
+leaf = {"subject": "www.shop.example", "issuer": "Issuing CA",
+        "san": ["www.shop.example"], "not_before": 10, "not_after": 100,
+        "is_ca": False}
+inter = {"subject": "Issuing CA", "issuer": "Root One", "san": [],
+         "not_before": 5, "not_after": 200, "is_ca": True}
+roots = {"Root One"}
+assert validate_chain([leaf, inter], roots, "www.shop.example", 50) is True
+assert validate_chain([], roots, "www.shop.example", 50) is False
+assert validate_chain([leaf, inter], roots, "evil.example", 50) is False
+assert validate_chain([leaf, inter], roots, "www.shop.example", 150) is False
+assert validate_chain([leaf, inter], {"Root Two"}, "www.shop.example", 50) is False
+bad = dict(inter, is_ca=False)
+assert validate_chain([leaf, bad], roots, "www.shop.example", 50) is False
+other = dict(inter, subject="Different CA")
+assert validate_chain([leaf, other], roots, "www.shop.example", 50) is False
+wild = dict(leaf, san=["*.shop.example"])
+assert validate_chain([wild, inter], roots, "www.shop.example", 50) is True
+assert validate_chain([wild, inter], roots, "shop.example", 50) is False
+```
+model:
+```python
+def _match(pattern, host):
+    pattern = pattern.lower()
+    host = host.lower()
+    if pattern.startswith("*."):
+        suffix = pattern[1:]
+        if not host.endswith(suffix):
+            return False
+        label = host[:-len(suffix)]
+        return label != "" and "." not in label
+    return pattern == host
+
+
+def validate_chain(chain, roots, hostname, today):
+    if not chain:
+        return False
+    if not any(_match(p, hostname) for p in chain[0]["san"]):
+        return False
+    for cert in chain:
+        if not cert["not_before"] <= today <= cert["not_after"]:
+            return False
+    for cert, issuer in zip(chain, chain[1:]):
+        if cert["issuer"] != issuer["subject"] or not issuer["is_ca"]:
+            return False
+    return chain[-1]["issuer"] in roots
+```
+hint: Work through the rules in order and return `False` as soon as one fails; return `True` only at the end.
+hint: `zip(chain, chain[1:])` pairs each certificate with the one that issued it.
+solution: Check non-emptiness, then the leaf's name against `hostname`, then every validity period, then each issuer link (and its CA flag), and finally that the last issuer is a trusted root.
+@practice self
+prompt: Trace a TLS 1.3 handshake for a browser opening `https://shop.example`. List the messages in order, say who sends each, which are encrypted, what the client verifies, and which keys exist at each stage (including where forward secrecy comes from).
+hint: Split the handshake into what is sent in clear (ClientHello, ServerHello) and what is encrypted.
+solution: ClientHello (client): random, cipher suites, supported versions, key share with an ephemeral (EC)DHE public value, server name, signature algorithms. ServerHello (server): chosen suite and server key share. Both now derive handshake keys from the shared (EC)DHE secret using HKDF; everything after is encrypted. Server sends EncryptedExtensions, Certificate (chain), CertificateVerify (signature over the transcript hash with the certificate key) and Finished (MAC over the transcript). The client verifies the chain to a trusted root, validity dates, the hostname against the certificate names, the CertificateVerify signature and the Finished MAC, then sends its Finished. Both derive application traffic keys and exchange data using an AEAD cipher. Forward secrecy comes from the ephemeral key shares: they are discarded after the handshake, so stealing the certificate's private key later does not reveal past session keys. The whole exchange takes one round trip after TCP.
+rubric: Lists ClientHello, ServerHello, Certificate, CertificateVerify and Finished messages in a correct order and identifies the sender of each.
+rubric: States that messages after ServerHello are encrypted and that keys come from ephemeral (EC)DHE plus a key-derivation function.
+rubric: Names the client's checks: chain to a trusted root, validity, hostname match, signature and Finished MAC.
+rubric: Explains forward secrecy as a consequence of ephemeral key shares.
+@quiz code
+prompt: Write `pin_ok(cert_bytes, pinned_hashes)` for certificate pinning. `cert_bytes` is a `bytes` object and `pinned_hashes` is a set of lowercase hex strings. Return `True` if the SHA-256 hex digest of `cert_bytes` is in the set, otherwise `False`.
+starter:
+```python
+import hashlib
+
+
+def pin_ok(cert_bytes, pinned_hashes):
+    pass
+```
+tests:
+```python
+abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+assert pin_ok(b"abc", {abc}) is True
+assert pin_ok(b"abd", {abc}) is False
+assert pin_ok(b"abc", set()) is False
+assert pin_ok(b"abc", {"00", abc}) is True
+```
+model:
+```python
+import hashlib
+
+
+def pin_ok(cert_bytes, pinned_hashes):
+    return hashlib.sha256(cert_bytes).hexdigest() in pinned_hashes
+```
+hint: `hashlib.sha256(data).hexdigest()` gives the lowercase hex digest.
+solution: Hash the certificate bytes and test membership in the pin set.
+@quiz mc
+prompt: A server's long-term private key is stolen a year after a connection was recorded. The connection used a TLS 1.3 handshake. Why can the attacker not decrypt the recorded traffic with that key?
+choice*: The session keys came from ephemeral Diffie-Hellman values that were deleted; the long-term key was only used to sign.
+choice: TLS 1.3 encrypts traffic directly with the server's private key, which is never sent.
+choice: The attacker needs the certificate authority's key, not the server's.
+choice: The recorded traffic was compressed, which cannot be reversed.
+hint: What is the server's certificate key used for in TLS 1.3?
+solution: In TLS 1.3 the long-term key only signs (CertificateVerify). Traffic keys derive from fresh (EC)DHE values that no longer exist, so there is nothing to decrypt with: forward secrecy.

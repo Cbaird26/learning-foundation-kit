@@ -1,0 +1,185 @@
+@lesson
+title: Instruction set architecture: RISC-V basics
+summary: Describe the RISC-V RV32I register file and instruction formats, and encode and decode simple instructions to and from their 32-bit machine words.
+objective: Explain what an instruction set architecture is and name the main design ideas behind RISC-V.
+objective: Use the 32 integer registers by both their numbers and their ABI names, and explain the role of x0.
+objective: Identify the R-, I-, S-, B-, U- and J-type formats, and encode or decode an R-type or I-type instruction by hand.
+reading: Dive into Systems, Chapter 5 on computer architecture (the von Neumann model and instruction execution); also look up the RV32I base integer instruction set in the RISC-V Unprivileged specification.
+
+@article
+The **instruction set architecture** (ISA) is the contract between software and hardware: the instructions, registers, memory model and encodings a programmer or compiler can rely on. Many different processors implement the same ISA. **RISC-V** is an open ISA with a deliberately small base, **RV32I** (32-bit registers; **RV64I** has 64-bit registers), to which optional **extensions** are added: M (multiply and divide), A (atomics), F and D (single and double floating point) and C (compressed 16-bit instructions). Compilers target combinations such as RV32IM or RV64GC.
+
+### Design principles
+
+RISC-V follows the classic RISC ideas: *simplicity favors regularity*; *smaller is faster*; *make the common case fast*. It is a **load-store architecture**: arithmetic works only on registers, and only dedicated load and store instructions touch memory. Every base instruction is 32 bits long and is fetched from an address that is a multiple of 4.
+
+### Registers
+
+RV32I has 32 integer registers `x0` to `x31`, each 32 bits wide, and a program counter `pc`. Register **`x0` is hardwired to zero**: reads give 0 and writes are discarded, which provides a free constant and lets many operations be written as special cases (`mv a, b` is `addi a, b, 0`; `nop` is `addi x0, x0, 0`). The **ABI** (application binary interface) gives the registers conventional names:
+
+| registers | ABI names | role |
+|---|---|---|
+| x0 | `zero` | constant 0 |
+| x1 | `ra` | return address |
+| x2 | `sp` | stack pointer |
+| x3, x4 | `gp`, `tp` | global and thread pointers |
+| x5-x7, x28-x31 | `t0`-`t2`, `t3`-`t6` | temporaries |
+| x8, x9, x18-x27 | `s0`/`fp`, `s1`, `s2`-`s11` | saved registers |
+| x10-x17 | `a0`-`a7` | arguments and return values |
+
+### Instruction formats
+
+All instructions have the same low 7 bits for the **opcode**, and the formats differ in how the remaining 25 bits are used:
+
+| format | used for | fields (high bit to low bit) |
+|---|---|---|
+| R | register-register ALU | funct7, rs2, rs1, funct3, rd, opcode |
+| I | immediates, loads, `jalr` | imm[11:0], rs1, funct3, rd, opcode |
+| S | stores | imm[11:5], rs2, rs1, funct3, imm[4:0], opcode |
+| B | conditional branches | imm[12\|10:5], rs2, rs1, funct3, imm[4:1\|11], opcode |
+| U | `lui`, `auipc` | imm[31:12], rd, opcode |
+| J | `jal` | imm[20\|10:1\|11\|19:12], rd, opcode |
+
+The widths are: opcode 7 bits (bits 6-0), `rd` 5 bits (11-7), `funct3` 3 bits (14-12), `rs1` 5 bits (19-15), `rs2` 5 bits (24-20), `funct7` 7 bits (31-25). The register fields sit in the same places in every format, which simplifies the hardware. Immediates are **sign-extended** from their top bit, which is always bit 31 of the instruction. The 12-bit I-type immediate covers $-2048$ to $2047$.
+
+Two examples: `add` has opcode `0110011` (`0x33`), `funct3` 0 and `funct7` `0000000`; `sub` is the same with `funct7` `0100000`. `addi` has opcode `0010011` (`0x13`) and `funct3` 0. A 32-bit constant is built with `lui` (loads the upper 20 bits) followed by `addi` for the low 12 bits; the pseudo-instruction `li rd, value` expands to this.
+
+### Assembly language
+
+An **assembler** translates text such as `add x5, x6, x7` (or `add t0, t1, t2`: destination first) into a machine word. **Pseudo-instructions** (`li`, `mv`, `j`, `ret`, `nop`) are conveniences that the assembler expands into real instructions.
+
+@example
+title: Encoding an R-type instruction
+problem: Encode `add x5, x6, x7` as a 32-bit hexadecimal word.
+step: This is R-type: `funct7 = 0000000`, `rs2 = 7`, `rs1 = 6`, `funct3 = 000`, `rd = 5`, `opcode = 0110011`.
+step: Write each field in its width: `0000000` `00111` `00110` `000` `00101` `0110011`.
+step: Concatenate: `0000 0000 0111 0011 0000 0010 1011 0011`.
+step: Group in hex: `0x007302B3`.
+answer: `0x007302B3`
+
+@example
+title: Decoding an I-type word
+problem: Decode `0xFFF30293`.
+step: In binary it is `1111 1111 1111 0011 0000 0010 1001 0011`.
+step: The low 7 bits are `0010011`, the I-type ALU opcode, and `funct3 = 000`, so the instruction is `addi`.
+step: `rd` is bits 11-7: `00101` = 5. `rs1` is bits 19-15: `00110` = 6.
+step: The immediate is bits 31-20: `111111111111`. Sign-extended, this is $-1$.
+step: The instruction is `addi x5, x6, -1`.
+answer: `addi x5, x6, -1`
+
+@mistakes
+- Putting the fields in the wrong order: assembly lists `rd` first, but the machine word puts `rd` low and `rs2`, `rs1` above `funct3`.
+- Forgetting to sign-extend the 12-bit immediate, so $-1$ is read as 4095.
+- Believing that a write to `x0` changes it: it is always zero.
+- Mixing up the ABI names (for example thinking `t0` is `x8`); `x5` is `t0` and `x8` is `s0`.
+
+@practice num
+prompt: What is the largest immediate value that fits in the 12-bit signed immediate field of an I-type instruction such as `addi`?
+answer: 2047
+check: 2 ** 11 - 1
+hint: The field has 12 bits and is interpreted in two's complement.
+solution: A 12-bit two's complement field covers $-2^{11}$ to $2^{11}-1$, so the largest value is $2047$. Larger constants need `lui` as well.
+
+@practice code
+prompt: Write `encode_r(funct7, rs2, rs1, funct3, rd, opcode)` that packs the six R-type fields (all non-negative integers within their widths) into a 32-bit instruction word and returns it as an integer. Example: `encode_r(0, 7, 6, 0, 5, 0x33)` (that is `add x5, x6, x7`) returns `0x007302B3`.
+starter:
+```python
+def encode_r(funct7, rs2, rs1, funct3, rd, opcode):
+    pass
+```
+tests:
+```python
+assert encode_r(0, 7, 6, 0, 5, 0x33) == 0x007302B3
+assert encode_r(0x20, 3, 2, 0, 1, 0x33) == 0x403100B3
+assert encode_r(0, 12, 11, 7, 10, 0x33) == 0x00C5F533
+assert encode_r(0, 2, 1, 4, 3, 0x33) == 0x0020C1B3
+assert encode_r(0, 0, 0, 0, 0, 0x33) == 0x00000033
+```
+model:
+```python
+def encode_r(funct7, rs2, rs1, funct3, rd, opcode):
+    return ((funct7 << 25) | (rs2 << 20) | (rs1 << 15)
+            | (funct3 << 12) | (rd << 7) | opcode)
+```
+hint: Each field is shifted to the position of its lowest bit: `funct7` to bit 25, `rs2` to 20, `rs1` to 15, `funct3` to 12, `rd` to 7, `opcode` stays at 0.
+hint: Combine the shifted fields with `|`.
+solution: Shift each field left by the position of its least significant bit (25, 20, 15, 12, 7 and 0) and OR them together. For `add x5, x6, x7` this gives `0x007302B3`.
+
+@practice code
+prompt: Write `fields_i(word)` that takes a 32-bit I-type instruction word (an integer) and returns the tuple `(opcode, rd, funct3, rs1, imm)`, where `imm` is the sign-extended 12-bit immediate as a (possibly negative) Python integer. Example: `fields_i(0xFFF30293)` returns `(0x13, 5, 0, 6, -1)`.
+starter:
+```python
+def fields_i(word):
+    pass
+```
+tests:
+```python
+assert fields_i(0xFFF30293) == (0x13, 5, 0, 6, -1)
+assert fields_i(0x00500093) == (0x13, 1, 0, 0, 5)
+assert fields_i(0x0082A303) == (0x03, 6, 2, 5, 8)
+assert fields_i(0xFF010113) == (0x13, 2, 0, 2, -16)
+assert fields_i(0x7FF00093) == (0x13, 1, 0, 0, 2047)
+```
+model:
+```python
+def fields_i(word):
+    imm = word >> 20
+    if imm >= 2048:
+        imm -= 4096
+    return (word & 0x7F, (word >> 7) & 0x1F, (word >> 12) & 0x7,
+            (word >> 15) & 0x1F, imm)
+```
+hint: Extract each field by shifting right to its lowest bit and masking with its width (7, 5, 3, 5 bits).
+hint: The immediate is `word >> 20` (12 bits). It is negative when it is at least 2048; subtract 4096 in that case.
+solution: Shift and mask for each field. The immediate occupies bits 31-20, so `word >> 20` gives a number from 0 to 4095; values 2048 and above have sign bit 1 and represent that value minus 4096.
+
+@practice ms
+prompt: Select every correct statement about RISC-V integer register names.
+choice*: `x1` is `ra`, the return address register.
+choice*: `x2` is `sp`, the stack pointer.
+choice*: `x10` is `a0`, used for the first argument and the return value.
+choice: `x5` is `s1`, a saved register.
+choice: `x0` is `ra`, because it holds the return address.
+hint: Recall that `x0` is special, and that `t0` is `x5`.
+solution: `x1` is `ra`, `x2` is `sp` and `x10` is `a0`. `x5` is `t0`, a temporary, not `s1` (which is `x9`), and `x0` is the constant zero register, `zero`.
+
+@practice mc
+prompt: What is the effect of the instruction `addi x0, x0, 5`?
+choice: It sets `x0` to 5.
+choice*: It has no architectural effect, because writes to `x0` are discarded.
+choice: It raises an illegal-instruction exception.
+choice: It adds 5 to the program counter.
+hint: What is special about the destination register?
+solution: Register `x0` always reads as 0 and ignores writes, so the instruction does nothing except advance the program counter normally. (`addi x0, x0, 0` is the canonical `nop`.)
+
+@quiz code
+prompt: Write `encode_i(imm, rs1, funct3, rd, opcode)` that packs an I-type instruction into a 32-bit integer. `imm` is a signed integer from $-2048$ to $2047$ (negative values must be encoded in 12-bit two's complement). Example: `encode_i(-1, 6, 0, 5, 0x13)` (`addi x5, x6, -1`) returns `0xFFF30293`.
+starter:
+```python
+def encode_i(imm, rs1, funct3, rd, opcode):
+    pass
+```
+tests:
+```python
+assert encode_i(-1, 6, 0, 5, 0x13) == 0xFFF30293
+assert encode_i(5, 0, 0, 1, 0x13) == 0x00500093
+assert encode_i(8, 5, 2, 6, 0x03) == 0x0082A303
+assert encode_i(-16, 2, 0, 2, 0x13) == 0xFF010113
+assert encode_i(-5, 0, 0, 10, 0x13) == 0xFFB00513
+```
+model:
+```python
+def encode_i(imm, rs1, funct3, rd, opcode):
+    return (((imm & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12)
+            | (rd << 7) | opcode)
+```
+hint: A negative `imm` must first be reduced to its 12-bit pattern; `imm & 0xFFF` does it.
+hint: Then shift each field to the position of its lowest bit: `imm` to bit 20, `rs1` to 15, `funct3` to 12, `rd` to 7; `opcode` stays at bit 0.
+solution: Mask the immediate to 12 bits (so $-1$ becomes `0xFFF`), shift it to bit 20, and OR in the other shifted fields. Without the mask, a negative number would corrupt the higher bits of the word.
+
+@quiz num
+prompt: The I-type instruction word `0xFFB00093` has its immediate in bits 31 to 20. What signed value does the immediate have?
+answer: -5
+check: int("FFB", 16) - 4096
+hint: Bits 31-20 of `0xFFB00093` are the top three hex digits, `0xFFB`.
+solution: The 12-bit field is `0xFFB` = 4091. Its sign bit is 1, so the value is $4091-4096=-5$; the instruction is `addi x1, x0, -5`.

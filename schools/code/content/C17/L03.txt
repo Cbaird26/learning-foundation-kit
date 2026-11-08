@@ -1,0 +1,200 @@
+@lesson
+title: Symmetric cryptography and block cipher modes
+summary: Explain how symmetric ciphers and modes of operation protect confidentiality, why ECB and nonce reuse fail, and implement padding and XOR building blocks.
+objective: State Kerckhoffs's principle and the properties of the one-time pad and of a secure block cipher.
+objective: Compare ECB, CBC and CTR modes, and explain why IV and nonce rules matter.
+objective: Implement PKCS#7 padding, XOR and a repeated-block detector in Python.
+reading: UC Berkeley CS 161 textbook, the chapters on symmetric-key encryption and block ciphers (look up "IND-CPA", "CBC mode" and "counter mode").
+@article
+**Symmetric-key encryption** uses one secret key for both encryption and decryption. Alice and Bob share a key $K$; Alice computes a ciphertext $C = E_K(M)$ and Bob recovers $M = D_K(C)$. By **Kerckhoffs's principle** the algorithm is public and only $K$ is secret. Never design your own cipher: use a vetted one.
+
+### The one-time pad
+
+XOR (`^`) satisfies $(m \oplus k) \oplus k = m$. If $k$ is truly random, as long as the message and used **once**, then $C = M \oplus K$ reveals nothing about $M$ (perfect secrecy). The cost is a key as long as all the data you will ever send, so it is impractical, but it is the model for stream ciphers. Reusing a pad is fatal:
+
+```python
+def xor(a: bytes, b: bytes) -> bytes:
+    return bytes(x ^ y for x, y in zip(a, b))
+
+# With one key k for two messages, xor(c1, c2) == xor(m1, m2): k cancels.
+```
+
+So a ciphertext pair under the same key stream leaks the XOR of the plaintexts, and redundancy in natural language or file formats usually allows recovering both. A defender's rule: **never reuse a keystream**.
+
+### Block ciphers
+
+A **block cipher** is a keyed permutation on fixed-size blocks. **AES** has a 128-bit (16-byte) block and keys of 128, 192 or 256 bits. A secure block cipher behaves like a random permutation to anyone without the key. A block cipher alone only encrypts one block, so we need a **mode of operation** for longer messages.
+
+- **ECB** encrypts every block independently. Equal plaintext blocks give equal ciphertext blocks, so patterns in the data (the outline of an image, repeated records) remain visible. Do not use ECB for data.
+- **CBC** XORs each plaintext block with the previous ciphertext block before encrypting. It needs a fresh, **unpredictable IV** (initialization vector) for each message and padding to a multiple of the block size.
+- **CTR** (counter mode) encrypts a counter built from a **nonce** and a block number, and XORs the result with the plaintext, turning the block cipher into a stream cipher. It needs no padding and is parallelizable, but a (key, nonce) pair must **never repeat**, or the pad-reuse failure above occurs.
+
+Encryption alone gives confidentiality but no integrity: an attacker who can modify ciphertexts can often change the plaintext in predictable ways (in CTR, flipping a ciphertext bit flips the same plaintext bit). Next lesson adds authentication; modern systems use authenticated modes such as GCM.
+
+### Padding
+
+**PKCS#7 padding** extends a message to a multiple of the block size $b$ by appending $n$ bytes each of value $n$, where $n = b - (\text{len} \bmod b)$. If the length is already a multiple of $b$, a whole block of padding is added, so padding can always be removed unambiguously: read the last byte $n$ and strip $n$ bytes. Padding errors must not be reported in a way that reveals which check failed; padding-oracle bugs have broken real systems, which is another reason to authenticate ciphertexts before decrypting.
+
+### Key sizes
+
+Brute-forcing an $n$-bit key takes about $2^{n-1}$ trials on average. At 128 bits that is far beyond any possible computation, so key size is rarely the weak point: key management, reuse of nonces and missing authentication are.
+
+@example
+title: Padding a 20-byte message
+problem: Apply PKCS#7 padding with block size 16 to a 20-byte message. How long is the padded message and what do the added bytes look like?
+step: $20 \bmod 16 = 4$, so the last block has 4 data bytes and 12 free bytes.
+step: $n = 16 - 4 = 12$, so append twelve bytes each equal to `0x0c`.
+step: The padded length is $20 + 12 = 32$ bytes, two full blocks.
+step: To unpad, read the last byte `0x0c` = 12, check that the last 12 bytes all equal 12, and remove them.
+answer: 32 bytes; twelve bytes of 0x0c
+@example
+title: Why a repeated pad leaks
+problem: Two messages are XORed with the same key stream byte `k` at the same position. The plaintext bytes are `H` (0x48) and `W` (0x57). What can an observer compute from the two ciphertext bytes?
+step: The ciphertext bytes are $0x48 \oplus k$ and $0x57 \oplus k$.
+step: XORing them gives $0x48 \oplus k \oplus 0x57 \oplus k = 0x48 \oplus 0x57$, because $k \oplus k = 0$.
+step: $0x48 \oplus 0x57 = 0x1f$, whatever $k$ is. The key has vanished, and the observer learns the XOR of the plaintext bytes.
+step: Repeating this at every position gives the XOR of the two whole messages, which structured text rarely survives.
+answer: 0x1f, the XOR of the plaintext bytes
+@mistakes
+- Encrypting data with ECB because it is the default or simplest mode; identical blocks stay identical.
+- Reusing a nonce or IV with the same key (counter mode makes this catastrophic; CBC needs unpredictable IVs).
+- Assuming encryption provides integrity; without a MAC or an authenticated mode, ciphertexts can be modified.
+- Thinking a longer key fixes a mode or nonce mistake: the weakness is in how the cipher is used.
+@practice mc
+prompt: A developer encrypts a bitmap image with a secure block cipher in ECB mode, and the ciphertext still shows the shape of the picture. Why?
+choice*: Equal plaintext blocks encrypt to equal ciphertext blocks, so regions of uniform color produce repeated blocks.
+choice: The block cipher itself is weak and must use a longer key.
+choice: ECB leaks the key through the repeated blocks.
+choice: The image was padded incorrectly.
+hint: Think about what happens to identical 16-byte plaintext blocks under the same key.
+solution: ECB applies the same permutation to every block independently, so repetition in the plaintext shows through. The cipher and key size are not the problem; the mode is.
+@practice code
+prompt: Write `xor_bytes(a, b)` that takes two `bytes` objects and returns a `bytes` of their byte-wise XOR. If the lengths differ, raise `ValueError`.
+starter:
+```python
+def xor_bytes(a, b):
+    pass
+```
+tests:
+```python
+assert xor_bytes(b"\x0f\xf0", b"\xff\xff") == b"\xf0\x0f"
+assert xor_bytes(b"", b"") == b""
+assert xor_bytes(b"abc", b"abc") == b"\x00\x00\x00"
+assert xor_bytes(xor_bytes(b"hello", b"key12"), b"key12") == b"hello"
+assert raises(ValueError, xor_bytes, b"ab", b"abc")
+```
+model:
+```python
+def xor_bytes(a, b):
+    if len(a) != len(b):
+        raise ValueError("lengths differ")
+    return bytes(x ^ y for x, y in zip(a, b))
+```
+hint: Check the lengths first. Then iterate over pairs of bytes with `zip`.
+hint: Iterating over `bytes` gives ints, and `bytes(iterable_of_ints)` builds a `bytes` back.
+solution: Reject unequal lengths, then build the result from `x ^ y` for each pair of bytes. XORing twice with the same key returns the original, as the fourth test shows.
+@practice code
+prompt: Write `pkcs7_pad(data, block=16)` returning `data` (bytes) extended with PKCS#7 padding, and `pkcs7_unpad(padded, block=16)` that removes it. `pkcs7_unpad` must raise `ValueError` if the length is zero or not a multiple of `block`, or if the last byte `n` is not between 1 and `block`, or if the last `n` bytes are not all equal to `n`.
+starter:
+```python
+def pkcs7_pad(data, block=16):
+    pass
+
+
+def pkcs7_unpad(padded, block=16):
+    pass
+```
+tests:
+```python
+assert pkcs7_pad(b"abc", 8) == b"abc\x05\x05\x05\x05\x05"
+assert pkcs7_pad(b"12345678", 8) == b"12345678" + b"\x08" * 8
+assert pkcs7_pad(b"") == b"\x10" * 16
+assert pkcs7_unpad(pkcs7_pad(b"hello world", 16)) == b"hello world"
+assert pkcs7_unpad(b"abc\x05\x05\x05\x05\x05", 8) == b"abc"
+assert raises(ValueError, pkcs7_unpad, b"abcdefg\x00", 8)
+assert raises(ValueError, pkcs7_unpad, b"abcde\x03\x03\x04", 8)
+assert raises(ValueError, pkcs7_unpad, b"abc", 8)
+```
+model:
+```python
+def pkcs7_pad(data, block=16):
+    n = block - len(data) % block
+    return data + bytes([n]) * n
+
+
+def pkcs7_unpad(padded, block=16):
+    if not padded or len(padded) % block != 0:
+        raise ValueError("bad length")
+    n = padded[-1]
+    if n < 1 or n > block or padded[-n:] != bytes([n]) * n:
+        raise ValueError("bad padding")
+    return padded[:-n]
+```
+hint: The pad length is `block - len(data) % block`, which is a full block when the length is already a multiple.
+hint: For unpadding, read `padded[-1]`, then compare `padded[-n:]` with `bytes([n]) * n`.
+solution: Pad with `n = block - len(data) % block` copies of the byte `n`. When unpadding, validate the length, the last byte and every padding byte before slicing them off.
+@practice mc
+prompt: Two messages were encrypted in counter mode with the same key and the same nonce. What does an observer who sees both ciphertexts learn?
+choice*: The XOR of the two plaintexts, because the same key stream was used for both.
+choice: Nothing, because counter mode never leaks anything.
+choice: The key, because it appears in both ciphertexts.
+choice: Only the length of the messages.
+hint: Counter mode produces a key stream that depends only on the key and nonce.
+solution: Same key and nonce give the same key stream, which cancels when the two ciphertexts are XORed, leaving the XOR of the plaintexts. This is why nonces must never repeat under one key.
+@practice code
+prompt: Write `has_repeated_block(ciphertext, size=16)` that splits the `bytes` object `ciphertext` into consecutive aligned blocks of `size` bytes (the length is a multiple of `size`) and returns `True` if any two blocks are equal, otherwise `False`. This is how an analyst notices that data was probably encrypted in ECB mode.
+starter:
+```python
+def has_repeated_block(ciphertext, size=16):
+    pass
+```
+tests:
+```python
+assert has_repeated_block(b"AAAABBBBAAAA", 4) is True
+assert has_repeated_block(b"AAAABBBBCCCC", 4) is False
+assert has_repeated_block(b"", 4) is False
+assert has_repeated_block(b"ABABAB", 2) is True
+assert has_repeated_block(b"ABBA", 2) is False
+```
+model:
+```python
+def has_repeated_block(ciphertext, size=16):
+    blocks = [
+        ciphertext[i:i + size] for i in range(0, len(ciphertext), size)
+    ]
+    return len(set(blocks)) < len(blocks)
+```
+hint: Cut the data into blocks with a slice at each multiple of `size`.
+hint: Duplicates exist exactly when the number of distinct blocks is smaller than the number of blocks.
+solution: Build the list of aligned blocks and compare its length with the length of its set; a smaller set means a repeated block.
+@quiz code
+prompt: Write `duplicate_blocks(ciphertext, size)` that splits `ciphertext` (bytes, with length a multiple of `size`) into aligned blocks and returns how many blocks are redundant, meaning the number of blocks minus the number of distinct blocks. For example `b"AABBAA"` with size 2 gives 1.
+starter:
+```python
+def duplicate_blocks(ciphertext, size):
+    pass
+```
+tests:
+```python
+assert duplicate_blocks(b"AABBAA", 2) == 1
+assert duplicate_blocks(b"AAAAAA", 2) == 2
+assert duplicate_blocks(b"ABCDEF", 2) == 0
+assert duplicate_blocks(b"", 4) == 0
+assert duplicate_blocks(b"xyxyxyzz", 2) == 2
+```
+model:
+```python
+def duplicate_blocks(ciphertext, size):
+    blocks = [
+        ciphertext[i:i + size] for i in range(0, len(ciphertext), size)
+    ]
+    return len(blocks) - len(set(blocks))
+```
+hint: Count all blocks, then subtract the count of distinct ones.
+solution: The number of redundant blocks is `len(blocks) - len(set(blocks))`.
+@quiz num
+prompt: A 48-byte message is padded with PKCS#7 using a 16-byte block size. How many 16-byte blocks does the padded message contain?
+answer: 4
+check: (48 + (16 - 48 % 16)) // 16
+hint: When the length is already a multiple of the block size, a full block of padding is still added.
+solution: $48 \bmod 16 = 0$, so $n = 16$ and a whole extra block is appended: $48 + 16 = 64$ bytes, which is 4 blocks.

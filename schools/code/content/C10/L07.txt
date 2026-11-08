@@ -1,0 +1,172 @@
+@lesson
+title: Database design: ER models
+summary: Model a set of requirements with an entity-relationship diagram and map it to relational tables.
+objective: Identify entities, attributes, relationships, cardinality ratios and participation constraints from a description.
+objective: Model weak entities, multivalued attributes and specialization.
+objective: Map an ER design to relational tables with primary keys and foreign keys.
+reading: CMU 15-445/645 Database Systems, the lecture on database design (ER model, if covered), or the entity-relationship chapter of any database textbook.
+@article
+Before writing `CREATE TABLE`, you decide *what the database must represent*. The **entity-relationship (ER) model** is a way to draw that design at a high level, independently of any database product, and then translate it to tables. Good design happens in three stages: requirements, conceptual design (the ER diagram), and logical design (the relational schema).
+
+### Building blocks
+
+- An **entity** is a distinguishable thing (a student, a course, an invoice). An **entity set** is the collection of similar entities and becomes a table.
+- An **attribute** describes an entity. It may be **simple** (`name`), **composite** (`address` made of street and city; flatten it into columns), **multivalued** (a person's phone numbers; a separate table), or **derived** (`age`, computed from `birth_date`; usually not stored).
+- A **key** is a set of attributes identifying each entity, underlined in a diagram.
+- A **relationship** connects entities, for example `Enrolls` between Student and Course. Relationships can have attributes of their own: the `grade` belongs to the *pair* (student, course), not to either alone.
+
+### Cardinality and participation
+
+The **cardinality ratio** says how many entities on one side relate to one on the other:
+
+- **one-to-one (1:1)**: each person has at most one passport and each passport belongs to one person.
+- **one-to-many (1:N)**: each department has many employees, each employee belongs to one department.
+- **many-to-many (M:N)**: students and courses.
+
+**Participation** says whether every entity must take part. It is **total** (every employee *must* belong to a department; drawn with a double line) or **partial** (a department may have no employees). Cardinality is read in both directions; always state it for each side.
+
+### Weak entities
+
+A **weak entity** cannot be identified by its own attributes alone. A `Room` is identified by its room number *within* a `Building`. It depends on an **owner** entity through an **identifying relationship** (total participation for the weak side). Its **partial key** (`room_no`) plus the owner's key (`building_id`) forms its full key.
+
+### Specialization
+
+**Specialization** (an "is-a" hierarchy) derives subclasses from a general entity: `Employee` specialized into `Engineer` and `Manager`. Subclasses inherit the attributes and key of the superclass. The constraints are whether the subclasses may overlap or must be disjoint, and whether every superclass entity must belong to some subclass (total) or not (partial).
+
+### Mapping to relational tables
+
+1. **Strong entity set**: one table, with the key as primary key; flatten composite attributes, leave out derived attributes.
+2. **Weak entity set**: one table whose primary key is the owner's key plus the partial key, with a foreign key to the owner (often `ON DELETE CASCADE`).
+3. **1:N relationship**: put a foreign key on the **N side** referring to the 1 side. No new table is needed. Relationship attributes move to the N side too.
+4. **M:N relationship**: create a **junction table** (also called a bridge table) with a foreign key to each side; its primary key is normally the combination of the two. Relationship attributes become its columns.
+5. **1:1 relationship**: put a foreign key (declared `UNIQUE`) on either side, preferably on the side with total participation.
+6. **Multivalued attribute**: a new table holding the entity's key and one value per row.
+7. **Specialization**: either one table per class with the subclass table keyed by the superclass key, or one table with a type column and NULLs for unused attributes. Each choice trades joins against NULLs.
+
+```sql
+CREATE TABLE student (sid INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE course  (cid TEXT PRIMARY KEY, title TEXT NOT NULL);
+CREATE TABLE enrolls (
+    sid   INTEGER REFERENCES student(sid),
+    cid   TEXT    REFERENCES course(cid),
+    grade TEXT,
+    PRIMARY KEY (sid, cid)
+);
+```
+
+### Common design pitfalls
+
+Do not model a relationship as an attribute (for example a `course_ids` column holding a list); this breaks atomicity and makes joins impossible. Do not store the same fact in two places. Do not create a table for something that is really just an attribute. These problems are made precise by normalization next week.
+
+@example
+title: From a description to tables
+problem: "A library has books. Each book has an ISBN, a title and many copies; each copy has a copy number that is unique only within its book, plus a condition. Members borrow copies; each loan records a date." Design the tables.
+step: Entities: `Book(isbn, title)`, `Member(member_id, name)`, and `Copy`, which is weak because its number is unique only within a book: its key is (isbn, copy_no).
+step: The relationship between Book and Copy is identifying: 1:N, and each copy must belong to a book (total participation).
+step: Borrows connects Member and Copy; a copy can be borrowed by many members over time and a member borrows many copies, so it is M:N, with the attribute `loan_date`. A real design would add the return date and make the key (member_id, isbn, copy_no, loan_date).
+step: Tables: `book(isbn, title)`, `copy(isbn, copy_no, condition)` with primary key (isbn, copy_no) and a foreign key to `book`, `member(member_id, name)`, and `loan(member_id, isbn, copy_no, loan_date)` with foreign keys to `member` and to `copy(isbn, copy_no)`.
+answer: Four tables: book, copy, member and loan.
+
+@example
+title: Reading cardinalities
+problem: "Every employee works in exactly one department. A department may have no employees." Give the cardinality and participation, and where the foreign key goes.
+step: Many employees can share one department, so Department to Employee is 1:N.
+step: Every employee is in a department: Employee participates totally. A department may be empty: partial participation.
+step: The foreign key goes on the N side, `employee.dept_id`, and total participation of Employee makes it `NOT NULL`.
+answer: 1:N, total for Employee and partial for Department; `employee.dept_id NOT NULL` references `department(id)`.
+
+@mistakes
+- Putting the foreign key on the 1 side of a 1:N relationship, which would force one cell to hold many values.
+- Forgetting the junction table of an M:N relationship, or storing a comma-separated list instead.
+- Placing a relationship attribute (such as `grade` or `quantity`) in one of the entity tables instead of the relationship's table.
+- Using a weak entity's partial key alone as its primary key, so rows of different owners clash.
+
+@practice num
+prompt: An ER design has four entity sets (all strong, no multivalued attributes): Student, Course, Instructor, Department. Relationships: Enrolls (Student M:N Course), Teaches (Instructor 1:N Course), WorksIn (Department 1:N Instructor), Prereq (Course M:N Course). Using the standard mapping rules, how many tables does the relational schema have?
+answer: 6
+check: 4 + sum(1 for card in ["M:N", "1:N", "1:N", "M:N"] if card == "M:N")
+hint: Each entity set gives a table. Which relationship types need a table of their own?
+solution: The four entity sets give four tables. The two M:N relationships (Enrolls and Prereq) each need a junction table. The 1:N relationships only add foreign keys. Total: 4 + 2 = 6.
+
+@practice code
+prompt: Write `foreign_key_plan(rels)`. `rels` is a list of tuples `(a, b, card)` where `a` and `b` are entity names (strings) and `card` is one of `"1:1"`, `"1:N"`, `"N:1"`, `"M:N"`. For each relationship, in order, return one string: for `"1:N"` return `"<b> references <a>"` (the many side `b` holds the foreign key); for `"N:1"` and `"1:1"` return `"<a> references <b>"`; for `"M:N"` return `"table <a>_<b> references <a> and <b>"`.
+starter:
+```python
+def foreign_key_plan(rels):
+    pass
+```
+tests:
+```python
+rels = [
+    ("dept", "emp", "1:N"),
+    ("emp", "dept", "N:1"),
+    ("person", "passport", "1:1"),
+    ("student", "course", "M:N"),
+]
+assert foreign_key_plan(rels) == [
+    "emp references dept",
+    "emp references dept",
+    "person references passport",
+    "table student_course references student and course",
+]
+assert foreign_key_plan([]) == []
+assert foreign_key_plan([("a", "b", "1:N")]) == ["b references a"]
+```
+model:
+```python
+def foreign_key_plan(rels):
+    plan = []
+    for a, b, card in rels:
+        if card == "1:N":
+            plan.append(f"{b} references {a}")
+        elif card in ("N:1", "1:1"):
+            plan.append(f"{a} references {b}")
+        else:
+            plan.append(f"table {a}_{b} references {a} and {b}")
+    return plan
+```
+hint: The foreign key always goes on the "many" side of a one-to-many relationship.
+hint: Handle the four cardinalities in separate branches and build each string with an f-string.
+solution: For `1:N` the table of `b` (the N side) gets the key; for `N:1` the table of `a` is the N side; `1:1` follows the stated convention; `M:N` needs a new junction table named from both entities.
+
+@practice mc
+prompt: Each employee belongs to exactly one department, and a department has many employees. In the relational schema, where does the foreign key go?
+choice*: In the employee table, as a column referencing the department's primary key.
+choice: In the department table, as a column holding the list of employee ids.
+choice: In a new junction table that has a column for each side.
+choice: In the department table, as a single column referencing one employee.
+hint: A foreign key column holds a single value per row. Which side has at most one partner?
+solution: Each employee row has at most one department, so one column on the employee side is enough. A department would need many cells to name many employees, and a junction table is needed only for many-to-many relationships.
+
+@practice ms
+prompt: `Room` is a weak entity owned by `Building`, with partial key `room_no`. Which statements are true?
+choice*: Its table's primary key combines the owner's key with `room_no`.
+choice*: Every room must be related to a building.
+choice: `room_no` alone is guaranteed to identify a room in the whole database.
+choice: Its table needs no foreign key to the building table.
+hint: A weak entity borrows part of its identity from the owner.
+solution: The full key is the owner's key plus the partial key, and total participation in the identifying relationship means every room has an owner. The room number repeats across buildings, so it cannot identify a room alone, and the owner's key in the weak table is a foreign key to the owner.
+
+@practice self
+prompt: Requirements: a university has departments (name, building). Each professor belongs to exactly one department and has an id, a name and a salary. Students have an id and a name and may have several email addresses. A course has a code and a title and is offered by one department. A student can enroll in many courses and a course has many students; each enrollment records a grade. Draw the ER design in words (entities, keys, relationships with cardinality) and give the relational tables with primary and foreign keys.
+solution: Entities: Department(name, building), key name. Professor(pid, name, salary), key pid. Student(sid, name), key sid, with multivalued attribute email. Course(code, title), key code. Relationships: WorksIn, Department 1:N Professor, total for Professor. Offers, Department 1:N Course. Enrolls, Student M:N Course, with attribute grade. Tables: department(name PK, building); professor(pid PK, name, salary, dept_name NOT NULL FK to department); student(sid PK, name); student_email(sid FK to student, email, PK (sid, email)); course(code PK, title, dept_name NOT NULL FK to department); enrolls(sid FK, code FK, grade, PK (sid, code)).
+rubric: The entities and keys are identified, and the multivalued email attribute is moved to its own table.
+rubric: The 1:N relationships put a foreign key on the N side, and the M:N Enrolls relationship becomes a junction table with the grade.
+rubric: Primary keys of junction and multivalued-attribute tables are composite, and foreign keys are stated.
+hint: Start by listing nouns as entities, then decide the cardinality of each relationship in both directions.
+
+@quiz mc
+prompt: Orders contain many products and a product appears in many orders. Each order line records a quantity. Where should `quantity` be stored in the relational schema?
+choice*: In the junction table that links orders and products, as a column next to the two foreign keys.
+choice: In the orders table, as a column.
+choice: In the products table, as a column.
+choice: In a separate table that holds only quantities, with no key.
+hint: Which pair of entities does the quantity describe?
+solution: The quantity describes one order together with one product, so it is an attribute of the relationship and lives in the junction table whose key is (order id, product id).
+
+@quiz num
+prompt: Entities A, B, C and D are mapped with the standard rules. The relationships are A 1:N B, B 1:N C, C M:N D and A 1:1 D. How many foreign-key constraints does the schema contain in total (a junction table with two references counts two, and a 1:1 relationship counts one)?
+answer: 5
+check: sum(2 if card == "M:N" else 1 for card in ["1:N", "1:N", "M:N", "1:1"])
+hint: Each 1:N and 1:1 relationship adds one foreign key; an M:N relationship adds a table with two.
+solution: A 1:N B gives one, B 1:N C gives one, C M:N D gives two in the junction table, and A 1:1 D gives one. The total is 1 + 1 + 2 + 1 = 5.

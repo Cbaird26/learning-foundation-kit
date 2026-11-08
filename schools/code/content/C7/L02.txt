@@ -1,0 +1,302 @@
+@lesson
+title: Functions, headers and how C programs are built
+summary: Split a C program into functions, header files and source files, and explain what the preprocessor, compiler, assembler and linker each do when you build it.
+objective: Write functions with prototypes and explain pass-by-value.
+objective: Organize code into a header with include guards and one or more `.c` files.
+objective: Name the four stages of building a C program and read a simple Makefile.
+reading: Beej's Guide to C Programming, the chapters on functions and on multifile projects (look up "Functions", "Multifile Projects" and "The Outside Environment").
+@article
+A C function has a return type, a name, parameters and a body. A **declaration** (or *prototype*) tells the compiler a function's signature; a **definition** supplies its body:
+
+```c
+int clamp(int x, int lo, int hi);       /* declaration */
+
+int clamp(int x, int lo, int hi) {      /* definition */
+    if (x < lo) {
+        return lo;
+    }
+    return x > hi ? hi : x;
+}
+```
+
+The compiler reads a file top to bottom, so a function must be declared before it is called. Write `(void)` for "no parameters": in C17, `int f()` means "unspecified parameters", not "none" (C23 changed this to mean none).
+
+### Pass by value
+
+C passes every argument **by value**: the function receives a copy. Assigning to a parameter never changes the caller's variable. To let a function modify the caller's data you pass an address, which is the subject of week 3. Arrays and strings, as you will see, are passed as addresses too.
+
+### Storage and linkage
+
+A local variable lives in the function's stack frame and disappears on return. A `static` local keeps its value between calls, because it exists for the whole program. A function or global variable marked `static` at file scope has **internal linkage**: other files cannot see it. Without `static`, a file-scope function or variable has **external linkage** and may be used from other files. A variable *defined* once (`int counter = 0;`) can be *declared* in other files with `extern int counter;`.
+
+### Headers and translation units
+
+A **header file** (`.h`) holds declarations to share: prototypes, `struct` and `typedef` declarations, macros and `extern` declarations. Do not define ordinary functions or variables in a header: every `.c` file that includes it would get its own definition and the linker would report a "multiple definition" error. Guard each header against being included twice in one file:
+
+```c
+#ifndef MATHUTIL_H
+#define MATHUTIL_H
+
+int clamp(int x, int lo, int hi);
+
+#endif
+```
+
+Use `#include <stdio.h>` with angle brackets for system headers and `#include "mathutil.h"` with quotes for your own.
+
+### The build pipeline
+
+Each `.c` file is a **translation unit**, compiled independently:
+
+1. **Preprocessing** (`gcc -E`) expands `#include` and `#define` and removes comments, producing pure C text.
+2. **Compilation** (`gcc -S`) turns C into assembly for the target CPU.
+3. **Assembly** (`gcc -c`) turns assembly into an **object file** (`.o`) containing machine code and a table of symbols.
+4. **Linking** (`gcc a.o b.o -o prog`) joins object files and libraries, matching each *undefined symbol* (a function a file calls but does not define) with exactly one definition. A missing definition gives `undefined reference to ...`; two definitions give `multiple definition of ...`.
+
+Running `gcc -std=c17 -Wall -Wextra -o prog main.c mathutil.c` performs all four stages. Macros are plain text substitution done in stage 1, so parenthesize their parameters: `#define SQUARE(x) ((x) * (x))`.
+
+### Makefiles
+
+`make` rebuilds only what is out of date. A rule has a target, its dependencies and a recipe:
+
+```make
+prog: main.o mathutil.o
+    gcc -o prog main.o mathutil.o
+
+main.o: main.c mathutil.h
+    gcc -std=c17 -Wall -Wextra -c main.c
+
+mathutil.o: mathutil.c mathutil.h
+    gcc -std=c17 -Wall -Wextra -c mathutil.c
+```
+
+Each recipe line must begin with a single **tab** character; the page shows it as spaces. A target is rebuilt when it is missing or when any dependency is newer than it, and dependencies are brought up to date first. List headers as dependencies, or changing a header will not trigger a rebuild of the files that include it.
+
+@example
+title: Which commands does a multi-file build run?
+problem: A project has `main.c`, `mathutil.c` and `mathutil.h`, and `main.c` includes `mathutil.h`. Give commands that build the program `prog` in two steps (compile each file, then link), and say what a missing `clamp` definition would produce.
+step: Compile each translation unit to an object file with `-c`: `gcc -std=c17 -Wall -Wextra -c main.c` creates `main.o`, and the same with `mathutil.c` creates `mathutil.o`.
+step: `main.o` calls `clamp` but contains no body for it, so its symbol table lists `clamp` as undefined. `mathutil.o` defines it.
+step: Link the objects: `gcc -o prog main.o mathutil.o`. The linker matches the undefined `clamp` in `main.o` with the definition in `mathutil.o`.
+step: If `mathutil.o` were left out of the link command, compilation of `main.c` would still succeed (the prototype is enough), but the linker would fail with `undefined reference to 'clamp'`.
+
+@example
+title: Pass by value
+problem: What does this program print?
+
+```c
+#include <stdio.h>
+
+void bump(int x) {
+    x = x + 1;
+}
+
+int main(void) {
+    int a = 5;
+    bump(a);
+    printf("%d\n", a);
+    return 0;
+}
+```
+step: `main` calls `bump(a)`. The parameter `x` is a new variable initialized with a copy of `a`, which is `5`.
+step: Inside `bump`, `x` becomes `6`. That changes only the copy, which disappears when `bump` returns.
+step: Back in `main`, `a` is still `5`, so the program prints `5`.
+answer: `5`
+
+@mistakes
+- Defining a function or an initialized global variable in a header: every file that includes it gets a copy, and the link fails with "multiple definition".
+- Forgetting include guards, so a type declared in a header is defined twice when two included headers both include it.
+- Omitting a header from a Makefile rule's dependencies, so editing it does not rebuild the files that use it.
+- Writing a Makefile recipe line with spaces instead of a tab (`make` reports "missing separator").
+- Writing a macro without parentheses around its parameters, such as `#define SQUARE(x) x * x`.
+
+@practice text
+prompt: What does this program print? Type the number.
+
+```c
+#include <stdio.h>
+
+static int next_id(void) {
+    static int id = 100;
+    id++;
+    return id;
+}
+
+int main(void) {
+    next_id();
+    next_id();
+    printf("%d\n", next_id());
+    return 0;
+}
+```
+answer: 103
+check: run_c('#include <stdio.h>\n\nstatic int next_id(void) {\n    static int id = 100;\n    id++;\n    return id;\n}\n\nint main(void) {\n    next_id();\n    next_id();\n    printf("%d\\n", next_id());\n    return 0;\n}\n')
+hint: A `static` local variable is initialized once and keeps its value between calls.
+solution: `id` starts at `100` the first time only. The three calls make it `101`, `102` and `103`, and the last returned value is printed.
+
+@practice code
+prompt: The linker matches each symbol an object file needs with a definition. Write `link(objects, library)`. `objects` is a dict mapping an object-file name to a dict with two lists of strings, `"defines"` and `"needs"`; `library` is a set of symbols the libraries provide. Return a sorted list of the symbols that some object needs but that neither any object nor `library` defines (an empty list when linking succeeds). If any symbol is defined more than once (in one object or in two), raise `ValueError`.
+starter:
+```python
+def link(objects, library):
+    pass
+```
+tests:
+```python
+ok = {
+    "main.o": {"defines": ["main"], "needs": ["add", "puts"]},
+    "add.o": {"defines": ["add"], "needs": []},
+}
+assert link(ok, {"puts"}) == []
+assert link(ok, set()) == ["puts"]
+broken = {
+    "main.o": {"defines": ["main"], "needs": ["sub", "add", "sub"]},
+}
+assert link(broken, {"printf"}) == ["add", "sub"]
+dup = {
+    "a.o": {"defines": ["helper"], "needs": []},
+    "b.o": {"defines": ["helper", "main"], "needs": []},
+}
+assert raises(ValueError, link, dup, set())
+assert raises(ValueError, link, {"a.o": {"defines": ["f", "f"], "needs": []}}, set())
+assert link({}, {"puts"}) == []
+```
+model:
+```python
+def link(objects, library):
+    defined = set()
+    for obj in objects.values():
+        for sym in obj["defines"]:
+            if sym in defined:
+                raise ValueError(sym)
+            defined.add(sym)
+    missing = set()
+    for obj in objects.values():
+        for sym in obj["needs"]:
+            if sym not in defined and sym not in library:
+                missing.add(sym)
+    return sorted(missing)
+```
+hint: First pass: collect every defined symbol, raising `ValueError` when you meet one twice.
+hint: Second pass: a needed symbol is missing if it is neither in your defined set nor in `library`. Use a set so duplicates collapse, then sort.
+solution: Two passes mirror what a linker does: build the table of definitions (rejecting duplicates), then resolve each undefined reference against it and the libraries. A `set` removes the repeated `sub` in the test.
+
+@practice mc
+prompt: Both `main.c` and `util.c` include `util.h`, which contains the line `int counter = 0;`. Each file compiles without errors. What happens when the two object files are linked?
+choice: The link succeeds and both files share one variable `counter`.
+choice: The link succeeds, but each file silently gets its own separate `counter`.
+choice*: The link fails with a "multiple definition of `counter`" error.
+choice: The compiler rejects `util.c`, because a header may not contain variables.
+hint: An initializer makes the line a definition, and the preprocessor pastes it into every file that includes the header.
+solution: After preprocessing, each translation unit contains its own definition of `counter`, so the object files each define the symbol and the linker reports a multiple definition. The fix is `extern int counter;` in the header and one definition (`int counter = 0;`) in exactly one `.c` file.
+
+@practice code
+prompt: `make` decides whether one target must be rebuilt. Write `needs_rebuild(target, deps, mtimes)`. `mtimes` is a dict mapping file names to modification times (integers); a file that does not exist is absent from the dict. Return `True` if `target` does not exist or if any file in `deps` has a modification time strictly greater than the target's, and `False` otherwise. You may assume every file in `deps` exists.
+starter:
+```python
+def needs_rebuild(target, deps, mtimes):
+    pass
+```
+tests:
+```python
+times = {"main.o": 10, "main.c": 7, "util.h": 7}
+assert needs_rebuild("main.o", ["main.c", "util.h"], times) is False
+times["util.h"] = 12
+assert needs_rebuild("main.o", ["main.c", "util.h"], times) is True
+assert needs_rebuild("prog", ["main.o"], times) is True
+assert needs_rebuild("main.o", ["main.c"], {"main.o": 7, "main.c": 7}) is False
+assert needs_rebuild("all", [], {}) is True
+assert needs_rebuild("x.o", [], {"x.o": 1}) is False
+```
+model:
+```python
+def needs_rebuild(target, deps, mtimes):
+    if target not in mtimes:
+        return True
+    return any(mtimes[d] > mtimes[target] for d in deps)
+```
+hint: A missing target is always out of date.
+hint: Otherwise compare each dependency's time with the target's time; equal times do not trigger a rebuild.
+solution: Return `True` when the target is missing; otherwise `any(...)` over the dependencies with a strict `>` comparison. With no dependencies, `any` of an empty sequence is `False`, so an existing target with no dependencies is up to date.
+
+@practice text
+prompt: Type the single `gcc` command (without a shell prompt) that compiles `main.c` to the object file `main.o` without linking, using no other options.
+answer: gcc -c main.c
+accept: gcc -c main.c -o main.o
+accept: gcc main.c -c
+accept: gcc -o main.o -c main.c
+accept: gcc -c -o main.o main.c
+nocheck: a shell command that cannot be computed here
+hint: Which option stops after the assembly stage?
+solution: `gcc -c main.c` runs the preprocessor, compiler and assembler and stops, writing `main.o` (the default name is the source name with `.o`).
+
+@quiz code
+prompt: Write `rebuild_order(goal, rules, mtimes)` that returns the list of targets `make` would rebuild, in the order it runs the recipes. `rules` maps each target to the list of its dependencies; a file that has no rule is a source file and exists. `mtimes` maps existing files to modification times; a target absent from `mtimes` does not exist. Visit dependencies in list order, depth first, bringing each target up to date once, and visit a target's dependencies before deciding about it. A target is rebuilt if it does not exist, if any dependency was rebuilt in this run, or if any dependency's time is strictly greater than the target's existing time.
+starter:
+```python
+def rebuild_order(goal, rules, mtimes):
+    pass
+```
+tests:
+```python
+rules = {
+    "prog": ["main.o", "util.o"],
+    "main.o": ["main.c", "util.h"],
+    "util.o": ["util.c", "util.h"],
+}
+fresh = {"prog": 10, "main.o": 8, "util.o": 8,
+         "main.c": 5, "util.c": 5, "util.h": 5}
+assert rebuild_order("prog", rules, fresh) == []
+header = dict(fresh, **{"util.h": 9})
+assert rebuild_order("prog", rules, header) == ["main.o", "util.o", "prog"]
+source = dict(fresh, **{"main.c": 12})
+assert rebuild_order("prog", rules, source) == ["main.o", "prog"]
+nothing = {k: v for k, v in fresh.items() if k != "prog"}
+assert rebuild_order("prog", rules, nothing) == ["prog"]
+assert rebuild_order("main.o", rules, header) == ["main.o"]
+```
+model:
+```python
+def rebuild_order(goal, rules, mtimes):
+    rebuilt = []
+    done = set()
+
+    def visit(target):
+        if target in done:
+            return
+        done.add(target)
+        dirty = target not in mtimes
+        for dep in rules.get(target, []):
+            visit(dep)
+            if dep in rebuilt:
+                dirty = True
+            elif target in mtimes and mtimes[dep] > mtimes[target]:
+                dirty = True
+        if dirty and target in rules:
+            rebuilt.append(target)
+
+    visit(goal)
+    return rebuilt
+```
+hint: Write a recursive helper that visits all dependencies first, then decides about the target itself.
+hint: Remember which targets were rebuilt; a target whose dependency was rebuilt must be rebuilt too. Keep a set of visited targets so each is handled once.
+solution: A depth-first post-order traversal gives the order recipes run in. Each target is marked dirty if it is missing, or a dependency was rebuilt, or a dependency is strictly newer; dirty targets are appended after their dependencies. The `done` set makes a shared dependency (here `util.h`) count only once.
+
+@quiz num
+prompt: What number does this program print?
+
+```c
+#include <stdio.h>
+
+#define SQUARE(x) x * x
+
+int main(void) {
+    int i = 3;
+    printf("%d\n", SQUARE(i + 1));
+    return 0;
+}
+```
+answer: 7
+check: int(run_c('#include <stdio.h>\n\n#define SQUARE(x) x * x\n\nint main(void) {\n    int i = 3;\n    printf("%d\\n", SQUARE(i + 1));\n    return 0;\n}\n'))
+hint: Macros substitute text; write out what `SQUARE(i + 1)` becomes before evaluating.
+solution: The preprocessor produces `i + 1 * i + 1`. Multiplication binds tighter than addition, so this is `3 + 3 + 1 = 7`, not 16. Writing `((x) * (x))` in the macro fixes it.

@@ -1,0 +1,207 @@
+@lesson
+title: File systems and storage devices
+summary: Compute hard disk access times, explain how SSDs differ, and describe how a Unix-style file system uses inodes, bitmaps and directories, including maximum file size and path lookup cost.
+objective: Compute disk I/O time from seek time, rotational delay and transfer time, and explain why sequential access is much faster than random access.
+objective: Describe the on-disk structures of a Unix-style file system: superblock, bitmaps, inode table, data blocks and directories.
+objective: Compute the maximum file size of a multi-level indexed inode and count the disk reads needed to open a path.
+reading: Operating Systems: Three Easy Pieces, the chapters "Hard Disk Drives", "Files and Directories", "File System Implementation" and "Flash-based SSDs".
+
+@article
+Memory forgets when power is lost; a **file system** gives programs a persistent, named, organized way to store data on a block device. Its design is driven by the physics of the device.
+
+### Hard disk drives
+
+A **hard disk drive (HDD)** has spinning platters; an arm positions a head over a **track**, and the data under the head is read as the platter rotates. The time for one I/O has three parts:
+
+$$T_{I/O} = T_{seek} + T_{rotation} + T_{transfer}.$$
+
+- **Seek:** moving the arm to the right track (several milliseconds for a random seek).
+- **Rotational delay:** waiting for the target sector to rotate under the head. On average it is half a rotation. A disk at 7200 RPM turns once in $60/7200 = 8.33$ ms, so the average delay is about 4.17 ms.
+- **Transfer:** reading the bytes at the media rate: $T_{transfer} = \text{size}/\text{rate}$.
+
+For small random reads, seek and rotation dominate (around 10 ms per request, so a few hundred small random I/Os per second), while a large **sequential** read pays them once and then streams at the full transfer rate (on the order of 100 MB/s or more). This gap shapes file system design: keep related data close together and issue large I/Os. Disk **schedulers** reorder requests to cut seek time: shortest-seek-time-first picks the nearest track but can starve far requests, while the **elevator (SCAN)** algorithm sweeps the arm in one direction serving requests in order, then reverses.
+
+### Solid-state drives
+
+An **SSD** stores bits in **NAND flash** and has no moving parts, so it has no seek or rotational delay. Its constraints are unusual: flash is read and written in **pages** (a few KB), but a page can only be written after the whole **block** containing it (many pages) has been **erased**, and each block survives a limited number of erase cycles. A **flash translation layer (FTL)** therefore remaps logical addresses to physical pages in a log-structured way, collects garbage from partly stale blocks, and spreads erases evenly (**wear leveling**). Rewriting data in place is expensive; random reads are fast; writes cost more than reads.
+
+### File system structure
+
+A Unix-style file system divides the disk into blocks (commonly 4 KB) arranged as:
+
+- a **superblock** describing the file system (sizes, where the other regions are);
+- an **inode bitmap** and a **data bitmap** recording which inodes and data blocks are free;
+- the **inode table**, an array of **inodes**;
+- the **data region**.
+
+An **inode** (index node) stores everything about a file except its name and contents: type, size, owner, permissions, timestamps, a link count and **pointers** to its data blocks. To support big files without wasting space on small ones, the inode has a few **direct pointers** (for example 12) to data blocks, then a pointer to a **single indirect block** (a block full of pointers), a **double indirect** pointer, and sometimes a **triple indirect** one. With 4 KB blocks and 4-byte pointers, an indirect block holds $4096/4 = 1024$ pointers. The file can then have $12 + 1024 + 1024^2$ blocks without the triple level.
+
+A **directory** is a file whose contents are a list of (name, inode number) pairs. The root directory has a well-known inode number. A **hard link** is another directory entry for the same inode (the link count counts them); a **symbolic link** is a small file containing a path.
+
+### Reading a path
+
+To open `/foo/bar`, the system reads the root directory's inode, then its data to find `foo`'s inode number; reads `foo`'s inode and then its data to find `bar`; and finally reads `bar`'s inode. If each directory fits in one block and nothing is cached, a path with $k$ components costs $1 + 2k$ reads. The cost grows with path depth, which is why file systems cache inodes and directory blocks in memory (the page cache).
+
+@example
+title: Disk I/O time
+problem: A 7200 RPM disk has an average seek of 4 ms and a transfer rate of 100 MB/s (10^8 bytes per second). Estimate the time for a random 4096-byte read.
+step: Rotational delay: half of one rotation, $0.5 \times 60000/7200$ ms $= 4.17$ ms.
+step: Transfer: $4096 / 10^8$ s $= 0.04096$ ms.
+step: Total: $4 + 4.17 + 0.04 \approx 8.21$ ms.
+step: Only about 0.5% of the time is spent transferring data, which is why random small I/O is slow on a disk.
+answer: about 8.2 ms
+
+@example
+title: Maximum file size of an inode
+problem: Block size 1 KB (1024 bytes), 4-byte pointers, 10 direct pointers, one single indirect and one double indirect pointer. What is the maximum file size?
+step: Pointers per indirect block: $1024/4 = 256$.
+step: Blocks addressed: direct 10; single indirect 256; double indirect $256^2 = 65536$. Total: $10 + 256 + 65536 = 65802$ blocks.
+step: Bytes: $65802 \times 1024 = 67{,}381{,}248$, about 64.3 MiB.
+answer: 67,381,248 bytes
+
+@mistakes
+- Treating an SSD like a disk with no constraints: flash must be erased in blocks before pages are rewritten, so the FTL, not the file system, hides the in-place update.
+- Computing the full rotation instead of half a rotation for the average rotational delay.
+- Thinking an inode stores the file's name: names live in directory entries, which is why one inode can have several names.
+- Forgetting the cost of reading each directory along a path, not just the final file's inode.
+
+@practice mc
+prompt: Why does an inode keep a few direct pointers and only use indirect blocks for larger files?
+choice*: Most files are small, so direct pointers reach their blocks with no extra reads, while large files can still be addressed through indirect blocks
+choice: Direct pointers make large files faster than indirect blocks in every case
+choice: Indirect blocks cannot be used for files under 1 GB
+choice: The inode must be small enough to fit into the superblock
+hint: Think about what is most common among real files.
+solution: Small files need no extra block reads or index blocks, while the indirect levels grow the maximum file size only for the files that need it. This keeps inodes small and fixed-size.
+
+@practice num
+prompt: What is the average rotational delay, in milliseconds, of a disk spinning at 7200 RPM? Round to two decimal places.
+answer: 4.17
+check: 60000 / 7200 / 2
+tol: 0.01
+unit: ms
+hint: One rotation takes $60000/7200$ ms; on average the head waits half a rotation.
+solution: One rotation takes $60000/7200 = 8.33$ ms, and the average wait is half of that, $4.17$ ms.
+
+@practice code
+prompt: Write `max_file_size(block_size, ptr_size, direct)` that returns the maximum size in bytes of a file in an inode with `direct` direct pointers, one single indirect pointer and one double indirect pointer. Each indirect block fills one block with pointers of `ptr_size` bytes.
+starter:
+```python
+def max_file_size(block_size, ptr_size, direct):
+    pass
+```
+tests:
+```python
+assert max_file_size(1024, 4, 10) == 67381248
+assert max_file_size(4096, 4, 12) == 4299210752
+assert max_file_size(512, 8, 4) == 2131968
+assert max_file_size(4096, 8, 0) == 1075838976
+```
+model:
+```python
+def max_file_size(block_size, ptr_size, direct):
+    per_block = block_size // ptr_size
+    blocks = direct + per_block + per_block * per_block
+    return blocks * block_size
+```
+hint: First compute how many pointers fit in one block.
+solution: Direct pointers address `direct` blocks, the single indirect block addresses `per_block` blocks and the double indirect block addresses `per_block ** 2` blocks. Multiply the total number of blocks by the block size.
+
+@practice code
+prompt: Write `io_time_ms(seek_ms, rpm, nbytes, rate)` that returns the time in milliseconds of one disk I/O: the seek time, plus the average rotational delay (half a rotation at `rpm` revolutions per minute), plus the transfer time of `nbytes` bytes at `rate` bytes per second.
+starter:
+```python
+def io_time_ms(seek_ms, rpm, nbytes, rate):
+    pass
+```
+tests:
+```python
+assert abs(io_time_ms(4, 7200, 4096, 100e6) - 8.207626666666668) < 1e-9
+assert abs(io_time_ms(8, 15000, 1_000_000, 200e6) - 15.0) < 1e-9
+assert abs(io_time_ms(0, 6000, 0, 1e6) - 5.0) < 1e-9
+```
+model:
+```python
+def io_time_ms(seek_ms, rpm, nbytes, rate):
+    rotation = 60_000 / rpm / 2
+    transfer = nbytes / rate * 1000
+    return seek_ms + rotation + transfer
+```
+hint: One rotation takes `60000 / rpm` milliseconds.
+solution: Add the three terms: the given seek time, half a rotation `60000 / rpm / 2`, and the transfer time `nbytes / rate * 1000` after converting seconds to milliseconds.
+
+@practice code
+prompt: Write `locate_block(offset, block_size, ptrs_per_block, direct)` for an inode with `direct` direct pointers, one single indirect block and one double indirect block. Let `b = offset // block_size` be the file block number that contains byte `offset`. Return `("direct", b)` if `b < direct`; otherwise `("indirect", i)` where `i` is the index in the single indirect block; otherwise `("double", i, j)` where `i` indexes the double indirect block and `j` indexes the single indirect block it points to. Raise `ValueError` if the offset is beyond the double indirect range.
+starter:
+```python
+def locate_block(offset, block_size, ptrs_per_block, direct):
+    pass
+```
+tests:
+```python
+args = (4096, 1024, 12)
+assert locate_block(0, *args) == ("direct", 0)
+assert locate_block(12 * 4096 - 1, *args) == ("direct", 11)
+assert locate_block(12 * 4096, *args) == ("indirect", 0)
+assert locate_block((12 + 1023) * 4096, *args) == ("indirect", 1023)
+assert locate_block((12 + 1024) * 4096, *args) == ("double", 0, 0)
+assert locate_block((12 + 1024 + 1025) * 4096 + 5, *args) == ("double", 1, 1)
+assert raises(ValueError, locate_block, (12 + 1024 + 1024 * 1024) * 4096, *args)
+```
+model:
+```python
+def locate_block(offset, block_size, ptrs_per_block, direct):
+    b = offset // block_size
+    if b < direct:
+        return ("direct", b)
+    b -= direct
+    if b < ptrs_per_block:
+        return ("indirect", b)
+    b -= ptrs_per_block
+    if b < ptrs_per_block * ptrs_per_block:
+        return ("double", b // ptrs_per_block, b % ptrs_per_block)
+    raise ValueError("offset beyond maximum file size")
+```
+hint: Subtract the number of blocks covered by each level as you move past it.
+solution: Compute the file block number, then peel off levels: direct blocks first, then the single indirect range, then the double indirect range, where division and remainder by `ptrs_per_block` give the two indexes.
+
+@practice self
+prompt: A process opens `/home/ana/notes.txt` and reads its first block. List, in order, the disk blocks that must be read (assume nothing is cached, every directory fits in one block, and the file's data is in a single block), and count them.
+solution: Read the root directory's inode (at a well-known inode number); read the root directory's data block to find the inode number of `home`; read `home`'s inode; read `home`'s data block to find `ana`; read `ana`'s inode; read `ana`'s data block to find `notes.txt`; read `notes.txt`'s inode (this gives the data block pointers); finally read the file's first data block. That is 3 components, so $1 + 2 \times 3 = 7$ reads to open the file, plus 1 read of the data: 8 block reads in total.
+hint: Each directory on the path needs its inode and then its data block, and the last component needs only its inode to open.
+rubric: Lists the inode and then the data block for each of the root, `home` and `ana` directories, in order.
+rubric: Reads the inode of `notes.txt` and then its first data block.
+rubric: Counts 7 reads for the open and 8 in total.
+
+@quiz code
+prompt: Write `reads_to_open(path)` that returns the number of block reads needed to open an absolute path, assuming nothing is cached and every directory fits in one block: one read for the root inode, then for each path component one read of the containing directory's data and one read of the component's inode. `"/"` has no components. Ignore empty components caused by repeated slashes.
+starter:
+```python
+def reads_to_open(path):
+    pass
+```
+tests:
+```python
+assert reads_to_open("/") == 1
+assert reads_to_open("/a") == 3
+assert reads_to_open("/a/b.txt") == 5
+assert reads_to_open("/usr/local/bin/python") == 9
+assert reads_to_open("//a///b/") == 5
+```
+model:
+```python
+def reads_to_open(path):
+    parts = [p for p in path.split("/") if p]
+    return 1 + 2 * len(parts)
+```
+hint: Split the path on `/` and keep the non-empty pieces.
+solution: With $k$ components the count is $1 + 2k$: the root inode, then a directory data read and an inode read for each component.
+
+@quiz mc
+prompt: A flash-based SSD receives an overwrite of data already stored in one page. Why does the SSD usually write the new data to a different, already-erased page instead of overwriting in place?
+choice*: Flash pages can be programmed only after their whole block has been erased, and erasing is slow and wears the block out
+choice: The disk head must first seek to a free track
+choice: Flash can only be written once in its entire lifetime
+choice: The file system forbids rewriting data
+hint: Erasure happens for a whole block, not a single page.
+solution: Programming requires erased cells, and erasing works on whole blocks, which also have a limited erase lifetime. The flash translation layer therefore writes the new version elsewhere, updates its mapping, and cleans up the old page later by garbage collection.

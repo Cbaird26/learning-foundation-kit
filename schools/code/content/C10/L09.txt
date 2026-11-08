@@ -1,0 +1,169 @@
+@lesson
+title: Storage and indexes: B+ trees and hashing
+summary: Explain how a database stores rows in pages, and compute lookup costs and node splits for B+ tree and hash indexes.
+objective: Describe pages, heap files and the buffer pool, and compute the number of pages a table occupies.
+objective: Explain B+ tree structure, search, insertion with splits, and compute tree height from fanout.
+objective: Compare B+ tree and hash indexes, and apply the leftmost-prefix rule for composite indexes.
+reading: CMU 15-445/645 Database Systems, the lectures on storage (disk-oriented DBMS, pages, buffer pool) and on tree indexes and hash tables.
+@article
+A relation is a logical idea; physically the rows live on disk (or SSD) and must be read into memory to be used. A **disk-oriented** database system organizes data into fixed-size **pages**, typically 4 KB to 16 KB (SQLite defaults to 4 KB, PostgreSQL to 8 KB). The page is the unit of transfer, so the main cost measure in this lesson is the **number of page reads and writes (I/Os)**, because reading a page is far slower than touching memory.
+
+### Pages, heap files and the buffer pool
+
+A **heap file** is an unordered collection of pages holding a table's rows. Within a page the **slotted page** layout keeps a slot directory at the front, pointing to variable-length rows; a row is addressed by a **record id** (page number, slot number). Rows that fit `r` per page occupy $\lceil n / r \rceil$ pages for $n$ rows, where $r = \lfloor \text{page size} / \text{row size} \rfloor$.
+
+Reading a page goes through the **buffer pool**, a region of memory caching pages. If the page is in the pool (a *hit*) no I/O happens. Otherwise a page is evicted by a **replacement policy** (LRU, or the cheaper clock approximation) and the requested page is read. A full table scan reads every page: cost equals the number of pages.
+
+### Why indexes
+
+Without an index, `WHERE id = 42` scans the whole heap file. An **index** is an auxiliary structure mapping search-key values to record ids, so a lookup reads a few pages. It is a redundant copy of part of the data, so it speeds reads and **slows writes** (every insert, delete or key update must also change each index) and costs space.
+
+### B+ trees
+
+The **B+ tree** is the default index in nearly every relational system. It is a balanced multiway search tree:
+
+- **All leaves are at the same depth**, so every lookup reads the same number of pages.
+- **Internal nodes** hold sorted separator keys and child pointers, and route the search.
+- **Leaves** hold the sorted keys with record ids (or the rows themselves), and are linked left to right as a list, so **range scans** follow leaf links after finding the start.
+- Each node is a page. The **fanout** $f$ is the maximum number of children per node. Apart from the root, nodes stay at least half full.
+
+With 4 KB pages and 8-byte keys and pointers a node holds roughly 250 entries, so a tree of 3 levels indexes about $250^3 \approx 15$ million entries. Lookup cost is $O(\log_f N)$ page reads, which in practice is 3 or 4, with the top levels usually cached.
+
+**Search** for key $k$: at each internal node follow the child whose key range contains $k$, down to a leaf, then look in the leaf. A **range query** `k BETWEEN lo AND hi` searches for `lo`, then scans leaves rightward until a key exceeds `hi`.
+
+**Insertion**: find the leaf, insert the key in sorted order. If the leaf now exceeds its capacity, **split** it into two halves and insert a separator key into the parent (for a leaf split the separator is a *copy* of the first key of the right half). If the parent overflows it splits too (for an internal split the middle key moves up). A split that reaches the root creates a new root, which is the only way a B+ tree gets taller. Deletion removes the key and, if a node becomes too empty, borrows from or merges with a sibling.
+
+### Hash indexes
+
+A **hash index** applies a hash function to the key to pick a **bucket** page. Equality lookup costs about one page read, but a hash index cannot answer range queries or sorting, because hashing destroys order. **Static hashing** with a fixed bucket count degrades as data grows (long overflow chains). **Extendible hashing** keeps a directory of $2^d$ bucket pointers, where $d$ is the **global depth**, indexed by the low-order $d$ bits of the hash value. A full bucket splits; if its **local depth** equals the global depth the directory doubles first. **Linear hashing** instead splits buckets one at a time in a fixed order, avoiding a directory.
+
+### Index choices
+
+A **clustered** index stores the rows in key order (one per table); other indexes are **unclustered**, so each match costs an extra page read. A **composite** index on $(a, b)$ sorts by $a$, then $b$, so it can seek on `a`, or on `a` and `b`, but not on `b` alone (the **leftmost-prefix** rule). A **covering** index contains every column a query needs, so the table is never read. Functions applied to the column (`WHERE UPPER(name) = 'X'`) or a leading wildcard (`LIKE '%x'`) prevent index seeks unless an index is built on that exact expression.
+
+@example
+title: Splitting a leaf
+problem: A B+ tree leaf holds at most 3 keys: 10, 20, 30. Insert 40 and show the result.
+step: Insert in sorted order: the leaf becomes 10, 20, 30, 40, which exceeds the capacity of 3.
+step: Split into two halves: the left leaf keeps 10, 20 and the right leaf gets 30, 40.
+step: The separator key copied up to the parent is the first key of the right leaf, 30.
+step: The parent now routes keys below 30 to the left leaf and keys 30 and above to the right leaf. If there was no parent, a new root with the single key 30 is created and the tree grows by one level.
+answer: Leaves [10, 20] and [30, 40] with separator 30.
+
+@example
+title: Estimating pages and lookup cost
+problem: A table has 100,000 rows of 100 bytes in 4096-byte pages (ignore page headers). An index has fanout 200. How many pages does the table need, and how many page reads does an index lookup need at most for 100,000 keys?
+step: Rows per page: $\lfloor 4096 / 100 \rfloor = 40$.
+step: Pages: $\lceil 100000 / 40 \rceil = 2500$, so a full scan reads 2500 pages.
+step: Levels needed: $200^2 = 40{,}000 < 100{,}000 \le 200^3$, so 3 levels.
+step: A lookup reads about 3 index pages plus 1 data page (unclustered), roughly 4 reads instead of 2500.
+answer: 2500 pages; about 3 index reads plus 1 table read.
+
+@mistakes
+- Using a B+ tree height formula with the wrong base: the base is the fanout, not 2.
+- Expecting an index on `(a, b)` to help `WHERE b = 5`; the leftmost-prefix rule says it cannot seek on `b` alone.
+- Adding an index for every column; each index slows writes and uses space.
+- Thinking a hash index can serve `ORDER BY` or range queries.
+
+@practice code
+prompt: Write `split_leaf(keys, max_keys)` for a B+ tree leaf. `keys` is a sorted list. If `len(keys) <= max_keys`, return `(list(keys), [], None)`. Otherwise split: let `n = len(keys)`, give the left leaf the first `ceil(n / 2)` keys and the right leaf the rest, and return `(left, right, separator)` where `separator` is the first key of the right leaf.
+starter:
+```python
+def split_leaf(keys, max_keys):
+    pass
+```
+tests:
+```python
+assert split_leaf([10, 20, 30, 40], 3) == ([10, 20], [30, 40], 30)
+assert split_leaf([1, 2, 3, 4, 5], 4) == ([1, 2, 3], [4, 5], 4)
+assert split_leaf([1, 2], 3) == ([1, 2], [], None)
+assert split_leaf([7, 8, 9], 3) == ([7, 8, 9], [], None)
+k = [1, 2, 3, 4]
+left, right, sep = split_leaf(k, 3)
+assert k == [1, 2, 3, 4]
+```
+model:
+```python
+def split_leaf(keys, max_keys):
+    if len(keys) <= max_keys:
+        return list(keys), [], None
+    mid = (len(keys) + 1) // 2
+    left = keys[:mid]
+    right = keys[mid:]
+    return left, right, right[0]
+```
+hint: `ceil(n / 2)` equals `(n + 1) // 2` for integers.
+hint: Slice the list at that midpoint; the separator is the first element of the right slice.
+solution: When there is room, return a copy and no separator. Otherwise compute `mid = (n + 1) // 2`, slice the keys, and copy up the first key of the right half, as a B+ tree does for a leaf split.
+
+@practice num
+prompt: Assume an idealized index in which every node, leaves included, has exactly 100 entries, so a tree with `h` levels indexes $100^h$ records. What is the smallest `h` that can index 1,000,000 records?
+answer: 3
+check: next(h for h in range(1, 20) if 100 ** h >= 1000000)
+hint: Find the smallest `h` with $100^h \ge 1{,}000{,}000$.
+solution: $100^2 = 10{,}000$ is too small and $100^3 = 1{,}000{,}000$ is exactly enough, so 3 levels suffice.
+
+@practice num
+prompt: A table has 10,000 rows of 200 bytes each. Pages are 4096 bytes and have no header, and a row never spans pages. How many pages does a full table scan read?
+answer: 500
+check: ceil(10000 / (4096 // 200))
+hint: First compute how many whole rows fit in one page.
+solution: $\lfloor 4096 / 200 \rfloor = 20$ rows per page, so $\lceil 10000 / 20 \rceil = 500$ pages.
+
+@practice mc
+prompt: A B+ tree index exists on `(last_name, first_name)`. Which query can use the index to seek directly to the matching entries?
+choice*: `WHERE last_name = 'Lee'`
+choice: `WHERE first_name = 'Ann'`
+choice: `WHERE last_name LIKE '%ee'`
+choice: `WHERE UPPER(last_name) = 'LEE'`
+hint: Entries are sorted by `last_name` first. Which predicates describe a contiguous range of that order?
+solution: An equality on the leading column selects a contiguous run of entries. A condition on only the second column, a leading wildcard, or a function of the column does not correspond to a contiguous range in the sort order.
+
+@practice ms
+prompt: A B+ tree index exists on column `x` of a large table. Which operations can it speed up?
+choice*: `WHERE x = 5`
+choice*: `WHERE x BETWEEN 5 AND 9`
+choice*: `ORDER BY x`, by avoiding a sort
+choice: `WHERE x * 2 = 10`, with an arithmetic expression on the column
+hint: Think about what a sorted structure gives you, and what an expression on the column hides.
+solution: A sorted tree supports point lookups, range scans along the linked leaves, and reading rows already in key order. An arithmetic expression applied to the column hides the key from the index, so it cannot be used for a seek.
+
+@quiz code
+prompt: Write `range_scan(sorted_keys, lo, hi)` that returns the list of keys `k` of the sorted list `sorted_keys` with `lo <= k <= hi`, in order, the way a B+ tree range scan would: locate the start with binary search (use the `bisect` module) and take the contiguous run. Duplicate keys are all returned. If `lo > hi` return `[]`.
+starter:
+```python
+def range_scan(sorted_keys, lo, hi):
+    pass
+```
+tests:
+```python
+keys = [2, 4, 4, 7, 9, 12]
+assert range_scan(keys, 4, 9) == [4, 4, 7, 9]
+assert range_scan(keys, 5, 6) == []
+assert range_scan(keys, 0, 100) == keys
+assert range_scan(keys, 9, 4) == []
+assert range_scan([], 1, 5) == []
+assert range_scan(keys, 12, 12) == [12]
+```
+model:
+```python
+from bisect import bisect_left, bisect_right
+
+
+def range_scan(sorted_keys, lo, hi):
+    if lo > hi:
+        return []
+    start = bisect_left(sorted_keys, lo)
+    end = bisect_right(sorted_keys, hi)
+    return sorted_keys[start:end]
+```
+hint: `bisect_left(keys, lo)` gives the first position holding a value at least `lo`.
+hint: `bisect_right(keys, hi)` gives the position just after the last value at most `hi`.
+solution: Two binary searches find the boundaries of the run, `bisect_left` for `lo` and `bisect_right` for `hi`, and a slice returns it. The cost is $O(\log n + k)$ for $k$ results, like a tree descent plus a leaf scan.
+
+@quiz num
+prompt: An extendible hash index has global depth 3 and uses the low-order 3 bits of the hash value to choose a directory entry (entries numbered 0 to 7). A key's hash value is 45. Which directory entry does it use?
+answer: 5
+check: 45 % 8
+hint: The low-order 3 bits of a number are its remainder when divided by 8.
+solution: $45 = 101101_2$, whose last three bits are $101_2 = 5$, which equals $45 \bmod 8 = 5$.

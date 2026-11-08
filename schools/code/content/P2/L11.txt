@@ -1,0 +1,267 @@
+@lesson
+title: Architecture decision records and documentation
+summary: Record significant design decisions in short architecture decision records and keep architecture documentation accurate, layered and cheap to maintain.
+objective: Write an architecture decision record with context, decision, alternatives and consequences.
+objective: Decide which decisions deserve a record and manage a record's life cycle (accepted, superseded).
+objective: Describe a system at several levels with the C4 model and keep documentation close to the code.
+reading: Architecture Patterns with Python ("Cosmic Python"), the Epilogue and Appendix A (Summary Diagram and Table); also look up "architecture decision records" (the short-format template) and the C4 model.
+@article
+Six months from now someone will look at your system and ask "why on earth did they do it this way?" That someone is often you. Code shows *what* the system does; it cannot show the options you rejected, the constraint that forced your hand or the assumption that has since expired. **Architecture decision records (ADRs)** are the cheapest effective answer: short documents, one per significant decision, kept with the code.
+
+### What an ADR is
+
+An ADR captures **one decision**, in a few paragraphs, with its reasoning. A widely used short template has these sections (the original format has title, status, context, decision and consequences; many teams add alternatives):
+
+- **Title**: a short noun phrase with a number: `0007. Use PostgreSQL for order storage`.
+- **Status**: `Proposed`, `Accepted`, `Deprecated` or `Superseded by 0012`.
+- **Context**: the forces at play: requirements, constraints, the team, the deadline. State facts and name the trade-offs honestly.
+- **Decision**: what you will do, in active voice: "We will use..."
+- **Alternatives considered**: the options you rejected and why. This is the part future readers value most.
+- **Consequences**: what becomes easier, what becomes harder, new risks, follow-up work. Include the negatives.
+
+Keep each to one page. If you need ten, you are writing a design document; link to it.
+
+### What deserves an ADR
+
+Write one when a decision is **hard to reverse, expensive to get wrong or likely to be questioned**: the database or message broker, the service boundaries, an authentication approach, a major framework, a data format, the API style, a rule such as "services own their data". Do not write one for a variable name or a library you can swap in an afternoon. A useful test: "if a new engineer joined and reversed this without knowing the reason, would it hurt?"
+
+### Life cycle: ADRs are append-only
+
+An accepted ADR is a historical record, not a living page. If circumstances change, **do not edit the old decision**; write a new ADR that supersedes it, and update the old one's status to `Superseded by 0012`. The history of reasoning stays intact, so you can see why the first choice made sense then. Number records sequentially, store them in the repository (`docs/adr/0007-use-postgresql-for-orders.md`), and review them in pull requests like code, so the team debates the decision before it is merged, and the review is the record of agreement.
+
+### Writing a good ADR: an example
+
+*Context:* "Order confirmation emails block the checkout request for up to 8 seconds, and the mail provider fails about 1 percent of the time. We have 6 engineers and run one deployable." *Decision:* "We will publish an `OrderPlaced` event through a transactional outbox and send email from a worker." *Alternatives:* "Send email in the request (rejected: latency and failure coupling); a separate email microservice (rejected: operational cost for our team size)." *Consequences:* "Checkout no longer waits on email; emails may arrive seconds late; we must make the worker idempotent and monitor the outbox backlog."
+
+Notice the numbers, the rejected options and the downsides. A record that says only "We chose X because it is best" teaches nothing.
+
+### Documenting architecture at several levels: C4
+
+The **C4 model** describes a system at four zoom levels, so each diagram has one audience and one message:
+
+1. **Context**: your system as one box, with the users and external systems around it.
+2. **Container**: the separately running pieces (web app, API, database, queue, worker) and how they communicate.
+3. **Component**: the major parts inside one container (services, repositories, adapters).
+4. **Code**: classes and functions; usually generated, rarely drawn by hand.
+
+Label every arrow with what flows and how ("places order, JSON over HTTPS"). A diagram with unlabeled lines and no legend causes arguments.
+
+### Documentation that survives
+
+- Keep docs **next to the code** (docs-as-code): in the repository, in Markdown, changed in the same pull request as the behavior they describe.
+- Write a **README** that answers: what is this, how do I run it and test it, where do things live, who owns it.
+- Write **runbooks** for operations: what the alert means, how to check, how to fix, who to call.
+- Prefer a few trustworthy documents over many stale ones. Date them, name an owner and delete what is wrong.
+- Where possible, **enforce architecture in tests** (an architecture "fitness function"): a test that fails if the domain package imports the web framework keeps the diagram true.
+
+### Habits
+
+Decide in writing, ask for review early, link ADRs from code comments and pull requests ("see ADR 0007"), and when a decision turns out wrong, supersede it without blame. The goal is not paperwork. It is that the next person can disagree with you *knowing the reasons*.
+
+@example
+title: Writing a decision record
+problem: Your team must choose how sessions are stored for a web app that will run on 3 servers behind a load balancer. Write the key parts of the ADR.
+step: Title and status: `0004. Store sessions in Redis`, status `Proposed` until the review is finished.
+step: Context with facts: three app servers; in-memory sessions would log users out when a request hits a different server; sticky sessions would unbalance load and lose sessions on deploy; sessions need to expire after 30 minutes idle.
+step: Decision: "We will store sessions in Redis with a 30-minute sliding expiry, keyed by an unguessable session id in an HTTP-only cookie."
+step: Alternatives: sticky sessions (rejected: uneven load, lost on deploy); database table (rejected: extra load on the primary database for every request); signed cookie sessions (rejected: cannot revoke a session, size limit).
+step: Consequences: servers are stateless and can be replaced freely; Redis becomes a critical dependency we must monitor and back up; a brief outage logs users out; one more component for new engineers to learn.
+answer: An ADR with title, status, factual context, a decision in active voice, three rejected alternatives and honest consequences.
+
+@example
+title: Superseding a decision
+problem: ADR 0004 says sessions are stored in Redis. A year later the team moves to token-based authentication. How do you record it?
+step: Do not edit the text of ADR 0004: it was correct for the situation then, and its reasoning is useful history.
+step: Write `0015. Use short-lived access tokens instead of server-side sessions`, with the new context: mobile clients, third-party integrations and the Redis outage that logged everyone out.
+step: In ADR 0015 write `Status: Accepted` and in its context say "This supersedes ADR 0004."
+step: Change only the status line of ADR 0004 to `Superseded by 0015`.
+step: A reader following either record can reconstruct the whole story: why Redis made sense, and why it stopped.
+answer: Add ADR 0015 and mark ADR 0004 as superseded; leave 0004's reasoning untouched.
+
+@mistakes
+- Writing ADRs after the fact with only the winner and no rejected alternatives, so the record cannot help anyone challenge or revisit it.
+- Editing an old ADR to match what the system does now. The history is lost; supersede instead.
+- Recording every small choice, until nobody reads the folder. Keep records for significant, hard-to-reverse decisions.
+- Drawing one giant diagram for every audience, with unlabeled arrows and no legend. Use levels and label the relationships.
+
+@practice mc
+prompt: Which decision most clearly deserves an architecture decision record?
+choice: Renaming a local variable from `d` to `delay`
+choice: Choosing which of two equivalent test-assertion helpers to import in one file
+choice*: Choosing a message broker that every service will depend on and that is expensive to change later
+choice: Fixing a typo in a README
+hint: Think about decisions that are hard to reverse and likely to be questioned.
+solution: A broker shared by every service is costly to reverse and likely to be questioned, so the reasoning is worth keeping. The other changes are trivial and easily undone.
+
+@practice code
+prompt: Write `adr_filename(number, title)` that returns the file name for a record: the number padded to four digits, a hyphen, the title in lowercase with every run of characters other than letters and digits replaced by a single hyphen (no hyphen at the start or end), and `.md`. Example: `adr_filename(7, "Use PostgreSQL for orders")` returns `"0007-use-postgresql-for-orders.md"`.
+starter:
+```python
+import re
+
+def adr_filename(number, title):
+    pass
+```
+tests:
+```python
+assert adr_filename(7, "Use PostgreSQL for orders") == "0007-use-postgresql-for-orders.md"
+assert adr_filename(12, "Adopt REST + JSON!") == "0012-adopt-rest-json.md"
+assert adr_filename(123, "  Drop  the cache ") == "0123-drop-the-cache.md"
+assert adr_filename(1, "Use Python 3") == "0001-use-python-3.md"
+assert adr_filename(2000, "A") == "2000-a.md"
+```
+model:
+```python
+import re
+
+def adr_filename(number, title):
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return f"{number:04d}-{slug}.md"
+```
+hint: Lower-case the title first, then replace each run of non-alphanumeric characters with one hyphen.
+hint: `str.strip("-")` removes hyphens from both ends, and `f"{number:04d}"` pads with zeros.
+solution: The regular expression `[^a-z0-9]+` matches whole runs of other characters, so punctuation and repeated spaces collapse into one hyphen; `strip("-")` removes leading and trailing ones. Predictable names keep records sorted by number.
+
+@practice text
+prompt: What does this program print? Type the two lines of output exactly.
+
+```python
+adrs = {1: "Accepted", 2: "Accepted", 3: "Proposed"}
+
+def supersede(old, new):
+    adrs[old] = f"Superseded by {new}"
+    adrs[new] = "Accepted"
+
+supersede(1, 3)
+print(adrs[1])
+print(sum(1 for s in adrs.values() if s == "Accepted"))
+```
+answer:
+```
+Superseded by 3
+2
+```
+check: run("adrs = {1: 'Accepted', 2: 'Accepted', 3: 'Proposed'}\n\ndef supersede(old, new):\n    adrs[old] = f'Superseded by {new}'\n    adrs[new] = 'Accepted'\n\nsupersede(1, 3)\nprint(adrs[1])\nprint(sum(1 for s in adrs.values() if s == 'Accepted'))\n")
+hint: After the call, record 1 is superseded, and records 2 and 3 are accepted.
+solution: Record 1 becomes `Superseded by 3` and record 3 becomes `Accepted`. Records 2 and 3 are accepted, so the count is `2`. Only the old record's status changes; its text stays as it was.
+
+@practice code
+prompt: Write `parse_adr(text)` that reads a record in this format and returns a dict with keys `"number"` (int), `"title"` (str) and `"status"` (str, or `None` if there is no status line). The first line is `# <number>. <title>`. The status is on a line starting with `Status:`; return what follows the colon, stripped.
+
+```text
+# 5. Use Redis for sessions
+
+Status: Accepted
+
+## Context
+```
+starter:
+```python
+def parse_adr(text):
+    pass
+```
+tests:
+```python
+doc = "# 5. Use Redis for sessions\n\nStatus: Accepted\n\n## Context\nSessions...\n"
+assert parse_adr(doc) == {"number": 5, "title": "Use Redis for sessions", "status": "Accepted"}
+doc2 = "# 12. Adopt REST\n\nStatus:  Superseded by 15 \n"
+assert parse_adr(doc2) == {"number": 12, "title": "Adopt REST", "status": "Superseded by 15"}
+doc3 = "# 3. No status yet\n\n## Context\n"
+assert parse_adr(doc3) == {"number": 3, "title": "No status yet", "status": None}
+assert parse_adr("# 100. A. B\nStatus: Proposed")["title"] == "A. B"
+```
+model:
+```python
+import re
+
+def parse_adr(text):
+    lines = text.splitlines()
+    match = re.match(r"#\s*(\d+)\.\s*(.+)", lines[0])
+    number = int(match.group(1))
+    title = match.group(2).strip()
+    status = None
+    for line in lines[1:]:
+        if line.startswith("Status:"):
+            status = line[len("Status:"):].strip()
+            break
+    return {"number": number, "title": title, "status": status}
+```
+hint: A regular expression with two groups can split the first line into number and title.
+hint: Loop over the remaining lines and stop at the first one that starts with `Status:`.
+solution: The first line yields the number and title (`\d+` then a literal period, then the rest of the line); a scan finds the status. Because only the first `. ` after the number splits, a title containing a period survives intact.
+
+@practice self
+prompt: Write two architecture decision records for a team of 5 engineers building an internal expense-approval web app (about 400 users, one office). Record 1: choose the database (the options are PostgreSQL, a document database and spreadsheets-as-database). Record 2: choose how to deploy (one container on a managed platform, Kubernetes, or a single virtual machine). Each record needs a numbered title, status, context with concrete facts, decision, at least two rejected alternatives with reasons, and consequences including at least one negative.
+hint: Use the team size, user count and nature of the data (money, approvals, audit trail) as the facts that decide.
+solution: ADR 0001. Use PostgreSQL for application data. Status: Accepted. Context: expense reports, line items, approvals and an audit trail are relational and need transactions (an approval and its audit entry must succeed or fail together). About 400 users and a few thousand reports a month, so scale is not a concern. Reporting by finance needs ad hoc queries and joins. The team knows SQL; nobody has operated a document database. Decision: We will use PostgreSQL, accessed through a repository port so storage can be swapped in tests. Alternatives: a document database (rejected: weaker multi-record transactions, reports would need extra tooling, no team experience); spreadsheets as database (rejected: no transactions or constraints, concurrent edits corrupt data, no audit guarantee). Consequences: strong integrity and easy reporting; we must manage schema migrations with the expand and contract method; we need backups and monitoring; scaling writes far beyond this size would need new work, which we accept. ADR 0002. Deploy as one container on a managed platform. Status: Accepted. Context: one deployable (a modular monolith), 400 users, business hours traffic, a 5-person team with no dedicated operations engineer, and a requirement of 99.5 percent availability. Decision: We will build one container image and run two instances of it on a managed container platform, with a managed PostgreSQL service. Alternatives: Kubernetes (rejected: operational cost and learning curve far exceed the need at this size); one virtual machine (rejected: manual patching, a single point of failure and slow, risky deployments). Consequences: deploys are a single command and rollbacks are easy; we depend on the platform vendor and its pricing; we give up fine control of networking; if we later split services, we will write a new decision record superseding this one.
+rubric: Each record has a numbered title, status, context with concrete facts from the scenario, a decision stated in active voice, and consequences.
+rubric: Each record lists at least two rejected alternatives with specific reasons tied to the team and scale, not generic claims.
+rubric: Consequences include honest negatives or new obligations (for example vendor dependence, operations work or scaling limits), and the two decisions are consistent with each other.
+
+@quiz code
+prompt: Write `render_adr(number, title, status, context, decision, consequences)` that returns the record as a Markdown string in exactly this layout (the final newline is part of the result):
+
+```text
+# <number>. <title>
+
+Status: <status>
+
+## Context
+
+<context>
+
+## Decision
+
+<decision>
+
+## Consequences
+
+<consequences>
+```
+starter:
+```python
+def render_adr(number, title, status, context, decision, consequences):
+    pass
+```
+tests:
+```python
+text = render_adr(
+    4, "Store sessions in Redis", "Accepted",
+    "Three servers.", "Use Redis.", "Redis is critical.",
+)
+assert text == (
+    "# 4. Store sessions in Redis\n\n"
+    "Status: Accepted\n\n"
+    "## Context\n\n"
+    "Three servers.\n\n"
+    "## Decision\n\n"
+    "Use Redis.\n\n"
+    "## Consequences\n\n"
+    "Redis is critical.\n"
+)
+assert render_adr(10, "T", "Proposed", "c", "d", "e").startswith("# 10. T\n\nStatus: Proposed\n")
+assert render_adr(1, "T", "S", "c", "d", "e").endswith("e\n")
+assert render_adr(1, "T", "S", "c", "d", "e").count("## ") == 3
+```
+model:
+```python
+def render_adr(number, title, status, context, decision, consequences):
+    return (
+        f"# {number}. {title}\n\n"
+        f"Status: {status}\n\n"
+        f"## Context\n\n{context}\n\n"
+        f"## Decision\n\n{decision}\n\n"
+        f"## Consequences\n\n{consequences}\n"
+    )
+```
+hint: Each section is a heading, a blank line, the text and another blank line.
+solution: Build the string with f-strings, keeping blank lines exactly as in the layout. Generating records from a template keeps a team's ADRs consistent and lets tools parse them.
+
+@quiz mc
+prompt: ADR 0002 ("Deploy on a single virtual machine") was accepted. Two years later the team moves to a managed container platform. What is the best way to record this?
+choice: Delete ADR 0002 so nobody follows it
+choice: Rewrite ADR 0002 so it describes the container platform
+choice*: Write a new ADR that supersedes 0002, and change only 0002's status to point to the new record
+choice: Update the deployment script and leave the records unchanged
+hint: ADRs are a history of reasoning, so what should happen to the old reasoning?
+solution: A new record explains the new decision and context, and the old record keeps its reasoning with a status pointing forward. Deleting or rewriting the old record destroys the history, and changing only the script leaves the records misleading.

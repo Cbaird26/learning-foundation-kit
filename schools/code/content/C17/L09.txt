@@ -1,0 +1,262 @@
+@lesson
+title: Web security: SQL injection and cross-site scripting
+summary: Explain how injection and cross-site scripting arise from mixing data with code, and prevent them with parameters, allowlists and context-aware output encoding.
+objective: Explain why concatenating untrusted input into SQL or HTML changes the program's structure.
+objective: Fix SQL injection with parameterized queries and allowlists, and XSS with output encoding, safe DOM APIs and a content security policy.
+objective: Distinguish reflected, stored and DOM-based XSS and choose defenses for each output context.
+reading: UC Berkeley CS 161 textbook, the chapters on web security: SQL injection and cross-site scripting (look up "parameterized queries" and "content security policy").
+@article
+Injection flaws share one root cause: a program builds a string of **code** (SQL, HTML, a shell command) by pasting in **data** that an attacker controls, and the interpreter cannot tell where the data ends. OWASP **A05 Injection** groups SQL injection, command injection and cross-site scripting. Everything below is about securing your own code, and the demonstrations use only your own toy database.
+
+### SQL injection
+
+Here is the bug next to its fix, using Python's built-in `sqlite3`:
+
+```python
+def find_user_bad(conn, name):          # BUG: data pasted into code
+    sql = "SELECT id FROM users WHERE name = '" + name + "'"
+    return conn.execute(sql).fetchall()
+
+def find_user(conn, name):              # FIX: parameterized query
+    sql = "SELECT id FROM users WHERE name = ?"
+    return conn.execute(sql, (name,)).fetchall()
+```
+
+In the first version, a name that contains a quote character ends the string literal early, and whatever follows is parsed as SQL. A name such as `x' OR '1'='1` turns the condition into one that is always true, so the query returns every row: the input changed the query's **structure**. In the fixed version the database receives the query text and the value **separately**. The `?` is a placeholder that can only ever hold a value, so no input can alter the structure. Use your driver's placeholder style (`?` in sqlite3, `%s` in several others).
+
+Defenses, in order of importance:
+
+1. **Parameterized queries** (prepared statements) for every value. ORMs generate them, but raw-SQL escape hatches in an ORM need the same care.
+2. **Allowlists for identifiers**: placeholders cannot stand for table or column names (`ORDER BY`), so map user choices to fixed strings you wrote.
+3. **Least privilege**: the application's database account should not own the schema or read tables it does not need, so a bug has limited reach.
+4. **Do not rely on hand-written escaping or blocklists**; they miss cases. Avoid detailed database errors in responses, and log suspicious input.
+
+The same idea applies to the shell: pass an argument list to `subprocess.run([...])` instead of a string run through a shell.
+
+### Cross-site scripting (XSS)
+
+XSS is injection into a web page: the attacker's text is interpreted by the browser as HTML or JavaScript, so it runs with the victim's session on your site's origin. It can read the page, make requests as the user and show fake forms. Three kinds:
+
+- **Reflected**: the payload is in the request (a query parameter) and the response echoes it.
+- **Stored**: the application saves the payload (a comment, a profile field) and serves it to every visitor.
+- **DOM-based**: client-side JavaScript takes data from the URL or page and writes it into the DOM unsafely, for example with `innerHTML`.
+
+The fix is **output encoding for the context** where the data lands:
+
+| Context | Defense |
+|---|---|
+| HTML body or attribute | HTML-escape `& < > " '` (and quote attributes) |
+| JavaScript data | Pass as JSON or data attributes, never build script text |
+| URL attribute (`href`) | Allow only expected schemes (`http`, `https`), then encode |
+| DOM in the browser | Use `textContent`, not `innerHTML` |
+
+```python
+import html
+
+def comment_html(user, text):
+    return "<p><b>" + html.escape(user) + "</b>: " + html.escape(text) + "</p>"
+```
+
+Modern template engines **escape by default**; keep that on and treat every bypass (a "safe" or "raw" marker) as a code-review flag. If users must submit rich HTML, run it through a well-maintained sanitizer library rather than writing one. Escape on **output**, not on input: the same stored text may be shown in HTML, JSON and email.
+
+Defense in depth: a **Content Security Policy** header such as `Content-Security-Policy: default-src 'self'; script-src 'self'` stops inline scripts and scripts from other origins even if an injection slips through; mark session cookies `HttpOnly` so scripts cannot read them (limits the damage, does not prevent the attack).
+
+@example
+title: Spotting the structural change
+problem: The query is built as `"SELECT * FROM users WHERE name = '" + name + "'"`. For the input `x' OR '1'='1`, write the SQL that is actually run, and explain the fix.
+step: Substituting the input gives `SELECT * FROM users WHERE name = 'x' OR '1'='1'`.
+step: SQL's `AND` binds tighter than `OR`, but there is no `AND` here: the condition is `name = 'x'` OR `'1'='1'`, and the second part is always true, so every row matches.
+step: The input escaped the string literal and added logic. With `WHERE name = ?` and the value passed separately, the whole text `x' OR '1'='1` is just a name that matches nobody.
+answer: The query returns every user; use a parameterized query.
+@example
+title: Escaping a comment for HTML
+problem: A page shows the comment `<img src=x onerror=alert(1)>` by string concatenation. What does `html.escape` produce, and why does it make the page safe?
+step: `html.escape` replaces `&` with `&amp;`, `<` with `&lt;`, `>` with `&gt;`, and by default also `"` with `&quot;` and `'` with `&#x27;`.
+step: The comment becomes `&lt;img src=x onerror=alert(1)&gt;`.
+step: The browser renders that as visible text, because without a literal `<` it never starts a tag, so the `onerror` attribute is never parsed.
+step: The same text placed in a JavaScript string or a URL needs different encoding: the encoding must match the context.
+answer: `&lt;img src=x onerror=alert(1)&gt;`, displayed as text
+@mistakes
+- Building SQL with string concatenation or f-strings "because the input is validated".
+- Trying to defend with a blocklist of bad characters or words instead of using parameters.
+- Escaping once, on input, and then putting the value in a different context (JavaScript, URL, attribute).
+- Using `innerHTML` or a template's "safe" marker with data that came from a user.
+@practice num
+prompt: A table `users(name)` holds the rows `ann`, `bob` and `cy`. A program builds its query by concatenation: `"SELECT * FROM users WHERE name = '" + name + "'"`. For the input `x' OR '1'='1` the query that runs is
+
+```sql
+SELECT * FROM users WHERE name = 'x' OR '1'='1'
+```
+
+How many rows does it return?
+answer: 3
+check: len(sql("CREATE TABLE users(name TEXT); INSERT INTO users VALUES ('ann'), ('bob'), ('cy');", "SELECT * FROM users WHERE name = 'x' OR '1'='1'"))
+hint: Evaluate the condition for each row; the second part of the `OR` does not mention the row at all.
+solution: `'1'='1'` is true for every row, so the whole `OR` is true and all 3 rows are returned. A parameterized query would return 0 rows for this input.
+@practice code
+prompt: Write `escape_html(text)` that returns `text` with these replacements: `&` to `&amp;`, `<` to `&lt;`, `>` to `&gt;`, `"` to `&quot;` and `'` to `&#x27;`. Replace `&` first so you do not escape the `&` you add.
+starter:
+```python
+def escape_html(text):
+    pass
+```
+tests:
+```python
+assert escape_html("plain") == "plain"
+assert escape_html("<b>") == "&lt;b&gt;"
+assert escape_html("Tom & Jerry") == "Tom &amp; Jerry"
+assert escape_html('say "hi"') == "say &quot;hi&quot;"
+assert escape_html("it's") == "it&#x27;s"
+assert escape_html("&lt;") == "&amp;lt;"
+```
+model:
+```python
+def escape_html(text):
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#x27;")
+    )
+```
+hint: Chain `str.replace` calls, one per character.
+hint: If `&` is replaced last, the `&` in `&lt;` would turn into `&amp;lt;`. Do it first.
+solution: Replace `&` first, then the other four characters. The last test shows that existing entities are escaped too, so the browser displays exactly the original text.
+@practice code
+prompt: Placeholders cannot stand for column names. Write `order_clause(column, allowed)` that returns the string `"ORDER BY " + column` if `column` is one of the strings in the list `allowed`, and otherwise raises `ValueError`. Compare exactly (case-sensitive).
+starter:
+```python
+def order_clause(column, allowed):
+    pass
+```
+tests:
+```python
+allowed = ["name", "created_at"]
+assert order_clause("name", allowed) == "ORDER BY name"
+assert order_clause("created_at", allowed) == "ORDER BY created_at"
+assert raises(ValueError, order_clause, "Name", allowed)
+assert raises(ValueError, order_clause, "name; DROP TABLE t", allowed)
+assert raises(ValueError, order_clause, "", allowed)
+```
+model:
+```python
+def order_clause(column, allowed):
+    if column not in allowed:
+        raise ValueError("column not allowed")
+    return "ORDER BY " + column
+```
+hint: Test membership with `in` before building any text.
+solution: The returned string only ever contains a name from your own list, never raw user input, so it cannot change the query's structure.
+@practice mc
+prompt: A search page shows `Results for <term>` by inserting the user's search term into the HTML. Which change fixes the XSS bug at its cause?
+choice*: HTML-escape the term when writing it into the page.
+choice: Remove the words `script` and `alert` from the term.
+choice: Convert the term to lowercase.
+choice: Parameterize the SQL query that does the search.
+hint: The bug is in how text is placed into HTML output, not in the database query.
+solution: Output encoding makes the browser treat the term as text. Blocklisting words is bypassable, lowercasing changes nothing about structure, and SQL parameters protect the database, not the page.
+@practice ms
+prompt: Which statements about cross-site scripting are true? Select all that apply.
+choice*: In stored XSS the application saves the payload and serves it to later visitors.
+choice*: Output encoding that matches the context (HTML, attribute, URL, script) is the primary defense.
+choice*: An HttpOnly cookie cannot be read by page scripts, which limits (but does not prevent) the damage.
+choice: Parameterized SQL queries also prevent XSS.
+choice: Escaping the text once when it is saved is enough for every place it is displayed later.
+hint: SQL and HTML are different interpreters; each needs its own defense at its own boundary.
+solution: The first three are true. Parameterized queries defend the database only, and one-time escaping on input cannot fit every output context.
+@practice self
+prompt: Fix the injection and XSS bugs in this function, then write one test that fails on the original code and passes on yours. Explain each change.
+
+```python
+def search_page(conn, term):
+    sql = "SELECT title FROM posts WHERE title LIKE '%" + term + "%'"
+    rows = conn.execute(sql).fetchall()
+    items = "".join("<li>" + r[0] + "</li>" for r in rows)
+    return "<h1>Results for " + term + "</h1><ul>" + items + "</ul>"
+```
+solution: Use a parameter for the value and escape every value placed into HTML (the term and each title). The wildcard characters are added to the parameter value, not to the SQL text.
+
+```python
+import html
+
+def search_page(conn, term):
+    sql = "SELECT title FROM posts WHERE title LIKE ?"
+    rows = conn.execute(sql, ("%" + term + "%",)).fetchall()
+    items = "".join("<li>" + html.escape(r[0]) + "</li>" for r in rows)
+    return (
+        "<h1>Results for " + html.escape(term) + "</h1><ul>"
+        + items + "</ul>"
+    )
+```
+
+Test: with a posts table in an in-memory database and the term `<b>x</b>`, assert that the returned page contains `&lt;b&gt;x&lt;/b&gt;` and does not contain `<b>x</b>`. A second test with a title that contains a quote character checks that the query still runs. The changes: the placeholder stops the term from changing the SQL structure (SQL injection); `html.escape` on the term (reflected XSS) and on stored titles (stored XSS) makes the browser treat them as text.
+hint: Two different interpreters read these strings: the database and the browser. Each needs its own defense.
+rubric: Replaces the concatenated SQL with a parameterized query, adding the percent signs to the parameter.
+rubric: Escapes both the reflected term and the stored titles before putting them in HTML.
+rubric: Provides a test that fails before the fix and passes after, and explains why.
+@quiz code
+prompt: Write `render_comment(user, text)` that returns the string `<p><b>USER</b>: TEXT</p>` where USER and TEXT are the arguments HTML-escaped with `html.escape` (default settings, which also escape quotes).
+starter:
+```python
+import html
+
+
+def render_comment(user, text):
+    pass
+```
+tests:
+```python
+assert render_comment("bob", "hello") == "<p><b>bob</b>: hello</p>"
+assert render_comment("bob", "it's") == "<p><b>bob</b>: it&#x27;s</p>"
+assert render_comment("<i>Al</i>", 'say "hi" & <script>x</script>') == (
+    "<p><b>&lt;i&gt;Al&lt;/i&gt;</b>: say &quot;hi&quot; &amp; "
+    "&lt;script&gt;x&lt;/script&gt;</p>"
+)
+assert "<script" not in render_comment("a", "<script>")
+```
+model:
+```python
+import html
+
+
+def render_comment(user, text):
+    return "<p><b>" + html.escape(user) + "</b>: " + html.escape(text) + "</p>"
+```
+hint: Escape each value separately and put the fixed markup around them.
+solution: Concatenate the fixed tags with `html.escape(user)` and `html.escape(text)`. Only your own markup contains angle brackets.
+@quiz code
+prompt: A link on a page uses a user-supplied URL. Write `safe_url(url)` that returns `True` only when the scheme of `url` (compared case-insensitively) is `http` or `https`, or when the URL has no scheme at all (a relative URL). Browsers ignore spaces and control characters (code points 0 to 32) at the start and end of a URL and drop tabs and newlines anywhere in it, so remove those first; then use `urllib.parse.urlparse(...).scheme`.
+starter:
+```python
+from urllib.parse import urlparse
+
+
+def safe_url(url):
+    pass
+```
+tests:
+```python
+assert safe_url("https://example.com/a") is True
+assert safe_url("HTTP://example.com") is True
+assert safe_url("/profile/me") is True
+assert safe_url("page.html") is True
+assert safe_url("javascript:alert(1)") is False
+assert safe_url("JaVaScRiPt:alert(1)") is False
+assert safe_url("data:text/html,hi") is False
+assert safe_url(" javascript:alert(1)") is False
+assert safe_url("java\tscript:alert(1)") is False
+assert safe_url("https://example.com/a\n") is True
+```
+model:
+```python
+from urllib.parse import urlparse
+
+
+def safe_url(url):
+    cleaned = url.replace("\t", "").replace("\n", "").replace("\r", "")
+    cleaned = cleaned.strip("".join(chr(c) for c in range(33)))
+    return urlparse(cleaned).scheme.lower() in ("", "http", "https")
+```
+hint: Clean the string first (remove tabs and newlines, then strip the characters from code point 0 to the space), then look at `urlparse(...).scheme`, which is the text before the first colon or an empty string.
+solution: Browsers clean a URL before choosing its scheme, so `' javascript:...'` and a scheme with a tab inside it still run script. Clean the string the same way, then allow only an empty scheme (relative) or `http`/`https`. Everything else, including `javascript:` and `data:`, is rejected by default, which is an allowlist rather than a blocklist.

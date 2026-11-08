@@ -1,0 +1,354 @@
+@lesson
+title: Asynchronous JavaScript: promises, async and fetch
+summary: Explain the event loop, write promise-based and `async`/`await` code, and request data over HTTP with `fetch` while handling errors correctly.
+objective: Predict the order in which synchronous code, microtasks and timer callbacks run.
+objective: Use promises, `async`/`await`, `Promise.all` and `Promise.allSettled`.
+objective: Call `fetch`, check `response.ok`, parse JSON and handle failures.
+reading: MDN Web Docs: Learn web development, "Asynchronous JavaScript" (introducing asynchronous JavaScript, how to use promises, making asynchronous programming easier with async and await, and the `fetch` guide in the Web APIs documentation).
+@article
+JavaScript in the browser runs your code on **one thread**. A slow operation, such as a network request, must therefore not block that thread, or the page would freeze. Instead, you start the operation, give the browser a function to call when it finishes, and carry on. This is **asynchronous** programming.
+
+### The event loop
+
+The runtime has a **call stack** (the function currently running), a **task queue** (for events, timers and I/O callbacks) and a **microtask queue** (for promise reactions and `queueMicrotask`). The **event loop** repeats: run one task to completion, then drain the entire microtask queue (including microtasks added while draining), let the browser render if needed, and take the next task. Consequently:
+
+- Synchronous code always finishes before any callback runs.
+- Promise callbacks run before the next `setTimeout` callback, even for `setTimeout(fn, 0)`.
+- A timeout delay is a *minimum*, not a guarantee.
+
+```javascript
+console.log("A");
+setTimeout(() => console.log("B"), 0);
+Promise.resolve().then(() => console.log("C"));
+console.log("D");
+// prints A, D, C, B
+```
+
+### Promises
+
+A **promise** represents a value that is not available yet. It is **pending**, then becomes **fulfilled** with a value or **rejected** with a reason, and then never changes. `.then(onFulfilled)` registers a reaction and itself returns a new promise, so steps chain; `.catch(onRejected)` handles a rejection anywhere earlier in the chain; `.finally(fn)` runs either way.
+
+```javascript
+fetch("/api/books")
+  .then((response) => response.json())
+  .then((books) => console.log(books.length))
+  .catch((err) => console.error("failed:", err));
+```
+
+### async and await
+
+An `async` function always returns a promise. Inside it, `await promise` pauses *that function* (not the thread) until the promise settles, then gives you the fulfilled value or throws the rejection, so ordinary `try`/`catch` works:
+
+```javascript
+async function loadBooks() {
+  try {
+    const response = await fetch("/api/books");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
+}
+```
+
+The code before the first `await` runs synchronously when the function is called; the rest runs later as microtasks. In modules, `await` may also be used at the top level.
+
+### fetch
+
+`fetch(url, options)` returns a promise for a `Response`. **It rejects only when the request cannot be made at all** (network failure, a blocked cross-origin request, an abort). A `404` or `500` reply *fulfills* the promise, so always check `response.ok` (true for statuses 200 to 299) or `response.status`. Reading the body is itself asynchronous: `response.json()` and `response.text()` return promises. To send JSON:
+
+```javascript
+const response = await fetch("/api/books", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ title: "Dune" }),
+});
+```
+
+An `AbortController` lets you cancel a request: pass `{ signal: controller.signal }` and call `controller.abort()`. For requests to another origin the browser enforces the **same-origin policy**: JavaScript can read the response only if the server permits it with **CORS** headers such as `Access-Control-Allow-Origin`. CORS is enforced by browsers to protect users; it is not an access-control mechanism for your API.
+
+### Combining promises
+
+| Function | Result |
+|---|---|
+| `Promise.all([a, b])` | array of values once all fulfill; rejects as soon as one rejects |
+| `Promise.allSettled([a, b])` | always fulfills, with a `{status, value or reason}` record for each |
+| `Promise.race([a, b])` | settles like the first promise to settle |
+| `Promise.any([a, b])` | first fulfillment; rejects only if all reject |
+
+Awaiting one request after another runs them **in sequence**. Independent requests should start together: `const [a, b] = await Promise.all([getA(), getB()]);`. Two 300 ms requests take about 600 ms in sequence and about 300 ms in parallel. Always show a loading state and an error state in the interface, and use `finally` to remove the loading indicator.
+
+@example
+title: Predicting output order
+problem: In what order does this program print its numbers?
+
+```javascript
+console.log("1");
+setTimeout(() => console.log("2"), 0);
+Promise.resolve().then(() => console.log("3"));
+(async () => {
+  console.log("4");
+  await null;
+  console.log("5");
+})();
+console.log("6");
+```
+step: Synchronous code runs first. `1` is printed; the timer is registered; the promise reaction is queued as a microtask.
+step: The async function starts synchronously, so `4` is printed; at `await null`, the rest of the function is queued as a microtask after the first one.
+step: `6` is printed, which ends the script. Now the microtasks run in the order queued: `3`, then `5`.
+step: Only after the microtask queue is empty does the timer task run and print `2`.
+answer: `1 4 6 3 5 2`
+
+@example
+title: Handling a failed request correctly
+problem: Why does this code show an empty list when the server answers `404`, and how do you fix it?
+
+```javascript
+const books = await (await fetch("/api/books")).json();
+```
+step: The `404` response *fulfills* the `fetch` promise, so no exception is thrown.
+step: If the error page is not JSON, `json()` rejects with a `SyntaxError`; if it is JSON such as `{"error": "not found"}`, the code treats the error object as the data.
+step: Check the status before reading the body:
+
+```javascript
+const response = await fetch("/api/books");
+if (!response.ok) {
+  throw new Error(`HTTP ${response.status}`);
+}
+const books = await response.json();
+```
+step: Wrap the call in `try`/`catch` (or a `.catch`) at the place where you can show an error message to the user.
+
+@mistakes
+- Assuming `fetch` rejects on a `404` or `500`; it resolves, so you must test `response.ok`.
+- Forgetting to `await` (or return) a promise, so the code continues with a pending promise instead of its value.
+- Awaiting independent requests one after another in a loop instead of starting them together with `Promise.all`.
+- Thinking `setTimeout(fn, 0)` runs before promise callbacks; microtasks always run first.
+
+@practice mc
+prompt: What does this program print?
+
+```javascript
+async function f() {
+  console.log("a");
+  await 0;
+  console.log("b");
+}
+f();
+console.log("c");
+```
+choice: `a b c`
+choice*: `a c b`
+choice: `c a b`
+choice: `b a c`
+hint: Code before the first `await` runs synchronously; the rest waits for a microtask.
+solution: Calling `f()` prints `a` immediately and pauses at `await`; control returns to the caller, which prints `c`; then the microtask resumes `f` and prints `b`.
+
+@practice code
+prompt: Simulate the event loop. A script is a list of statements: `("log", text)` prints the text; `("timeout", delay, statements)` schedules the statements to run as a timer task after `delay` milliseconds of virtual time; `("microtask", statements)` queues the statements as a microtask. Write `event_loop(script)` that returns the list of printed texts. Run the whole script first; then repeat: run every queued microtask in FIFO order (including ones added meanwhile), then, if timers remain, take the timer with the smallest due time (ties go to the one scheduled first), set the current time to its due time and run its statements. A timer scheduled while running at time `t` is due at `t + delay`.
+starter:
+```python
+import heapq
+from collections import deque
+
+
+def event_loop(script):
+    pass
+```
+tests:
+```python
+s1 = [("log", "A"), ("timeout", 0, [("log", "B")]),
+      ("microtask", [("log", "C")]), ("log", "D")]
+assert event_loop(s1) == ["A", "D", "C", "B"]
+s2 = [("microtask", [("log", "1"), ("microtask", [("log", "2")])]),
+      ("timeout", 0, [("log", "t")]), ("log", "s")]
+assert event_loop(s2) == ["s", "1", "2", "t"]
+s3 = [("timeout", 100, [("log", "slow")]), ("timeout", 10, [("log", "fast")])]
+assert event_loop(s3) == ["fast", "slow"]
+s4 = [("timeout", 10, [("timeout", 0, [("log", "x")]),
+                       ("microtask", [("log", "m")])]),
+      ("timeout", 10, [("log", "y")])]
+assert event_loop(s4) == ["m", "y", "x"]
+assert event_loop([]) == []
+s5 = [("timeout", 5, [("timeout", 20, [("log", "late")])]),
+      ("timeout", 15, [("log", "mid")])]
+assert event_loop(s5) == ["mid", "late"]
+```
+model:
+```python
+import heapq
+from collections import deque
+
+
+def event_loop(script):
+    out = []
+    micro = deque()
+    timers = []
+    seq = 0
+    now = 0
+
+    def run(statements):
+        nonlocal seq
+        for stmt in statements:
+            if stmt[0] == "log":
+                out.append(stmt[1])
+            elif stmt[0] == "timeout":
+                heapq.heappush(timers, (now + stmt[1], seq, stmt[2]))
+                seq += 1
+            elif stmt[0] == "microtask":
+                micro.append(stmt[1])
+
+    run(script)
+    while True:
+        while micro:
+            run(micro.popleft())
+        if not timers:
+            break
+        now, _, statements = heapq.heappop(timers)
+        run(statements)
+    return out
+```
+hint: Keep a `deque` for microtasks and a heap of `(due_time, sequence_number, statements)` for timers; the sequence number breaks ties.
+hint: The loop is: drain all microtasks; if no timers are left stop; otherwise pop the earliest timer, update the current time and run it.
+solution: A helper `run` executes statements: it prints, pushes timers with `now + delay`, or queues microtasks. After the script, alternate between draining the microtask queue and running one timer. Because microtasks are drained completely before each timer, `m` in the fourth test comes before `y`, and `x` (due at time 10, scheduled later) comes after `y`.
+
+@practice code
+prompt: Write `parse_api_response(status, text)` that mimics correct `fetch` handling. The class `HttpError` (with a `status` attribute) is defined in the starter code. If `status` is not in the range 200 to 299, raise `HttpError(status)`. If the status is `204` (No Content), return `None`. Otherwise return the result of parsing `text` as JSON with `json.loads`; invalid JSON is not caught, so the `json.JSONDecodeError` (a `ValueError`) propagates, as a rejected `response.json()` would.
+starter:
+```python
+import json
+
+
+class HttpError(Exception):
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+def parse_api_response(status, text):
+    pass
+```
+tests:
+```python
+assert parse_api_response(200, '{"id": 7, "tags": ["a"]}') == {
+    "id": 7, "tags": ["a"]}
+assert parse_api_response(201, "[1, 2]") == [1, 2]
+assert parse_api_response(204, "") is None
+assert raises(HttpError, parse_api_response, 404, '{"error": "no"}')
+assert raises(HttpError, parse_api_response, 199, "{}")
+assert raises(HttpError, parse_api_response, 300, "{}")
+try:
+    parse_api_response(503, "")
+except HttpError as err:
+    failed = err.status
+assert failed == 503
+assert raises(ValueError, parse_api_response, 200, "<html>")
+```
+model:
+```python
+import json
+
+
+class HttpError(Exception):
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+def parse_api_response(status, text):
+    if not 200 <= status <= 299:
+        raise HttpError(status)
+    if status == 204:
+        return None
+    return json.loads(text)
+```
+hint: Check the status first, so that an error page is never parsed as data.
+hint: `204` has no body, so return before calling `json.loads`.
+solution: Reject anything outside 200-299 with `HttpError`, return `None` for 204 and otherwise parse the body. This is the same order as `if (!response.ok) throw ...` followed by `response.json()`.
+
+@practice ms
+prompt: Which statements about asynchronous JavaScript are true?
+choice*: A `fetch` promise fulfills even when the server replies with status `404`, so `response.ok` must be checked.
+choice*: `await` pauses only the surrounding `async` function; other code on the page continues to run.
+choice*: When the call stack is empty, promise callbacks run before the next `setTimeout` callback.
+choice: `Promise.all` always fulfills, even when one of its promises rejects.
+choice: An `async` function returns the plain value of its `return` statement, not a promise.
+hint: Remember what `fetch` treats as a failure, and what an `async` function always returns.
+solution: `fetch` rejects only on network-level failures; `await` suspends one function, not the thread; and microtasks run before the next timer task. `Promise.all` rejects if any input rejects (`allSettled` never rejects), and an `async` function always returns a promise.
+
+@practice self
+prompt: Write an `async` function `loadUser(id)` for a page that has a `div` with id `status` and a `div` with id `profile`. It must request `/api/users/<id>`, show "Loading..." in `status` while waiting, show an error message there if the network fails or the response is not `ok`, otherwise display the user's `name` in `profile` safely, and in every case clear the loading message when it is done. Explain why `finally` is a good place for one of those steps.
+hint: Structure it as `try { ... } catch (err) { ... } finally { ... }`, and check `response.ok` before calling `response.json()`.
+solution: A model answer:
+
+```javascript
+async function loadUser(id) {
+  const status = document.querySelector("#status");
+  const profile = document.querySelector("#profile");
+  status.textContent = "Loading...";
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(id)}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const user = await response.json();
+    profile.textContent = user.name;
+    status.textContent = "";
+  } catch (err) {
+    status.textContent = `Could not load the user (${err.message}).`;
+  }
+}
+```
+Here the loading message is replaced in both the success and the failure branch. A variant clears the loading state in a `finally` block, which runs whether the `try` block finished normally, threw, or returned early, so the indicator can never be left spinning.
+rubric: Checks `response.ok` and throws or handles non-2xx responses, since `fetch` does not reject on them.
+rubric: Uses `try`/`catch` (or `.catch`) so network failures and invalid JSON produce a visible error message.
+rubric: Sets the user's name with `textContent` rather than `innerHTML`.
+rubric: Clears the loading message on every path, and explains that `finally` runs on success and failure.
+
+@quiz code
+prompt: Simulate `Promise.all`. `results` is a list of settled outcomes, each either `("ok", value)` or `("err", reason)`. Write `promise_all(results)` that returns `("ok", [values in order])` if every outcome is `"ok"`, and otherwise `("err", reason)` with the reason of the **first** `"err"` outcome in the list. An empty list gives `("ok", [])`.
+starter:
+```python
+def promise_all(results):
+    pass
+```
+tests:
+```python
+assert promise_all([("ok", 1), ("ok", 2), ("ok", 3)]) == ("ok", [1, 2, 3])
+assert promise_all([("ok", 1), ("err", "boom"), ("ok", 3)]) == ("err", "boom")
+assert promise_all([("err", "a"), ("err", "b")]) == ("err", "a")
+assert promise_all([]) == ("ok", [])
+assert promise_all([("ok", None)]) == ("ok", [None])
+```
+model:
+```python
+def promise_all(results):
+    values = []
+    for kind, payload in results:
+        if kind == "err":
+            return ("err", payload)
+        values.append(payload)
+    return ("ok", values)
+```
+hint: Go through the outcomes in order and return at the first error.
+hint: Collect values in a list and return it only after the loop finishes without an error.
+solution: Return `("err", reason)` at the first failed outcome; otherwise collect all the values in order and return them. This is the rule of `Promise.all`: it fulfills only if every promise does, and otherwise rejects with the first rejection.
+
+@quiz mc
+prompt: What does this program print?
+
+```javascript
+Promise.reject(new Error("x"))
+  .catch(() => "recovered")
+  .then((value) => console.log(value))
+  .finally(() => console.log("done"));
+```
+choice*: `recovered` and then `done`
+choice: `done` and then `recovered`
+choice: `x` and then `done`
+choice: Nothing, because the rejection is never handled.
+hint: `.catch` returns a new promise, and what its handler returns becomes the value the chain continues with.
+solution: The `catch` handler handles the rejection and returns `"recovered"`, so the promise it returns is fulfilled with that string. The next `then` prints it, and `finally` runs afterwards in either case, printing `done`. The rejection is handled, so there is no unhandled-rejection error.

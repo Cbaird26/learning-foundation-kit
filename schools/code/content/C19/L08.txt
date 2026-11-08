@@ -1,0 +1,184 @@
+@lesson
+title: Ensembles: random forests and boosting
+summary: Combine many trees by bagging and random feature subsets to cut variance, or by boosting residuals to cut bias, and carry out the key computations by hand.
+objective: Explain bootstrap sampling, out-of-bag samples and why averaging reduces variance.
+objective: Describe how a random forest decorrelates its trees.
+objective: Carry out one round of gradient boosting for squared error and build a small decision tree by hand.
+reading: An Introduction to Statistical Learning (Python edition), Chapter 8 "Tree-Based Methods", sections 8.2.1 "Bagging", 8.2.2 "Random Forests" and 8.2.3 "Boosting".
+@article
+A single deep tree has high variance; a single shallow tree has high bias. **Ensembles** combine many trees to fix either problem. The two main families work in opposite ways.
+
+### Bagging
+
+**Bagging** (bootstrap aggregating) trains each model on a **bootstrap sample**: $n$ examples drawn **with replacement** from the $n$ training examples. The models' predictions are averaged (regression) or voted (classification). A given example is missing from a bootstrap sample with probability $(1 - 1/n)^n$, which tends to $e^{-1} \approx 0.368$. So each model sees about 63.2% of the distinct examples and the rest are its **out-of-bag (OOB)** examples. Scoring each example only with the models that did not see it gives the **OOB error**, a cross-validation-like estimate that costs no extra training.
+
+Why does averaging help? Suppose $B$ models each have prediction variance $\sigma^2$ and pairwise correlation $\rho$. Their average has variance
+$$\rho\,\sigma^2 + \frac{1 - \rho}{B}\,\sigma^2.$$
+The second term vanishes as $B$ grows, but the first does not: **correlated models cannot average away their shared error**. Averaging leaves bias unchanged, so bagging suits low-bias, high-variance learners such as deep trees.
+
+### Random forests
+
+Bagged trees are correlated because a few strong features dominate the top splits in every tree. A **random forest** adds a second source of randomness: at each split only a random subset of $m$ of the $d$ features may be considered (the classic recommendations are $m \approx \sqrt{d}$ for classification and $d/3$ for regression; libraries differ, and scikit-learn's regression forests consider all features by default). Weaker features then get used, the trees disagree more, $\rho$ falls, and the average improves. Adding more trees never causes overfitting by itself, it only reduces the second variance term, though it costs time. Forests also give **feature importance** scores (for example the total impurity decrease contributed by each feature), which should be read with care when features are correlated.
+
+### Boosting
+
+**Boosting** builds the ensemble sequentially, each new model correcting the errors of the current one, and its aim is to reduce bias with **weak learners** (shallow trees, often depth 1 to 4). In **gradient boosting** with squared error:
+
+1. Start with the constant model $F_0(x) = \bar{y}$.
+2. For $m = 1, \dots, M$: compute the residuals $r_i = y_i - F_{m-1}(x_i)$, fit a small tree $h_m$ to the residuals, and set $F_m = F_{m-1} + \nu\,h_m$.
+
+The **learning rate** (shrinkage) $\nu \in (0, 1]$ makes each step cautious. For squared error the residuals are the negative gradient of the loss with respect to the predictions, which is why the method is "gradient" boosting, and other losses use their own negative gradients. **AdaBoost** is the older classification variant: it increases the weights of misclassified examples so that the next learner concentrates on them, and combines the learners in a weighted vote.
+
+Unlike a forest, a boosted model can overfit if $M$ is too large, so $M$, $\nu$ and the tree depth are tuned together on validation data, often with early stopping. A smaller $\nu$ needs more rounds but usually generalizes better.
+
+### Choosing
+
+Random forests are easy to tune, parallelize across trees, and give an OOB estimate. Boosted trees often reach slightly higher accuracy on tabular data after more careful tuning. Both lose the readability of a single tree.
+
+@example
+title: One round of gradient boosting
+problem: Data: $x = (1, 2, 3, 4)$, $y = (1, 2, 6, 7)$. Use a stump (one split) at the threshold $2.5$ and learning rate $\nu = 0.5$. Find $F_1$ and the MSE before and after.
+step: $F_0 = \bar{y} = 4$ for every input. The MSE is $(9 + 4 + 4 + 9)/4 = 6.5$.
+step: The residuals are $r = (-3, -2, 2, 3)$.
+step: The stump predicts the mean residual in each region: $(-3 - 2)/2 = -2.5$ for $x \le 2.5$ and $(2 + 3)/2 = 2.5$ for $x > 2.5$.
+step: With $\nu = 0.5$: $F_1 = 4 + 0.5(-2.5) = 2.75$ for $x \le 2.5$ and $4 + 0.5(2.5) = 5.25$ otherwise.
+step: The errors are $-1.75, -0.75, 0.75, 1.75$, so the MSE is $(3.0625 + 0.5625 + 0.5625 + 3.0625)/4 = 1.8125$.
+answer: $F_1 = (2.75, 2.75, 5.25, 5.25)$; the MSE drops from $6.5$ to $1.8125$.
+
+@example
+title: How many examples does a bootstrap sample miss?
+problem: For $n = 10$, what is the probability that a particular example is absent from a bootstrap sample, and how many examples are out-of-bag on average?
+step: Each of the 10 draws misses the example with probability $9/10$.
+step: The draws are independent, so the probability that all miss it is $(0.9)^{10} \approx 0.3487$.
+step: By linearity of expectation, the expected number of OOB examples is $10 \times 0.3487 \approx 3.5$.
+step: As $n$ grows, $(1 - 1/n)^n \to e^{-1} \approx 0.368$, so about a third of the data is out-of-bag for every tree.
+answer: $\approx 0.349$, so about $3.5$ examples are out-of-bag.
+
+@mistakes
+- Believing that more trees in a random forest cause overfitting; it is boosting with too many rounds that overfits.
+- Sampling a bootstrap without replacement, which just reproduces the full data set (or a subset) instead of a resample.
+- Using strongly pruned, high-bias trees in a bagged ensemble: averaging does not reduce bias.
+- Reading feature importance as causal effect, or trusting it when features are strongly correlated.
+
+@practice mc
+prompt: In a random forest, why does each split consider only a random subset of the features rather than all of them?
+choice: To make each tree faster at the cost of more bias in the average.
+choice*: To make the trees less correlated, so that averaging them reduces variance further.
+choice: To guarantee that every feature is used equally often in the final model.
+choice: To make the trees shallower so they cannot overfit.
+hint: Think of the term $\rho\sigma^2$ in the variance of an average of correlated models.
+solution: Without feature subsampling, a few strong features dominate the top splits of every bagged tree and the trees look alike (high $\rho$). Restricting the candidates decorrelates the trees, which lowers the variance of the average. The speed gain is a side effect, and the trees are not made shallower.
+
+@practice code
+prompt: Write `ensemble_vote(predictions)` where `predictions` is a list with one entry per model, and each entry is a list of that model's integer class predictions for the same samples. Return a list with the majority-vote class for each sample; if classes tie, choose the **smaller** class. Example: `ensemble_vote([[0, 1], [1, 1], [0, 0]])` is `[0, 1]`.
+starter:
+```python
+def ensemble_vote(predictions):
+    pass
+```
+tests:
+```python
+assert ensemble_vote([[0, 1], [1, 1], [0, 0]]) == [0, 1]
+assert ensemble_vote([[1, 2, 2]]) == [1, 2, 2]
+assert ensemble_vote([[0, 1], [1, 0]]) == [0, 0]
+assert ensemble_vote([[2, 0], [2, 1], [1, 1], [0, 1]]) == [2, 1]
+assert ensemble_vote([[3], [3], [1], [1], [2]]) == [1]
+```
+model:
+```python
+def ensemble_vote(predictions):
+    result = []
+    for votes in zip(*predictions):
+        counts = {}
+        for v in votes:
+            counts[v] = counts.get(v, 0) + 1
+        best = max(counts.values())
+        result.append(min(c for c, n in counts.items() if n == best))
+    return result
+```
+hint: `zip(*predictions)` groups the votes for each sample together.
+hint: For each sample count the votes, find the highest count, and take the smallest class with that count.
+solution: Transpose with `zip(*predictions)` so each tuple holds the votes for one sample, count them, and return the smallest class among those with the maximal count. In the last test, classes 3 and 1 each have 2 votes and class 1 wins the tie.
+
+@practice code
+prompt: Write `boost_step(xs, ys, current, threshold, lr)` for one round of gradient boosting with squared error and a stump. The residuals are `r_i = ys[i] - current[i]`. Examples with `x <= threshold` form the left region and the others the right region; the stump predicts the mean residual of each region (`0.0` for an empty region). Return the new list `current[i] + lr * (stump prediction for xs[i])`. Do not modify `current`. Example: `boost_step([1, 2, 3, 4], [3, 5, 9, 11], [7, 7, 7, 7], 2.5, 0.5)` is `[5.5, 5.5, 8.5, 8.5]`.
+starter:
+```python
+def boost_step(xs, ys, current, threshold, lr):
+    pass
+```
+tests:
+```python
+assert boost_step([1, 2, 3, 4], [3, 5, 9, 11], [7, 7, 7, 7], 2.5, 0.5) == [5.5, 5.5, 8.5, 8.5]
+assert boost_step([1, 2, 3, 4], [3, 5, 9, 11], [7, 7, 7, 7], 2.5, 1) == [4.0, 4.0, 10.0, 10.0]
+assert boost_step([1, 2, 3, 4], [3, 5, 9, 11], [7, 7, 7, 7], 0, 1) == [7.0, 7.0, 7.0, 7.0]
+cur = [1.0, 1.0]
+assert boost_step([0, 1], [2.0, 4.0], cur, 0.5, 1) == [2.0, 4.0]
+assert cur == [1.0, 1.0]
+```
+model:
+```python
+def boost_step(xs, ys, current, threshold, lr):
+    res = [y - c for y, c in zip(ys, current)]
+    left = [r for x, r in zip(xs, res) if x <= threshold]
+    right = [r for x, r in zip(xs, res) if x > threshold]
+    left_mean = sum(left) / len(left) if left else 0.0
+    right_mean = sum(right) / len(right) if right else 0.0
+    return [
+        c + lr * (left_mean if x <= threshold else right_mean)
+        for x, c in zip(xs, current)
+    ]
+```
+hint: First compute the residuals, then the mean residual of each side of the threshold.
+solution: Residuals tell the stump what is left to explain. Its prediction is each region's mean residual, shrunk by `lr` and added to the current prediction. With the threshold below all `x`, the single region has mean residual 0 here, so nothing changes.
+
+@practice num
+prompt: A bootstrap sample of $n = 5$ examples is drawn with replacement. What is the probability that one particular example does not appear in the sample? Give a decimal.
+answer: 0.32768
+tol: 0.00001
+check: (1 - 1 / 5) ** 5
+hint: Each draw misses the example with probability $1 - 1/n$, and the draws are independent.
+solution: The probability is $(4/5)^5 = 1024/3125 = 0.32768$.
+
+@practice self
+prompt: Build a decision tree of depth at most 2 by hand, using the Gini impurity and greedy splitting. The eight training points $(x_1, x_2) \to$ class are: $(1,1) \to 0$, $(2,3) \to 0$, $(3,2) \to 0$, $(6,1) \to 1$, $(7,3) \to 1$, $(8,2) \to 1$, $(6,7) \to 0$, $(7,8) \to 0$. Find the root split, compute the weighted Gini impurity of the root split, split the impure child, and write the final tree and its training accuracy.
+hint: The class-0 and class-1 counts give the root impurity $1 - (5/8)^2 - (3/8)^2$.
+hint: Try thresholds of $x_1$ between 3 and 6 first; then look at which points remain impure on the right.
+solution: The root node has 5 zeros and 3 ones, so $G = 1 - (25 + 9)/64 = 0.46875$. The best split is $x_1 \le 4.5$: the left child holds $(1,1), (2,3), (3,2)$, all class 0 ($G = 0$); the right child holds $(6,1), (7,3), (8,2)$ of class 1 and $(6,7), (7,8)$ of class 0, so $G = 1 - (9 + 4)/25 = 0.48$ and the weighted impurity is $\frac{3}{8}\cdot 0 + \frac{5}{8}\cdot 0.48 = 0.30$. The best alternatives (for example $x_2 \le 5$ with $0.375$, or $x_1 \le 7.5$ with about $0.357$) are worse. The right child is split by $x_2 \le 5$: the left part $(6,1), (7,3), (8,2)$ is pure class 1 and the right part $(6,7), (7,8)$ is pure class 0. The tree is: if $x_1 \le 4.5$ predict 0; else if $x_2 \le 5$ predict 1; else predict 0. All 8 training points are classified correctly (accuracy 100%).
+rubric: Computes the root impurity $0.46875$ and compares candidate splits by weighted Gini, choosing $x_1 \le 4.5$ with weighted impurity $0.30$.
+rubric: Identifies that the left child is pure and that only the right child needs a second split.
+rubric: Splits the right child on $x_2 \le 5$ (any threshold between 3 and 7 on $x_2$) giving two pure leaves.
+rubric: States the final tree with leaf classes and training accuracy 100%.
+
+@quiz code
+prompt: Write `oob_indices(n, sample_indices)` that returns the sorted list of indices in `range(n)` that do **not** appear in the bootstrap sample `sample_indices` (a list of indices that may contain repeats). Example: `oob_indices(5, [0, 0, 3, 3, 4])` is `[1, 2]`.
+starter:
+```python
+def oob_indices(n, sample_indices):
+    pass
+```
+tests:
+```python
+assert oob_indices(5, [0, 0, 3, 3, 4]) == [1, 2]
+assert oob_indices(3, [0, 1, 2]) == []
+assert oob_indices(4, [2, 2, 2, 2]) == [0, 1, 3]
+assert oob_indices(0, []) == []
+assert oob_indices(3, [1, 1, 1]) == [0, 2]
+```
+model:
+```python
+def oob_indices(n, sample_indices):
+    seen = set(sample_indices)
+    return [i for i in range(n) if i not in seen]
+```
+hint: A set makes the membership test fast and ignores repeats.
+solution: Build a set of the sampled indices and keep the indices of `range(n)` that are not in it; iterating in increasing order gives a sorted result. These are the examples on which a tree can be scored without bias.
+
+@quiz mc
+prompt: Which pairing of ensemble method and its main effect on the bias–variance trade-off is correct?
+choice: Bagging mainly lowers bias, while boosting mainly lowers variance.
+choice*: Bagging mainly lowers variance, while boosting with shallow trees mainly lowers bias.
+choice: Both mainly lower variance, and neither changes bias.
+choice: Both can never overfit however many models are added.
+hint: Averaging independent-ish noisy models cancels noise; fitting residuals corrects systematic error.
+solution: Bagging averages high-variance models, which reduces variance and leaves bias roughly unchanged. Boosting adds weak, high-bias learners that fit the remaining residuals, which reduces bias. A boosted ensemble can overfit when it has too many rounds.

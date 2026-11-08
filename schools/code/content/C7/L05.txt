@@ -1,0 +1,302 @@
+@lesson
+title: Strings in C
+summary: Work with C strings as NUL-terminated character arrays, use the standard string functions without overflowing buffers, and write bounded string functions of your own.
+objective: Explain how a C string is stored and how `strlen` and `sizeof` differ.
+objective: Distinguish a writable `char` array from a read-only string literal.
+objective: Copy, concatenate and format strings without overflowing the destination buffer.
+objective: Implement standard string functions by hand with correct termination.
+reading: Beej's Guide to C Programming, the chapter on strings (look up "Strings", "String Literals vs Character Arrays" and "String Functions" such as `strlen`, `strcpy` and `strncpy`).
+@article
+C has no string type. A **string** is an array of `char` that ends with the **NUL** byte, `'\0'` (the character whose value is 0). The string `"hi"` occupies three bytes: `'h'`, `'i'`, `'\0'`. Every function in `<string.h>` finds the end of a string by scanning for that byte, so a missing terminator makes them run past the buffer: undefined behavior.
+
+### Arrays versus literals
+
+```c
+char a[] = "hello";        /* writable array of 6 bytes, copy of the literal */
+const char *p = "hello";   /* pointer to a string literal: read-only */
+```
+
+`sizeof(a)` is `6` (five letters plus the terminator), while `strlen(a)` is `5`: **`strlen` counts the characters before the first NUL, and takes $O(n)$ time**. A string literal is stored in read-only memory in typical implementations; modifying it (`p[0] = 'j'`) is undefined behavior. Declare pointers to literals as `const char *` so the compiler catches such writes. You may write into `a` freely, as long as you stay inside its 6 bytes and keep the terminator.
+
+A buffer of capacity $N$ holds strings of at most $N - 1$ characters. Forgetting the `+ 1` for the terminator is the classic off-by-one error in C.
+
+### The standard functions
+
+- `strlen(s)`: length, not counting the NUL.
+- `strcpy(dst, src)`: copies `src` including its NUL. It does **not** check that `dst` is large enough.
+- `strncpy(dst, src, n)`: copies at most `n` bytes and pads with NULs if `src` is shorter, but if `strlen(src) >= n` it does **not** write a terminator. It is not a safe `strcpy`.
+- `strcat(dst, src)`: appends; same size problem, and it rescans `dst` each call.
+- `strcmp(a, b)`: returns a negative value, zero or a positive value according to the order of the strings; test only the sign (`strcmp(a, b) == 0` for equality). Never compare strings with `==`, which compares addresses.
+- `strchr(s, c)`, `strstr(s, t)`: find a character or a substring; they return a pointer into `s` or `NULL`.
+- `memcpy(dst, src, n)` and `memmove`: copy raw bytes; use `memmove` if the ranges overlap.
+
+### Safe patterns
+
+Prefer `snprintf(buf, sizeof buf, "%s-%d", name, id)`: it never writes more than the stated size, always terminates the result (when the size is at least 1), and **returns the length the full output would have had**, so a return value `>= sizeof buf` means the output was truncated. For copying you can write the check yourself:
+
+```c
+size_t n = strlen(src);
+if (n >= sizeof dst) {
+    /* does not fit: report an error or truncate deliberately */
+}
+```
+
+Never use `gets`: it cannot be told the buffer size, and it was removed from the language in C11. Use `fgets(buf, sizeof buf, stdin)`, which reads at most `sizeof buf - 1` characters and keeps the newline if it fits.
+
+### Writing your own
+
+String functions are short loops over indices or pointers. A bounded copy that always terminates, similar to the BSD `strlcpy` (not part of standard C), looks like this:
+
+```c
+size_t copy_trunc(char *dst, size_t cap, const char *src) {
+    size_t n = strlen(src);
+    if (cap > 0) {
+        size_t k = (n < cap - 1) ? n : cap - 1;
+        memcpy(dst, src, k);
+        dst[k] = '\0';
+    }
+    return n;
+}
+```
+
+It returns the length of `src`, so the caller can detect truncation by `result >= cap`. State the contract of every string function you write: who owns the buffer, what the capacity is, and whether the result is always terminated.
+
+@example
+title: sizeof, strlen and an early terminator
+problem: What does this program print?
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char s[] = "abcdef";
+    s[3] = '\0';
+    printf("%s %zu %zu\n", s, strlen(s), sizeof(s));
+    return 0;
+}
+```
+step: `s` has 7 bytes: `a b c d e f` and the terminator. `sizeof(s)` is `7` and never changes.
+step: `s[3] = '\0'` overwrites `'d'` with a NUL, so the bytes are `a b c NUL e f NUL`.
+step: `%s` and `strlen` stop at the first NUL: the string is `abc`, with length `3`.
+step: The output is `abc 3 7`.
+answer: `abc 3 7`
+
+@example
+title: Writing my_strlen with a pointer
+problem: Implement `size_t my_strlen(const char *s)` without calling `strlen`.
+step: A string ends at the first byte equal to `'\0'`, so walk a pointer until it finds that byte.
+step: The distance walked is the length: `p - s` counts elements.
+step: Write it:
+
+```c
+size_t my_strlen(const char *s) {
+    const char *p = s;
+    while (*p != '\0') {
+        p++;
+    }
+    return (size_t)(p - s);
+}
+```
+step: For `""` the loop never runs and the result is `0`; for `"hi"` the pointer stops at index 2. The running time is $O(n)$ for a string of $n$ characters, and the function never reads past the terminator.
+
+@mistakes
+- Allocating `strlen(s)` bytes for a copy instead of `strlen(s) + 1`, leaving no room for the terminator.
+- Trusting `strncpy` to terminate: when the source is at least `n` characters, the destination has no NUL.
+- Comparing strings with `==` (comparing addresses) instead of `strcmp`.
+- Modifying a string literal through a `char *`: undefined behavior; use a `char` array for text you change.
+- Calling `strlen` in a loop condition, which makes the loop $O(n^2)$ because `strlen` rescans the string each time.
+
+@practice text
+prompt: What does this program print? Type the output exactly (four numbers separated by single spaces).
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char s[] = "hello";
+    char t[10] = "hi";
+    printf("%zu %zu %zu %zu\n", sizeof(s), strlen(s), sizeof(t), strlen(t));
+    return 0;
+}
+```
+answer: 6 5 10 2
+check: run_c('#include <stdio.h>\n#include <string.h>\n\nint main(void) {\n    char s[] = "hello";\n    char t[10] = "hi";\n    printf("%zu %zu %zu %zu\\n", sizeof(s), strlen(s), sizeof(t), strlen(t));\n    return 0;\n}\n')
+hint: `sizeof` gives the size of the whole array; `strlen` counts up to the first NUL.
+solution: `s` is sized by its initializer: five letters plus NUL is `6`, with length `5`. `t` was declared with 10 bytes, so `sizeof(t)` is `10`, but its string `"hi"` has length `2` (the remaining bytes are zero-filled).
+
+@practice code
+prompt: Model a C string buffer as a Python list of integers (character codes) in which the string ends at the first `0`. Write `my_strlen(buf)` that returns the number of items before the first `0`. The list always contains at least one `0`. Do not use `list.index`.
+starter:
+```python
+def my_strlen(buf):
+    pass
+```
+tests:
+```python
+assert my_strlen([104, 105, 0]) == 2
+assert my_strlen([0]) == 0
+assert my_strlen([97, 0, 98, 0]) == 1
+assert my_strlen([65, 66, 67, 68, 0, 0, 0]) == 4
+```
+model:
+```python
+def my_strlen(buf):
+    n = 0
+    while buf[n] != 0:
+        n += 1
+    return n
+```
+hint: Start a counter at 0 and examine `buf[n]`.
+hint: Keep increasing the counter while `buf[n] != 0`; the first zero marks the end.
+solution: Scan forward until a zero is found. Items after the first zero (such as the second `0` and `98` in the third test) are not part of the string. The loop runs $n + 1$ comparisons for a string of $n$ characters.
+
+@practice mc
+prompt: What is the danger in this code?
+
+```c
+char dst[8];
+strncpy(dst, "a long input string", sizeof dst);
+printf("%s\n", dst);
+```
+choice: `strncpy` writes past the end of `dst`, corrupting the stack.
+choice*: The source is longer than the limit, so `strncpy` copies 8 characters and writes no terminator; `printf` then reads past the end of `dst`.
+choice: `strncpy` always returns `NULL` when the source is too long, so `dst` is empty.
+choice: String literals cannot be used as the source of `strncpy`.
+hint: Count how many bytes `strncpy` copies and ask where the NUL would have to be.
+solution: `strncpy` never writes more than `n` bytes, so it does not overflow `dst`, but when `strlen(src) >= n` the copy has no terminating NUL, and `printf("%s")` keeps reading memory until it happens to find a zero byte. Terminate explicitly (`dst[sizeof dst - 1] = '\0';`) or use `snprintf`.
+
+@practice code
+prompt: Model buffers as Python lists of character codes with the string ending at the first `0`. Write `copy_trunc(dst, src)` that copies the string in `src` into the list `dst` (whose length is the buffer capacity), copying at most `len(dst) - 1` characters and always writing a terminating `0` after the copied characters (when `len(dst)` is at least 1). Entries of `dst` after the terminator stay unchanged. Return the length of the string in `src`. If `dst` is empty, change nothing and still return the length.
+starter:
+```python
+def copy_trunc(dst, src):
+    pass
+```
+tests:
+```python
+dst = [9] * 8
+assert copy_trunc(dst, [104, 105, 0]) == 2
+assert dst == [104, 105, 0, 9, 9, 9, 9, 9]
+dst = [9] * 4
+assert copy_trunc(dst, [97, 98, 99, 100, 101, 0]) == 5
+assert dst == [97, 98, 99, 0]
+dst = [9] * 3
+assert copy_trunc(dst, [97, 98, 0]) == 2
+assert dst == [97, 98, 0]
+dst = [9]
+assert copy_trunc(dst, [97, 0]) == 1
+assert dst == [0]
+dst = []
+assert copy_trunc(dst, [97, 0]) == 1
+assert dst == []
+```
+model:
+```python
+def copy_trunc(dst, src):
+    n = 0
+    while src[n] != 0:
+        n += 1
+    if len(dst) > 0:
+        k = min(n, len(dst) - 1)
+        for i in range(k):
+            dst[i] = src[i]
+        dst[k] = 0
+    return n
+```
+hint: First find the length `n` of the source string.
+hint: You can copy `k = min(n, len(dst) - 1)` characters; then place the terminator at index `k`, but only if `dst` is not empty.
+solution: This is the C `copy_trunc` of the article. The terminator is written at index `k`, which is at most `len(dst) - 1`, so there is always room. Returning the source length lets a caller detect truncation with `result >= len(dst)`.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char buf[16];
+    int n = snprintf(buf, 6, "%s-%d", "alpha", 42);
+    printf("%d %s %zu\n", n, buf, strlen(buf));
+    return 0;
+}
+```
+answer: 8 alpha 5
+check: run_c('#include <stdio.h>\n#include <string.h>\n\nint main(void) {\n    char buf[16];\n    int n = snprintf(buf, 6, "%s-%d", "alpha", 42);\n    printf("%d %s %zu\\n", n, buf, strlen(buf));\n    return 0;\n}\n')
+hint: `snprintf` writes at most 5 characters plus the NUL when the size is 6, but returns the length the whole output would have had.
+solution: The full output `alpha-42` has 8 characters, which is what `snprintf` returns. Only 5 characters plus a terminator fit in the stated size of 6, so `buf` holds `alpha`, whose length is `5`.
+
+@quiz code
+prompt: Model buffers as Python lists of character codes with the string ending at the first `0`; the length of `dst` is the buffer capacity, and `dst` contains a valid terminated string. Write `safe_cat(dst, src)` that appends the string in `src` to the string in `dst`, copying as many characters as fit so that the result always keeps a terminating `0` inside `dst`. Return `True` if all of `src` was appended and `False` if it was truncated.
+starter:
+```python
+def safe_cat(dst, src):
+    pass
+```
+tests:
+```python
+def buf(s, cap):
+    return [ord(c) for c in s] + [0] * (cap - len(s))
+
+def text(b):
+    out = ""
+    for c in b:
+        if c == 0:
+            break
+        out += chr(c)
+    return out
+
+d = buf("ab", 8)
+assert safe_cat(d, buf("cd", 3)) is True
+assert text(d) == "abcd"
+d = buf("abc", 6)
+assert safe_cat(d, buf("defgh", 6)) is False
+assert text(d) == "abcde"
+assert d[5] == 0
+d = buf("abcde", 6)
+assert safe_cat(d, buf("", 1)) is True
+assert text(d) == "abcde"
+d = buf("abcde", 6)
+assert safe_cat(d, buf("x", 2)) is False
+assert text(d) == "abcde"
+d = buf("", 4)
+assert safe_cat(d, buf("xyz", 4)) is True
+assert text(d) == "xyz"
+```
+model:
+```python
+def safe_cat(dst, src):
+    cap = len(dst)
+    n = 0
+    while dst[n] != 0:
+        n += 1
+    k = 0
+    while src[k] != 0 and n + k < cap - 1:
+        dst[n + k] = src[k]
+        k += 1
+    dst[n + k] = 0
+    return src[k] == 0
+```
+hint: Find where the string in `dst` ends; that is where appending starts.
+hint: Copy characters one at a time while the source has more and while the index stays below `len(dst) - 1`; then write the terminator and report whether the source was used up.
+solution: The last usable slot for a character is `len(dst) - 2`, because index `len(dst) - 1` must remain available for the terminator. After the loop, `src[k] == 0` means every character was copied. Compare with `strcat`, which has no such limit and relies on the caller to guarantee the space.
+
+@quiz text
+prompt: What does this program print? Type the output exactly (two numbers separated by one space).
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char s[] = "ab\0cd";
+    printf("%zu %zu\n", strlen(s), sizeof(s));
+    return 0;
+}
+```
+answer: 2 6
+check: run_c('#include <stdio.h>\n#include <string.h>\n\nint main(void) {\n    char s[] = "ab\\0cd";\n    printf("%zu %zu\\n", strlen(s), sizeof(s));\n    return 0;\n}\n')
+hint: The literal contains an explicit NUL byte in the middle.
+solution: `strlen` stops at the embedded NUL, so it reports `2`. The array holds all five characters `a`, `b`, NUL, `c`, `d` plus the implicit terminator, so `sizeof(s)` is `6`.

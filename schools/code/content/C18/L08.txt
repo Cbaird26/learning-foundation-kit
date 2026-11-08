@@ -1,0 +1,252 @@
+@lesson
+title: Planning
+summary: Represent a classical planning problem in STRIPS style, search for plans by progression, and compute a delete-relaxation heuristic.
+objective: Describe states, actions with preconditions and effects, and goals in the STRIPS and PDDL style, including the closed-world assumption.
+objective: Apply an action to a state, and find a plan with forward (progression) search.
+objective: Compute a delete-relaxation heuristic with planning-graph layers, and compare progression, regression and partial-order planning.
+reading: Poole and Mackworth, the chapter "Deterministic Planning" (the STRIPS representation, forward planning, regression planning and planning as a CSP).
+
+@article
+**Planning** is the problem of finding a sequence of actions that achieves a goal. Search on an unstructured state space (weeks 2 and 3) cannot exploit what an action means. A planning language represents states and actions with logic, so an algorithm can look inside actions and derive good heuristics automatically.
+
+### Classical planning and STRIPS
+
+**Classical planning** assumes a fully observable, deterministic, static, discrete environment. In the **STRIPS** style, a **state** is a set of ground **fluents** (facts that can change), for example `{at_A, pkg_A}`. The **closed-world assumption** says that any fluent not in the set is false. A **goal** is a set of fluents that must all hold. An **action** has:
+
+- **preconditions**: fluents that must be in the state for the action to be applicable;
+- an **add list**: fluents that become true;
+- a **delete list**: fluents that become false.
+
+If $\text{pre}(a) \subseteq s$, then
+$$\text{result}(s, a) = (s \setminus \text{del}(a)) \cup \text{add}(a).$$
+The delete list is applied first, so a fluent that is in both lists ends up true. This answers the **frame problem** in the simplest way: everything not mentioned by the action stays as it was. The standard language is **PDDL**, which writes **action schemas** with variables, such as $\text{Fly}(p, a, b)$, that expand into ground actions. A schema over $P$ planes and $A$ airports with $a \ne b$ has $P \cdot A \cdot (A - 1)$ ground actions.
+
+### Progression and regression
+
+**Forward (progression) search** starts at the initial state and applies applicable actions until a state satisfies the goal. Any of the search algorithms of earlier weeks work, for example breadth-first search for a shortest plan or A* with a heuristic.
+
+**Backward (regression) search** starts from the goal: for a **relevant** action (one that adds some goal fluent and deletes no goal fluent), the regressed goal is $(g \setminus \text{add}(a)) \cup \text{pre}(a)$. It often has a smaller branching factor, but it searches over goal descriptions.
+
+### Heuristics from relaxation
+
+An informative heuristic comes from a **relaxed problem**. The **delete relaxation** ignores the delete lists, so fluents once true stay true. Its optimal plan length $h^+$ is admissible. A cheap related estimate builds **layers** as in a **planning graph**: layer 0 is the initial state; each next layer adds the effects of every action whose preconditions are all present. The first layer that contains all the goal fluents is a lower bound on the plan length (the **max** heuristic), so it is admissible. If the goal never appears, the problem is unsolvable. Heuristics such as FF, built from a relaxed plan, are not admissible but guide planners well. The **GraphPlan** algorithm extends the planning graph with **mutex** (mutually exclusive) links and extracts a plan from it.
+
+### Other planning formalisms
+
+**Partial-order planning** searches the space of plans and leaves the order of independent actions unspecified until needed. **Hierarchical task network (HTN)** planning decomposes high-level tasks into subtasks using domain knowledge. **SAT-based** planning encodes "is there a plan of length $k$?" as a satisfiability problem. Real systems relax the classical assumptions with probabilities (next week's topics), partial observability and continuous time.
+
+```python
+def result(state, action):
+    if not action["pre"] <= state:
+        return None
+    return frozenset((state - action["del"]) | action["add"])
+```
+
+@example
+title: A STRIPS action and its effect
+problem: The schema $\text{Fly}(p, a, b)$ has preconditions $\text{At}(p, a)$ and $\text{Plane}(p)$, add list $\{\text{At}(p, b)\}$ and delete list $\{\text{At}(p, a)\}$. In the state $\{\text{At}(P1, SFO), \text{Plane}(P1)\}$, apply $\text{Fly}(P1, SFO, JFK)$.
+step: Ground the schema: preconditions $\{\text{At}(P1, SFO), \text{Plane}(P1)\}$, add $\{\text{At}(P1, JFK)\}$, delete $\{\text{At}(P1, SFO)\}$.
+step: Check applicability: both preconditions are in the state, so the action is applicable.
+step: Delete first: $\{\text{At}(P1, SFO), \text{Plane}(P1)\} \setminus \{\text{At}(P1, SFO)\} = \{\text{Plane}(P1)\}$.
+step: Then add: the new state is $\{\text{Plane}(P1), \text{At}(P1, JFK)\}$. Plane(P1) was not mentioned in the effects, so it is unchanged.
+answer: $\{\text{Plane}(P1), \text{At}(P1, JFK)\}$.
+
+@example
+title: Counting planning-graph layers
+problem: Actions: `boil` needs `water, kettle` and adds `hot`; `steep` needs `hot, teabag` and adds `tea`. The initial state is `{water, kettle, teabag}` and the goal is `{tea}`. How many layers does the delete-relaxation estimate give?
+step: Layer 0 is the initial state `{water, kettle, teabag}`.
+step: Layer 1: `boil` is applicable (its preconditions are in layer 0), so `hot` is added. `steep` is not yet applicable. The layer is `{water, kettle, teabag, hot}`.
+step: Layer 2: `steep` is now applicable and adds `tea`. The goal `{tea}` is contained in layer 2.
+answer: 2 layers, which equals the length of the only plan (`boil`, then `steep`).
+
+@mistakes
+- Applying the add list before the delete list, which wrongly removes a fluent that the action also adds.
+- Forgetting the closed-world assumption: a fluent that is absent from the state is false, not unknown.
+- Assuming the delete-relaxation estimate is exact: ignoring deletes can make the estimate smaller than the true plan length (but never larger, for the layer count).
+- Counting ground actions of $\text{Fly}(p, a, b)$ with $a = b$ allowed, when the schema requires different airports.
+
+@practice mc
+prompt: Which statement about the delete relaxation of a planning problem is correct?
+choice: It adds extra preconditions, so plans in the relaxed problem are longer
+choice*: The optimal relaxed plan is never longer than the optimal real plan, so its length is an admissible heuristic
+choice: It makes the problem unsolvable whenever the original is solvable
+choice: It requires that every action deletes at least one fluent
+hint: Ignoring the delete lists can only make things easier.
+solution: With the delete lists ignored, any real plan still works in the relaxed problem and facts never disappear, so the best relaxed plan is at most as long as the best real plan. That makes it admissible.
+
+@practice num
+prompt: The action schema $\text{Fly}(p, a, b)$ moves plane $p$ from airport $a$ to a different airport $b$. With 3 planes and 4 airports, how many ground actions are there?
+answer: 36
+check: 3 * 4 * 3
+hint: Choose a plane, then a source airport, then a destination different from the source.
+solution: There are 3 planes, 4 sources and 3 destinations that differ from the source, so $3 \cdot 4 \cdot 3 = 36$.
+
+@practice code
+prompt: Write `result(state, action)` for STRIPS-style planning. `state` is a `frozenset` of fluent names and `action` is a dict with the keys `"pre"`, `"add"` and `"del"`, each a set of fluent names. If every precondition is in the state, return the new state as a `frozenset`, computed by removing the delete list and then adding the add list. Otherwise return `None`. Do not modify the arguments.
+starter:
+```python
+def result(state, action):
+    pass
+```
+tests:
+```python
+load = {"pre": {"at_A", "pkg_A"}, "add": {"in_truck"}, "del": {"pkg_A"}}
+s = frozenset({"at_A", "pkg_A"})
+assert result(s, load) == frozenset({"at_A", "in_truck"})
+assert result(frozenset({"at_B", "pkg_A"}), load) is None
+assert s == frozenset({"at_A", "pkg_A"})
+both = {"pre": set(), "add": {"x"}, "del": {"x"}}
+assert result(frozenset(), both) == frozenset({"x"})
+assert isinstance(result(s, load), frozenset)
+```
+model:
+```python
+def result(state, action):
+    current = set(state)
+    if not action["pre"] <= current:
+        return None
+    return frozenset((current - action["del"]) | action["add"])
+```
+hint: `a <= b` tests whether the set `a` is a subset of `b`.
+hint: Remove the delete list first (`state - action["del"]`), then take the union with the add list.
+solution: Check `pre <= state`; if it holds, compute `(state - del) | add` as a `frozenset`. Deleting first means a fluent in both lists is true afterwards, which the `both` test checks.
+
+@practice text
+prompt: What does this program print? Type the lines in order.
+
+```python
+state = {"a", "b"}
+actions = [({"a"}, {"c"}, {"a"}),
+           ({"b", "c"}, {"d"}, {"b"}),
+           ({"a"}, {"e"}, set())]
+for pre, add, dele in actions:
+    if pre <= state:
+        state = (state - dele) | add
+    print(sorted(state))
+```
+answer:
+```
+['b', 'c']
+['c', 'd']
+['c', 'd']
+```
+check: run("state = {'a', 'b'}\nactions = [({'a'}, {'c'}, {'a'}),\n           ({'b', 'c'}, {'d'}, {'b'}),\n           ({'a'}, {'e'}, set())]\nfor pre, add, dele in actions:\n    if pre <= state:\n        state = (state - dele) | add\n    print(sorted(state))\n")
+hint: Track the set after each action: the first action deletes `a` and adds `c`.
+hint: The third action needs `a`, which was deleted, so it is not applicable and the state does not change.
+solution: After the first action the state is `{b, c}`; the second needs `b` and `c`, deletes `b` and adds `d`, giving `{c, d}`; the third needs `a`, which is gone, so nothing changes and the same state is printed again.
+
+@practice code
+prompt: Write a planner. `plan(initial, goal, actions)` takes `initial` and `goal` as sets of fluent names and `actions` as a dict mapping an action name to a dict with the keys `"pre"`, `"add"` and `"del"` (sets of fluents). Use breadth-first search over states (as frozensets), trying the actions in sorted name order, and return the shortest plan as a list of action names, or `None` if the goal cannot be reached. A state satisfies the goal when the goal set is a subset of the state. If the initial state already satisfies the goal, return `[]`.
+starter:
+```python
+from collections import deque
+
+
+def plan(initial, goal, actions):
+    pass
+```
+tests:
+```python
+acts = {
+    "go_AB": {"pre": {"at_A"}, "add": {"at_B"}, "del": {"at_A"}},
+    "go_BA": {"pre": {"at_B"}, "add": {"at_A"}, "del": {"at_B"}},
+    "load": {"pre": {"at_A", "pkg_A"}, "add": {"in_truck"},
+             "del": {"pkg_A"}},
+    "unload_B": {"pre": {"at_B", "in_truck"}, "add": {"pkg_B"},
+                 "del": {"in_truck"}},
+}
+start = {"at_A", "pkg_A"}
+assert plan(start, {"pkg_B"}, acts) == ["load", "go_AB", "unload_B"]
+assert plan(start, {"pkg_A"}, acts) == []
+assert plan(start, {"pkg_C"}, acts) is None
+assert plan(start, {"at_B", "in_truck"}, acts) == ["load", "go_AB"]
+two = {"a": {"pre": set(), "add": {"x"}, "del": set()},
+       "b": {"pre": set(), "add": {"y"}, "del": set()}}
+assert plan(set(), {"x", "y"}, two) == ["a", "b"]
+```
+model:
+```python
+from collections import deque
+
+
+def plan(initial, goal, actions):
+    start = frozenset(initial)
+    goal = frozenset(goal)
+    parent = {start: None}
+    frontier = deque([start])
+    while frontier:
+        state = frontier.popleft()
+        if goal <= state:
+            steps = []
+            while parent[state] is not None:
+                state, name = parent[state]
+                steps.append(name)
+            return steps[::-1]
+        for name in sorted(actions):
+            act = actions[name]
+            current = set(state)
+            if act["pre"] <= current:
+                nxt = frozenset((current - act["del"]) | act["add"])
+                if nxt not in parent:
+                    parent[nxt] = (state, name)
+                    frontier.append(nxt)
+    return None
+```
+hint: Store for each reached state the pair `(previous state, action name)` so the plan can be rebuilt.
+hint: Test the goal when a state is removed from the queue, and apply every action whose preconditions hold, in sorted name order.
+solution: Breadth-first search on the state space, with states as frozensets so that they can be dictionary keys. The first goal state removed from the queue is at the smallest depth, so the rebuilt plan is shortest. A `None` return means the queue emptied without reaching the goal.
+
+@quiz code
+prompt: Write `relaxed_layers(initial, goal, actions)` that computes the delete-relaxation layer estimate. `initial` and `goal` are sets of fluents and `actions` maps names to dicts with `"pre"`, `"add"` and `"del"` sets. Layer 0 is `initial`. Each next layer is the previous layer together with the add lists of all actions whose preconditions are contained in the previous layer (delete lists are ignored). Return the index of the first layer that contains every fluent of `goal`, or `None` if the layers stop growing before that happens.
+starter:
+```python
+def relaxed_layers(initial, goal, actions):
+    pass
+```
+tests:
+```python
+acts = {
+    "go_AB": {"pre": {"at_A"}, "add": {"at_B"}, "del": {"at_A"}},
+    "go_BA": {"pre": {"at_B"}, "add": {"at_A"}, "del": {"at_B"}},
+    "load": {"pre": {"at_A", "pkg_A"}, "add": {"in_truck"},
+             "del": {"pkg_A"}},
+    "unload_B": {"pre": {"at_B", "in_truck"}, "add": {"pkg_B"},
+                 "del": {"in_truck"}},
+}
+start = {"at_A", "pkg_A"}
+assert relaxed_layers(start, {"pkg_B"}, acts) == 2
+assert relaxed_layers(start, {"at_B"}, acts) == 1
+assert relaxed_layers(start, {"pkg_A"}, acts) == 0
+assert relaxed_layers(start, {"pkg_C"}, acts) is None
+assert relaxed_layers(start, set(), acts) == 0
+```
+model:
+```python
+def relaxed_layers(initial, goal, actions):
+    layer = set(initial)
+    goal = set(goal)
+    index = 0
+    while True:
+        if goal <= layer:
+            return index
+        new = set(layer)
+        for act in actions.values():
+            if act["pre"] <= layer:
+                new |= act["add"]
+        if new == layer:
+            return None
+        layer = new
+        index += 1
+```
+hint: Keep the current layer as a set and build the next one from the same previous layer, not from the one you are still building.
+hint: Stop with `None` when a new layer equals the previous one, because nothing more can ever be added.
+solution: Each iteration adds the effects of every currently applicable action at once, so the layer index counts parallel steps. In the logistics example `at_B` and `in_truck` appear in layer 1, which makes `unload_B` applicable and gives `pkg_B` in layer 2, an estimate of 2 against a real plan length of 3.
+
+@quiz mc
+prompt: In a STRIPS-style planning problem, what does the closed-world assumption say?
+choice: Every action must have at least one delete effect
+choice*: Any fluent that is not listed in the current state is false
+choice: The planner may not apply an action twice
+choice: The goal must be a single fluent
+hint: Think about how a state is represented as a set.
+solution: A state lists exactly the fluents that are true, and everything else is taken to be false. That is what lets a state be a simple set and an action update it by deleting and adding fluents.

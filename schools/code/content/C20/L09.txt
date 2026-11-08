@@ -1,0 +1,371 @@
+@lesson
+title: Server-side web development with Python and Flask
+summary: Write a Flask application with routes, URL parameters, JSON and HTML responses, request data and error handling, and explain how a request reaches your code.
+objective: Define Flask routes with methods and URL converters, and read query strings, form data and JSON from `request`.
+objective: Return strings, JSON, status codes, redirects and errors from view functions.
+objective: Explain WSGI, the development server and why a production server such as Gunicorn is used.
+reading: MDN Web Docs: Learn web development, "Server-side website programming first steps" (introduction, client-server overview, web frameworks) and the Flask documentation's Quickstart.
+@article
+So far the browser has done the work. A **server-side** application runs on a server, receives HTTP requests and produces responses: HTML pages, JSON or files. **Flask** is a small Python web framework: it handles routing, request parsing and responses, and leaves the choice of database, forms and authentication libraries to you. Install it into a virtual environment with `python -m venv .venv`, activate it, then `pip install flask`.
+
+### A first application
+
+```python
+from flask import Flask, abort, request
+
+app = Flask(__name__)
+
+
+@app.get("/")
+def home():
+    return "Hello, web!"
+
+
+@app.get("/api/greet/<name>")
+def greet(name):
+    return {"message": f"Hello, {name}!"}
+
+
+@app.post("/api/echo")
+def echo():
+    data = request.get_json()
+    return data, 201
+
+
+@app.get("/api/items/<int:item_id>")
+def item(item_id):
+    if item_id > 100:
+        abort(404)
+    return {"id": item_id}
+```
+
+Save it as `app.py` and run the development server with `flask --app app run --debug`. It listens on `http://127.0.0.1:5000` by default and, in debug mode, reloads on code changes and shows an interactive debugger, so **never enable debug mode on a public server**.
+
+### Routing
+
+`@app.get`, `@app.post` and so on (Flask 2.0 and later) are shortcuts for `@app.route(path, methods=[...])`; a bare `@app.route("/")` allows `GET` (plus `HEAD` and `OPTIONS`). A decorator **registers** the function in the app's URL map. The parts in angle brackets are **converters**: `<name>` matches a string without slashes, `<int:item_id>` matches digits and passes the function an `int`, and there are also `float`, `path` and `uuid`. A request whose path matches no route gets `404 Not Found`; a path that matches but with an unsupported method gets `405 Method Not Allowed`. Defining `/about/` (with a trailing slash) makes `/about` redirect to it, whereas defining `/about` makes `/about/` a 404.
+
+### The request object
+
+Inside a view, the global-looking `request` describes the current request: `request.method`, `request.path`, `request.args` (the query string, so `request.args.get("q", "")` for `?q=flask`), `request.form` (an HTML form body), `request.headers`, `request.cookies` and `request.get_json()`. For `get_json()`, Flask answers `415` if the request is not declared as JSON, and `400` if the JSON is invalid; `request.get_json(silent=True)` returns `None` instead. **Validate everything from the client**: its values are untrusted input (week 11).
+
+### Responses
+
+A view may return a string (an HTML `200` response), a `dict` or `list` (converted to JSON with `Content-Type: application/json`), or a tuple `(body, status)` or `(body, status, headers)`. `abort(404)` raises an HTTP error immediately. `redirect(url)` returns a `302` redirect (a `303` after a `POST` is the usual choice), and `url_for("home")` builds a URL from a view's function name, so URLs are not scattered through your code. Customize errors with a handler:
+
+```python
+@app.errorhandler(404)
+def not_found(error):
+    return {"error": "not found"}, 404
+```
+
+Files placed in the `static` folder are served under `/static/...`, and HTML templates live in `templates` (week 10).
+
+### How a request reaches your code
+
+A Python web server speaks HTTP to the browser and calls the application through a standard interface: **WSGI** (Web Server Gateway Interface), a function-call protocol that Flask implements; ASGI is the asynchronous counterpart used by other frameworks. Flask's built-in server is for development only. In production, run a WSGI server such as **Gunicorn** (`gunicorn app:app` means module `app`, variable `app`), usually behind a reverse proxy that terminates TLS and serves static files. The flow: browser sends a request, the proxy forwards it to Gunicorn, Gunicorn builds a WSGI call, Flask matches the URL to a view, calls it with the converted parameters, and turns the return value into an HTTP response.
+
+### Structuring and configuring
+
+Keep configuration (secret keys, database paths) out of source code: read it from environment variables into `app.config`. As an application grows, use an **application factory** (`create_app()`) and **blueprints** to group related routes. Because each request is independent (HTTP is stateless), do not keep per-user data in module-level variables: a server runs several worker processes, and the data would differ between them and vanish on restart.
+
+@example
+title: Reading a Flask route
+problem: Given `@app.get("/users/<int:uid>")`, what happens for `GET /users/42`, `GET /users/abc` and `POST /users/42`?
+step: `/users/42` matches: `42` is digits, so Flask calls the view with `uid=42` (an `int`) and sends its return value as the response.
+step: `/users/abc` does not match, because the `int` converter requires digits; no other route matches, so the response is `404 Not Found`.
+step: `/users/42` with `POST` matches the URL, but the route allows only `GET` (and `HEAD`, `OPTIONS`), so the response is `405 Method Not Allowed`.
+step: The view function never runs in the last two cases, so your code does not need to check for them.
+
+@example
+title: A route that reads the query string
+problem: Write `GET /search?q=flask` so it returns the JSON `{"query": "flask", "length": 5}`, and returns an error for a missing `q`.
+step: Read the parameter with `request.args.get("q", "").strip()`; the default avoids `None`.
+step: If it is empty, call `abort(400)`: the client sent a bad request.
+step: Otherwise return a dictionary, which Flask converts to JSON:
+
+```python
+@app.get("/search")
+def search():
+    query = request.args.get("q", "").strip()
+    if not query:
+        abort(400)
+    return {"query": query, "length": len(query)}
+```
+step: For `/search?q=flask` the response is `200` with `{"query": "flask", "length": 5}`; for `/search` it is `400`.
+
+@mistakes
+- Running with `debug=True` or `--debug` on a public server, which exposes an interactive debugger.
+- Using the development server in production instead of Gunicorn or another WSGI server.
+- Trusting `request.args`, `request.form` or JSON values without validating type and range.
+- Storing user data in a global variable, which breaks with multiple worker processes and restarts.
+
+@practice mc
+prompt: A Flask view ends with `return "Not found", 404`. What does Flask send?
+choice: A `200` response, because only the first element is used.
+choice*: A response with status `404` and the text `Not found` as the body.
+choice: An error page generated by Flask, ignoring the text.
+choice: A `404` response that has no body.
+hint: A tuple return value is read as `(body, status)`.
+solution: In Flask, returning `(body, status)` builds a response with that body and that status code.
+
+@practice text
+prompt: What does this program print? Type the output exactly (two lines).
+
+```python
+routes = {}
+
+
+def route(path):
+    def register(func):
+        routes[path] = func
+        return func
+    return register
+
+
+@route("/")
+def home():
+    return "home"
+
+
+@route("/about")
+def about():
+    return "about"
+
+
+print(sorted(routes))
+print(routes["/about"]())
+```
+answer:
+```
+['/', '/about']
+about
+```
+check: run("routes = {}\n\n\ndef route(path):\n    def register(func):\n        routes[path] = func\n        return func\n    return register\n\n\n@route(\"/\")\ndef home():\n    return \"home\"\n\n\n@route(\"/about\")\ndef about():\n    return \"about\"\n\n\nprint(sorted(routes))\nprint(routes[\"/about\"]())\n")
+hint: A decorator runs when the function is defined, here storing the function in `routes` under its path.
+solution: Each `@route(...)` call stores the function in the dictionary when the module runs. `sorted(routes)` lists the keys in string order, where `/` sorts before `/about`, and `routes["/about"]()` calls the stored function, which returns `about`. This is how `@app.route` builds a URL map.
+
+@practice code
+prompt: Write `match_route(pattern, path)` that matches a URL path against a Flask-style pattern and returns a dictionary of the parameters, or `None` if it does not match. A pattern is made of `/`-separated segments; a segment of the form `<name>` matches any non-empty text without `/` and gives a string; `<int:name>` matches one or more ASCII digits `0-9` and gives an `int`; any other segment must match exactly. The number of segments must be equal (so `/users/42/` does not match `/users/<int:uid>`).
+starter:
+```python
+def match_route(pattern, path):
+    pass
+```
+tests:
+```python
+assert match_route("/", "/") == {}
+assert match_route("/users/<int:uid>", "/users/42") == {"uid": 42}
+assert match_route("/users/<int:uid>", "/users/abc") is None
+assert match_route("/users/<int:uid>", "/users/-5") is None
+assert match_route("/users/<int:uid>", "/users/\u0663") is None
+assert match_route("/users/<int:uid>", "/users/42/") is None
+assert match_route("/hello/<name>", "/hello/ada") == {"name": "ada"}
+assert match_route("/hello/<name>", "/hello/") is None
+assert match_route("/hello/<name>", "/hello/a/b") is None
+assert match_route("/posts/<int:pid>/c/<slug>", "/posts/7/c/hi-there") == {
+    "pid": 7, "slug": "hi-there"}
+assert match_route("/about", "/contact") is None
+```
+model:
+```python
+def parse_segment(segment):
+    if segment.startswith("<") and segment.endswith(">"):
+        inner = segment[1:-1]
+        if ":" in inner:
+            kind, name = inner.split(":", 1)
+        else:
+            kind, name = "string", inner
+        return kind, name
+    return None
+
+
+def match_route(pattern, path):
+    pattern_parts = pattern.split("/")
+    path_parts = path.split("/")
+    if len(pattern_parts) != len(path_parts):
+        return None
+    params = {}
+    for expected, actual in zip(pattern_parts, path_parts):
+        parsed = parse_segment(expected)
+        if parsed is None:
+            if expected != actual:
+                return None
+            continue
+        kind, name = parsed
+        if actual == "":
+            return None
+        if kind == "int":
+            if not (actual.isascii() and actual.isdigit()):
+                return None
+            params[name] = int(actual)
+        else:
+            params[name] = actual
+    return params
+```
+hint: Split both strings on `/` and compare segment by segment; different counts mean no match.
+hint: A parameter segment starts with `<` and ends with `>`; if the text inside contains a colon, the part before it is the converter and the part after it is the name.
+solution: Split pattern and path into segments, require equal lengths, and compare each pair: literal segments must be equal; a parameter segment must be non-empty, and an `int` segment must be all digits, which excludes `-5` and `abc`. Collect the converted values in a dictionary.
+
+@practice code
+prompt: Write `dispatch(routes, method, path)` for a tiny router. `routes` is a list of `(pattern, methods, handler)` tuples, where `methods` is a set of upper-case method names and `handler` is a function taking the URL parameters as keyword arguments. A route applies if the pattern matches `path` (use the simplified matching below) and `method` is in its `methods`; the first such route in the list is called, and the result is `(200, handler(**params))`. If no route applies but at least one pattern matches the path, return `(405, "Method Not Allowed")`; if no pattern matches, return `(404, "Not Found")`. Patterns have `/`-separated segments; a segment `<name>` matches any non-empty text without `/` and becomes a keyword argument (a string); other segments must match exactly.
+starter:
+```python
+def dispatch(routes, method, path):
+    pass
+```
+tests:
+```python
+def show(name):
+    return f"user {name}"
+
+
+def create():
+    return "created"
+
+
+routes = [
+    ("/users/<name>", {"GET"}, show),
+    ("/users", {"POST"}, create),
+    ("/users", {"GET"}, lambda: "list"),
+    ("/", {"GET", "HEAD"}, lambda: "home"),
+]
+assert dispatch(routes, "GET", "/users/ada") == (200, "user ada")
+assert dispatch(routes, "POST", "/users") == (200, "created")
+assert dispatch(routes, "GET", "/users") == (200, "list")
+assert dispatch(routes, "HEAD", "/") == (200, "home")
+assert dispatch(routes, "DELETE", "/users") == (405, "Method Not Allowed")
+assert dispatch(routes, "POST", "/users/ada") == (405, "Method Not Allowed")
+assert dispatch(routes, "GET", "/missing") == (404, "Not Found")
+assert dispatch(routes, "GET", "/users/") == (404, "Not Found")
+```
+model:
+```python
+def _match(pattern, path):
+    pattern_parts = pattern.split("/")
+    path_parts = path.split("/")
+    if len(pattern_parts) != len(path_parts):
+        return None
+    params = {}
+    for expected, actual in zip(pattern_parts, path_parts):
+        if expected.startswith("<") and expected.endswith(">"):
+            if actual == "":
+                return None
+            params[expected[1:-1]] = actual
+        elif expected != actual:
+            return None
+    return params
+
+
+def dispatch(routes, method, path):
+    path_matched = False
+    for pattern, methods, handler in routes:
+        params = _match(pattern, path)
+        if params is None:
+            continue
+        path_matched = True
+        if method in methods:
+            return 200, handler(**params)
+    if path_matched:
+        return 405, "Method Not Allowed"
+    return 404, "Not Found"
+```
+hint: Remember whether any pattern matched the path, even if the method did not, to tell `405` from `404`.
+hint: Do not stop at the first matching pattern: the same URL may have separate routes for `GET` and `POST`.
+solution: Loop over the routes; for each one whose pattern matches, note that the path exists, and call the handler if the method is allowed. After the loop, `405` means the path exists but not for this method, and `404` means nothing matched. The `/users` path has two routes, which is why the loop must continue after a pattern match with the wrong method.
+
+@practice self
+prompt: Write a Flask application `app.py` with three routes: `GET /` returning a short HTML greeting; `GET /api/square/<int:n>` returning JSON `{"n": n, "square": n squared}`; and `POST /api/messages` that reads JSON, returns `400` with an error message if the `text` field is missing or not a non-empty string, and otherwise returns the JSON `{"text": ...}` with status `201`. Also give the commands to create a virtual environment, install Flask and start the development server, and say what you would use instead of the development server in production.
+hint: Use `request.get_json(silent=True)` so that invalid JSON gives `None` instead of an automatic error, then validate the type and content before using it.
+solution: A model answer:
+
+```python
+from flask import Flask, request
+
+app = Flask(__name__)
+
+
+@app.get("/")
+def home():
+    return "<h1>Hello from Flask</h1>"
+
+
+@app.get("/api/square/<int:n>")
+def square(n):
+    return {"n": n, "square": n * n}
+
+
+@app.post("/api/messages")
+def create_message():
+    data = request.get_json(silent=True)
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return {"error": "text is required"}, 400
+    return {"text": text.strip()}, 201
+```
+
+Commands: `python -m venv .venv`, then `source .venv/bin/activate` (on Windows, `.venv\Scripts\activate`), `pip install flask`, and `flask --app app run --debug`. In production, use a WSGI server such as Gunicorn (`gunicorn app:app`), behind a reverse proxy, and without debug mode.
+rubric: The three routes use the correct decorators, the `int` converter and return HTML, JSON and a `(body, status)` tuple.
+rubric: The POST route validates its input (dictionary, string, non-empty) and returns `400` with a message otherwise.
+rubric: The setup commands are correct: virtual environment, `pip install flask`, `flask --app app run`.
+rubric: Names a production WSGI server (such as Gunicorn) and does not recommend debug mode in production.
+
+@quiz code
+prompt: Write `build_url(pattern, **params)`, the reverse of routing (like Flask's `url_for`). It replaces each `<name>` and `<int:name>` segment of `pattern` (segments are separated by `/`) with the matching keyword argument. A string value is converted with `str` and percent-encoded with `urllib.parse.quote(value, safe="")`, so a `/` in it becomes `%2F`. A value for `<int:name>` must be an `int` that is not negative (and not a `bool`), otherwise raise `ValueError`; it is written in decimal. A missing parameter raises `KeyError`.
+starter:
+```python
+from urllib.parse import quote
+
+
+def build_url(pattern, **params):
+    pass
+```
+tests:
+```python
+assert build_url("/") == "/"
+assert build_url("/users/<int:uid>", uid=5) == "/users/5"
+assert build_url("/hello/<name>", name="hello world") == "/hello/hello%20world"
+assert build_url("/f/<name>", name="a/b") == "/f/a%2Fb"
+assert build_url("/p/<int:pid>/c/<slug>", pid=7, slug="x") == "/p/7/c/x"
+assert raises(KeyError, build_url, "/users/<int:uid>")
+assert raises(ValueError, build_url, "/users/<int:uid>", uid="5")
+assert raises(ValueError, build_url, "/users/<int:uid>", uid=-1)
+assert raises(ValueError, build_url, "/users/<int:uid>", uid=True)
+```
+model:
+```python
+from urllib.parse import quote
+
+
+def build_url(pattern, **params):
+    parts = []
+    for segment in pattern.split("/"):
+        if segment.startswith("<") and segment.endswith(">"):
+            inner = segment[1:-1]
+            if ":" in inner:
+                kind, name = inner.split(":", 1)
+            else:
+                kind, name = "string", inner
+            value = params[name]
+            if kind == "int":
+                if (not isinstance(value, int) or isinstance(value, bool)
+                        or value < 0):
+                    raise ValueError(f"{name} must be a non-negative int")
+                segment = str(value)
+            else:
+                segment = quote(str(value), safe="")
+        parts.append(segment)
+    return "/".join(parts)
+```
+hint: Split the pattern on `/`, replace each parameter segment, and join the segments again with `/`.
+hint: Look up `params[name]` first (this raises `KeyError` if it is missing), then check the type for the `int` converter.
+solution: Replace every parameter segment: look up the value (a missing name raises `KeyError`), validate and format integers, and percent-encode strings with `quote(..., safe="")`, which also encodes `/`. Building URLs from one function instead of by string concatenation keeps them consistent and correctly encoded.
+
+@quiz mc
+prompt: A team deploys their Flask app by running `flask --app app run --debug` on a public server. What is the best change?
+choice: Keep it, but change the port number to something unusual.
+choice*: Turn debug mode off and run the app under a production WSGI server such as Gunicorn, behind a reverse proxy.
+choice: Keep debug mode on, because it makes errors easier to diagnose for users.
+choice: Replace Flask's routes with global variables so that the server needs no framework.
+hint: The development server and the debugger are not designed for untrusted traffic.
+solution: The development server is not built for production load or security, and debug mode exposes an interactive debugger that can execute code. Production uses a WSGI server and normally a reverse proxy for TLS and static files.

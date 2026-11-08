@@ -1,0 +1,258 @@
+@lesson
+title: Network security: firewalls, intrusion detection and denial of service
+summary: Explain how firewalls, intrusion detection and denial-of-service defenses work, and model packet filtering and rate limiting in Python.
+objective: Compare stateless, stateful and application-layer firewalls and write rules that deny by default.
+objective: Explain signature-based and anomaly-based intrusion detection and why base rates make false positives dominate.
+objective: Explain how denial-of-service and amplification attacks work and the defenses against them: SYN cookies, ingress filtering and rate limiting.
+reading: UC Berkeley CS 161 textbook, the chapters on network security: firewalls, intrusion detection and denial of service (look up "SYN cookies", "intrusion detection" and "ingress filtering").
+@article
+A network is a shared medium between your systems and parties you do not trust. Network defenses reduce the **attack surface** (what can be reached), **detect** misuse, and keep services **available** under load. None of them replaces secure applications; they are layers in a defense in depth.
+
+### Firewalls
+
+A **firewall** enforces a policy over traffic crossing a trust boundary.
+
+- A **stateless packet filter** looks at each packet in isolation: protocol, source and destination address, and ports. Fast, but it cannot tell a reply from an unsolicited packet.
+- A **stateful firewall** tracks connections. It allows outbound connections from inside and lets the matching replies back in, while dropping unsolicited inbound packets.
+- An **application-layer firewall** or **proxy** understands protocols such as HTTP, and a **web application firewall (WAF)** inspects web requests. It can enforce policy on content, but it is a supplement to fixing bugs, not a replacement.
+
+Rules are evaluated in order and the **first match wins**, so the order is part of the policy. Always end with **default deny**: traffic not explicitly allowed is dropped. Filter in both directions: **ingress** filtering restricts what enters; **egress** filtering restricts what leaves and can stop a compromised host from phoning home. Place public servers in a **DMZ** and segment internal networks, so one compromised machine cannot reach everything. Network address translation (NAT) is not a security control, even though it hides internal addresses.
+
+```text
+# a rule list, evaluated top to bottom
+deny   any  203.0.113.0/24   any     # block a bad range first
+allow  tcp  0.0.0.0/0        443     # HTTPS from anywhere
+allow  tcp  10.0.0.0/8       22      # SSH from the internal range only
+(implicit) deny everything else
+```
+
+### Intrusion detection and prevention
+
+An **intrusion detection system (IDS)** watches traffic (**network-based**, NIDS) or host activity such as logs and system calls (**host-based**, HIDS) and raises alerts; an **intrusion prevention system (IPS)** can also block. Two approaches:
+
+- **Signature-based** detection matches known bad patterns. It has few false alarms for known attacks but misses new ones.
+- **Anomaly-based** detection learns normal behavior and flags deviations. It can catch novel attacks but produces more false alarms.
+
+Detectors are judged by the **false positive rate** (benign events flagged) and **false negative rate** (attacks missed). Attacks are rare, so the **base-rate fallacy** applies: with attack prevalence 0.0001, a detector with 99% detection and a 1% false-positive rate yields, by Bayes' rule,
+
+$$P(\text{attack} \mid \text{alert}) = \frac{0.99 \cdot 0.0001}{0.99 \cdot 0.0001 + 0.01 \cdot 0.9999} \approx 0.0098,$$
+
+so about 99 of every 100 alerts are false. This is why alerts need triage, context and tuning.
+
+### Denial of service
+
+A **denial-of-service (DoS)** attack makes a service unavailable, usually by exhausting a resource: bandwidth, connection state, CPU or application work. A **distributed** attack (DDoS) uses many sources. Understanding the mechanism leads to the defense:
+
+- **SYN flood**: a server allocates state for each half-open TCP connection. **SYN cookies** encode the connection's parameters in the initial sequence number it sends back, so it keeps no state until a valid ACK returns.
+- **Reflection and amplification**: the attacker sends small requests with a **spoofed source address** (the victim's) to many servers using a connectionless protocol such as UDP, and each server sends a much larger response to the victim. The **amplification factor** is response size divided by request size. Defenses: **ingress filtering** by networks so that spoofed packets are dropped near the source (BCP 38, RFC 2827), not running open resolvers or servers that answer anyone, response rate limiting, and designing protocols so a response is never much larger than its request.
+- **Application-layer** attacks (many expensive requests, slow connections): per-client **rate limiting**, timeouts, caching, and limits on request size and work.
+- At scale: **anycast** and content-delivery or scrubbing providers that absorb traffic, and capacity planning.
+
+A **token bucket** is a standard rate limiter: tokens accumulate at a fixed rate up to a maximum (the burst size), and each request spends one token; with no tokens the request is rejected or delayed.
+
+@example
+title: First match wins
+problem: Using the rule list in the article, what happens to a TCP packet from 203.0.113.9 to port 443, and to one from 198.51.100.7 to port 22?
+step: For 203.0.113.9: the first rule (`deny any 203.0.113.0/24`) matches because the source lies in that range. The packet is denied, even though a later rule would have allowed port 443.
+step: For 198.51.100.7 to port 22: the first rule does not match; port 22 is not 443; the SSH rule requires a source in 10.0.0.0/8, which this is not.
+step: No rule matches, so default deny applies.
+answer: Both are denied
+@example
+title: Amplification factor
+problem: A 60-byte request to a misconfigured UDP service triggers a 3000-byte response sent to the spoofed victim address. What is the amplification factor, and what does a network operator do about it?
+step: The factor is response size divided by request size: $3000 / 60 = 50$.
+step: Each byte the attacker spends produces 50 bytes toward the victim, and the victim sees only the servers' addresses, not the attacker's.
+step: Defenses are layered: the service owner restricts who can query it and limits response size; networks apply ingress filtering so spoofed source addresses are dropped; the victim's provider can filter or absorb the traffic.
+answer: 50
+@mistakes
+- Putting an `allow any` rule before more specific `deny` rules, so the later rules never match.
+- Leaving out a default deny, or filtering only incoming traffic and not outgoing.
+- Ignoring the base rate and concluding that a "99% accurate" detector means 99% of alerts are real.
+- Treating NAT or a firewall as sufficient protection while the application behind it is vulnerable.
+@practice code
+prompt: Write `in_cidr(ip, cidr)` that returns `True` if the IPv4 address `ip` (a string like `"192.168.1.77"`) lies inside the network `cidr` (a string like `"192.168.1.64/26"`). Convert the dotted address to a 32-bit integer yourself (do not import `ipaddress`) and compare under a mask with the given prefix length (0 to 32).
+starter:
+```python
+def in_cidr(ip, cidr):
+    pass
+```
+tests:
+```python
+assert in_cidr("10.0.0.5", "10.0.0.0/8") is True
+assert in_cidr("11.0.0.1", "10.0.0.0/8") is False
+assert in_cidr("192.168.1.77", "192.168.1.64/26") is True
+assert in_cidr("192.168.1.128", "192.168.1.64/26") is False
+assert in_cidr("1.2.3.4", "0.0.0.0/0") is True
+assert in_cidr("1.2.3.4", "1.2.3.4/32") is True
+assert in_cidr("1.2.3.5", "1.2.3.4/32") is False
+```
+model:
+```python
+def _to_int(ip):
+    a, b, c, d = (int(part) for part in ip.split("."))
+    return (a << 24) | (b << 16) | (c << 8) | d
+
+
+def in_cidr(ip, cidr):
+    network, prefix = cidr.split("/")
+    mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+    return (_to_int(ip) & mask) == (_to_int(network) & mask)
+```
+hint: Build the 32-bit value as `a * 2**24 + b * 2**16 + c * 2**8 + d`.
+hint: The mask for prefix length `p` is `(0xFFFFFFFF << (32 - p)) & 0xFFFFFFFF`; both addresses must match under it.
+solution: Convert both addresses to integers, apply the prefix mask to each, and compare. The `& 0xFFFFFFFF` keeps the mask to 32 bits, and prefix 0 gives mask 0, which matches everything.
+@practice code
+prompt: Write `firewall_decision(rules, packet)`. `rules` is a list of tuples `(action, proto, cidr, dport)` evaluated in order; `action` is `"allow"` or `"deny"`, `proto` is a string or `"any"`, `cidr` is matched against the packet's source address with `in_cidr` (given in the starter), and `dport` is an integer or `None` for any port. `packet` is a dict with keys `"proto"`, `"src"` and `"dport"`. Return the action of the first matching rule; if none matches return `"deny"`.
+starter:
+```python
+def in_cidr(ip, cidr):
+    def to_int(text):
+        a, b, c, d = (int(p) for p in text.split("."))
+        return (a << 24) | (b << 16) | (c << 8) | d
+
+    network, prefix = cidr.split("/")
+    mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+    return to_int(ip) & mask == to_int(network) & mask
+
+
+def firewall_decision(rules, packet):
+    pass
+```
+tests:
+```python
+rules = [
+    ("deny", "any", "203.0.113.0/24", None),
+    ("allow", "tcp", "0.0.0.0/0", 443),
+    ("allow", "tcp", "10.0.0.0/8", 22),
+]
+assert firewall_decision(rules, {"proto": "tcp", "src": "203.0.113.9", "dport": 443}) == "deny"
+assert firewall_decision(rules, {"proto": "tcp", "src": "198.51.100.7", "dport": 443}) == "allow"
+assert firewall_decision(rules, {"proto": "tcp", "src": "198.51.100.7", "dport": 22}) == "deny"
+assert firewall_decision(rules, {"proto": "tcp", "src": "10.1.2.3", "dport": 22}) == "allow"
+assert firewall_decision(rules, {"proto": "udp", "src": "10.1.2.3", "dport": 22}) == "deny"
+assert firewall_decision([], {"proto": "tcp", "src": "10.1.2.3", "dport": 80}) == "deny"
+```
+model:
+```python
+def in_cidr(ip, cidr):
+    def to_int(text):
+        a, b, c, d = (int(p) for p in text.split("."))
+        return (a << 24) | (b << 16) | (c << 8) | d
+
+    network, prefix = cidr.split("/")
+    mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+    return to_int(ip) & mask == to_int(network) & mask
+
+
+def firewall_decision(rules, packet):
+    for action, proto, cidr, dport in rules:
+        if proto != "any" and proto != packet["proto"]:
+            continue
+        if not in_cidr(packet["src"], cidr):
+            continue
+        if dport is not None and dport != packet["dport"]:
+            continue
+        return action
+    return "deny"
+```
+hint: Loop through the rules in order and skip a rule as soon as one of its three conditions fails.
+hint: Return at the first rule where protocol, source and port all match; return `"deny"` after the loop.
+solution: A rule matches only if protocol, source range and port all match. Returning at the first match makes order significant, and the final `"deny"` is the default policy.
+@practice code
+prompt: Write `allowed_requests(times, rate, burst)` simulating a token bucket. `times` is a non-decreasing list of integer request times; `rate` is the integer number of tokens added per time unit; `burst` is the bucket capacity. The bucket starts full (`burst` tokens) at the time of the first request. Before each request, add `rate * (t - last_time)` tokens (capped at `burst`). A request is allowed (`True`) and uses one token if at least one token is available; otherwise it is rejected (`False`) and uses none. Return the list of booleans.
+starter:
+```python
+def allowed_requests(times, rate, burst):
+    pass
+```
+tests:
+```python
+assert allowed_requests([0, 0, 0, 0], 1, 2) == [True, True, False, False]
+assert allowed_requests([0, 0, 1, 1, 1], 1, 2) == [True, True, True, False, False]
+assert allowed_requests([0, 0, 0, 100, 100, 100, 100], 1, 3) == [
+    True, True, True, True, True, True, False
+]
+assert allowed_requests([], 1, 1) == []
+assert allowed_requests([5], 2, 1) == [True]
+```
+model:
+```python
+def allowed_requests(times, rate, burst):
+    results = []
+    tokens = burst
+    last = times[0] if times else 0
+    for t in times:
+        tokens = min(burst, tokens + rate * (t - last))
+        last = t
+        if tokens >= 1:
+            tokens -= 1
+            results.append(True)
+        else:
+            results.append(False)
+    return results
+```
+hint: Keep `tokens` and `last`. Refill before deciding about each request.
+hint: Refill with `min(burst, tokens + rate * (t - last))`; the cap is what stops a long idle period from storing unlimited tokens.
+solution: Refill first (capped at `burst`), then spend a token if one is available. The test with a gap of 100 shows the cap: only 3 requests succeed after the idle period, not 100.
+@practice num
+prompt: An intrusion detector catches 99% of attacks and flags 1% of benign events. Attacks make up 1 in 10000 events. If an alert fires, what is the probability that it is a real attack? Give the answer as a decimal to four places.
+answer: 0.0098
+check: 0.99 * 0.0001 / (0.99 * 0.0001 + 0.01 * 0.9999)
+tol: 0.0005
+hint: Use Bayes' rule: true alerts divided by all alerts, per 10000 events.
+solution: Per 10000 events there is 1 attack, detected with probability 0.99, and 9999 benign events with 1% flagged. The probability is $0.000099 / (0.000099 + 0.009999) \approx 0.0098$, under 1 percent.
+@practice mc
+prompt: How do SYN cookies defend a server against a SYN flood?
+choice*: The server encodes connection information in the sequence number it sends and allocates no state until a valid ACK returns.
+choice: The server drops every SYN packet from a client it has not seen before.
+choice: The server encrypts the SYN packets so attackers cannot send them.
+choice: The server limits itself to one connection per user permanently.
+hint: A SYN flood works by making the server remember half-open connections.
+solution: With SYN cookies the server stores nothing for a half-open connection. A genuine client completes the handshake by echoing the encoded value, from which the server rebuilds the state; attackers who never complete it cost the server no memory.
+@practice ms
+prompt: Which measures help against reflection and amplification attacks? Select all that apply.
+choice*: Networks dropping packets with spoofed source addresses (ingress filtering)
+choice*: Not running open resolvers or UDP services that answer any source address
+choice*: Rate limiting identical responses sent to one address
+choice: Using NAT on the victim's network
+choice: Encrypting the victim's traffic with TLS
+hint: The attack depends on spoofed sources and on servers that answer anyone with larger replies.
+solution: Ingress filtering stops the spoofed requests, closing open services removes the amplifiers, and response rate limiting reduces what the victim receives. NAT and TLS do not change how much traffic arrives.
+@quiz code
+prompt: Write `flag_ips(lines, limit)` for a login-failure detector. Each line in `lines` is `"FAIL <ip>"` or `"OK <ip>"`. Return the sorted list of IP addresses that have at least `limit` `FAIL` lines in total. Lines starting with `OK` are ignored.
+starter:
+```python
+def flag_ips(lines, limit):
+    pass
+```
+tests:
+```python
+logs = [
+    "FAIL 10.0.0.1", "FAIL 10.0.0.2", "OK 10.0.0.1",
+    "FAIL 10.0.0.1", "FAIL 10.0.0.1", "OK 10.0.0.3",
+]
+assert flag_ips(logs, 3) == ["10.0.0.1"]
+assert flag_ips(logs, 1) == ["10.0.0.1", "10.0.0.2"]
+assert flag_ips(logs, 5) == []
+assert flag_ips([], 1) == []
+assert flag_ips(["OK 1.1.1.1"] * 4, 1) == []
+```
+model:
+```python
+def flag_ips(lines, limit):
+    counts = {}
+    for line in lines:
+        status, ip = line.split()
+        if status == "FAIL":
+            counts[ip] = counts.get(ip, 0) + 1
+    return sorted(ip for ip, n in counts.items() if n >= limit)
+```
+hint: Count failures per address in a dictionary.
+hint: Only lines whose first word is `FAIL` count; finish with a sorted list of addresses whose count is at least `limit`.
+solution: Tally `FAIL` lines per IP address, keep those with a count of at least `limit`, and sort. Rules like this are typical host-based or log-based detectors.
+@quiz num
+prompt: A 45-byte request to a UDP service produces a 2700-byte response. What is the amplification factor?
+answer: 60
+check: 2700 / 45
+hint: Divide the response size by the request size.
+solution: $2700 / 45 = 60$.

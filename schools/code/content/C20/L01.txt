@@ -1,0 +1,276 @@
+@lesson
+title: How the web works: HTTP, URLs and browsers
+summary: Explain what happens between typing a URL and seeing a page, and read and write HTTP requests, responses, status codes and URLs.
+objective: Name the parts of a URL and say which parts are sent to the server.
+objective: Read and write HTTP/1.1 request and response messages, choosing suitable methods and status codes.
+objective: Describe the steps a browser takes from a URL to pixels on the screen.
+reading: MDN Web Docs: Learn web development, the "Getting started with the web" module (the "How the web works" article), and the HTTP guide on MDN (overview, messages and status codes).
+@article
+The web is a system of **clients** (usually browsers) that request **resources** from **servers**, which reply with responses. Every step follows a published protocol, so any browser can talk to any server. This week gives you the map you will use for the rest of the course.
+
+### From URL to page
+
+Typing `https://docs.example.org/guide/intro.html?lang=en#install` starts a chain of events:
+
+1. The browser **parses the URL**: scheme `https`, host `docs.example.org`, port 443 (the default for `https`; `http` defaults to 80), path `/guide/intro.html`, query `lang=en`, fragment `install`.
+2. **DNS** turns the host name into an IP address.
+3. The browser opens a **TCP** connection (or, for HTTP/3, a **QUIC** connection over UDP) and, for `https`, performs a **TLS** handshake (TLS 1.3, RFC 8446, is the current version) that authenticates the server and encrypts the traffic.
+4. The browser sends an **HTTP request**.
+5. The server sends an **HTTP response**; the browser starts parsing it while it arrives.
+
+The **fragment** (`#install`) never leaves the browser: it tells the browser which part of the page to scroll to or which element to focus. Everything else is used to build the request.
+
+### HTTP messages
+
+HTTP is a text-based request/response protocol (HTTP/1.1 is plain text; HTTP/2 and HTTP/3 carry the same semantics in a binary framing, described in RFC 9110 for semantics, RFC 9114 for HTTP/3 and RFC 9000 for QUIC). An HTTP/1.1 request is a start line, headers, an empty line and an optional body, with lines ending in `CRLF`:
+
+```http
+GET /guide/intro.html?lang=en HTTP/1.1
+Host: docs.example.org
+Accept: text/html
+```
+
+The reply has a status line, headers, an empty line and a body:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Content-Length: 1256
+
+<!doctype html>...
+```
+
+`Host` tells a server that serves several sites which one you mean. `Content-Type` says how to interpret the body, and `Content-Length` is its size in **bytes**.
+
+### Methods and status codes
+
+| Method | Meaning | Safe | Idempotent |
+|---|---|---|---|
+| `GET` | read a resource | yes | yes |
+| `POST` | submit data, create | no | no |
+| `PUT` | replace a resource | no | yes |
+| `PATCH` | partially modify | no | not guaranteed |
+| `DELETE` | remove | no | yes |
+
+*Safe* means the request is not supposed to change server state; *idempotent* means repeating it has the same effect as sending it once. Status codes are grouped by first digit: **1xx** informational, **2xx** success (`200 OK`, `201 Created`, `204 No Content`), **3xx** redirection (`301`/`308` permanent, `302`/`307` temporary, `304 Not Modified`), **4xx** client error (`400`, `401`, `403`, `404`, `405`, `409`, `429`) and **5xx** server error (`500`, `503`). `307` and `308` keep the original method on the redirect; historically `301` and `302` let browsers change `POST` into `GET`.
+
+### Statelessness
+
+Each request is understood on its own. Anything that must persist between requests, such as "this user is signed in", is carried by **cookies** or tokens that the client sends back each time. You will build exactly that in week 11.
+
+### What the browser does with the response
+
+The browser parses the HTML into the **DOM** (a tree of elements), fetches linked CSS and parses it into the **CSSOM**, combines them into a render tree, computes **layout** (sizes and positions), and **paints** pixels. Scripts can change the DOM and trigger layout and paint again. Linked images, stylesheets and scripts are separate HTTP requests.
+
+Python's `urllib.parse` module (`urlsplit`, `parse_qs`, `urljoin`) parses URLs exactly as this lesson describes, and it runs in the browser exercises.
+
+@example
+title: Dissecting a URL
+problem: Name the parts of `https://docs.example.org/guide/intro.html?lang=en&v=2#install`, and say which parts the server receives.
+step: The scheme is `https`, so the connection uses TLS and the default port is 443.
+step: The host is `docs.example.org`; it is resolved with DNS and sent in the `Host` header.
+step: The path is `/guide/intro.html`; the query string is `lang=en&v=2`, which is two `name=value` pairs joined by `&`.
+step: The fragment is `install`. The request line becomes `GET /guide/intro.html?lang=en&v=2 HTTP/1.1`, so the fragment is not in it.
+answer: The server receives the host, path and query; the fragment stays in the browser.
+
+@example
+title: Parsing a request line in Python
+problem: Given `"GET /search?q=web HTTP/1.1"`, extract the method, the path and the query values.
+step: The request line has three space-separated fields, so `method, target, version = line.split(" ")` gives `"GET"`, `"/search?q=web"` and `"HTTP/1.1"`.
+step: Split the target into its parts with `urlsplit(target)`. Its `.path` is `/search` and its `.query` is `q=web`.
+step: Decode the query with `parse_qs`, which returns a dictionary whose values are lists, because a name may repeat:
+
+```python
+from urllib.parse import urlsplit, parse_qs
+
+line = "GET /search?q=web HTTP/1.1"
+method, target, version = line.split(" ")
+parts = urlsplit(target)
+print(method, parts.path, parse_qs(parts.query))
+```
+step: This prints `GET /search {'q': ['web']}`.
+
+@mistakes
+- Believing the fragment (`#section`) is sent to the server; it is handled only by the browser.
+- Using `301` or `302` when the method must be preserved on a redirect; `307` and `308` guarantee that.
+- Computing `Content-Length` as the number of characters instead of the number of bytes, which differs for non-ASCII text in UTF-8.
+- Calling `POST` idempotent or `GET` unsafe: repeating a `POST` may create two records, while `GET` must not change state.
+
+@practice mc
+prompt: A page has moved permanently to a new address, and clients that send a `POST` to the old address must repeat the same `POST` at the new one. Which status code fits?
+choice: `301 Moved Permanently`
+choice: `302 Found`
+choice*: `308 Permanent Redirect`
+choice: `404 Not Found`
+hint: Two redirect codes were added specifically so that the method is not changed.
+solution: `308` is a permanent redirect that requires the client to keep the method and body. `301` is permanent, but browsers historically turn a `POST` into a `GET`; `302` is only temporary; `404` is not a redirect at all.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+from urllib.parse import urlsplit
+
+u = urlsplit("https://shop.example.com:8443/cart/items?id=42#top")
+print(u.hostname, u.port, u.path, u.query, u.fragment)
+```
+answer: shop.example.com 8443 /cart/items id=42 top
+check: run("from urllib.parse import urlsplit\n\nu = urlsplit(\"https://shop.example.com:8443/cart/items?id=42#top\")\nprint(u.hostname, u.port, u.path, u.query, u.fragment)\n")
+hint: `urlsplit` separates scheme, host, port, path, query and fragment, without the `?`, `#` or `:` separators in these attributes.
+solution: The host is `shop.example.com`, the explicit port is `8443`, the path is `/cart/items`, the query is `id=42` and the fragment is `top`; `print` separates them with spaces.
+
+@practice code
+prompt: Write `parse_request(raw)` for a raw HTTP/1.1 request string whose lines end in `"\r\n"`, and whose header block ends with a blank line (a body may follow, which you ignore). Return a 4-tuple `(method, path, query, headers)`: `method` is the request method; `path` is the target without its query string; `query` is the dictionary from `urllib.parse.parse_qs` (names map to lists of values, `{}` if there is no query); `headers` maps lowercase header names to values with surrounding spaces removed.
+starter:
+```python
+from urllib.parse import urlsplit, parse_qs
+
+
+def parse_request(raw):
+    pass
+```
+tests:
+```python
+raw = ("GET /search?q=web+dev&page=2 HTTP/1.1\r\n"
+       "Host: example.com\r\nAccept: text/html\r\n\r\n")
+assert parse_request(raw) == (
+    "GET", "/search", {"q": ["web dev"], "page": ["2"]},
+    {"host": "example.com", "accept": "text/html"})
+raw2 = ("POST /login HTTP/1.1\r\nHost: a.org\r\n"
+        "Content-Length:  12\r\n\r\nuser=ada&x=1")
+assert parse_request(raw2) == (
+    "POST", "/login", {},
+    {"host": "a.org", "content-length": "12"})
+raw3 = "GET /?t=1&t=2 HTTP/1.1\r\nX-Token: a:b\r\n\r\n"
+assert parse_request(raw3) == (
+    "GET", "/", {"t": ["1", "2"]}, {"x-token": "a:b"})
+```
+model:
+```python
+from urllib.parse import urlsplit, parse_qs
+
+
+def parse_request(raw):
+    head = raw.split("\r\n\r\n", 1)[0]
+    lines = head.split("\r\n")
+    method, target, _version = lines[0].split(" ")
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    parts = urlsplit(target)
+    return method, parts.path, parse_qs(parts.query), headers
+```
+hint: Cut the header block off at the first blank line (`"\r\n\r\n"`), then split it into lines.
+hint: `str.partition(":")` splits at the first colon only, which matters for values that contain colons.
+solution: Split off the head, take the first line apart into method and target, use `urlsplit` and `parse_qs` on the target, and build the header dictionary with `partition(":")`, `strip()` and `lower()`. Because `partition` splits at the first colon, the value `a:b` survives intact.
+
+@practice code
+prompt: Write `status_class(code)` that returns the class name of an HTTP status code as one of `"informational"` (1xx), `"success"` (2xx), `"redirection"` (3xx), `"client error"` (4xx) or `"server error"` (5xx). For a code below 100 or above 599, raise `ValueError`.
+starter:
+```python
+def status_class(code):
+    pass
+```
+tests:
+```python
+assert status_class(200) == "success"
+assert status_class(404) == "client error"
+assert status_class(503) == "server error"
+assert status_class(100) == "informational"
+assert status_class(308) == "redirection"
+assert status_class(599) == "server error"
+assert raises(ValueError, status_class, 99)
+assert raises(ValueError, status_class, 600)
+```
+model:
+```python
+def status_class(code):
+    names = {
+        1: "informational",
+        2: "success",
+        3: "redirection",
+        4: "client error",
+        5: "server error",
+    }
+    if not 100 <= code <= 599:
+        raise ValueError(f"not an HTTP status code: {code}")
+    return names[code // 100]
+```
+hint: The class is determined by the hundreds digit, which integer division by 100 gives you.
+hint: Check the range first, so that `99` and `600` raise before you index a dictionary.
+solution: Validate `100 <= code <= 599`, then map `code // 100` to a name with a dictionary. Boundaries such as `100` and `599` are valid, `99` and `600` are not.
+
+@practice ms
+prompt: Which statements about HTTP and URLs are true?
+choice*: HTTP is stateless, so a login is remembered by sending a cookie or token with every request.
+choice*: A `GET` request is supposed to be safe: it should not change the state of the server.
+choice*: The fragment of a URL (the part after `#`) is not included in the request sent to the server.
+choice: A `404` status means the server crashed while handling the request.
+choice: `POST` is idempotent, so sending it twice always has the same effect as sending it once.
+hint: Safe and idempotent are different properties, and 5xx (not 4xx) signals server failure.
+solution: HTTP keeps no memory between requests, `GET` must not change state, and the fragment is kept by the browser. A `404` means the resource was not found (a client error), and `POST` is not idempotent: repeating it can create a second record.
+
+@practice self
+prompt: A user types `https://www.example.com/shop?item=7` and presses Enter. List, in order, the steps until the page appears on screen, naming the protocol or data structure involved in each step (at least six steps).
+hint: Follow the order of the lesson: URL, DNS, connection, TLS, request, response, rendering.
+solution: 1. The browser parses the URL into scheme, host, path and query. 2. DNS resolves `www.example.com` to an IP address. 3. A TCP connection (or QUIC for HTTP/3) is opened to port 443. 4. A TLS handshake authenticates the server and sets up encryption. 5. The browser sends `GET /shop?item=7 HTTP/1.1` with a `Host` header and other headers. 6. The server replies with a status line, headers and an HTML body. 7. The browser parses the HTML into the DOM and requests linked CSS, JavaScript and images with further HTTP requests. 8. CSS becomes the CSSOM, the render tree is built, layout is computed and the page is painted.
+rubric: Includes URL parsing, DNS, a transport connection and TLS in a sensible order.
+rubric: Describes an HTTP request and response, including method, path and a status code.
+rubric: Mentions HTML parsing into the DOM and the follow-up requests for subresources.
+rubric: Mentions layout and paint (or rendering) as the final steps.
+
+@quiz code
+prompt: Write `build_response(status, body)` that returns a complete HTTP/1.1 response as a `str`. The status line is `HTTP/1.1 <status> <reason>`, where the supported statuses are `200` (`OK`), `404` (`Not Found`) and `500` (`Internal Server Error`); any other status raises `ValueError`. After the status line come exactly two headers in this order: `Content-Type: text/plain; charset=utf-8` and `Content-Length: <n>`, where `n` is the length of `body` encoded as UTF-8 **in bytes**. Every line ends with `"\r\n"`, a blank line follows the headers, then the body.
+starter:
+```python
+def build_response(status, body):
+    pass
+```
+tests:
+```python
+assert build_response(200, "hi") == (
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Content-Length: 2\r\n\r\nhi")
+assert build_response(404, "") == (
+    "HTTP/1.1 404 Not Found\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "Content-Length: 0\r\n\r\n")
+assert build_response(500, "café").endswith(
+    "Content-Length: 5\r\n\r\ncafé")
+assert raises(ValueError, build_response, 418, "x")
+```
+model:
+```python
+REASONS = {200: "OK", 404: "Not Found", 500: "Internal Server Error"}
+
+
+def build_response(status, body):
+    if status not in REASONS:
+        raise ValueError(f"unsupported status: {status}")
+    size = len(body.encode("utf-8"))
+    return (
+        f"HTTP/1.1 {status} {REASONS[status]}\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        f"Content-Length: {size}\r\n"
+        "\r\n"
+        f"{body}"
+    )
+```
+hint: A dictionary from status code to reason phrase handles both the lookup and the unsupported case.
+hint: `len(body)` counts characters; encode first with `body.encode("utf-8")` to count bytes.
+solution: Look up the reason phrase (raise `ValueError` if missing), compute the byte length from the UTF-8 encoding, and join the lines with `"\r\n"`. The test with `café` checks that `é` takes two bytes, so the length is 5, not 4.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```python
+from urllib.parse import urljoin
+
+print(urljoin("https://example.com/blog/2026/post.html", "../about.html"))
+```
+answer: https://example.com/blog/about.html
+check: run("from urllib.parse import urljoin\n\nprint(urljoin(\"https://example.com/blog/2026/post.html\", \"../about.html\"))\n")
+hint: A relative reference is resolved against the directory of the base path, and `..` moves up one directory.
+solution: The base directory is `/blog/2026/`; `..` moves up to `/blog/`, and `about.html` is appended, giving `https://example.com/blog/about.html`.

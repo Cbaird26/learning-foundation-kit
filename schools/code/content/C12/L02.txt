@@ -1,0 +1,250 @@
+@lesson
+title: Syntax: tokens, grammars and tokenizing
+summary: Describe a language's syntax with tokens and a context-free grammar, and write a tokenizer that turns an arithmetic expression into a list of tokens.
+objective: Explain the difference between lexical syntax (tokens) and phrase syntax (grammar).
+objective: Read and write productions in Backus-Naur form and derive a string from a grammar.
+objective: Write a tokenizer using a single left-to-right scan with the maximal munch rule.
+reading: Crafting Interpreters, Chapter 4 "Scanning".
+
+@article
+Before a program can be run it has to be read. Reading happens in two layers, and each uses a different tool.
+
+### Tokens: the lexical layer
+
+The **scanner** (or *lexer*, or *tokenizer*) groups characters into **tokens**, the smallest meaningful units: numbers, identifiers, keywords, operators, punctuation. Whitespace and comments usually separate tokens and then vanish. A token has a **kind** and its text (its **lexeme**):
+
+```text
+source:  (12 + 3) * 4
+tokens:  LPAREN "("   NUM "12"   OP "+"   NUM "3"   RPAREN ")"   OP "*"   NUM "4"
+```
+
+The set of valid lexemes for each kind is simple: a number is one or more digits, an identifier is a letter followed by letters and digits. Such patterns are **regular**, which is why regular expressions and finite automata are the classic tools for scanning.
+
+Two rules appear in almost every scanner. **Maximal munch**: take the longest lexeme that matches, so `<=` is one token rather than `<` followed by `=`, and `123` is one number rather than three. **Keywords versus identifiers**: scan an identifier first, then check whether its text is reserved (`if`, `let`).
+
+### Grammars: the phrase layer
+
+Tokens alone do not say how they combine. A **context-free grammar** does. It is a set of **productions**, each rewriting a **nonterminal** (a syntactic category) into a sequence of terminals (tokens) and nonterminals. We write them in **Backus-Naur form (BNF)**. Here is a grammar for sums and products:
+
+```text
+expr   -> term  ( "+" term )*
+term   -> factor ( "*" factor )*
+factor -> NUM | "(" expr ")"
+```
+
+The `( ... )*` means "zero or more repetitions" (extended BNF). To **derive** a string, start from the start symbol `expr` and keep replacing a nonterminal using one of its productions until only tokens remain. A string is in the language exactly when some derivation produces it.
+
+The grammar encodes **precedence**. Because `*` is handled lower in the grammar (in `term`) than `+` (in `expr`), a product always groups tighter than a sum: `1 + 2 * 3` has the product `2 * 3` as one operand of the `+`. Repetition in a production also lets the parser fix **associativity**: if the grammar had a `-` operator, a parser that folds the repeated operands from the left would group `10 - 4 - 3` as `(10 - 4) - 3`.
+
+A grammar is **ambiguous** if some string has two different parse trees. The rule `expr -> expr "+" expr | expr "*" expr | NUM` is ambiguous for `1 + 2 * 3`. Layering the grammar (`expr`, `term`, `factor`) removes the ambiguity.
+
+### Writing a tokenizer
+
+A hand-written scanner is a loop over the characters with an index `i`. At each position it looks at the current character and decides which kind of token starts there:
+
+```python
+def tokenize(src):
+    tokens = []
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if ch.isspace():
+            i += 1
+        elif ch in "0123456789":
+            j = i
+            while j < len(src) and src[j] in "0123456789":
+                j += 1
+            tokens.append(("NUM", src[i:j]))
+            i = j
+        elif ch in "+-*/":
+            tokens.append(("OP", ch))
+            i += 1
+        else:
+            raise ValueError(f"unexpected character {ch!r}")
+    return tokens
+```
+
+The inner loop implements maximal munch: it extends `j` while digits continue. The scan is linear, $O(n)$ in the length of the source, because each character is examined a constant number of times. An unrecognized character is reported as an error with a clear message, rather than silently skipped.
+
+@example
+title: Tokenizing step by step
+problem: Trace the tokenizer on `"12+3"`.
+step: `i = 0`, `ch = "1"` is a digit. The inner loop advances `j` past `1` and `2` and stops at `+` (`j = 2`). Append `("NUM", "12")` and set `i = 2`.
+step: `i = 2`, `ch = "+"` is in `"+-*/"`. Append `("OP", "+")` and set `i = 3`.
+step: `i = 3`, `ch = "3"` is a digit. The inner loop stops at `j = 4` because `j == len(src)`. Append `("NUM", "3")` and set `i = 4`.
+step: `i = 4` is no longer less than `len(src)`, so the loop ends.
+answer: `[("NUM", "12"), ("OP", "+"), ("NUM", "3")]`
+
+@example
+title: Deriving a string from a grammar
+problem: Using `expr -> term ("+" term)*`, `term -> factor ("*" factor)*` and `factor -> NUM | "(" expr ")"`, show that `1 + 2 * 3` is in the language.
+step: Start with `expr` and use one repetition of the `+` part: `expr => term "+" term`.
+step: Expand the left `term` as a single factor: `term => factor => NUM`, giving `NUM "+" term`.
+step: Expand the right `term` with one `*`: `term => factor "*" factor`, so we now have `NUM "+" factor "*" factor`.
+step: Replace each remaining `factor` by `NUM`, giving `NUM "+" NUM "*" NUM`, which matches `1 + 2 * 3`. The `*` was produced inside a `term`, so the product groups first.
+answer: The string is derivable, and `2 * 3` forms one operand of `+`.
+
+@mistakes
+- Splitting the source on spaces instead of scanning characters; `12+3` has no spaces but still contains three tokens.
+- Forgetting maximal munch, so `123` becomes three number tokens or `<=` becomes two tokens.
+- Reading past the end of the string in the inner digit loop because the `j < len(src)` check is missing or comes after `src[j]`.
+- Mixing up the layers: whether `1 + * 2` is valid is a grammar question, while whether `?` is a legal character is a lexical question.
+
+@practice mc
+prompt: A scanner uses the maximal munch rule and has these tokens: `<`, `=`, `<=`. How does it tokenize the text `a<=b`?
+choice: `a`, `<`, `=`, `b`
+choice*: `a`, `<=`, `b`
+choice: `a<`, `=b`
+choice: It reports an error because `<=` is ambiguous
+hint: Maximal munch always takes the longest lexeme that matches at the current position.
+solution: At the position of `<`, both `<` and `<=` match, and the longer one wins, so the tokens are `a`, `<=` and `b`.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+import re
+print(re.findall(r"[0-9]+|[-+*/()]", "12+(3*45)"))
+```
+answer: ['12', '+', '(', '3', '*', '45', ')']
+check: run("import re\nprint(re.findall(r'[0-9]+|[-+*/()]', '12+(3*45)'))\n")
+hint: The pattern matches either a run of digits or one operator or parenthesis character.
+solution: The regular expression is a compact scanner. `[0-9]+` is greedy, so `12` and `45` are each one token, and every operator or parenthesis is its own token.
+
+@practice code
+prompt: Write `read_number(src, i)` that reads a run of decimal digits from the string `src` starting at index `i`. It returns a tuple `(text, j)`, where `text` is the digits and `j` is the index just after the last digit. If `src[i]` is not a digit, it returns `("", i)`. Example: `read_number("12+3", 0)` is `("12", 2)`.
+starter:
+```python
+def read_number(src, i):
+    pass
+```
+tests:
+```python
+assert read_number("12+3", 0) == ("12", 2)
+assert read_number("12+3", 3) == ("3", 4)
+assert read_number("12+3", 2) == ("", 2)
+assert read_number("", 0) == ("", 0)
+assert read_number("007x", 0) == ("007", 3)
+```
+model:
+```python
+def read_number(src, i):
+    j = i
+    while j < len(src) and src[j] in "0123456789":
+        j += 1
+    return src[i:j], j
+```
+hint: Keep a second index that starts at `i` and moves forward while the character is a digit.
+hint: Check `j < len(src)` before `src[j]`, so the loop stops safely at the end of the string.
+solution: Advance `j` while `src[j]` is a digit and `j` is in range, then return the slice `src[i:j]` with `j`. If no digit is found, `j` equals `i` and the slice is empty.
+
+@practice code
+prompt: Write `tokenize(src)` for arithmetic expressions. It returns a list of `(kind, text)` tuples: `("NUM", digits)` for a run of digits, `("OP", ch)` for one of `+ - * /`, `("LPAREN", "(")` and `("RPAREN", ")")`. Whitespace separates tokens and is skipped. Any other character raises `ValueError`. Example: `tokenize("2 * (3)")` is `[("NUM", "2"), ("OP", "*"), ("LPAREN", "("), ("NUM", "3"), ("RPAREN", ")")]`.
+starter:
+```python
+def tokenize(src):
+    pass
+```
+tests:
+```python
+assert tokenize("12+3") == [("NUM", "12"), ("OP", "+"), ("NUM", "3")]
+assert tokenize("") == []
+assert tokenize("  7  ") == [("NUM", "7")]
+assert tokenize("2 * (3)") == [
+    ("NUM", "2"), ("OP", "*"), ("LPAREN", "("),
+    ("NUM", "3"), ("RPAREN", ")"),
+]
+assert tokenize("10-4") == [("NUM", "10"), ("OP", "-"), ("NUM", "4")]
+assert raises(ValueError, tokenize, "3 ? 4")
+```
+model:
+```python
+def tokenize(src):
+    tokens = []
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if ch.isspace():
+            i += 1
+        elif ch in "0123456789":
+            j = i
+            while j < len(src) and src[j] in "0123456789":
+                j += 1
+            tokens.append(("NUM", src[i:j]))
+            i = j
+        elif ch in "+-*/":
+            tokens.append(("OP", ch))
+            i += 1
+        elif ch == "(":
+            tokens.append(("LPAREN", ch))
+            i += 1
+        elif ch == ")":
+            tokens.append(("RPAREN", ch))
+            i += 1
+        else:
+            raise ValueError(f"unexpected character {ch!r}")
+    return tokens
+```
+hint: Loop with an index and decide what to do from the current character.
+hint: For a digit, scan ahead to the end of the number and append one `NUM` token; for a space, just move on.
+solution: Dispatch on the current character: skip whitespace, scan a whole number for a digit, emit single-character tokens for operators and parentheses, and raise `ValueError` otherwise. Each branch must advance `i`, otherwise the loop never ends.
+
+@practice num
+prompt: How many tokens does the text `(12 + 3) * 4` contain, if every number, operator and parenthesis is one token?
+answer: 7
+check: int(run("import re\nprint(len(re.findall(r'[0-9]+|[-+*/()]', '(12 + 3) * 4')))\n"))
+hint: Count each parenthesis, each operator and each whole number separately.
+solution: The tokens are `(`, `12`, `+`, `3`, `)`, `*` and `4`, which is 7. The number `12` counts once because of maximal munch.
+
+@practice ms
+prompt: Select every statement that is true about a scanner and a grammar.
+choice*: The scanner turns characters into tokens before parsing begins.
+choice*: Whether `1 + * 2` is a valid expression is decided by the grammar, not by the scanner.
+choice: A context-free grammar is needed to recognize a run of digits.
+choice*: A layered grammar (`expr`, `term`, `factor`) can express operator precedence.
+choice: Whitespace must always become a token.
+hint: Runs of digits are a regular pattern, and phrase structure needs a grammar.
+solution: The scanner works first and produces tokens, and the grammar decides how tokens may be combined, including precedence through layering. A run of digits is regular and needs no grammar, and whitespace is normally discarded.
+
+@quiz code
+prompt: Write `strip_comments(src)` that removes every comment from the text `src`. A comment starts at a `#` and runs up to, but not including, the next newline (or the end of the text). Everything else, including newlines, is kept. Example: `strip_comments("a = 1 # one\nb = 2")` is `"a = 1 \nb = 2"`.
+starter:
+```python
+def strip_comments(src):
+    pass
+```
+tests:
+```python
+assert strip_comments("a = 1 # one\nb = 2") == "a = 1 \nb = 2"
+assert strip_comments("no comment") == "no comment"
+assert strip_comments("# whole line\nx") == "\nx"
+assert strip_comments("x # a # b") == "x "
+assert strip_comments("") == ""
+assert strip_comments("a\n# c\nb") == "a\n\nb"
+```
+model:
+```python
+def strip_comments(src):
+    out = []
+    i = 0
+    while i < len(src):
+        if src[i] == "#":
+            while i < len(src) and src[i] != "\n":
+                i += 1
+        else:
+            out.append(src[i])
+            i += 1
+    return "".join(out)
+```
+hint: Scan one character at a time, like a tokenizer, and keep a list of the characters you keep.
+hint: When you see `#`, advance the index until you reach a newline or the end, without appending anything, and leave the newline for the next pass.
+solution: Scan with an index. On `#`, skip characters until the newline (which is not consumed), otherwise copy the character. The second `#` in `x # a # b` is inside the comment and disappears with it.
+
+@quiz mc
+prompt: Which string is generated by the grammar `S -> "a" S "b" | ""`, where `""` is the empty string?
+choice*: `aabb`
+choice: `abab`
+choice: `aab`
+choice: `ba`
+hint: Each use of the first production adds one `a` on the left and one `b` on the right of what `S` produces.
+solution: Applying the first production twice and then the empty production gives `aabb`. The grammar only produces `a`s followed by the same number of `b`s, so `abab`, `aab` and `ba` are not generated.

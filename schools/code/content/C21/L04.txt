@@ -1,0 +1,199 @@
+@lesson
+title: Mutual exclusion and leader election
+summary: Compare distributed mutual exclusion algorithms by safety, liveness and message cost, and trace the bully and ring election algorithms.
+objective: State the safety, liveness and fairness requirements of mutual exclusion and compute message costs of the centralized, Ricart-Agrawala and token ring algorithms.
+objective: Decide how a Ricart-Agrawala process answers a request using Lamport timestamps.
+objective: Trace the bully and Chang-Roberts ring election algorithms and count their messages.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 5 "Coordination" (the sections on mutual exclusion and election algorithms).
+
+@article
+Many distributed tasks need one process at a time to hold a resource (**mutual exclusion**) or need one process designated to coordinate (a **leader**). With no shared memory and no shared clock, both are solved by exchanging messages.
+
+### Requirements for mutual exclusion
+
+- **Safety:** at most one process is in the critical section at any time.
+- **Liveness:** every request is eventually granted (no deadlock, no starvation).
+- **Fairness (ordering):** requests are granted in the order they were made, usually defined by happened-before or Lamport order.
+
+### Algorithms
+
+**Centralized.** One coordinator holds a queue. A process sends REQUEST, receives GRANT, and later sends RELEASE: **3 messages** per entry. It is simple and fair, but the coordinator is a single point of failure and a bottleneck.
+
+**Ricart-Agrawala (distributed).** To enter, process $P_i$ timestamps a request with a Lamport clock value and sends REQUEST$(t_i, i)$ to the other $N-1$ processes; it enters after receiving a REPLY from all of them. A process that receives a request answers as follows:
+
+- if it is in the critical section (HELD), it **defers** the reply until it leaves;
+- if it does not want the section (RELEASED), it replies immediately;
+- if it also wants the section (WANTED), it compares timestamps as pairs $(t, \text{id})$: the **smaller pair wins**. It replies immediately if the other request is smaller, and defers if its own is smaller.
+
+Cost: $N-1$ requests plus $N-1$ replies, so **$2(N-1)$ messages** per entry. Ties between equal timestamps are broken by process id, which makes the order total. The price is that all $N$ processes must be alive: one crashed process that never replies blocks everyone.
+
+**Token ring.** Processes form a logical ring and pass a unique token; only the holder may enter. Cost per entry ranges from 0 to $N-1$ messages, and the token circulates even when nobody wants it. Losing the token (a crashed holder) requires detection and regeneration.
+
+### Leader election
+
+Election algorithms pick one process, normally the one with the highest id, and tell everyone.
+
+**Bully algorithm.** A process $P$ that notices the leader is gone sends ELECTION to all processes with *higher* ids. If none answers, $P$ wins and sends COORDINATOR to all. If a higher process answers OK, $P$ stops, and that process starts its own election. The highest-id live process always ends up as leader (it "bullies" the others).
+
+**Ring election (Chang-Roberts).** Processes are in a ring and each sends its id clockwise. A process receiving id $x$ forwards it if $x$ is larger than its own id, discards it if smaller, and declares itself leader if $x$ equals its own id (the message went all the way around). If all processes start simultaneously, the number of election messages is between $2N-1$ and $N(N+1)/2$ for $N$ distinct ids: the best case has ids increasing in the direction of travel, the worst case ids decreasing.
+
+```python
+def hops(ids, i):
+    """Messages caused by the id at ring position i."""
+    n = len(ids)
+    for k in range(1, n + 1):
+        j = (i + k) % n
+        if ids[j] > ids[i] or k == n:
+            return k
+```
+
+In real systems, leaders are usually chosen with a consensus-based coordination service and a **lease** (a leadership grant that expires unless renewed), which handles the delayed-message and partition cases that simple election algorithms ignore (Lessons 7 and 8).
+
+@example
+title: Ricart-Agrawala conflict
+problem: Processes P1 and P2 both want the critical section. P1's request is $(5, 1)$ and P2's request is $(5, 2)$. Each receives the other's request while WANTED. Who enters first, and who defers?
+step: Compare the pairs: $(5, 1) < (5, 2)$ because the timestamps tie and 1 < 2, so P1's request wins.
+step: P2 receives $(5, 1)$ from P1: P1's request is smaller than P2's own, so P2 replies immediately.
+step: P1 receives $(5, 2)$ from P2: P2's request is larger than its own, so P1 defers its reply.
+step: P1 has all replies and enters. When P1 leaves, it sends the deferred reply, and P2 enters.
+answer: P1 enters first; P2 waits for the deferred reply
+
+@example
+title: Ring election message count
+problem: Six processes sit on a ring in the order of travel with ids 4, 6, 2, 5, 1, 3. All start an election at once. How many election messages are sent (not counting the final announcement)?
+step: Each id travels clockwise until it reaches a process with a larger id (discarded there, counting that last hop), or goes all the way around.
+step: 4 goes to 6: 1 message. 6 passes 2, 5, 1, 3, 4 and returns to itself: 6 messages.
+step: 2 goes to 5: 1. 5 goes to 1 (smaller, forwarded), 3 (smaller, forwarded), 4 (smaller, forwarded), then 6 (larger, discarded): 4 messages.
+step: 1 goes to 3: 1. 3 goes to 4: 1.
+step: Total: $1 + 6 + 1 + 4 + 1 + 1 = 14$. The elected leader is 6.
+answer: 14
+
+@mistakes
+- Granting access to a process that holds a smaller Lamport timestamp than your own pending request, or ignoring the process-id tie-breaker.
+- Counting Ricart-Agrawala cost as $N$ instead of $2(N-1)$, or forgetting that a crashed participant blocks it.
+- Thinking the bully algorithm lets a lower-id process win: the highest-id live process always wins.
+- Assuming simple election algorithms handle network partitions; they can elect two leaders, one per side.
+
+@practice mc
+prompt: What is the main weakness of the centralized mutual exclusion algorithm with one coordinator?
+choice: It can allow two processes into the critical section at once
+choice*: The coordinator is a single point of failure and a performance bottleneck
+choice: It needs $2(N-1)$ messages per entry
+choice: It cannot grant requests in the order they arrived
+hint: Think about what happens when the coordinator crashes.
+solution: The coordinator serializes everything, so it is both a bottleneck and a single point of failure. Safety holds, the cost is only 3 messages per entry, and requests are queued in arrival order.
+
+@practice num
+prompt: With the Ricart-Agrawala algorithm in a system of 8 processes, how many messages (requests plus replies) does one process need to enter the critical section once, assuming no other process wants it?
+answer: 14
+check: 2 * (8 - 1)
+hint: A request goes to every other process, and each sends back a reply.
+solution: There are $N - 1 = 7$ requests and 7 replies, so $2 \times 7 = 14$ messages.
+
+@practice code
+prompt: Write `should_reply(state, mine, theirs)` for a Ricart-Agrawala process. `state` is `"RELEASED"`, `"WANTED"` or `"HELD"`. `mine` is this process's own request as a tuple `(timestamp, process_id)` (ignored unless `state` is `"WANTED"`), and `theirs` is the incoming request tuple. Return `True` if the process should reply immediately and `False` if it should defer the reply. When both want the section, the lexicographically smaller tuple wins, so the process replies only if `theirs` is smaller than `mine`.
+starter:
+```python
+def should_reply(state, mine, theirs):
+    pass
+```
+tests:
+```python
+assert should_reply("RELEASED", None, (3, 2)) is True
+assert should_reply("HELD", (1, 1), (9, 2)) is False
+assert should_reply("WANTED", (5, 2), (5, 1)) is True
+assert should_reply("WANTED", (5, 1), (5, 2)) is False
+assert should_reply("WANTED", (4, 3), (6, 1)) is False
+assert should_reply("WANTED", (7, 1), (6, 3)) is True
+```
+model:
+```python
+def should_reply(state, mine, theirs):
+    if state == "RELEASED":
+        return True
+    if state == "HELD":
+        return False
+    return theirs < mine
+```
+hint: Two of the three states decide the answer without comparing timestamps.
+hint: For `"WANTED"`, tuples compare lexicographically in Python, which is exactly the timestamp-then-id rule: reply when `theirs < mine`.
+solution: RELEASED replies at once, HELD defers, and WANTED replies only if the other request has priority, that is `theirs < mine` as `(timestamp, id)` tuples.
+
+@practice code
+prompt: Write `ring_messages(ids)` returning the total number of election messages in the Chang-Roberts algorithm when every process starts an election simultaneously. `ids` is a list of distinct integers in the order of travel around the ring (the last process sends to the first). Each id travels from its owner to the next process with a larger id (that final hop counts as a message, and the message is then discarded); the largest id travels the whole way round back to itself, which counts as `len(ids)` messages.
+starter:
+```python
+def ring_messages(ids):
+    pass
+```
+tests:
+```python
+assert ring_messages([3, 1, 2]) == 5
+assert ring_messages([1, 2, 3]) == 5
+assert ring_messages([3, 2, 1]) == 6
+assert ring_messages([4, 6, 2, 5, 1, 3]) == 14
+assert ring_messages([7]) == 1
+assert ring_messages([5, 4, 3, 2, 1]) == 15
+```
+model:
+```python
+def ring_messages(ids):
+    n = len(ids)
+    total = 0
+    for i in range(n):
+        for k in range(1, n + 1):
+            j = (i + k) % n
+            if ids[j] > ids[i] or k == n:
+                total += k
+                break
+    return total
+```
+hint: For each position, walk clockwise and count hops until you meet a larger id.
+hint: Use `(i + k) % n` for the position `k` steps ahead. The largest id never meets a larger one, so stop at `k == n`.
+solution: For each starting position, count steps until a larger id is found, capped at `n` for the maximum. Summing gives the total; descending ids give $n(n+1)/2$ messages, for example 15 for five processes.
+
+@practice self
+prompt: Block deliverable: assign Lamport and vector timestamps to a trace. There are three processes P1, P2, P3 with vectors written as [P1, P2, P3]. P1: event a (local), event b (send m to P2), event c (local). P2: event d (local), event e (receive m), event f (send n to P3). P3: event g (local), event h (receive n). Give the Lamport timestamp and the vector timestamp of every event, then name one pair of concurrent events and justify it with the vectors.
+hint: On a receive take the maximum first, then add 1 (to the counter, or to your own vector entry).
+solution: Lamport: a=1, b=2, c=3; d=1, e=max(1,2)+1=3, f=4; g=1, h=max(1,4)+1=5. Vectors: a=[1,0,0], b=[2,0,0], c=[3,0,0]; d=[0,1,0], e: max([0,1,0],[2,0,0])=[2,1,0] then own entry +1 gives [2,2,0], f=[2,3,0]; g=[0,0,1], h: max([0,0,1],[2,3,0])=[2,3,1], own entry +1 gives [2,3,2]. Concurrent pair: c=[3,0,0] and f=[2,3,0]: c has the larger first entry (3 > 2) and f the larger second entry (3 > 0), so neither is before the other. (Note that the Lamport timestamps 3 < 4 would wrongly suggest c came before f.)
+rubric: All eight Lamport timestamps are correct.
+rubric: All eight vectors are correct, including max-then-increment on receives e and h.
+rubric: Names a truly concurrent pair (such as c and f, or c and h) and justifies it by showing one larger entry on each side.
+
+@quiz code
+prompt: Write `token_ring_order(n, holder, wanting)`. A ring has processes `0` to `n - 1`, and the token passes from each process to the next one (`i` to `(i + 1) % n`). The token starts at process `holder`. Every process in the set `wanting` enters the critical section once, when the token reaches it (the holder itself first if it wants to). Return the list of processes in the order they enter.
+starter:
+```python
+def token_ring_order(n, holder, wanting):
+    pass
+```
+tests:
+```python
+assert token_ring_order(5, 0, {1, 3}) == [1, 3]
+assert token_ring_order(5, 2, {0, 3, 4}) == [3, 4, 0]
+assert token_ring_order(4, 1, {1, 0}) == [1, 0]
+assert token_ring_order(3, 0, set()) == []
+assert token_ring_order(6, 4, {3, 5, 4}) == [4, 5, 3]
+```
+model:
+```python
+def token_ring_order(n, holder, wanting):
+    order = []
+    for k in range(n):
+        p = (holder + k) % n
+        if p in wanting:
+            order.append(p)
+    return order
+```
+hint: Visit the processes in the order the token reaches them, starting at `holder`.
+hint: Use `(holder + k) % n` for `k` from 0 to `n - 1` and keep those that are in `wanting`.
+solution: The token visits `holder`, `holder + 1`, and so on around the ring once; collecting the visited processes that want the section gives the entry order.
+
+@quiz mc
+prompt: In the bully algorithm, process 3 starts an election in a group of live processes 1, 2, 3, 5 and 6 (process 7 has just crashed). Which process becomes the leader?
+choice: 3, because it started the election
+choice: 1, because it has the lowest id
+choice*: 6, because it is the highest-id live process
+choice: 7, because it was the previous leader
+hint: The winner is always the live process with the highest id.
+solution: Process 3 sends ELECTION to 5 and 6, which answer and start their own elections; eventually 6, which hears no answer from a higher live process, announces itself as leader. Process 7 is crashed.

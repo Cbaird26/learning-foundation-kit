@@ -1,0 +1,198 @@
+@lesson
+title: Test design: edge cases and boundaries
+summary: Choose a small set of test inputs that finds real bugs by using equivalence classes, boundary values and a checklist of typical edge cases.
+objective: Partition inputs into equivalence classes and pick one representative from each.
+objective: Apply boundary value analysis to find off-by-one errors.
+objective: Use a checklist of edge cases (empty, one, duplicates, negatives, invalid input) for any function.
+reading: Test-Driven Development with Python, the sections on what to test and on "useful TDD concepts" (such as keeping tests minimal and avoiding testing constants); look up "boundary value analysis" and "equivalence partitioning".
+@article
+You cannot test every input. A function that takes two 32-bit integers has about $2^{64}$ possible calls. Test design is the skill of choosing a **small** set of inputs that is most likely to expose bugs. Two classic techniques, equivalence partitioning and boundary value analysis, get you most of the way, and a checklist of edge cases gets you the rest.
+
+### Equivalence classes
+
+Inputs that the code should treat the same way form an **equivalence class**. If a shipping rule says "orders under 50 pay 7, orders of 50 or more ship free", there are two classes: below 50 and 50 or above. Testing 12, 31 and 44 adds little over testing one value from the class. Pick one representative per class, plus one for each *invalid* class (a negative total, a missing value, a string where a number belongs). That gives you the minimum set that covers every behavior.
+
+### Boundary values
+
+Bugs live at the edges of classes, because that is where programmers write `<` when they meant `<=`. For every boundary test the value **on** it and the values **just either side**. For "under 50 ships for 7": test 49 (pays), 50 (free) and, to catch an accidental `<= 50`, you must have 50 in your tests. The classic rule is to test $b-1$, $b$ and $b+1$ for each boundary $b$; for an inclusive range 18 to 65 the interesting values are 17, 18, 65 and 66.
+
+The same idea applies to sizes: empty, one element, two elements, and the maximum your code claims to support. Off-by-one errors in loops and slices (`range(n)` versus `range(n + 1)`, `xs[1:]` versus `xs[:1]`) show up almost entirely at these sizes.
+
+### An edge-case checklist
+
+When you read a function, ask what happens with:
+
+- **Empty or zero**: an empty list, empty string, `0`, `None` where allowed.
+- **One element**, and **two** (the smallest case where ordering and duplicates matter).
+- **Duplicates** and ties (two items with the same score, repeated keys).
+- **Negative numbers**, and numbers that overflow other languages (Python integers do not overflow, but floats lose precision).
+- **Unsorted** versus sorted input, and input that is already in the target state.
+- **Unicode and whitespace**: accented characters, leading or trailing spaces, tabs, newlines.
+- **Invalid input**: wrong type, out-of-range value. Decide the contract, *raise* or *return a default*, and test that decision.
+- **Mutation**: does the function modify its argument? A test can assert the input is unchanged.
+
+### Test the contract, not the implementation
+
+A test should check what the function promises, not how it does it. If `median` promises "the middle value of the numbers", a test that depends on whether it sorts a copy or in place is brittle, but a test that the caller's list is not modified is part of the contract. Whenever you are unsure what the correct behavior is at an edge, that is a design question to settle with the team or the specification, and the test is where you write the answer down.
+
+### Floating point
+
+Floats are approximate: `0.1 + 0.2 == 0.3` is `False`. Compare with `pytest.approx` (or `math.isclose`) with a tolerance that fits the problem, and use `decimal.Decimal` or integer cents for money.
+
+### How many tests?
+
+Enough that each class and each boundary is covered, not more. If you have twenty tests with different "normal" values that all take the same path through the code, you have one test and nineteen maintenance costs. Combine tables of cases with `@pytest.mark.parametrize` so adding a case is one line.
+
+@example
+title: Boundary tests for a shipping rule
+problem: `shipping(total)` returns 7 when `total < 50`, and 0 when `total >= 50`. Negative totals raise `ValueError`. Choose the tests.
+step: Equivalence classes: negative (invalid), from 0 up to but not including 50, and 50 or more. One representative each: `-1`, `20`, `80`.
+step: Boundaries: the value 50 itself and its neighbors, 49 and 51. Also the lower edge of the valid range, 0 (valid, so it pays 7) and -1 (invalid).
+step: As a table: `(0, 7)`, `(49, 7)`, `(50, 0)`, `(51, 0)`, `(80, 0)`, plus a `pytest.raises(ValueError)` test for `-1`.
+step: The case that catches the classic bug is `50`: code written as `total <= 50` returns 7 there, so only a test on the boundary itself finds it.
+answer: Tests at -1 (error), 0, 49, 50, 51 and one larger value, with 50 being the one that catches `<` versus `<=`.
+
+@example
+title: Finding the empty-input bug
+problem: A teammate wrote `last_word(text)` that returns the last word of a sentence. Which edge cases do you try?
+
+```python
+def last_word(text):
+    return text.split(" ")[-1]
+```
+step: Normal case: `"hello brave world"` gives `"world"`. It passes.
+step: Whitespace: `"hello world "` (trailing space) gives `""`, because `split(" ")` yields an empty last piece. This is a bug.
+step: Empty input: `""` gives `""`; is that the intended contract, or should it raise? Ask, then encode the answer in a test.
+step: Fix the whitespace bug with `text.split()`, which splits on any run of whitespace and drops empty pieces, and decide that blank text raises `ValueError`.
+answer: The trailing space and the empty string are the edge cases that expose the bug and the missing contract.
+
+@mistakes
+- Testing only "happy path" values in the middle of a range and never the boundaries where off-by-one errors live.
+- Writing many tests of the same equivalence class and none for the invalid classes.
+- Leaving the behavior at an edge undefined (what should an empty list return?) instead of deciding and testing it.
+- Comparing floating-point results with `==` and getting flaky or wrong tests.
+
+@practice mc
+prompt: A discount applies to orders of 100 or more. Which set of inputs is the best minimal set for finding an off-by-one error in the comparison?
+choice: 10, 20, 30
+choice*: 99, 100, 101
+choice: 500, 1000, 5000
+choice: 100, 100, 100
+hint: Where do `<` and `<=` give different answers?
+solution: The values 99, 100 and 101 sit on and either side of the boundary, so `>=` versus `>` and the other off-by-one mistakes all change at least one result. The other sets stay inside one class or repeat the same value.
+
+@practice text
+prompt: What does this program print? Type the output exactly, one line per print.
+
+```python
+nums = [10, 20, 30, 40]
+print(nums[1:3])
+print(nums[:0])
+print(nums[-1:])
+print(nums[4:])
+```
+answer:
+```
+[20, 30]
+[]
+[40]
+[]
+```
+check: run("nums = [10, 20, 30, 40]\nprint(nums[1:3])\nprint(nums[:0])\nprint(nums[-1:])\nprint(nums[4:])\n")
+hint: A slice `a:b` includes index `a` and excludes index `b`; slices never raise `IndexError`.
+solution: `nums[1:3]` is indexes 1 and 2; `nums[:0]` stops before index 0, so it is empty; `nums[-1:]` starts at the last element; `nums[4:]` starts at the length, giving an empty list rather than an error. These are the boundaries where slicing off-by-ones appear.
+
+@practice code
+prompt: Write `age_group(age)`: `0` to `12` returns `"child"`, `13` to `19` returns `"teen"`, `20` to `64` returns `"adult"`, `65` and over returns `"senior"`. A negative age raises `ValueError`.
+starter:
+```python
+def age_group(age):
+    pass
+```
+tests:
+```python
+assert age_group(0) == "child"
+assert age_group(12) == "child"
+assert age_group(13) == "teen"
+assert age_group(19) == "teen"
+assert age_group(20) == "adult"
+assert age_group(64) == "adult"
+assert age_group(65) == "senior"
+assert age_group(110) == "senior"
+assert raises(ValueError, age_group, -1)
+```
+model:
+```python
+def age_group(age):
+    if age < 0:
+        raise ValueError("age must not be negative")
+    if age <= 12:
+        return "child"
+    if age <= 19:
+        return "teen"
+    if age <= 64:
+        return "adult"
+    return "senior"
+```
+hint: Handle the invalid class (negative) first, then test from the youngest group up.
+hint: Use the upper bound of each group (`<= 12`, `<= 19`, `<= 64`) so the boundaries are exactly the ones in the specification.
+solution: Reject negatives, then use an `if` chain on the upper bound of each group, falling through to `"senior"`. The tests sit on every boundary (12/13, 19/20, 64/65), which is where a wrong `<` or `<=` would show up.
+
+@practice ms
+prompt: Which of these are good edge cases to include when testing `average(nums)`, which returns the mean of a list of numbers?
+choice*: An empty list
+choice*: A list with a single number
+choice*: A list mixing negative and positive numbers that sum to zero
+choice: The same ordinary list again with different variable names
+choice: A list with one million elements in every unit test run
+hint: Pick the inputs that put the code on different paths or at the edge of its contract.
+solution: The empty list (division by zero, or a contract decision), a single element, and cancelling negatives are classic edges. A renamed copy of a normal case tests nothing new, and a huge input slows the unit suite without testing a new behavior.
+
+@practice self
+prompt: Here is a specification: `parse_percent(text)` converts strings such as `"45%"`, `" 7 %"` and `"100%"` to an integer 45, 7 and 100. The value must be between 0 and 100 inclusive; anything else raises `ValueError`. List at least eight test cases (input and expected result or exception), grouped by equivalence class, and say which ones are boundary tests.
+hint: Group inputs into classes first, then add the values on each boundary.
+solution: Valid, ordinary: `"45%"` gives 45, and `" 7 %"` gives 7 (whitespace around the number and before the percent sign). Boundaries of the valid range: `"0%"` gives 0 and `"100%"` gives 100 (on the boundaries); `"-1%"` and `"101%"` raise `ValueError` (just outside). Invalid format: `""`, `"%"`, `"45"` (no percent sign), `"4 5%"` (space inside the number) and `"abc%"` each raise `ValueError`. Other edges: `"45.5%"` (decision needed: the contract says integer, so it raises `ValueError`) and `"045%"` (leading zero: gives 45). Boundary tests are `0%`, `100%`, `-1%` and `101%`; each equivalence class (valid, below range, above range, malformed) has at least one representative, and the ambiguous ones (`45.5%`, `045%`) are flagged as decisions to confirm and then to pin down in tests.
+rubric: Includes all four boundary cases around the valid range (0, 100, -1, 101).
+rubric: Covers malformed input classes (empty, missing percent sign, non-numeric text) with the expected exception.
+rubric: Identifies at least one ambiguous case (decimals, leading zeros or inner spaces) and states the decision to make instead of ignoring it.
+rubric: Groups tests by equivalence class and labels which are boundary tests.
+
+@quiz code
+prompt: Write `median(nums)` that returns the median of a list of numbers: the middle value when the length is odd, the average of the two middle values when it is even. An empty list raises `ValueError`. The function must **not** modify the list it is given.
+starter:
+```python
+def median(nums):
+    pass
+```
+tests:
+```python
+assert median([3, 1, 2]) == 2
+assert median([4, 1, 3, 2]) == 2.5
+assert median([7]) == 7
+assert median([5, 5, 5, 5]) == 5
+assert raises(ValueError, median, [])
+xs = [3, 1, 2]
+median(xs)
+assert xs == [3, 1, 2]
+```
+model:
+```python
+def median(nums):
+    if not nums:
+        raise ValueError("median of empty list")
+    ordered = sorted(nums)
+    mid = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+```
+hint: Sort a copy (use `sorted`, not `list.sort`) so the caller's list is untouched.
+hint: For an odd length the middle index is `len // 2`; for an even length average the elements at `mid - 1` and `mid`.
+solution: Raise on empty input, sort a copy with `sorted`, then pick the middle element for odd lengths or average the two middle elements for even lengths. The tests cover odd, even, single, all-equal, empty and the no-mutation contract.
+
+@quiz num
+prompt: A function accepts ages in the inclusive range 18 to 65. For each end of the range you test the first value outside the range and the end value itself. How many distinct input values does that give in total?
+answer: 4
+check: len({18 - 1, 18, 65, 65 + 1})
+hint: Write the two values at the low end and the two at the high end.
+solution: At the low end you test 17 (just outside) and 18 (the boundary); at the high end 65 (the boundary) and 66 (just outside). That is 4 values. Adding the interior neighbors 19 and 64 gives the three-values-per-boundary version of the rule, which is 6.

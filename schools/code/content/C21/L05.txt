@@ -1,0 +1,201 @@
+@lesson
+title: Replication
+summary: Compare primary-backup, state machine, chain and quorum replication, and compute quorum sizes and replica behavior under failure.
+objective: Explain why systems replicate data and compare synchronous and asynchronous primary-backup replication.
+objective: Describe state machine replication and why it requires deterministic operations applied in the same order.
+objective: Choose N, W and R for quorum replication and decide whether reads see the latest write.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 7 "Consistency and replication" (the sections on replication management and consistency protocols).
+
+@article
+**Replication** keeps copies of the same data or service on several machines. It serves three goals: **availability** (the service survives crashes), **performance** (reads served by nearby or many replicas), and **durability** (data survives the loss of a disk or a site). The price is the central problem of the next lessons: keeping the copies consistent while messages are delayed or lost and nodes crash.
+
+### Primary-backup
+
+One replica, the **primary**, accepts all writes and forwards them to the **backups**. Clients may read from the primary only, or from backups too.
+
+- **Synchronous** replication: the primary acknowledges a write only after the backups confirmed it. A failover loses no acknowledged write, but writes are slower and block if a backup is unreachable.
+- **Asynchronous** replication: the primary acknowledges immediately and ships changes later. Writes are fast, but a primary crash can **lose acknowledged writes**, and backups show **replication lag** (stale reads).
+
+Failover raises its own questions: who decides the primary is dead (a timeout may be wrong), and how do you prevent two nodes from both acting as primary (**split brain**)? Consensus (Lesson 7) is the clean answer.
+
+### State machine replication
+
+A service is a deterministic **state machine**: its state is a function of the sequence of commands applied. If every replica starts in the same state and applies the **same commands in the same order**, all replicas stay identical. The hard part is agreeing on the order, which is exactly what a consensus-based replicated log (Paxos, Raft) provides. Commands must be deterministic: no local clocks, no random numbers, no reading of external state during execution.
+
+```python
+def apply_log(log):
+    state = {}
+    for entry in log:
+        if entry[0] == "set":
+            state[entry[1]] = entry[2]
+        else:
+            state.pop(entry[1], None)
+    return state
+```
+
+### Chain replication
+
+Replicas form a chain. Writes enter at the **head** and propagate along the chain; the write is acknowledged when the **tail** has it, and reads are served by the tail. Because the tail has only fully replicated writes, reads are strongly consistent, and the work is spread across nodes.
+
+### Quorum replication
+
+With $N$ replicas, a write must be acknowledged by $W$ replicas and a read must contact $R$ replicas. If
+
+$$R + W > N,$$
+
+then every read quorum overlaps every write quorum in at least one replica, so a read contacts at least one replica holding the latest acknowledged write. Each stored value carries a **version** (a number, timestamp or vector clock) so the reader returns the value with the highest version. With $R + W \le N$ a read may miss the latest write.
+
+Typical choices for $N = 3$: $W=2, R=2$ (balanced, tolerates one failure for both); $W=3, R=1$ (fast reads, writes need all replicas); $W=1, R=3$ (fast writes). Quorum systems with $R+W>N$ are not automatically linearizable: concurrent writes, failed writes that landed on some replicas, and **sloppy quorums** (using substitute nodes during failures) can still expose stale or conflicting values, which is why repair mechanisms exist: **read repair** (the reader updates stale replicas it noticed) and **anti-entropy** (background comparison of replicas).
+
+Replicas can tolerate $N - W$ failures for writes and $N - R$ for reads.
+
+@example
+title: Replication lag in asynchronous primary-backup
+problem: A primary acknowledges writes immediately and ships each write to its backup one step later. The client writes x=1, then x=2, then the primary crashes before shipping the second write, and the backup is promoted. What does a client read, and what was lost?
+step: After `write(x, 1)` the primary replies to the client and sends the update to the backup, which applies it: backup x is 1.
+step: After `write(x, 2)` the primary replies immediately. It crashes before the update leaves.
+step: The backup is promoted. Its state still has x=1.
+step: A read returns 1. The acknowledged write x=2 is lost. Synchronous replication would not have acknowledged x=2 until the backup had it.
+answer: reads 1; the acknowledged write x=2 is lost
+
+@example
+title: Choosing quorum sizes
+problem: With N = 5, writes use W = 4. What is the smallest R that guarantees reads see the latest acknowledged write, and how many replica failures can reads and writes each tolerate?
+step: We need $R + W > N$, so $R + 4 > 5$ and $R \ge 2$. The smallest is 2.
+step: Writes tolerate $N - W = 5 - 4 = 1$ failed replica.
+step: Reads tolerate $N - R = 5 - 2 = 3$ failed replicas.
+step: This configuration favors reads at the cost of fragile writes; $W = 3, R = 3$ balances both at two tolerated failures each.
+
+@mistakes
+- Assuming asynchronous replication never loses acknowledged writes after a primary failure.
+- Applying non-deterministic commands (current time, random values) on each replica of a state machine, so replicas diverge.
+- Believing $R + W > N$ alone makes a quorum store linearizable; concurrent writes and sloppy quorums break that.
+- Computing failure tolerance from the wrong quorum: writes tolerate $N - W$ failures and reads $N - R$.
+
+@practice mc
+prompt: A primary acknowledges each write to the client before sending it to its backups. The primary crashes and a backup takes over. What can have happened?
+choice: Nothing; backups always have every write the primary acknowledged
+choice*: Some acknowledged writes may be missing on the new primary
+choice: The backups will contain writes that the primary never received
+choice: Reads from the new primary can never be stale
+hint: Acknowledgment happened before replication.
+solution: With asynchronous replication, a write acknowledged before it reached the backup can be lost when the primary crashes. This is the durability price of low write latency.
+
+@practice num
+prompt: A quorum-replicated store has N = 5 replicas and uses W = 3 and R = 3. What is the maximum number of replicas that can be down while both reads and writes still succeed?
+answer: 2
+check: 5 - max(3, 3)
+hint: Writes need 3 live replicas and reads need 3 live replicas.
+solution: Both operations need 3 live replicas, so up to $5 - 3 = 2$ can be down.
+
+@practice code
+prompt: Write `apply_log(log)` for a replicated key-value state machine. `log` is a list of commands: `("set", key, value)` sets a key and `("del", key)` removes it (removing a missing key does nothing). Apply them in order starting from an empty dict and return the final dict.
+starter:
+```python
+def apply_log(log):
+    pass
+```
+tests:
+```python
+assert apply_log([]) == {}
+assert apply_log([("set", "a", 1), ("set", "b", 2)]) == {"a": 1, "b": 2}
+assert apply_log([("set", "a", 1), ("set", "a", 5)]) == {"a": 5}
+assert apply_log([("set", "a", 1), ("del", "a")]) == {}
+assert apply_log([("del", "z"), ("set", "z", 3)]) == {"z": 3}
+assert apply_log([("set", "a", 1), ("del", "a"), ("set", "a", 2)]) == {"a": 2}
+```
+model:
+```python
+def apply_log(log):
+    state = {}
+    for entry in log:
+        if entry[0] == "set":
+            state[entry[1]] = entry[2]
+        else:
+            state.pop(entry[1], None)
+    return state
+```
+hint: Start with an empty dict and process the commands in order.
+hint: Distinguish the two commands by `entry[0]`; `dict.pop(key, None)` removes a key without an error when it is missing.
+solution: Replaying the log in order is the heart of state machine replication: two replicas given the same log end in the same state. `pop(key, None)` makes deleting a missing key a no-op.
+
+@practice code
+prompt: Write `quorum_read(responses)`. `responses` is a non-empty list of `(version, value)` pairs returned by the replicas contacted in a read quorum. Return the value that has the highest version number (versions in one call are distinct).
+starter:
+```python
+def quorum_read(responses):
+    pass
+```
+tests:
+```python
+assert quorum_read([(3, "c"), (5, "e"), (4, "d")]) == "e"
+assert quorum_read([(1, "only")]) == "only"
+assert quorum_read([(7, "new"), (2, "old")]) == "new"
+assert quorum_read([(0, None), (1, "x")]) == "x"
+assert quorum_read([(2, 0), (1, 99)]) == 0
+```
+model:
+```python
+def quorum_read(responses):
+    return max(responses, key=lambda r: r[0])[1]
+```
+hint: You want the pair with the largest first element.
+hint: `max(responses, key=lambda r: r[0])` finds that pair; then return its second element. Do not compare the values themselves.
+solution: A read quorum overlaps the last write quorum, so the highest version among the responses is the latest write. Return its value, using the version only as the key for `max`.
+
+@practice text
+prompt: This program models asynchronous replication. Type exactly what it prints.
+
+```python
+primary = {}
+backup = {}
+log = []
+
+def write(k, v):
+    primary[k] = v
+    log.append((k, v))
+
+write("x", 1)
+write("x", 2)
+for k, v in log[:1]:
+    backup[k] = v
+print(primary["x"], backup["x"])
+```
+answer: 2 1
+check: run("primary = {}\nbackup = {}\nlog = []\n\ndef write(k, v):\n    primary[k] = v\n    log.append((k, v))\n\nwrite('x', 1)\nwrite('x', 2)\nfor k, v in log[:1]:\n    backup[k] = v\nprint(primary['x'], backup['x'])\n")
+hint: Only the first log entry is shipped to the backup.
+solution: The primary applied both writes (`x = 2`), but only `log[:1]`, the first write, reached the backup, so it holds `x = 1`. The program prints `2 1`, a stale backup.
+
+@quiz code
+prompt: Write `min_read_quorum(n, w)` returning the smallest read quorum size `r` (an integer from 1 to `n`) such that `r + w > n`, for a store with `n` replicas and write quorum `w` (`1 <= w <= n`).
+starter:
+```python
+def min_read_quorum(n, w):
+    pass
+```
+tests:
+```python
+assert min_read_quorum(5, 3) == 3
+assert min_read_quorum(3, 3) == 1
+assert min_read_quorum(3, 1) == 3
+assert min_read_quorum(7, 4) == 4
+assert min_read_quorum(1, 1) == 1
+```
+model:
+```python
+def min_read_quorum(n, w):
+    return n - w + 1
+```
+hint: Solve $r + w > n$ for the smallest integer $r$.
+hint: The smallest integer greater than $n - w$ is $n - w + 1$.
+solution: $r + w > n$ means $r > n - w$, so the smallest integer is $r = n - w + 1$. With $w = n$ a single replica suffices; with $w = 1$ every replica must be read.
+
+@quiz ms
+prompt: Which statements about replication are true?
+choice*: Synchronous primary-backup replication does not lose acknowledged writes when the primary fails (assuming at most the primary fails).
+choice*: State machine replication needs commands to be deterministic.
+choice: If $R + W \le N$, every read is guaranteed to see the latest write.
+choice*: Chain replication serves reads from the tail, which holds only fully replicated writes.
+choice: Asynchronous replication gives lower consistency but also lower write latency, so it never loses data.
+hint: Check each claim against the acknowledgment rule or the quorum inequality.
+solution: Synchronous replication acknowledges only after backups have the write; deterministic commands in the same order keep replicas identical; the tail of a chain has everything that was acknowledged. $R+W \le N$ allows missing the latest write, and asynchronous replication can lose acknowledged writes.

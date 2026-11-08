@@ -1,0 +1,213 @@
+@lesson
+title: Databases at scale: replication and sharding
+summary: Scale a database for reads with replication and for writes and size with sharding, and reason about lag, failover, shard keys and resharding.
+objective: Explain leader-follower replication, synchronous versus asynchronous replication, and replication lag.
+objective: Compare range, hash and directory sharding and choose a shard key from the access pattern.
+objective: Explain how consistent hashing limits data movement when shards are added or removed.
+reading: The System Design Primer, the sections "Database", "Replication" (master-slave and master-master), "Federation", "Sharding" and "Denormalization".
+@article
+A single database server eventually runs out of one of four things: read capacity, write capacity, storage, or availability. Before you split anything, do the cheap things: add indexes, fix slow queries, cache reads (last week), and buy a bigger machine (a 2 TB database often still fits on one). When you outgrow that, two techniques do different jobs. **Replication** keeps copies of the same data on several machines: it scales **reads** and improves **availability**. **Sharding** (horizontal partitioning) splits the data across machines: it scales **writes and storage**.
+
+### Leader-follower replication
+
+In the common design, one **leader** (primary) accepts all writes and ships a log of changes to **followers** (replicas). Reads can go to followers. If the leader fails, a follower is promoted (**failover**).
+
+- **Asynchronous replication**: the leader acknowledges a write immediately and followers catch up later. Fast, but a leader crash can lose the last few writes, and followers can be behind.
+- **Synchronous replication**: the leader waits for at least one follower to confirm before acknowledging. No acknowledged write is lost on failover, but a slow or dead follower slows or blocks writes. A common compromise is **semi-synchronous**: wait for one follower, let the others be asynchronous.
+
+The delay between the leader and a follower is **replication lag**. It causes visible anomalies:
+
+- **Read-your-writes violations**: a user updates their profile, the redirect reads from a lagging follower, and the old value appears. Fixes: read from the leader for a short time after a write (or for data the user just changed), or track a replication position and read only from followers that have reached it.
+- **Monotonic read violations**: two reads go to different followers and time appears to run backwards. Fix: pin a user's session to one follower.
+
+Failover has its own traps: choosing the follower that is furthest behind loses data; a **split brain** (two nodes believe they are the leader) corrupts data, so failover needs a reliable way to ensure the old leader stops accepting writes (fencing).
+
+### Sharding
+
+When writes or data exceed one machine, split rows into **shards**, each on its own database (usually itself replicated). A **shard key** determines which shard owns a row.
+
+| Scheme | How | Strength | Weakness |
+|---|---|---|---|
+| Range | key ranges (A-F, G-M, ...) or date ranges | Range scans are efficient | Hot spots, such as all new writes hitting the latest range |
+| Hash | `hash(key) mod N` or a ring | Even spread | Range queries touch every shard; naive mod-N reshuffles most keys when N changes |
+| Directory | a lookup table maps key to shard | Flexible, easy to move one tenant | The directory is a dependency and must be fast and highly available |
+
+**Choosing a shard key** is the central decision. A good key spreads load evenly (high cardinality, no hot values), keeps the data of a typical query together (so most queries hit one shard), and rarely changes. For a multi-tenant product `tenant_id` is natural; for a social app `user_id`; a bad choice is a timestamp or a low-cardinality field such as country.
+
+### Consistent hashing
+
+With `hash(key) mod N`, going from 4 to 5 shards changes the owner of about 80 percent of keys: a huge data migration. **Consistent hashing** places both shards and keys on a circular hash space; a key belongs to the first shard clockwise from it. Adding a shard takes keys only from its neighbors, about $1/N$ of all keys move, and removing one hands its keys to its neighbors. Each shard is given many **virtual nodes** (points on the ring) to smooth the balance and to let stronger machines own more points.
+
+### The costs of sharding
+
+- **Cross-shard queries** (a join, a global count) must fan out to all shards and merge results; avoid them on hot paths, or maintain a separate denormalized view.
+- **Cross-shard transactions** need distributed protocols (two-phase commit or sagas, week 8); design so that most transactions stay inside one shard.
+- **Hot keys**: one celebrity or one tenant can overload a single shard even with a good scheme; the fix is to split or cache that key.
+- **Resharding** is a project: plan for it from day one (many logical shards mapped onto fewer machines, so rebalancing means moving whole logical shards).
+- **Unique IDs** can no longer come from one auto-increment counter; use time-ordered ID generators or per-shard ranges.
+
+Shard late. Every sharded design is more complex to build, query and operate than a single, well-tuned replicated database.
+
+@example
+title: Read-your-writes with lag
+problem: A user changes their display name. The write goes to the leader; the redirected page load reads from a follower that is 800 ms behind and shows the old name. Explain and fix it.
+step: The write is acknowledged by the leader at time 0. With asynchronous replication, the follower applies it at about 0.8 s. A read at 0.1 s sees the old value.
+step: This is a read-your-writes violation: the user's own writes should be visible to them even if others see them a little later.
+step: Fix A: for 5 seconds (more than the typical lag) after any write by a user, route that user's profile reads to the leader.
+step: Fix B: the leader returns a log position with the write; the next read carries it and is sent to a follower only if the follower has applied at least that position, otherwise to the leader.
+step: Other users reading from followers may see the old name for a short time, which is acceptable here.
+answer: Route the writer's reads to the leader (or to a caught-up follower) after the write.
+
+@example
+title: How much moves with mod-N?
+problem: Records with ids 0 to 19 are assigned to shards with `id mod 4`. A fifth shard is added and the rule becomes `id mod 5`. What fraction of these 20 ids keep their shard?
+step: A key keeps its shard when `id mod 4 == id mod 5`.
+step: Check ids 0 to 3: each gives the same remainder under both rules, since the id is smaller than 4.
+step: Check ids 4 to 19: id 4 is 0 under mod 4 and 4 under mod 5; id 5 is 1 and 0; id 8 is 0 and 3; and so on. None of these match, because the two remainders agree only when `id mod 20` is below 4.
+step: Four of 20 ids keep their shard, so 80 percent move.
+step: With consistent hashing, about $1/5$ of keys (the new shard's share) would move, and every moved key goes to the new shard.
+answer: 20 percent stay; 80 percent move with mod-N, versus about 20 percent moved with consistent hashing.
+
+@mistakes
+- Reading from replicas immediately after a write and showing the user stale data (a read-your-writes violation).
+- Sharding by a monotonically increasing key such as a timestamp or auto-increment id, so all new writes land on one hot shard.
+- Using `hash(key) mod N` with N changing, which remaps most keys on every resize.
+- Sharding before exhausting simpler fixes (indexes, caching, replicas, bigger hardware), and then discovering that most queries span shards.
+
+@practice mc
+prompt: Users change their email address and are immediately redirected to a settings page that reads from a read replica. They sometimes see the old address. Which fix is best?
+choice: Switch the database to synchronous replication for all followers, accepting slower writes everywhere.
+choice*: Send that user's reads to the leader (or to a replica that has applied their write) for a short period after the write.
+choice: Add a second leader so writes are replicated twice as fast.
+choice: Increase the cache TTL on the settings page.
+hint: The problem is specific to a user reading their own recent write.
+solution: Routing the writer's reads to the leader, or to a follower known to be caught up, guarantees read-your-writes cheaply. Making all replication synchronous slows every write; extra leaders add conflicts; a longer cache TTL makes staleness worse.
+
+@practice code
+prompt: Implement a consistent-hash ring. The helper `_hash(text)` is provided in the starter. `HashRing(nodes, vnodes=50)` places each node on the ring at `vnodes` points, where point `i` for node `n` has the position `_hash(f"{n}#{i}")`. `get(key)` returns the node owning `key`: the node at the first ring position at or after `_hash(key)`, wrapping around to the start. `add(node)` and `remove(node)` change the membership. Nodes are strings.
+starter:
+```python
+import bisect
+import hashlib
+
+
+def _hash(text):
+    return int(hashlib.md5(text.encode()).hexdigest(), 16)
+
+
+class HashRing:
+    def __init__(self, nodes, vnodes=50):
+        pass
+
+    def add(self, node):
+        pass
+
+    def remove(self, node):
+        pass
+
+    def get(self, key):
+        pass
+```
+tests:
+```python
+ring = HashRing(["a", "b", "c"])
+keys = [f"user{i}" for i in range(300)]
+before = {k: ring.get(k) for k in keys}
+assert set(before.values()) == {"a", "b", "c"}
+ring.add("d")
+after = {k: ring.get(k) for k in keys}
+moved = [k for k in keys if before[k] != after[k]]
+assert 0 < len(moved) < 200
+assert all(after[k] == "d" for k in moved)
+ring.remove("d")
+assert {k: ring.get(k) for k in keys} == before
+assert HashRing(["solo"]).get("anything") == "solo"
+```
+model:
+```python
+import bisect
+import hashlib
+
+
+def _hash(text):
+    return int(hashlib.md5(text.encode()).hexdigest(), 16)
+
+
+class HashRing:
+    def __init__(self, nodes, vnodes=50):
+        self.vnodes = vnodes
+        self.ring = []
+        for node in nodes:
+            self.add(node)
+
+    def add(self, node):
+        for i in range(self.vnodes):
+            bisect.insort(self.ring, (_hash(f"{node}#{i}"), node))
+
+    def remove(self, node):
+        self.ring = [(h, n) for h, n in self.ring if n != node]
+
+    def get(self, key):
+        i = bisect.bisect(self.ring, (_hash(key), ""))
+        if i == len(self.ring):
+            i = 0
+        return self.ring[i][1]
+```
+hint: Keep a sorted list of `(position, node)` pairs and use `bisect` to find the first position at or after the key's hash.
+hint: If the index equals the length of the list, wrap around to index 0.
+solution: The ring is a sorted list of positions. Lookup uses binary search for the first position at least `_hash(key)`, wrapping to the start. The tests check the defining property: when node `d` joins, every key that moves goes to `d`, and removing it restores the old mapping. Lookup is $O(\log(N \cdot V))$ for $N$ nodes with $V$ virtual nodes each.
+
+@practice num
+prompt: A dataset is 18 TB. Each shard server stores at most 2 TB, but you plan to keep each shard no more than 70 percent full to leave room for growth and rebalancing. Assume the data spreads perfectly evenly. What is the minimum number of shards?
+answer: 13
+check: ceil(18/(2*0.7))
+hint: Usable space per shard is 70 percent of 2 TB.
+solution: Usable space per shard is $2 \times 0.7 = 1.4$ TB. $18 / 1.4 = 12.86$, which rounds up to 13 shards.
+
+@practice text
+prompt: What does this program print?
+
+```python
+ids = [7, 12, 20, 31, 45]
+same = 0
+for uid in ids:
+    if uid % 4 == uid % 5:
+        same += 1
+print(same)
+```
+answer: 1
+check: run("ids = [7, 12, 20, 31, 45]\nsame = 0\nfor uid in ids:\n    if uid % 4 == uid % 5:\n        same += 1\nprint(same)\n")
+hint: Compute `uid % 4` and `uid % 5` for each id and compare them.
+solution: Only 20 has the same remainder under both rules (0 and 0). The others differ: 7 gives 3 and 2, 12 gives 0 and 2, 31 gives 3 and 1, 45 gives 1 and 0. So one of five ids would keep its shard when going from 4 to 5 shards.
+
+@practice self
+prompt: An orders database is a single leader with one asynchronous follower. It holds 600 GB, handles 800 writes per second and 6,000 reads per second at peak, and the business says that losing an acknowledged order is unacceptable but a few seconds of downtime during failover is fine. Propose the replication setup: number and placement of replicas, sync mode, how reads are routed, how failover works, and what lag-related problems users could see and how you prevent them.
+hint: Start from the data-loss requirement, which decides synchronous versus asynchronous.
+solution: A model answer:
+
+- Topology: one leader and two followers in different availability zones from each other and the leader (three zones in total). Reads are 6,000 per second; two followers at a safe 3,000 reads per second each handle that, and the leader serves writes only (800 per second is well within one node).
+- Sync mode: semi-synchronous. The leader waits for one follower in another zone to confirm each commit before acknowledging; the other follower is asynchronous. This meets "no acknowledged order is lost" for a single failure, at the cost of one cross-zone round trip (about a millisecond) per write.
+- Read routing: product and order-history reads go to followers; reads right after a user's own write (order confirmation page) go to the leader or to a follower that has applied that write's log position.
+- Failover: an automatic controller with health checks and a majority vote (so network partitions do not cause two leaders) promotes the synchronous follower, which has every acknowledged write. The old leader is fenced so it cannot accept writes if it returns, and rejoins as a follower. Clients reconnect through a stable endpoint.
+- Lag problems: stale order lists and read-your-writes anomalies are prevented as above. Monitor replication lag and alert if it exceeds a few seconds; remove lagging followers from the read pool.
+- Not needed yet: sharding. 600 GB and 800 writes per second fit on one leader; revisit when writes or storage grow several times.
+rubric: Chooses a sync mode that satisfies the "no lost acknowledged order" requirement and states the write-latency cost.
+rubric: Places replicas in separate failure domains and checks that follower read capacity covers the 6,000 reads per second.
+rubric: Describes a failover mechanism that promotes a caught-up follower and prevents split brain (fencing or majority agreement).
+rubric: Identifies read-your-writes and lag anomalies and gives a concrete prevention, and explains why sharding is unnecessary at this size.
+
+@quiz mc
+prompt: An analytics service stores events in a table range-sharded by `created_at`, one shard per month. Insert rate is high, and almost all reads are for the last day. Users complain that inserts are slow while old shards sit idle. What is the best fix?
+choice: Add more read replicas to the oldest shards.
+choice: Shard by a smaller range, such as one shard per hour, which keeps the same pattern.
+choice*: Choose a shard key that spreads concurrent writes, such as a hash of the device id, and keep time as a secondary index or time bucket within each shard.
+choice: Move all events to one larger server so that there is no sharding.
+hint: Ask where the writes go at any given moment.
+solution: With time-range sharding every current write hits the newest shard, a hot spot. A hashed key such as the device id spreads writes across all shards while a time-ordered index inside each shard keeps recent-event queries efficient. Smaller ranges still send all new writes to one shard, and replicas of idle shards do nothing for write load.
+
+@quiz num
+prompt: Peak read traffic is 20,000 reads per second. Each replica serves at most 3,000 reads per second, and the leader serves no reads. What is the minimum number of replicas needed?
+answer: 7
+check: ceil(20000/3000)
+hint: Divide and round up.
+solution: $20{,}000 / 3{,}000 = 6.67$, rounded up to 7 replicas. In practice you would add one more so that losing a replica does not overload the rest.

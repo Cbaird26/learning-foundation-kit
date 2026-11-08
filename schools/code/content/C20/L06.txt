@@ -1,0 +1,347 @@
+@lesson
+title: The DOM and events
+summary: Select and change elements with the DOM API, respond to user events, and use event delegation to build an interactive to-do list.
+objective: Select, create, modify and remove DOM elements, using `textContent` rather than `innerHTML` for untrusted text.
+objective: Register event listeners and explain capturing, target and bubbling phases, `preventDefault` and `stopPropagation`.
+objective: Use event delegation and keep application state separate from the page.
+reading: MDN Web Docs: Learn web development, "Client-side web APIs" (Manipulating documents, and the introductory material on events in "JavaScript building blocks").
+@article
+The browser turns your HTML into the **Document Object Model (DOM)**: a tree of objects, one per element, attribute and piece of text. JavaScript changes the page by changing this tree, and the browser repaints. The entry point is the global `document`.
+
+### Selecting and changing elements
+
+```javascript
+const title = document.querySelector("h1");        // first match or null
+const items = document.querySelectorAll("li.todo"); // static NodeList
+title.textContent = "My tasks";
+title.classList.add("highlight");   // also remove(), toggle(), contains()
+title.setAttribute("title", "Hello");
+```
+
+`querySelector` and `querySelectorAll` take the same selectors as CSS (week 3); `getElementById` is the faster special case. `dataset` reads `data-*` attributes (`el.dataset.id` for `data-id`). To change appearance, prefer toggling classes defined in your CSS over writing `element.style`.
+
+### Creating elements and the `innerHTML` danger
+
+```javascript
+const li = document.createElement("li");
+li.textContent = userText;       // inserted as text
+list.append(li);                 // add as last child
+li.remove();                     // delete from the page
+```
+
+`textContent` always inserts **text**: `<script>` in the string is displayed literally. `innerHTML` parses its value as **HTML**, so setting it from untrusted input (a comment, a URL parameter, an API field) lets an attacker inject markup and script: **cross-site scripting (XSS)**, covered in week 11. Use `textContent` and `createElement` for user data, and reserve `innerHTML` for markup you wrote yourself.
+
+### Events
+
+An **event** signals that something happened (`click`, `input`, `submit`, `keydown`, `change`, `focus`, `DOMContentLoaded`). A **listener** is a function the browser calls when it does:
+
+```javascript
+button.addEventListener("click", (event) => {
+  console.log(event.type, event.target);
+});
+```
+
+A script marked `defer` or `type="module"` runs after the document is parsed, so elements already exist. Use real controls (`button`, `a`, `input`), because they are focusable and activate with the keyboard (a link with Enter, a button with Enter or Space), generating a `click` event; a `div` does not.
+
+### Propagation
+
+An event travels in three phases: **capturing** from the root down to the target, the **target** itself, then **bubbling** back up to the root. Listeners run in the bubbling phase by default, so a click on a button inside a `div` also reaches listeners on the `div`, the `body` and `document`. In a listener, `event.target` is the element where the event originated and `event.currentTarget` is the element the listener is attached to. `event.stopPropagation()` stops the event from reaching further ancestors. `event.preventDefault()` cancels the browser's default action (following a link, submitting a form), but does not stop propagation. Some events do not bubble: `focus` and `blur` (use `focusin` and `focusout`).
+
+### Event delegation
+
+Instead of adding a listener to every list item, add **one** to the parent and find the item from `event.target`:
+
+```javascript
+list.addEventListener("click", (event) => {
+  const li = event.target.closest("li");   // nearest ancestor-or-self
+  if (li && list.contains(li)) {
+    li.classList.toggle("done");
+  }
+});
+```
+
+`closest(selector)` walks up from an element to the nearest one matching the selector. Delegation uses less memory and automatically works for items added later.
+
+### State and rendering
+
+Real interfaces keep **state** in a JavaScript data structure (an array of task objects) and update the page from it, rather than treating the DOM as the source of truth. A small pure function that takes the current state and an action and returns the new state is easy to test (you will write one). `localStorage` persists strings in the browser, so store state with `JSON.stringify` and read it back with `JSON.parse`; it holds data per origin, is readable by any script on the page, and must not be used for secrets.
+
+### A complete to-do list
+
+```html
+<form id="add-form">
+  <label for="new-task">New task</label>
+  <input id="new-task" required>
+  <button>Add</button>
+</form>
+<ul id="list"></ul>
+```
+
+```javascript
+const form = document.querySelector("#add-form");
+const input = document.querySelector("#new-task");
+const list = document.querySelector("#list");
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = input.value.trim();
+  if (text === "") return;
+  const li = document.createElement("li");
+  li.textContent = text;
+  list.append(li);
+  form.reset();
+  input.focus();
+});
+
+list.addEventListener("click", (event) => {
+  const li = event.target.closest("li");
+  if (li) li.classList.toggle("done");
+});
+```
+
+@example
+title: Following an event through the tree
+problem: A page has `<div id="box"><button id="btn">Go</button></div>`. A click listener is on `#btn` (prints `btn`), one on `#box` (prints `box`) and one on `document` (prints `doc`). What is printed when the button is clicked?
+step: The click happens on the button, so `event.target` is `#btn`. The capture phase passes down from the document without running these (bubbling) listeners.
+step: At the target, the button's listener runs and prints `btn`.
+step: The event bubbles to the parent `#box`, whose listener prints `box`; then it reaches `document`, which prints `doc`.
+step: If the `#box` listener called `event.stopPropagation()`, the `document` listener would not run.
+answer: `btn`, `box`, `doc`, in that order.
+
+@example
+title: Adding a task safely
+problem: Show how to add the text typed by a user to a `ul` without allowing script injection.
+step: Create the element with `document.createElement("li")` instead of writing a string of HTML.
+step: Set its content with `li.textContent = text`. Special characters such as `<` are then shown literally.
+step: Append it with `list.append(li)`:
+
+```javascript
+function addTask(list, text) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  list.append(li);
+}
+```
+step: With `list.innerHTML += "<li>" + text + "</li>"` the same input `<img src=x onerror=...>` would run as markup, which is why it is avoided for user data.
+
+@mistakes
+- Setting `innerHTML` from user-supplied text instead of using `textContent`, which creates an XSS vulnerability.
+- Running a script in the `head` without `defer` and getting `null` from `querySelector` because the element is not parsed yet.
+- Confusing `event.target` (where it started) with `event.currentTarget` (where the listener is attached) in a delegated handler.
+- Forgetting `event.preventDefault()` in a `submit` handler, so the page reloads and loses its state.
+
+@practice mc
+prompt: Which line is the safest way to show a visitor's comment `comment` inside the element `box`?
+choice: `box.innerHTML = comment;`
+choice*: `box.textContent = comment;`
+choice: `box.outerHTML = comment;`
+choice: `document.write(comment);`
+hint: Three of the choices parse the string as HTML.
+solution: `textContent` inserts the string as plain text, so markup in it is displayed, not executed. The other three parse the string as HTML, which allows injected elements and scripts.
+
+@practice ms
+prompt: Which statements about DOM events are true?
+choice*: `event.target` is the element where the event originated, and `event.currentTarget` is the element whose listener is running.
+choice*: `event.preventDefault()` cancels the browser's default action, such as a form submission, without stopping propagation.
+choice*: With event delegation, one listener on a parent can handle clicks on children added later.
+choice: `event.stopPropagation()` prevents the browser's default action for the event.
+choice: By default, listeners run in the capturing phase, from the document down to the target.
+hint: Default actions and propagation are separate mechanisms, and listeners run when the event bubbles unless you ask otherwise.
+solution: `target` and `currentTarget` differ during bubbling; `preventDefault` only cancels the default action; delegation works because events bubble to the parent. `stopPropagation` stops the event reaching other elements, not the default action, and listeners run in the bubbling phase unless registered with the capture option.
+
+@practice code
+prompt: Event delegation relies on finding the nearest ancestor of a clicked element. Simulate it in Python. The tree is a dictionary `parents` mapping each node name to its parent's name (the root maps to `None`), and `tags` maps each node name to its tag name. Write `closest(parents, tags, node, tag)` that returns the name of the first node, starting at `node` itself and moving up through the ancestors, whose tag equals `tag`, or `None` if there is none.
+starter:
+```python
+def closest(parents, tags, node, tag):
+    pass
+```
+tests:
+```python
+parents = {"span1": "li1", "li1": "ul", "ul": "body", "body": None}
+tags = {"span1": "span", "li1": "li", "ul": "ul", "body": "body"}
+assert closest(parents, tags, "span1", "li") == "li1"
+assert closest(parents, tags, "li1", "li") == "li1"
+assert closest(parents, tags, "span1", "body") == "body"
+assert closest(parents, tags, "ul", "li") is None
+assert closest(parents, tags, "span1", "span") == "span1"
+```
+model:
+```python
+def closest(parents, tags, node, tag):
+    while node is not None:
+        if tags[node] == tag:
+            return node
+        node = parents[node]
+    return None
+```
+hint: Loop while the current node is not `None`, checking the node first and then moving to its parent.
+hint: Checking the node itself first is what makes `closest` match the element itself as well as its ancestors.
+solution: Walk upwards from `node`: return the first node whose tag matches, otherwise step to `parents[node]`; at the root, the parent is `None`, which ends the loop and returns `None`.
+
+@practice code
+prompt: The state of a to-do list is a list of dictionaries such as `{"id": 1, "text": "Buy milk", "done": False}`. Write the pure function `todo_reducer(todos, action)` that returns the **new** list without modifying `todos` or its dictionaries. `action` is a dictionary: `{"type": "add", "text": ...}` appends a task with `done` set to `False`, the text stripped of surrounding whitespace, and an `id` one greater than the largest existing id (1 for an empty list); if the stripped text is empty, return the list unchanged. `{"type": "toggle", "id": n}` flips `done` for the task with that id (other tasks, and unknown ids, change nothing). `{"type": "remove", "id": n}` deletes the task with that id. Any other action type raises `ValueError`.
+starter:
+```python
+def todo_reducer(todos, action):
+    pass
+```
+tests:
+```python
+s0 = []
+s1 = todo_reducer(s0, {"type": "add", "text": "  Buy milk "})
+assert s1 == [{"id": 1, "text": "Buy milk", "done": False}]
+assert s0 == []
+s2 = todo_reducer(s1, {"type": "add", "text": "Write code"})
+assert [t["id"] for t in s2] == [1, 2]
+s3 = todo_reducer(s2, {"type": "toggle", "id": 1})
+assert s3[0]["done"] is True and s3[1]["done"] is False
+assert s2[0]["done"] is False
+assert todo_reducer(s3, {"type": "toggle", "id": 99}) == s3
+s4 = todo_reducer(s3, {"type": "remove", "id": 2})
+assert s4 == [{"id": 1, "text": "Buy milk", "done": True}]
+assert todo_reducer(s4, {"type": "add", "text": "   "}) == s4
+assert todo_reducer(s4, {"type": "add", "text": "Next"})[-1]["id"] == 2
+assert raises(ValueError, todo_reducer, s4, {"type": "clear"})
+```
+model:
+```python
+def todo_reducer(todos, action):
+    kind = action["type"]
+    if kind == "add":
+        text = action["text"].strip()
+        if not text:
+            return todos
+        new_id = max((t["id"] for t in todos), default=0) + 1
+        return todos + [{"id": new_id, "text": text, "done": False}]
+    if kind == "toggle":
+        return [
+            {**t, "done": not t["done"]} if t["id"] == action["id"] else t
+            for t in todos
+        ]
+    if kind == "remove":
+        return [t for t in todos if t["id"] != action["id"]]
+    raise ValueError(f"unknown action: {kind}")
+```
+hint: Build a new list in each case (`todos + [...]` or a comprehension) instead of calling `append` on the old one.
+hint: To change one task without mutating it, make a copy with `{**t, "done": not t["done"]}`.
+solution: Dispatch on `action["type"]`. Adding uses `max(..., default=0) + 1` for the id and returns a new list; toggling rebuilds the list with a changed copy of the matching task; removing filters it out; anything else raises `ValueError`. Never mutating the input is what makes this kind of function easy to test and to use for rendering.
+
+@practice self
+prompt: Extend the to-do list from the article so that each task has a "Delete" button and the list survives a page reload. Write the JavaScript (you may assume the HTML shown in the article). Use event delegation for the buttons, keep the tasks in an array, and store it with `localStorage`. Explain how your code avoids injecting HTML.
+hint: Keep an array of task objects, write a `render()` that rebuilds the list from it, and call `save()` and `render()` after every change.
+solution: A model answer:
+
+```javascript
+const KEY = "tasks";
+let tasks = JSON.parse(localStorage.getItem(KEY) ?? "[]");
+const form = document.querySelector("#add-form");
+const input = document.querySelector("#new-task");
+const list = document.querySelector("#list");
+
+function save() {
+  localStorage.setItem(KEY, JSON.stringify(tasks));
+}
+
+function render() {
+  list.replaceChildren();
+  for (const task of tasks) {
+    const li = document.createElement("li");
+    li.dataset.id = task.id;
+    li.classList.toggle("done", task.done);
+    const label = document.createElement("button");
+    label.type = "button";
+    label.textContent = task.text;
+    label.dataset.action = "toggle";
+    label.setAttribute("aria-pressed", String(task.done));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete";
+    del.dataset.action = "delete";
+    li.append(label, " ", del);
+    list.append(li);
+  }
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = input.value.trim();
+  if (text === "") return;
+  const id = Math.max(0, ...tasks.map((t) => t.id)) + 1;
+  tasks.push({ id, text, done: false });
+  save();
+  render();
+  form.reset();
+  input.focus();
+});
+
+list.addEventListener("click", (event) => {
+  const li = event.target.closest("li");
+  if (!li) return;
+  const id = Number(li.dataset.id);
+  const action = event.target.closest("button")?.dataset.action;
+  if (action === "delete") {
+    tasks = tasks.filter((t) => t.id !== id);
+  } else if (action === "toggle") {
+    const task = tasks.find((t) => t.id === id);
+    task.done = !task.done;
+  } else {
+    return;
+  }
+  save();
+  render();
+});
+
+render();
+```
+The text of each task is set with `textContent`, so markup typed by the user is shown literally instead of being parsed as HTML. The task text is itself a button (with `aria-pressed` showing whether it is done), so marking a task done works from the keyboard as well as with a mouse.
+rubric: Keeps tasks in an array and renders the list from that state, saving with `JSON.stringify` and loading with `JSON.parse`.
+rubric: Uses one delegated click listener on the list, with `closest` or `event.target` to find the item and button.
+rubric: Prevents the default form submission and ignores empty input.
+rubric: Builds the DOM with `createElement` and `textContent` (not `innerHTML`) and explains why.
+
+@quiz code
+prompt: Simulate event bubbling with `stopPropagation`. `parents` maps each node name to its parent's name (the root maps to `None`). `listeners` maps a node name to a pair `(label, stops)`: when an event reaches that node, its listener runs, and if `stops` is `True` it calls `stopPropagation()`, so no node further up is visited. Write `bubble(parents, listeners, target)` that returns the list of labels of the listeners that run, in order, for an event whose target is `target`. Nodes without a listener are skipped.
+starter:
+```python
+def bubble(parents, listeners, target):
+    pass
+```
+tests:
+```python
+parents = {"button": "div", "div": "body", "body": "html", "html": None}
+ls = {"button": ("b", False), "div": ("d", False), "html": ("h", False)}
+assert bubble(parents, ls, "button") == ["b", "d", "h"]
+ls2 = {"button": ("b", False), "div": ("d", True), "html": ("h", False)}
+assert bubble(parents, ls2, "button") == ["b", "d"]
+assert bubble(parents, ls2, "body") == ["h"]
+assert bubble(parents, {}, "button") == []
+assert bubble(parents, {"button": ("b", True), "html": ("h", False)},
+              "button") == ["b"]
+```
+model:
+```python
+def bubble(parents, listeners, target):
+    called = []
+    node = target
+    while node is not None:
+        if node in listeners:
+            label, stops = listeners[node]
+            called.append(label)
+            if stops:
+                break
+        node = parents[node]
+    return called
+```
+hint: Start at the target and move to the parent until you pass the root (`None`).
+hint: After running a listener that stops propagation, leave the loop immediately.
+solution: Walk up from the target; at each node with a listener, record its label and stop if that listener stops propagation. In the second test the listener on `div` stops the event, so `html` is never reached.
+
+@quiz mc
+prompt: A to-do list adds and removes `li` elements while the page runs, and each item must react to clicks. Which approach works for items added at any time with the least code?
+choice: Call `querySelectorAll("li")` once at page load and add a listener to each result.
+choice*: Add one click listener to the `ul` and use `event.target.closest("li")` to find the item.
+choice: Poll the page every second to see which `li` was clicked.
+choice: Set `onclick` attributes with `innerHTML` containing the task text.
+hint: Which element receives the click event after it bubbles up from any item, old or new?
+solution: Events bubble, so a single listener on the parent sees clicks from every current and future child; `closest("li")` finds the item. A one-time `querySelectorAll` covers only elements that exist at that moment, and the other approaches are wasteful or unsafe.

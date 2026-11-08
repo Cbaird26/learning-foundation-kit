@@ -1,0 +1,229 @@
+@lesson
+title: Editors, documentation and automation with make
+summary: Work efficiently in a terminal editor and an IDE, find answers in documentation, and automate common tasks with a Makefile.
+objective: Use basic vim modes and commands, and name the main features of an IDE that speed up development.
+objective: Find and read documentation effectively (manual pages, `help()`, reference versus tutorial, error messages).
+objective: Write a Makefile with targets, prerequisites, variables and phony targets, and explain when `make` rebuilds a target.
+reading: The Missing Semester of Your CS Education, lectures "Editors (Vim)" and "Command-line Environment", and the GNU Make manual's introduction ("Overview of make" and "An Introduction to Makefiles").
+@article
+Your editor is where you spend most of your working day, and a few hours spent learning it pay off for years. This final tools lesson covers editors, the art of finding answers, and automating routine commands.
+
+### Editors
+
+An **IDE** (integrated development environment) such as VS Code or PyCharm combines an editor with a debugger, a terminal, version control and a **language server**, a background process that supplies completion, go-to-definition, rename-everywhere and live error checking. Learn the shortcuts for the things you do hundreds of times a day: open a file by name, search the project, jump to a definition, find all references, rename a symbol, run the tests, and start the debugger with a breakpoint. Configure a **formatter** and a **linter** to run on save so style is never debated in code review.
+
+**Vim** is a terminal editor found on almost every server, so a minimum of it is worth knowing for editing over SSH. It is **modal**: the same key does different things in different modes. You start in **normal mode**, where keys are commands. `i` enters **insert mode** for typing text and `Esc` returns to normal mode. Useful normal-mode commands: `h j k l` move left, down, up, right; `w` and `b` move by word; `0` and `$` go to line start and end; `x` deletes a character; `dd` deletes (cuts) a line; `yy` copies a line; `p` pastes; `u` undoes; `/text` searches. Commands starting with `:` act on files: `:w` saves, `:q` quits, `:wq` does both, and `:q!` quits **without saving**. If you are stuck, press `Esc` a few times, then type `:q!`.
+
+### Finding answers
+
+- Commands: `man name` (the manual page), `name --help`, and `type name` to see what a name is.
+- Python: `help(str.split)` in the interpreter, `python3 -m pydoc name`, docstrings, and the official documentation. The standard-library reference tells you precisely what a function does; a **tutorial** teaches the idea. Use a tutorial to learn something new and the reference to check a detail.
+- Error messages: read the whole message and the last lines of a traceback, then search the **exact message** (without your file names) together with the tool's name. Prefer official documentation and the project's issue tracker to anonymous snippets. Never paste secrets or private code into public forums.
+- Source code: for open-source libraries, reading the function you call is often the fastest way to learn what it really does.
+
+When you ask a person for help, give the goal, what you ran, the exact error, and what you already tried: a **minimal reproducible example** gets answers fast.
+
+### Automating with make
+
+`make` runs commands described in a file named `Makefile`, rebuilding only what is out of date. A **rule** has a target, its prerequisites and a recipe:
+
+```make
+VENV = .venv
+
+.PHONY: setup test clean
+
+setup: requirements.txt
+	python3 -m venv $(VENV)
+	$(VENV)/bin/python -m pip install -r requirements.txt
+
+test:
+	$(VENV)/bin/python -m unittest discover -s tests
+
+clean:
+	rm -rf $(VENV) __pycache__
+```
+
+Each recipe line must start with a **tab character** (not spaces); any other leading whitespace is a syntax error ("missing separator"), so set your editor to insert a real tab in Makefiles. The make that ships with macOS is an old GNU Make 3.81, so stick to these classic features. `make test` runs the `test` rule. With no argument, `make` builds the **first** target in the file.
+
+**When does make rebuild?** A target that is a file is rebuilt if it does not exist or if any prerequisite has a **modification time newer** than the target. That is how `make` recompiles only the changed sources of a C program. Targets that are *actions* rather than files (`test`, `clean`) should be declared `.PHONY`, so they always run even if a file with that name exists. `make -n` prints the commands without running them.
+
+Variables are set with `NAME = value` and used as `$(NAME)`. Inside a recipe, **automatic variables** give the rule's pieces: `$@` is the target, `$<` is the first prerequisite and `$^` is all prerequisites. A **pattern rule** such as `%.o: %.c` describes how to build any `.o` file from the `.c` file with the same stem, and `make -j4` runs independent recipes in parallel. Each recipe line runs in its own shell, so `cd dir` on one line does not affect the next line; join commands with `&&` on one line when needed.
+
+For Python projects, a Makefile is a convenient front door: `make setup`, `make test`, `make lint` document and standardize how everyone runs the project. Other tools (`just`, `npm` scripts, `tox`) do similar jobs, but `make` is everywhere.
+
+@example
+title: Reading a Makefile
+problem: Given the rules below, what runs when you type `make app`, if `main.c` was edited a minute ago and `util.c` was not edited?
+
+```make
+app: main.o util.o
+	cc -o app main.o util.o
+main.o: main.c
+	cc -c main.c
+util.o: util.c
+	cc -c util.c
+```
+step: To build `app`, make first checks its prerequisites `main.o` and `util.o`, recursively.
+step: `main.c` is newer than `main.o`, so `main.o` is out of date and `cc -c main.c` runs.
+step: `util.c` is older than `util.o`, so `util.o` is up to date and its recipe is skipped.
+step: `main.o` was just rebuilt, so `app` is out of date and `cc -o app main.o util.o` runs. Two commands run in total.
+answer: `cc -c main.c` then `cc -o app main.o util.o`
+@example
+title: Automatic variables
+problem: Write one pattern rule that compiles any `NAME.c` into `NAME.o`, using automatic variables instead of repeating file names.
+step: The target pattern is `%.o` and the prerequisite pattern is `%.c`: the `%` matches the same stem in both.
+step: In the recipe, `$<` is the first prerequisite (the `.c` file) and `$@` is the target (the `.o` file).
+step: The rule is:
+
+```make
+%.o: %.c
+	cc -c $< -o $@
+```
+step: For the target `main.o` this expands to `cc -c main.c -o main.o`.
+answer: `%.o: %.c` with the recipe `cc -c $< -o $@`
+@mistakes
+- Indenting recipe lines with spaces in a normal Makefile (it needs a tab), which causes the error "missing separator".
+- Forgetting `.PHONY` on `test` or `clean`, so a file or directory of that name makes `make` say the target is up to date.
+- Expecting `cd` to carry over to the next recipe line, when each line is a separate shell.
+- Searching for an answer without reading the error message first, or pasting secrets into a public question.
+@practice mc
+prompt: Why do you declare targets such as `test` and `clean` as `.PHONY`?
+choice*: They are actions, not files, so `make` should always run them even if a file named `test` exists.
+choice: It makes the recipes run faster.
+choice: It lets the recipe lines be indented with spaces.
+choice: It makes `make` run them in parallel.
+hint: Normally `make` decides by comparing timestamps of files.
+solution: If a file named `test` existed with no newer prerequisites, `make test` would report it as up to date and do nothing. `.PHONY` tells make that the target is not a file.
+@practice code
+prompt: Write `needs_rebuild(target_mtime, prereq_mtimes)` that decides whether `make` would run a rule's recipe. `target_mtime` is the target file's modification time as a number, or `None` if the target does not exist. `prereq_mtimes` is a list of numbers (the prerequisites' modification times). Return `True` if the target does not exist or if any prerequisite is strictly newer than the target; otherwise `False`.
+starter:
+```python
+def needs_rebuild(target_mtime, prereq_mtimes):
+    pass
+```
+tests:
+```python
+assert needs_rebuild(None, [1]) is True
+assert needs_rebuild(10, [5, 10]) is False
+assert needs_rebuild(10, [5, 11]) is True
+assert needs_rebuild(10, []) is False
+assert needs_rebuild(None, []) is True
+```
+model:
+```python
+def needs_rebuild(target_mtime, prereq_mtimes):
+    if target_mtime is None:
+        return True
+    return any(m > target_mtime for m in prereq_mtimes)
+```
+hint: A missing target always needs building.
+hint: Otherwise compare each prerequisite time with the target's time using `>` (equal times mean up to date).
+solution: Return `True` immediately for a missing target. Otherwise the target is stale exactly when some prerequisite is strictly newer, which `any(...)` expresses.
+@practice code
+prompt: A Makefile is represented as a dictionary `rules` mapping each target to the list of its prerequisites. Names that are not keys of `rules` are source files and are never built. Write `build_order(rules, target)` that returns the list of targets in the order `make` would build them for `target`: visit prerequisites from left to right and recursively, build each target once, and a target comes after all its prerequisites. Example: with `{"app": ["main.o", "util.o"], "main.o": ["main.c"], "util.o": ["util.c"]}`, `build_order(rules, "app")` returns `["main.o", "util.o", "app"]`.
+starter:
+```python
+def build_order(rules, target):
+    pass
+```
+tests:
+```python
+r = {"app": ["main.o", "util.o"], "main.o": ["main.c", "util.h"],
+     "util.o": ["util.c", "util.h"]}
+assert build_order(r, "app") == ["main.o", "util.o", "app"]
+r2 = {"all": ["a", "b"], "a": ["c"], "b": ["c"], "c": []}
+assert build_order(r2, "all") == ["c", "a", "b", "all"]
+assert build_order({}, "x") == []
+assert build_order({"a": []}, "a") == ["a"]
+```
+model:
+```python
+def build_order(rules, target):
+    order = []
+    seen = set()
+
+    def visit(name):
+        if name in seen or name not in rules:
+            return
+        seen.add(name)
+        for prereq in rules[name]:
+            visit(prereq)
+        order.append(name)
+
+    visit(target)
+    return order
+```
+hint: Use a depth-first search that appends a target to the result after visiting its prerequisites.
+hint: Keep a `seen` set so a shared prerequisite is built once, and ignore names that are not in `rules`.
+solution: A post-order depth-first traversal lists every prerequisite before the target that needs it. The `seen` set avoids building a shared prerequisite twice, and names missing from `rules` are plain source files. Time is linear in the number of rules and prerequisite entries.
+@practice ms
+prompt: Select every good habit for getting unstuck with an error you do not understand.
+choice*: Read the whole error message, including the last lines of the traceback.
+choice*: Search the exact message text together with the name of the tool or library.
+choice*: Reduce the problem to a minimal reproducible example before asking someone.
+choice: Paste code containing your passwords or API keys into a public forum so people can reproduce it.
+choice: Copy a solution you do not understand straight into your project.
+hint: Which habits help you and others understand the problem, and which leak data or skip understanding?
+solution: The error text and a minimal example are the most useful evidence. Secrets must never be shared publicly, and unexplained pasted code leaves you unable to maintain it.
+@practice self
+prompt: Write a Makefile for a Python project that has a `requirements.txt`, a `tests/` directory run with `python -m unittest discover -s tests`, and a virtual environment in `.venv`. It needs three phony targets: `setup` (create the environment and install the requirements), `test` (run the tests using the environment's Python) and `clean` (delete the environment and `__pycache__` directories). Use a variable for the environment directory. Say how a new developer uses it, and how you would test it on your computer.
+hint: Use `$(VENV)/bin/python` so you do not need to activate the environment.
+solution:
+
+```make
+VENV = .venv
+PY = $(VENV)/bin/python
+
+.PHONY: setup test clean
+
+setup:
+	python3 -m venv $(VENV)
+	$(PY) -m pip install -r requirements.txt
+
+test:
+	$(PY) -m unittest discover -s tests
+
+clean:
+	rm -rf $(VENV)
+	find . -name __pycache__ -type d -prune -exec rm -rf {} +
+```
+
+A new developer clones the repository and runs `make setup` and then `make test`. To test the Makefile, run `make -n setup` to preview the commands, then run the targets for real, check that `make test` fails if you break a test, and that `make clean` removes the environment.
+rubric: Declares `setup`, `test` and `clean` as `.PHONY` and uses a variable for the environment directory.
+rubric: Recipes use the environment's Python (`$(VENV)/bin/python`) and the correct `unittest` command.
+rubric: Recipe lines begin with a tab character, and the answer explains how to use and check the file.
+@quiz code
+prompt: Write `expand_recipe(command, target, prereqs)` that expands the automatic variables in a recipe line the way `make` does: `$@` becomes `target`, `$<` becomes the first prerequisite (or an empty string if there are none), and `$^` becomes all prerequisites joined by single spaces. Other text is unchanged. Example: `expand_recipe("cc -o $@ $^", "app", ["a.o", "b.o"])` returns `"cc -o app a.o b.o"`.
+starter:
+```python
+def expand_recipe(command, target, prereqs):
+    pass
+```
+tests:
+```python
+assert expand_recipe("cc -o $@ $^", "app", ["a.o", "b.o"]) == "cc -o app a.o b.o"
+assert expand_recipe("cc -c $< -o $@", "main.o", ["main.c", "util.h"]) == "cc -c main.c -o main.o"
+assert expand_recipe("echo hi", "t", ["x"]) == "echo hi"
+assert expand_recipe("touch $@", "stamp", []) == "touch stamp"
+assert expand_recipe("cat $<", "t", []) == "cat "
+```
+model:
+```python
+def expand_recipe(command, target, prereqs):
+    first = prereqs[0] if prereqs else ""
+    result = command.replace("$@", target)
+    result = result.replace("$<", first)
+    result = result.replace("$^", " ".join(prereqs))
+    return result
+```
+hint: Use `str.replace` once for each of the three variables.
+hint: Compute the value of `$<` first: the first prerequisite if the list is not empty, otherwise `""`.
+solution: Each automatic variable is a simple textual substitution: the target, the first prerequisite, and the space-joined prerequisites. The empty-list case gives an empty string for `$<` and `$^`.
+@quiz mc
+prompt: You are editing a file in vim, pressed `i`, typed some text, and now want to save the file and quit. What do you do?
+choice: Type `:wq` immediately, while still in insert mode.
+choice*: Press `Esc` to return to normal mode, then type `:wq` and press Enter.
+choice: Press `Ctrl-S`, then close the terminal window.
+choice: Type `dd`, which saves the line.
+hint: Commands that start with a colon are typed in normal mode.
+solution: In insert mode, keys are inserted as text. `Esc` returns to normal mode, where `:wq` writes the file and quits (`:q!` would quit without saving).

@@ -1,0 +1,173 @@
+@lesson
+title: Back-of-the-envelope estimation
+summary: Estimate traffic, storage and bandwidth for a system in a few minutes using round numbers, stated assumptions and sanity checks.
+objective: Convert daily usage into average and peak queries per second, and daily data into storage over a retention period.
+objective: Use powers of two and rough latency numbers to judge whether a design is feasible.
+objective: Write an estimate so a reviewer can see every assumption and check every step.
+reading: The System Design Primer, the sections "Powers of two table", "Latency numbers every programmer should know" and "Back-of-the-envelope calculations" (the appendix).
+@article
+A back-of-the-envelope estimate answers one question: **which order of magnitude are we in?** Ten requests per second means a single small server; ten thousand means a fleet; a million means a different architecture. Nobody needs the exact figure; you need to be within a factor of two or three, and you need to show your work so someone else can correct an assumption without redoing the arithmetic.
+
+### The method
+
+1. **List assumptions** as numbers with units: daily active users (DAU), actions per user per day, size per record, retention, read-to-write ratio, replication factor.
+2. **Compute** with round numbers. Use 100,000 seconds as an approximation of a day when speed matters (a day is actually 86,400).
+3. **Sanity-check** against something you know: "that is about the size of all the photos one large service stores" or "one server cannot do that".
+4. **State the consequence**: "so a single database cannot hold this; we shard" or "so one machine suffices".
+
+### Traffic
+
+Average queries per second (QPS) is requests per day divided by seconds per day. Traffic is not flat: it peaks when users are awake. Unless told otherwise assume **peak = 2 to 3 times the average**, and design for the peak.
+
+$$\text{QPS}_{\text{avg}} = \frac{\text{DAU} \times \text{actions per user per day}}{86{,}400}$$
+
+For read-heavy systems derive reads from writes with a ratio (for example 100 reads per write for a link shortener).
+
+### Storage
+
+Storage is new records per day, times bytes per record, times retention days, times the replication factor. Do not forget **indexes and overhead** (often 20 to 100 percent extra) and **replicas** (commonly 3 copies). Use decimal units in estimates: 1 KB = 1,000 bytes, 1 GB = $10^9$ bytes, 1 TB = $10^{12}$, 1 PB = $10^{15}$.
+
+### Bandwidth
+
+Bandwidth is QPS times bytes per response. Network capacity is quoted in bits per second, so multiply bytes per second by 8. Egress (data leaving your system) is usually the dominant cost for media services, which is why they put content on a content delivery network (CDN).
+
+### Numbers worth memorizing
+
+These are rough orders of magnitude that vary with hardware, cloud provider and year; use them to judge feasibility, not to predict exact timings.
+
+| Quantity | Approximate value |
+|---|---|
+| $2^{10}$, $2^{20}$, $2^{30}$, $2^{40}$ | 1 thousand, 1 million, 1 billion, 1 trillion (bytes: KB, MB, GB, TB) |
+| Main-memory read | about 100 nanoseconds |
+| Random read from a solid-state drive | about 100 microseconds |
+| Round trip inside one data center | about 0.5 milliseconds |
+| Disk seek (spinning disk) | about 10 milliseconds |
+| Round trip across an ocean | about 100 to 150 milliseconds |
+
+Three consequences follow. Memory is about a thousand times faster than an SSD, which is why caches pay off. Network calls dominate latency: ten sequential calls inside a data center cost about 5 ms, ten across continents cost over a second. And data far away is slow no matter how fast your code is, which is why we replicate data close to users.
+
+### Check your own estimate
+
+Good habits: write units on every line; round aggressively (86,400 is about $10^5$); compare two routes to the same number; and ask "does this match reality?" If your estimate says a chat app needs 5 petabytes a day, an assumption is probably off by 1000.
+
+@example
+title: Peak traffic for a weather API
+problem: A weather app has 40 million daily active users. Each user opens the app 5 times a day and each open makes 2 API calls. Peak traffic is 3 times the daily average. Estimate the average and peak QPS.
+step: Calls per day: $40{,}000{,}000 \times 5 \times 2 = 400{,}000{,}000$.
+step: Average QPS: $400{,}000{,}000 / 86{,}400 \approx 4{,}630$.
+step: Peak QPS: $3 \times 4{,}630 \approx 13{,}900$.
+step: Sanity check: with the rough day of $10^5$ seconds, $4 \times 10^8 / 10^5 = 4{,}000$, close to the exact figure, so the order of magnitude agrees.
+step: Consequence: if one server comfortably handles 2,000 QPS, about 7 servers cover the peak before redundancy, and the responses are cacheable, so far fewer origin calls are needed.
+answer: About 4,630 QPS on average and 13,900 at peak.
+
+@example
+title: Storage for an event log
+problem: A service receives 2,000 events per second on average. Each event is 300 bytes. Events are kept for 90 days, and every event is stored on 3 replicas. How much storage is needed?
+step: Events per day: $2{,}000 \times 86{,}400 = 172{,}800{,}000$.
+step: One day of data: $172{,}800{,}000 \times 300 = 51.84$ GB.
+step: Ninety days: $51.84 \times 90 = 4{,}665.6$ GB, about 4.7 TB.
+step: Replication factor 3: $4.67 \times 3 \approx 14$ TB.
+step: Sanity check: 14 TB fits on a handful of large disks, so storage is not the hard part. Indexes could add up to 50 percent, still under 21 TB. Write throughput (2,000 per second, 600 KB/s) is also small, so this is easy for one modest cluster.
+answer: About 14 TB including replicas, before indexes.
+
+@mistakes
+- Using seconds per month or per year in a QPS formula by mistake; QPS always divides by 86,400 (or the rough $10^5$).
+- Forgetting replication and indexes, which can multiply raw storage by 3 to 5.
+- Mixing bytes and bits when converting to bandwidth: network links are quoted in bits per second, so multiply bytes by 8.
+- Designing for the average instead of the peak, or reporting a number without the assumptions that produced it.
+
+@practice num
+prompt: A service receives 200 million requests per day, spread evenly over 24 hours (86,400 seconds). What is the average number of requests per second, rounded to the nearest whole number?
+answer: 2315
+check: round(200_000_000/86400)
+hint: Divide requests per day by seconds per day.
+solution: $200{,}000{,}000 / 86{,}400 = 2{,}314.8$, which rounds to 2,315.
+
+@practice num
+prompt: A table receives 5 million new rows per day. Each row is 500 bytes. Rows are kept for 365 days, with no replication and no indexes. Using 1 GB = $10^9$ bytes, how many GB does the table hold after one year?
+answer: 912.5
+check: 5_000_000*500*365/1e9
+tol: 0.01
+unit: GB
+hint: Compute bytes per day first, then multiply by 365.
+solution: Each day adds $5{,}000{,}000 \times 500 = 2.5$ GB. Over 365 days that is $2.5 \times 365 = 912.5$ GB.
+
+@practice code
+prompt: Write `estimate_storage_tb(items_per_day, bytes_per_item, years, replication)` that returns the total storage in terabytes (1 TB = $10^{12}$ bytes) needed to keep every item for `years` years (365 days each) with `replication` copies. Return a float rounded to 3 decimal places. Example: 10 million items a day at 1,000 bytes for 5 years with 3 replicas is `54.75`.
+starter:
+```python
+def estimate_storage_tb(items_per_day, bytes_per_item, years, replication):
+    pass
+```
+tests:
+```python
+assert estimate_storage_tb(10_000_000, 1000, 5, 3) == 54.75
+assert estimate_storage_tb(1_000_000, 200, 1, 1) == 0.073
+assert estimate_storage_tb(0, 500, 3, 3) == 0.0
+assert estimate_storage_tb(2_000_000, 1500, 2, 2) == 4.38
+```
+model:
+```python
+def estimate_storage_tb(items_per_day, bytes_per_item, years, replication):
+    total_bytes = items_per_day * bytes_per_item * 365 * years * replication
+    return round(total_bytes / 10**12, 3)
+```
+hint: Multiply items per day, bytes per item, days, and replication, then divide by $10^{12}$.
+solution: Total bytes are `items_per_day * bytes_per_item * 365 * years * replication`; dividing by `10**12` converts to terabytes. Check by hand: $10^7 \times 1000 \times 365 \times 5 \times 3 = 5.475 \times 10^{13}$ bytes, which is 54.75 TB.
+
+@practice mc
+prompt: A page load makes 3 sequential API calls to a service in another continent. Assume each round trip takes 150 ms and server processing time is negligible. Roughly how much network time does the page spend on these calls?
+choice: About 45 ms
+choice*: About 450 ms
+choice: About 4.5 seconds
+choice: About 1.5 ms
+hint: Sequential calls add up.
+solution: Three sequential round trips of 150 ms cost 450 ms. Running independent calls in parallel, or moving the service closer, would cut that figure.
+
+@practice self
+prompt: Estimate traffic and storage for three systems. State every number you use and show your arithmetic. Use these assumptions.
+
+1. Link shortener: 50 million new links per day, 500 bytes per record, kept for 5 years (365 days each), no replication, read-to-write ratio 100 to 1. Find average write QPS, average read QPS and total storage in TB (1 TB = $10^{12}$ bytes).
+2. Chat: 20 million daily active users, each sends 40 messages a day, 100 bytes per message, kept for 2 years (730 days), peak is 3 times average. Find average and peak messages per second and total storage in TB.
+3. Photo sharing: 10 million daily active users, an average of 0.5 uploads per user per day, 3 MB per original upload, 3.3 MB stored per photo including thumbnails, kept for 1 year. Find uploads per second, upload bandwidth in Mbit/s, and storage per year in PB (1 PB = $10^{15}$ bytes).
+
+Finish each system with one sentence on what the result implies for the design.
+hint: Do the three systems one at a time, writing the formula before the numbers.
+hint: Write units on each line, and multiply bytes per second by 8 for bits per second.
+solution: Link shortener:
+- Writes per day 50,000,000 over 86,400 s is about 579 writes/s. Reads are 100 times that, about 57,870 reads/s.
+- Daily storage is 50,000,000 x 500 = 25 GB. Over 1,825 days that is 45,625 GB, about 45.6 TB.
+- Implication: reads dominate, are easy to cache, and 46 TB is a modest sharded or single large store; the write rate is small.
+
+Chat:
+- Messages per day are 20,000,000 x 40 = 800,000,000, which is about 9,260 per second average and about 27,800 per second at peak.
+- Daily storage is 800,000,000 x 100 B = 80 GB; over 730 days that is 58,400 GB, about 58.4 TB.
+- Implication: the write rate needs a partitioned store, but the data volume is small; the hard part is delivery to connected users, not storage.
+
+Photo sharing:
+- Uploads per day are 10,000,000 x 0.5 = 5,000,000, about 57.9 per second.
+- Upload bandwidth is 57.9 x 3 MB = 173.6 MB/s, about 1,389 Mbit/s (1.4 Gbit/s).
+- Storage per day is 5,000,000 x 3.3 MB = 16.5 TB; over 365 days that is 6,022 TB, about 6.0 PB.
+- Implication: this needs object storage and a CDN; the database holds only metadata and is small.
+
+Sanity checks: the two text-like systems fit in tens of TB, the media system is about a hundred times larger, which matches the sizes of photos versus text.
+rubric: Every calculation uses the stated assumptions and shows the formula, with units on each line.
+rubric: The numbers are close to the model (link shortener about 579 writes/s and 45.6 TB; chat about 9,260 average and 27,800 peak messages/s and 58.4 TB; photos about 58 uploads/s, 1.4 Gbit/s and 6.0 PB).
+rubric: Bits and bytes are converted correctly for bandwidth, and peak is applied only where the prompt gives a peak factor.
+rubric: Each system ends with a sensible design implication (cache, partition, object storage plus CDN) and at least one sanity check.
+
+@quiz num
+prompt: An app has 30 million daily active users. Each user makes 20 requests per day. Peak traffic is 3 times the daily average, and a day has 86,400 seconds. What is the peak QPS, rounded to the nearest whole number?
+answer: 20833
+check: round(30_000_000*20/86400*3)
+hint: Compute the average QPS first, then multiply by the peak factor.
+solution: Requests per day are $30{,}000{,}000 \times 20 = 600{,}000{,}000$. Average QPS is $600{,}000{,}000 / 86{,}400 = 6{,}944.4$. Peak is $3 \times 6{,}944.4 = 20{,}833.3$, rounded to 20,833.
+
+@quiz mc
+prompt: A table has 1 billion rows and every row is 64 bytes (assume no indexes and no replication). About how large is the table?
+choice: About 64 MB
+choice: About 640 GB
+choice*: About 64 GB
+choice: About 6.4 TB
+hint: $10^9$ rows times 64 bytes; one billion bytes is a gigabyte.
+solution: $10^9 \times 64$ bytes is $64 \times 10^9$ bytes, which is 64 GB. That fits in the memory of a single large server, which is a useful fact when deciding whether a dataset needs sharding.

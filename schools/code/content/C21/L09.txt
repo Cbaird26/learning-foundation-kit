@@ -1,0 +1,200 @@
+@lesson
+title: Partitioning, consistent hashing and distributed storage
+summary: Split data across nodes by range or hash, use consistent hashing to limit data movement when nodes join or leave, and place replicas on a hash ring.
+objective: Compare range partitioning and hash partitioning, including hot spots and range queries.
+objective: Explain why hashing keys modulo the node count moves most keys when the cluster changes, and how consistent hashing moves only a small fraction.
+objective: Look up the owner and the replica set of a key on a hash ring, and explain virtual nodes.
+reading: Distributed Systems by van Steen and Tanenbaum (4th edition), Chapter 6 "Naming" (the section on distributed hash tables, including the Chord system); also look up decentralized (peer-to-peer) architectures in the index.
+
+@article
+Replication copies the same data to several nodes. **Partitioning** (also called **sharding**) is the opposite: it splits a dataset so that each node holds only a portion, which lets storage and traffic scale beyond one machine. Real systems combine both: each partition is replicated.
+
+### Partitioning strategies
+
+**Range partitioning** assigns contiguous key ranges to partitions (for example keys `A` to `F` on shard 1). Range queries are efficient because neighbouring keys live together, but sequential keys (timestamps, auto-increment ids) create a **hot spot**, since all new writes land in the last range. Partitions can be split when they grow.
+
+**Hash partitioning** applies a hash function to the key and assigns by hash value. It spreads load evenly and avoids sequential hot spots, but range queries must contact every partition. Even hash partitioning cannot fix a single **hot key** that receives a large share of traffic; that needs caching or splitting the key.
+
+### The problem with `hash(key) mod N`
+
+Suppose key $k$ lives on node $k \bmod N$. When a node is added, $N$ becomes $N+1$, and for most keys $k \bmod N \ne k \bmod (N+1)$. About a fraction $N/(N+1)$ of all keys move, which causes a storm of data transfer and cache misses exactly when the cluster is under change.
+
+### Consistent hashing
+
+**Consistent hashing** hashes both nodes and keys onto the same circular space, the **hash ring** (for example integers 0 to $2^{32}-1$ that wrap around). A key is stored on the first node found going **clockwise** from the key's position (at or after it, wrapping past the top back to 0).
+
+When a node joins, it takes over only the keys between its predecessor and itself, which come from its successor: on average **$K/N$ of $K$ keys move** (not almost all). When a node leaves, its keys go to its successor. Plain consistent hashing can distribute unevenly because a few random points divide the circle unequally, so each physical node is given many positions, called **virtual nodes** (vnodes). Vnodes smooth the load and let a more powerful machine take more vnodes; when a node fails, its load is spread over many others rather than dumped on one successor.
+
+```python
+def owner(positions, h):
+    """positions: dict node -> ring position; h: key hash."""
+    ahead = [(p, n) for n, p in positions.items() if p >= h]
+    return min(ahead)[1] if ahead else min((p, n) for n, p in positions.items())[1]
+```
+
+### Replication on the ring
+
+To keep $r$ copies, store the key on its owner and the next $r - 1$ **distinct physical nodes** clockwise (the **preference list**). With vnodes, skip positions that belong to a node already chosen. A coordinator can then use quorum reads and writes (Lesson 5) over that list, and a failed node's data can be repaired from its successors. Consistent hashing, vnodes, quorums, vector-clock-style versions and anti-entropy together describe the design of Dynamo-style stores.
+
+Other approaches to the same problem include **rendezvous hashing** (each key goes to the node with the highest hash of the pair key and node) and a **directory service** that maps ranges to nodes explicitly, as in distributed file systems with a metadata server plus chunk servers. A directory gives full control over placement but the directory itself must be replicated and kept consistent.
+
+@example
+title: Lookups on a ring
+problem: A ring has positions 0 to 99. Nodes: A at 10, B at 40, C at 70. Where do keys with hashes 55, 95 and 10 go? What happens when D joins at position 50?
+step: Key 55: the first node at or after 55 clockwise is C (70).
+step: Key 95: nothing at or after 95, so wrap around to the smallest position: A (10).
+step: Key 10: a node at exactly 10 is at or after the key, so A owns it.
+step: D joins at 50. It takes keys in the range (40, 50] from C, its successor. Keys 55 (still C), 95 (still A) and 10 (still A) are unchanged; only keys with hashes 41 to 50 move.
+answer: 55 goes to C, 95 goes to A, 10 goes to A; D takes only keys 41 to 50 from C
+
+@example
+title: Moving keys with modulo hashing
+problem: Keys 0 to 11 are placed by `k mod 3`. A fourth node is added and placement becomes `k mod 4`. How many of the 12 keys change node?
+step: Compare `k mod 3` and `k mod 4` for each key: keys 0, 1 and 2 give identical values.
+step: Key 3: 0 versus 3, moves. Key 4: 1 versus 0, moves. Key 5: 2 versus 1, moves.
+step: Keys 6, 7, 8, 9, 10 and 11 give 0 versus 2, 1 versus 3, 2 versus 0, 0 versus 1, 1 versus 2, 2 versus 3: all differ.
+step: Only keys 0, 1 and 2 stay, so 9 of 12 keys (75%) move. A consistent-hashing ring would move about $12/4 = 3$ keys on average.
+answer: 9 keys
+
+@mistakes
+- Using `hash(key) mod N` for a cluster that changes size, which remaps most keys.
+- Forgetting the wrap-around case, where a key beyond the last node goes to the first node.
+- Choosing the next $r-1$ *positions* instead of the next distinct *physical nodes* as replicas, so two copies land on the same machine.
+- Assuming hash partitioning supports efficient range scans or removes the hot-key problem.
+
+@practice mc
+prompt: A cache cluster places keys on node `hash(key) mod N`. The team adds one node to the cluster. What is the main problem?
+choice: The new node can never receive any keys
+choice*: Most keys now map to a different node, causing mass cache misses and data movement
+choice: Only keys on the last node move
+choice: The hash function stops being uniform
+hint: Compare `k mod N` with `k mod (N+1)` for many keys.
+solution: Changing the modulus changes the assignment of most keys (about a fraction $N/(N+1)$), so nearly the entire cache becomes cold. Consistent hashing was designed to avoid this.
+
+@practice num
+prompt: Keys 0 to 99 are placed on nodes by `k mod 4`. The cluster grows to 5 nodes and keys are placed by `k mod 5`. How many of the 100 keys end up on a different node number than before?
+answer: 80
+check: sum(1 for k in range(100) if k % 4 != k % 5)
+hint: A key stays only if `k mod 4` equals `k mod 5`.
+hint: The pattern of (k mod 4, k mod 5) repeats every 20 keys; count how many in 0 to 19 agree.
+solution: In each block of 20 keys, the remainders agree only for $k = 0, 1, 2, 3$ (where $k < 4$), so 4 of 20 stay and 16 move. Over 100 keys, 80 move.
+
+@practice code
+prompt: Write `owner(positions, h)` for a hash ring. `positions` is a dict mapping a node name to its integer ring position (all positions distinct), and `h` is the integer hash of a key. Return the node with the smallest position that is greater than or equal to `h`. If no node has a position `>= h`, wrap around and return the node with the smallest position overall.
+starter:
+```python
+def owner(positions, h):
+    pass
+```
+tests:
+```python
+ring = {"A": 10, "B": 40, "C": 70}
+assert owner(ring, 55) == "C"
+assert owner(ring, 95) == "A"
+assert owner(ring, 10) == "A"
+assert owner(ring, 11) == "B"
+assert owner(ring, 0) == "A"
+assert owner({"X": 5}, 99) == "X"
+assert owner({"B": 40, "A": 10, "C": 70}, 70) == "C"
+```
+model:
+```python
+def owner(positions, h):
+    best = None
+    for node, pos in positions.items():
+        if pos >= h and (best is None or pos < positions[best]):
+            best = node
+    if best is not None:
+        return best
+    return min(positions, key=positions.get)
+```
+hint: Among the nodes at or after `h`, you want the one with the smallest position.
+hint: If no node is at or after `h`, return the node with the minimum position overall: `min(positions, key=positions.get)`.
+solution: Scan for the closest position at or after `h`; if the scan finds none, the key wraps around the ring to the lowest position. A node exactly at `h` owns the key.
+
+@practice code
+prompt: Write `replicas_for(positions, h, r)` returning the preference list for a key: a list of `r` **distinct** nodes, starting with the key's owner (the node with the smallest position `>= h`, wrapping around) and continuing clockwise through the next nodes in increasing position order, wrapping around. `positions` maps node names to distinct integer positions, one position per node, and `1 <= r <= len(positions)`.
+starter:
+```python
+def replicas_for(positions, h, r):
+    pass
+```
+tests:
+```python
+ring = {"A": 10, "B": 40, "C": 70, "D": 90}
+assert replicas_for(ring, 55, 2) == ["C", "D"]
+assert replicas_for(ring, 95, 3) == ["A", "B", "C"]
+assert replicas_for(ring, 5, 1) == ["A"]
+assert replicas_for(ring, 91, 4) == ["A", "B", "C", "D"]
+assert replicas_for(ring, 40, 2) == ["B", "C"]
+assert replicas_for({"X": 3, "Y": 8}, 9, 2) == ["X", "Y"]
+```
+model:
+```python
+def replicas_for(positions, h, r):
+    ordered = sorted(positions, key=positions.get)
+    start = 0
+    for i, node in enumerate(ordered):
+        if positions[node] >= h:
+            start = i
+            break
+    else:
+        start = 0
+    return [ordered[(start + k) % len(ordered)] for k in range(r)]
+```
+hint: Sort the nodes by position first; then the preference list is a run of consecutive nodes in that order.
+hint: Find the index of the first node with position `>= h` (or 0 if there is none), then take `r` nodes from there using `% len(ordered)` to wrap around.
+solution: With the nodes in ring order, the owner is the first node at or after the key, and the other replicas are the following nodes, wrapping at the end. With one position per node the nodes are already distinct physical machines.
+
+@practice text
+prompt: A table is range-partitioned with bounds `[100, 200, 300]`: partition 0 holds keys below 100, partition 1 holds 100 to 199, and so on. This program finds the partition of each key. Type the output exactly (one number per line).
+
+```python
+import bisect
+bounds = [100, 200, 300]
+for key in [5, 100, 250, 999]:
+    print(bisect.bisect_right(bounds, key))
+```
+answer:
+```
+0
+1
+2
+3
+```
+check: run("import bisect\nbounds = [100, 200, 300]\nfor key in [5, 100, 250, 999]:\n    print(bisect.bisect_right(bounds, key))\n")
+hint: `bisect_right` counts how many bounds are less than or equal to the key.
+solution: 5 is below every bound (0); 100 equals the first bound, so it counts it (1); 250 is at or above 100 and 200 (2); 999 is above all three (3).
+
+@quiz code
+prompt: Write `keys_moved(keys, n_old, n_new)` returning how many keys in the list `keys` (non-negative integers) are placed on a different node number when the placement rule changes from `key % n_old` to `key % n_new`.
+starter:
+```python
+def keys_moved(keys, n_old, n_new):
+    pass
+```
+tests:
+```python
+assert keys_moved(list(range(10)), 2, 3) == 6
+assert keys_moved([0, 6, 12], 3, 6) == 0
+assert keys_moved([], 3, 4) == 0
+assert keys_moved([7], 7, 8) == 1
+assert keys_moved([5, 10, 15], 5, 5) == 0
+```
+model:
+```python
+def keys_moved(keys, n_old, n_new):
+    return sum(1 for k in keys if k % n_old != k % n_new)
+```
+hint: A key moves exactly when its two remainders differ.
+hint: Count the keys with `k % n_old != k % n_new`.
+solution: Compare the old and new node numbers for each key and count the differences. In the second test, 0, 6 and 12 all have remainder 0 under both rules, so none move.
+
+@quiz mc
+prompt: What is the main purpose of giving each physical node many virtual nodes on a consistent hash ring?
+choice: To reduce the number of physical nodes needed
+choice: To make range queries efficient
+choice*: To even out the load and spread a failed node's keys over many nodes
+choice: To remove the need for replication
+hint: With only one random point per node, the arcs between points can be very unequal.
+solution: Many positions per node average out the random arc sizes, so load is more even, a bigger machine can hold more vnodes, and when a node fails its keys scatter over many successors instead of overloading one. Vnodes do not help range queries or replace replication.

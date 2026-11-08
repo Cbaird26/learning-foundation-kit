@@ -1,0 +1,256 @@
+@lesson
+title: Assembly: arithmetic, memory and branches
+summary: Write and trace RISC-V assembly programs that use arithmetic, loads and stores, and conditional branches to implement loops.
+objective: Use RV32I arithmetic, logical, shift and comparison instructions, including the signed and unsigned variants.
+objective: Address memory with loads and stores, taking byte addressing and little-endian byte order into account.
+objective: Implement if statements and loops with branches, and trace a program register by register.
+reading: Dive into Systems, the assembly chapters (x86-64 and Arm; read the sections on arithmetic, memory access and conditional control flow for the ideas, which carry over to RISC-V), and the RV32I chapter of the RISC-V Unprivileged specification for the instructions.
+
+@article
+Assembly language is a readable spelling of machine instructions. This lesson covers the three things nearly every program needs: computing on registers, moving data to and from memory, and changing the order of execution.
+
+### Arithmetic and logic
+
+The R-type instructions `add`, `sub`, `and`, `or`, `xor`, `sll`, `srl`, `sra`, `slt` and `sltu` take two source registers and a destination: `add t0, t1, t2` means `t0 = t1 + t2`. Most have an immediate form: `addi`, `andi`, `ori`, `xori`, `slli`, `srli`, `srai`, `slti`, `sltiu`. There is no `subi`, since `addi t0, t1, -5` does the job. Arithmetic wraps modulo $2^{32}$ and never traps.
+
+Shifts: `sll` shifts left filling with zeros; `srl` shifts right filling with zeros (**logical**); `sra` shifts right copying the sign bit (**arithmetic**, correct for signed values). Only the low 5 bits of the shift amount are used. Shifting left by $k$ multiplies by $2^k$, which is how array indexes are scaled.
+
+`slt rd, rs1, rs2` sets `rd` to 1 if `rs1 < rs2` comparing as **signed** numbers and 0 otherwise; `sltu` compares as **unsigned**. The pseudo-instructions `li rd, imm` (load immediate), `mv rd, rs` (copy) and `neg` save typing.
+
+### Memory
+
+Memory is an array of bytes, each with its own address. A load or store computes the address `rs1 + offset`, where the offset is a signed 12-bit immediate: `lw t0, 8(a0)` loads the 32-bit word at address `a0 + 8` into `t0`, and `sw t0, 8(a0)` stores it. For smaller data there are `lb`/`lbu` (load a byte, sign- or zero-extended), `lh`/`lhu` (16 bits) and `sb`/`sh` (store the low byte or halfword). Words should be aligned to multiples of 4.
+
+RISC-V is **little-endian**: the least significant byte of a word is at the lowest address. If the word `0x12345678` is stored at address 0x100, then address 0x100 holds `0x78`, 0x101 holds `0x56`, 0x102 holds `0x34` and 0x103 holds `0x12`.
+
+To read element `i` of an array of 4-byte integers whose base address is in `a0`, scale the index and add: `slli t1, t0, 2` then `add t1, a0, t1` then `lw t2, 0(t1)`.
+
+### Branches and loops
+
+Conditional branches compare two registers and jump to a label if the condition holds: `beq`, `bne`, `blt`, `bge` (signed) and `bltu`, `bgeu` (unsigned). The target is encoded as a signed offset from the branch's own address, so code stays valid wherever it is loaded. There is no branch-on-greater-than; swap the operands (`bgt a, b, L` is `blt b, a, L`). `j label` is an unconditional jump, a pseudo-instruction for `jal x0, label`.
+
+An `if (a < b) { ... }` becomes a branch that skips the body when the condition is false, so you test the **opposite** condition: `bge a, b, skip`. A loop has a test at the top (or bottom) and a jump back. Here is a complete function that sums an array of `n` integers (`a0` holds the address, `a1` holds `n`, and the sum is returned in `a0`; `ret` is explained next week):
+
+```text
+sum_array:
+    li   t0, 0          # sum = 0
+    li   t1, 0          # i = 0
+loop:
+    bge  t1, a1, done   # if i >= n, leave the loop
+    slli t2, t1, 2      # t2 = i * 4
+    add  t2, a0, t2     # t2 = address of a[i]
+    lw   t3, 0(t2)      # t3 = a[i]
+    add  t0, t0, t3     # sum += a[i]
+    addi t1, t1, 1      # i += 1
+    j    loop
+done:
+    mv   a0, t0         # return value
+    ret
+```
+
+### Tracing
+
+To trace a program, keep a table of the registers that change and step through one instruction at a time, applying the instruction exactly. Remember that after a taken branch execution continues at the label, otherwise at the next instruction. Tracing by hand is the way to find bugs the assembler cannot see.
+
+@example
+title: Tracing the array-sum loop
+problem: Trace `sum_array` for the array `[4, -1, 7]` with `a1 = 3`. What does it return?
+step: Initially `t0 = 0` (sum), `t1 = 0` (i). Test: `0 >= 3` is false, so the body runs: `t3 = a[0] = 4`, `t0 = 4`, `t1 = 1`.
+step: `1 >= 3` is false: `t3 = -1`, `t0 = 3`, `t1 = 2`.
+step: `2 >= 3` is false: `t3 = 7`, `t0 = 10`, `t1 = 3`.
+step: `3 >= 3` is true, so `bge` jumps to `done`, `a0 = t0 = 10`, and `ret` returns.
+answer: `10`
+
+@example
+title: Bytes, endianness and sign extension
+problem: The word `0xA1B2C3D4` is stored at address 0x1000, and `t6` holds 0x1000. What do `lbu t0, 1(t6)` and `lb t1, 1(t6)` load?
+step: Little-endian order puts the bytes at 0x1000, 0x1001, 0x1002, 0x1003 as `D4`, `C3`, `B2`, `A1`.
+step: Both instructions read the byte at address `0x1000 + 1 = 0x1001`, which is `0xC3`.
+step: `lbu` zero-extends: `t0 = 0x000000C3 = 195`.
+step: `lb` sign-extends from bit 7, which is 1: `t1 = 0xFFFFFFC3 = -61`.
+answer: `t0 = 195`, `t1 = -61`
+
+@mistakes
+- Testing the same condition as the `if` instead of its opposite when branching around the body.
+- Using `blt` on values that are really unsigned (addresses, sizes), which treats large values as negative; use `bltu`.
+- Forgetting to scale an array index by the element size (adding `i` instead of `4 * i` for `int` data).
+- Assuming big-endian byte order when reasoning about the bytes of a stored word.
+
+@practice num
+prompt: The 32-bit word `0x12345678` is stored in memory at address 0x200 on a little-endian machine. What is the decimal value of the single byte stored at address 0x200?
+answer: 120
+check: 0x12345678 & 0xFF
+hint: Little-endian means the least significant byte comes first, at the lowest address.
+solution: The least significant byte of `0x12345678` is `0x78`, stored at the lowest address 0x200. In decimal, `0x78 = 7*16 + 8 = 120`.
+
+@practice mc
+prompt: Registers `a0` and `a1` hold two array addresses, which are unsigned 32-bit numbers. Which branch correctly jumps to `L` when the address in `a0` is lower than the address in `a1`?
+choice: `blt a0, a1, L`
+choice*: `bltu a0, a1, L`
+choice: `bge a0, a1, L`
+choice: `beq a0, a1, L`
+hint: Addresses above `0x80000000` look negative if you treat them as signed.
+solution: `bltu` compares unsigned, which is right for addresses. `blt` would treat an address such as `0xFFFF0000` as negative and give the wrong answer. `bge` and `beq` test the opposite or the wrong relation.
+
+@practice code
+prompt: Model the RV32I branch decision in Python. Write `branch_taken(op, a, b)` where `op` is one of `"beq"`, `"bne"`, `"blt"`, `"bge"`, `"bltu"`, `"bgeu"` and `a` and `b` are 32-bit register contents given as unsigned integers from 0 to `0xFFFFFFFF`. Return `True` if the branch is taken and `False` otherwise. `blt` and `bge` compare as signed 32-bit numbers; `bltu` and `bgeu` compare as unsigned. Example: `branch_taken("blt", 0xFFFFFFFF, 1)` is `True` because `0xFFFFFFFF` is $-1$.
+starter:
+```python
+def branch_taken(op, a, b):
+    pass
+```
+tests:
+```python
+assert branch_taken("beq", 5, 5) is True
+assert branch_taken("bne", 5, 5) is False
+assert branch_taken("blt", 0xFFFFFFFF, 1) is True
+assert branch_taken("bltu", 0xFFFFFFFF, 1) is False
+assert branch_taken("bge", 1, 0xFFFFFFFF) is True
+assert branch_taken("bgeu", 1, 0xFFFFFFFF) is False
+assert branch_taken("bgeu", 3, 3) is True
+assert branch_taken("blt", 3, 3) is False
+```
+model:
+```python
+def signed(x):
+    return x - (1 << 32) if x & 0x80000000 else x
+
+
+def branch_taken(op, a, b):
+    if op == "beq":
+        return a == b
+    if op == "bne":
+        return a != b
+    if op == "blt":
+        return signed(a) < signed(b)
+    if op == "bge":
+        return signed(a) >= signed(b)
+    if op == "bltu":
+        return a < b
+    return a >= b
+```
+hint: First write a helper that converts an unsigned 32-bit value to its signed meaning: subtract $2^{32}$ when bit 31 is set.
+hint: Use the converted values for `blt` and `bge`, and the raw values for `bltu` and `bgeu`.
+solution: Convert each operand to signed form with `x - (1 << 32)` when bit 31 is set, and compare those for `blt` and `bge`. Unsigned branches compare the raw numbers. Always return a real `bool` from a comparison.
+
+@practice code
+prompt: Write `alu(op, a, b)` that models the RV32I register-register ALU. `op` is one of `"add"`, `"sub"`, `"and"`, `"or"`, `"xor"`, `"sll"`, `"srl"`, `"sra"`, `"slt"`, `"sltu"`; `a` and `b` are unsigned 32-bit integers (0 to `0xFFFFFFFF`), and the result is also an unsigned 32-bit integer. Arithmetic wraps modulo $2^{32}$; shifts use only the low 5 bits of `b` as the amount; `sra` is an arithmetic right shift of `a` (sign-extending); `slt` compares as signed and `sltu` as unsigned, giving 1 or 0.
+starter:
+```python
+def alu(op, a, b):
+    pass
+```
+tests:
+```python
+assert alu("add", 0xFFFFFFFF, 1) == 0
+assert alu("sub", 0, 1) == 0xFFFFFFFF
+assert alu("sll", 1, 31) == 0x80000000
+assert alu("srl", 0x80000000, 4) == 0x08000000
+assert alu("sra", 0x80000000, 4) == 0xF8000000
+assert alu("sra", 0x40000000, 4) == 0x04000000
+assert alu("slt", 0xFFFFFFFF, 1) == 1
+assert alu("sltu", 0xFFFFFFFF, 1) == 0
+assert alu("xor", 0xF0F0F0F0, 0xFFFF0000) == 0x0F0FF0F0
+assert alu("sll", 1, 33) == 2
+assert alu("and", 0xFF00FF00, 0x0FF00FF0) == 0x0F000F00
+assert alu("or", 0xFF00FF00, 0x0FF00FF0) == 0xFFF0FFF0
+```
+model:
+```python
+MASK = 0xFFFFFFFF
+
+
+def signed(x):
+    return x - (1 << 32) if x & 0x80000000 else x
+
+
+def alu(op, a, b):
+    shamt = b & 31
+    if op == "add":
+        r = a + b
+    elif op == "sub":
+        r = a - b
+    elif op == "and":
+        r = a & b
+    elif op == "or":
+        r = a | b
+    elif op == "xor":
+        r = a ^ b
+    elif op == "sll":
+        r = a << shamt
+    elif op == "srl":
+        r = a >> shamt
+    elif op == "sra":
+        r = signed(a) >> shamt
+    elif op == "slt":
+        r = int(signed(a) < signed(b))
+    else:
+        r = int(a < b)
+    return r & MASK
+```
+hint: Compute the result as an ordinary Python integer and mask it with `0xFFFFFFFF` at the end so that it wraps.
+hint: Python's `>>` on a negative integer is already an arithmetic shift, so for `sra` convert `a` to its signed value first. Use `b & 31` as the shift amount.
+solution: Compute each operation on Python integers, converting to signed values for `sra` and `slt`, and mask the result to 32 bits at the end. The mask turns $-1$ into `0xFFFFFFFF` and wraps overflowing sums.
+
+@practice self
+prompt: Write a RISC-V program (assembly text) that leaves in `a0` the sum $1+2+\dots+10$, using a loop with a counter in `t0`. Then trace the loop: give the value of `t0` and `a0` at the start of each pass, and the final value of `a0`.
+hint: Keep the running sum in `a0` and a counter in `t0` that starts at 1; the loop ends when the counter passes 10.
+hint: Put the test at the bottom: `blt t0, t1, loop` with `t1 = 11` repeats while the counter is below 11.
+solution: One solution:
+
+```text
+    li   a0, 0          # sum
+    li   t0, 1          # counter i
+    li   t1, 11         # limit
+loop:
+    add  a0, a0, t0     # sum += i
+    addi t0, t0, 1      # i += 1
+    blt  t0, t1, loop   # repeat while i < 11
+```
+
+Start of each pass (`t0`, `a0`): (1, 0), (2, 1), (3, 3), (4, 6), (5, 10), (6, 15), (7, 21), (8, 28), (9, 36), (10, 45). After the tenth pass `a0 = 55`, `t0 = 11`, and `blt` falls through because `11 < 11` is false.
+rubric: Initializes the sum to 0 and the counter to 1, with a limit that makes the loop run exactly 10 times.
+rubric: Loop body adds the counter to the sum, increments the counter and branches back with a correct condition.
+rubric: Trace table is consistent with the program and ends with `a0 = 55`.
+
+@quiz code
+prompt: Memory is modelled as a `bytearray` called `mem`. Write `lw(mem, addr)` that returns the 32-bit word stored at byte address `addr` as an unsigned integer, assuming little-endian byte order (the byte at `addr` is the least significant). Example: if `mem[0:4]` is `[0x78, 0x56, 0x34, 0x12]`, then `lw(mem, 0)` is `0x12345678`.
+starter:
+```python
+def lw(mem, addr):
+    pass
+```
+tests:
+```python
+mem = bytearray([0x78, 0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF])
+assert lw(mem, 0) == 0x12345678
+assert lw(mem, 4) == 0xFFFFFFFF
+assert lw(mem, 1) == 0xFF123456
+assert lw(bytearray(4), 0) == 0
+```
+model:
+```python
+def lw(mem, addr):
+    return (mem[addr] | (mem[addr + 1] << 8)
+            | (mem[addr + 2] << 16) | (mem[addr + 3] << 24))
+```
+hint: Byte `addr + k` contributes `mem[addr + k]` shifted left by `8 * k` bits.
+hint: Combine the four shifted bytes with `|`.
+solution: In little-endian order the byte at the lowest address is least significant, so shift byte `k` left by `8 * k` and OR the four together.
+
+@quiz num
+prompt: What value is in `a0` when this program finishes?
+
+```text
+    li   a0, 1
+    li   t0, 0
+    li   t1, 6
+again:
+    slli a0, a0, 1
+    addi t0, t0, 1
+    bne  t0, t1, again
+```
+answer: 64
+check: 1 << 6
+hint: The loop body runs until `t0` reaches 6. What does `slli a0, a0, 1` do to `a0`?
+solution: Each pass doubles `a0`. The body runs 6 times (`t0` goes 1 to 6, and `bne` stops when `t0 == 6`), so `a0 = 1 * 2^6 = 64`.

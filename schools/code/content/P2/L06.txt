@@ -1,0 +1,324 @@
+@lesson
+title: Behavioral design patterns
+summary: Use strategy, observer, command, state and template method to organize behavior, and choose the right pattern for a given problem.
+objective: Implement observer, state and template method in Python.
+objective: Explain how strategy, state and command differ and when each applies.
+objective: Pick and justify three patterns for supplied design problems.
+reading: Architecture Patterns with Python ("Cosmic Python"), Chapter 8 (Events and the Message Bus) and Chapter 10 (Commands and Command Handler) (the observer and command ideas at architecture scale); also look up the Gang of Four behavioral patterns.
+@article
+Behavioral patterns describe how objects **share responsibility and communicate**. You will meet them constantly: GUI callbacks, plugin systems, workflow engines, undo stacks. Python's first-class functions make many of them lighter than the textbook versions, so notice the idea and use the simplest form that works.
+
+### Strategy
+
+**Intent:** make a family of algorithms interchangeable. The object holds a strategy and calls it; callers choose which. You saw this in week 4 as composition: a sorter given a comparison key, a pricing object given discount rules. In Python the strategy is often just a function: `sorted(words, key=len)` passes a strategy. Use it when an `if`/`elif` chain picks an algorithm by type or setting.
+
+### Observer
+
+**Intent:** when one object changes or something happens, tell any number of interested objects without the source knowing who they are. The source keeps a list of subscribers and calls each one.
+
+```python
+class EventBus:
+    def __init__(self):
+        self._handlers = {}
+
+    def subscribe(self, event, handler):
+        self._handlers.setdefault(event, []).append(handler)
+
+    def publish(self, event, payload):
+        for handler in self._handlers.get(event, []):
+            handler(payload)
+```
+
+The publisher knows only "call these functions with a payload". Adding an email notification on `order_placed` means subscribing, not editing the order code. Costs: control flow becomes harder to follow ("who reacts to this?"), handler order may matter, and one failing handler can break the others, so decide what `publish` does about errors. Architectures use the same idea with domain events (week 10).
+
+### Command
+
+**Intent:** represent an action as an object, so it can be stored, queued, logged or undone. A command bundles what to do with the data it needs, and often an `undo`.
+
+```python
+class AppendText:
+    def __init__(self, doc, text):
+        self.doc, self.text = doc, text
+
+    def do(self):
+        self.doc.append(self.text)
+
+    def undo(self):
+        self.doc.remove_last(len(self.text))
+```
+
+An editor keeps a stack of executed commands; "undo" pops one and calls `undo()`. Job queues and audit logs are commands too: an action recorded as data.
+
+### State
+
+**Intent:** an object's behavior depends on its current state, so model states explicitly instead of scattering `if self.status == ...` through every method. A simple, table-driven form is a transition table:
+
+```python
+TRANSITIONS = {
+    ("closed", "open"): "open",
+    ("open", "close"): "closed",
+    ("closed", "lock"): "locked",
+    ("locked", "unlock"): "closed",
+}
+
+class Door:
+    def __init__(self):
+        self.state = "closed"
+
+    def handle(self, event):
+        self.state = TRANSITIONS.get((self.state, event), self.state)
+```
+
+Every legal transition is visible in one table, and anything not listed is ignored (or could raise an error). For richer behavior per state, make each state a class with its own methods (the classic State pattern). **State vs strategy:** both swap a collaborator, but a strategy is chosen *from outside* and normally stays; states change *themselves* as events occur.
+
+### Template Method
+
+**Intent:** a base class fixes the skeleton of an algorithm and lets subclasses fill in steps.
+
+```python
+class DataJob:
+    def run(self):
+        raw = self.extract()
+        clean = self.transform(raw)
+        self.load(clean)
+
+    def extract(self):
+        raise NotImplementedError
+
+    def transform(self, raw):
+        raise NotImplementedError
+
+    def load(self, clean):
+        raise NotImplementedError
+```
+
+This is the legitimate use of inheritance from week 4: a parent *designed for extension*, with documented hooks. If you find yourself overriding `run`, the template is leaking. The strategy alternative passes the steps in as functions and avoids inheritance entirely.
+
+### Iterator and others
+
+**Iterator** is built into Python: anything with `__iter__`, and generators with `yield`, hide how a collection is traversed. **Chain of Responsibility** passes a request along handlers until one handles it (web middleware, validation chains). **Mediator**, **Visitor** and **Memento** exist too; learn them when you meet a need.
+
+### Choosing patterns
+
+Name the force. Many reactions to one event: observer. Algorithm swapped by configuration: strategy. Behavior changes with life-cycle stage: state. Undo, queueing or logging of actions: command. Fixed process with varying steps: template method. A pattern is a hypothesis; if the code reads worse after applying it, back out.
+
+@example
+title: A table-driven state machine
+problem: Given the `Door` class above (states `closed`, `open`, `locked`), what is `door.state` after these events: `open`, `lock`, `close`, `lock`, `open`?
+step: Start in `closed`.
+step: `open`: the pair `("closed", "open")` is in the table, so the state becomes `open`.
+step: `lock`: there is no entry for `("open", "lock")`, so the state stays `open`. Locking an open door is simply ignored.
+step: `close` gives `closed`; `lock` then gives `locked`.
+step: `open`: there is no entry for `("locked", "open")`, so the door stays `locked`.
+answer: `locked`
+
+@example
+title: Choosing a pattern for an undo feature
+problem: A text editor must support undoing the last several edits. Which pattern fits, and what does the design look like?
+step: Name the force: each edit must be stored and reversed later, which means actions must exist as data. That is the **Command** pattern.
+step: Give each edit a class with `do()` and `undo()` (an `AppendText` command, a `DeleteRange` command).
+step: The editor keeps a history list. Executing a command calls `do()` and pushes it. `undo()` pops the last command and calls its `undo()`.
+step: For redo, move popped commands onto a second stack, and clear that stack when a new command runs.
+step: New editing actions are new command classes, so the editor itself does not change: open for extension.
+answer: Command, with a history stack of objects that each know how to undo themselves.
+
+@mistakes
+- Using a pattern name as the design: "we use observer" says nothing about what events exist, who handles errors, or whether order matters.
+- Subscribing handlers that raise exceptions inside `publish` without deciding whether the remaining handlers should still run.
+- Confusing state and strategy: if the object itself decides when the behavior switches, it is state; if the caller picks, it is strategy.
+- Building class-per-state hierarchies when a transition table would be clearer for a handful of states.
+
+@practice mc
+prompt: When an order is placed, the system must send a confirmation email, update a sales dashboard and reserve stock. Marketing wants to add a loyalty-points step next month without touching the order code. Which pattern fits best?
+choice: Template Method, with an `Order.place` that subclasses override
+choice: Singleton, so that one order object exists
+choice*: Observer, with the order publishing an `order_placed` event that each concern subscribes to
+choice: Adapter, wrapping the email library
+hint: Which pattern lets new reactions be added without changing the publisher?
+solution: Observer lets any number of subscribers react to an event without the order code knowing them, so loyalty points become one more subscription. Template Method would require subclassing, and singleton and adapter solve different problems.
+
+@practice code
+prompt: Write a class `EventBus` with `subscribe(event, handler)` and `publish(event, payload)`. Publishing calls every handler subscribed to that event, in subscription order, passing the payload, and returns how many handlers were called. Publishing an event with no subscribers returns `0`. Handlers for other events must not be called.
+starter:
+```python
+class EventBus:
+    pass
+```
+tests:
+```python
+bus = EventBus()
+seen = []
+bus.subscribe("placed", lambda p: seen.append(("a", p)))
+bus.subscribe("placed", lambda p: seen.append(("b", p)))
+bus.subscribe("shipped", lambda p: seen.append(("c", p)))
+assert bus.publish("placed", 7) == 2
+assert seen == [("a", 7), ("b", 7)]
+assert bus.publish("shipped", 8) == 1
+assert seen[-1] == ("c", 8)
+assert bus.publish("unknown", 1) == 0
+assert len(seen) == 3
+```
+model:
+```python
+class EventBus:
+    def __init__(self):
+        self._handlers = {}
+
+    def subscribe(self, event, handler):
+        self._handlers.setdefault(event, []).append(handler)
+
+    def publish(self, event, payload):
+        handlers = self._handlers.get(event, [])
+        for handler in handlers:
+            handler(payload)
+        return len(handlers)
+```
+hint: Keep a dictionary from event name to a list of handlers.
+solution: A dictionary of lists stores subscribers per event; `publish` calls them in order and returns how many ran. The publisher knows nothing about who is listening, which is the point of the observer pattern.
+
+@practice text
+prompt: What does this program print? Type the three lines of output exactly.
+
+```python
+class Doc:
+    def __init__(self):
+        self.text = ""
+        self.sizes = []
+
+    def append(self, s):
+        self.text += s
+        self.sizes.append(len(s))
+
+    def undo(self):
+        n = self.sizes.pop()
+        self.text = self.text[:-n]
+
+d = Doc()
+d.append("ab")
+d.append("cde")
+print(d.text)
+d.undo()
+print(d.text)
+d.append("f")
+print(d.text)
+```
+answer:
+```
+abcde
+ab
+abf
+```
+check: run("class Doc:\n    def __init__(self):\n        self.text = ''\n        self.sizes = []\n\n    def append(self, s):\n        self.text += s\n        self.sizes.append(len(s))\n\n    def undo(self):\n        n = self.sizes.pop()\n        self.text = self.text[:-n]\n\nd = Doc()\nd.append('ab')\nd.append('cde')\nprint(d.text)\nd.undo()\nprint(d.text)\nd.append('f')\nprint(d.text)\n")
+hint: `undo` removes as many characters as the last append added.
+solution: After two appends the text is `abcde`. `undo` pops the size 3 and removes `cde`, leaving `ab`. Appending `f` gives `abf`. The history of sizes is the simplest form of a command stack.
+
+@practice code
+prompt: Write a class `Door` with a `state` attribute that starts as `"closed"` and a method `handle(event)`. The states are `"closed"`, `"open"` and `"locked"`; the events are `"open"`, `"close"`, `"lock"` and `"unlock"`. The legal transitions are: closed + open gives open; open + close gives closed; closed + lock gives locked; locked + unlock gives closed. Any other combination is ignored (the state does not change). Use a transition table, not a chain of `if`.
+starter:
+```python
+class Door:
+    pass
+```
+tests:
+```python
+d = Door()
+assert d.state == "closed"
+d.handle("open")
+assert d.state == "open"
+d.handle("lock")
+assert d.state == "open"
+d.handle("close")
+d.handle("lock")
+assert d.state == "locked"
+d.handle("open")
+assert d.state == "locked"
+d.handle("unlock")
+assert d.state == "closed"
+d.handle("explode")
+assert d.state == "closed"
+```
+model:
+```python
+TRANSITIONS = {
+    ("closed", "open"): "open",
+    ("open", "close"): "closed",
+    ("closed", "lock"): "locked",
+    ("locked", "unlock"): "closed",
+}
+
+class Door:
+    def __init__(self):
+        self.state = "closed"
+
+    def handle(self, event):
+        self.state = TRANSITIONS.get((self.state, event), self.state)
+```
+hint: Key a dictionary by the pair `(current_state, event)`.
+hint: `dict.get(key, default)` with the current state as the default ignores illegal events.
+solution: All legal transitions live in one table keyed by `(state, event)`, and `get` with the current state as the default makes every unlisted pair a no-op. Adding a state is adding rows, not editing branches.
+
+@practice self
+prompt: For each problem, choose a design pattern (creational, structural or behavioral), justify it in one or two sentences with the force it resolves, and sketch the class or function signatures. (a) A report must be exported as CSV, JSON or HTML, chosen by a setting, and finance wants Excel soon. (b) A vendor's `LegacyBilling` class has `post(amount_cents, acct)` but your code is written against `charge(customer_id, cents)`. (c) A user-profile page's data loads from a slow service, and many components call `profile.name()` and `profile.avatar()` on one profile object that may never be shown.
+hint: For each, name the force first: swapped algorithm, wrong interface, or controlled access.
+solution: (a) Strategy (with a factory to choose from the setting). Force: an algorithm swapped by configuration, and a growing `if`/`elif`. Sketch: `exporters = {"csv": export_csv, "json": export_json, "html": export_html}` and `def export(rows, kind): return exporters[kind](rows)`. Excel is one new function and one dictionary entry. (b) Adapter. Force: the interface you have differs from the one you want, and you cannot edit the vendor. Sketch: `class BillingAdapter: def __init__(self, legacy): ...` with `def charge(self, customer_id, cents): return self._legacy.post(cents, self._acct_for(customer_id))`. Callers depend on `charge`. (c) Proxy (lazy loading). Force: same interface as the real profile, but the expensive load is deferred until first use. Sketch: `class LazyProfile: def __init__(self, loader): self._loader, self._real = loader, None` and `def name(self): return self._load().name()` where `_load` fetches once and caches. Callers cannot tell it from the real profile.
+rubric: Each of the three problems is paired with a pattern that fits the stated force (strategy or factory, adapter, proxy or lazy-loading wrapper).
+rubric: Each justification names the force or problem it resolves rather than just the pattern name.
+rubric: Each sketch gives plausible signatures that show how callers use the result, and the three solutions are distinct.
+
+@quiz code
+prompt: Write a base class `DataJob` that implements the template method `run()`. `run()` calls `self.extract()`, passes its result to `self.transform(raw)`, passes that result to `self.load(clean)`, and returns whatever `load` returns. The three steps raise `NotImplementedError` in the base class. Subclasses fill them in and never override `run`.
+starter:
+```python
+class DataJob:
+    pass
+```
+tests:
+```python
+class Doubler(DataJob):
+    def extract(self):
+        return [1, 2, 3]
+
+    def transform(self, raw):
+        return [x * 2 for x in raw]
+
+    def load(self, clean):
+        return sum(clean)
+
+assert Doubler().run() == 12
+assert raises(NotImplementedError, DataJob().run)
+
+class Partial(DataJob):
+    def extract(self):
+        return 1
+
+assert raises(NotImplementedError, Partial().run)
+assert raises(NotImplementedError, DataJob().extract)
+```
+model:
+```python
+class DataJob:
+    def run(self):
+        raw = self.extract()
+        clean = self.transform(raw)
+        return self.load(clean)
+
+    def extract(self):
+        raise NotImplementedError
+
+    def transform(self, raw):
+        raise NotImplementedError
+
+    def load(self, clean):
+        raise NotImplementedError
+```
+hint: `run` is the fixed skeleton; the three steps are hooks.
+solution: `run` fixes the order extract, transform, load and returns the load result. Each hook raises `NotImplementedError` until a subclass supplies it, so a half-written job fails clearly when run.
+
+@quiz mc
+prompt: A `Document` object has behavior that differs by lifecycle: in `draft` it can be edited, in `review` it can only be commented on, and in `published` it is read-only. The document moves between these itself as events occur (submit, approve). Which pattern best describes the design that models this?
+choice: Strategy, because the caller picks one algorithm and keeps it
+choice: Singleton, because there is one document at a time
+choice*: State, because behavior changes with the object's lifecycle stage and the object moves between stages itself
+choice: Adapter, because each stage has a different interface
+hint: Who decides when the behavior changes, the caller or the object itself?
+solution: State fits when an object's behavior depends on its lifecycle stage and transitions happen as events occur. Strategy is chosen from outside and normally stays, while singleton and adapter solve unrelated problems.
