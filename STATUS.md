@@ -72,9 +72,9 @@ from the AI school (C8–C10, C22, C23), philosophy of mind from the Metaphysics
 | 2. Brief, review template, validated example lesson (`example_neuro_lesson.txt`), rebranded app | done |
 | 3. Write the 21 new courses | done (Nov 8) |
 | 4. Independent review of each course | done (21 of 21 in `work/review_log.txt`, follow-ups in `work/WRITERS.md`) |
-| 5. Integrate and build | in progress |
-| 6. Test the page | not started |
-| 7. Publish as `neuroscience-learning-foundation` (owner's yes first) | not started |
+| 5. Integrate and build | done (70 courses validate with 0 errors; 16.7 MB page, 289 runnable blocks) |
+| 6. Test the page | done (292 routes, 0 math errors, 0 page errors; Python, grading, exam and error log checked) |
+| 7. Publish as `neuroscience-learning-foundation` (owner's yes first) | waiting for the owner's yes |
 | 8. Add to the hub | not started |
 
 How to continue step 3: for each course without 13 files, write it exactly as `schools/neuro/toolkit/BRIEF.md` says,
@@ -186,3 +186,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: P5 and P6 written, so all 21 new courses are written; P1 reviewed (24 fixes); reviews of P4, P5, P6 running; trial build fine (one Try-it float fixed in C15)
 - 2026-11-08: Neuro: all 21 new courses written and independently reviewed (P4 6 fixes, P5 6, P6 8, with follow-ups); spelling audit clean; final validation and build next, then the owner is asked before publishing
 - 2026-11-08: Neuro: steps 2–4 done; step 5 (integrate and build) in progress
+- 2026-11-08: Neuro: all 70 courses validate; page built (16.7 MB) and tested (292 routes, no math or page errors); publish/index.html ready; waiting for the owner's yes
