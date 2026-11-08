@@ -53,11 +53,11 @@ Decisions so far:
 | C23 | AI ethics, safety and governance | 13/13 | yes | yes |
 | C24 | Machine learning engineering and MLOps | 13/13 | yes | yes |
 | P1 | Statistical learning theory | 13/13 | yes |  |
-| P2 | Probabilistic machine learning and generative models | 13/13 | yes |  |
-| P3 | Large language models | 13/13 | yes |  |
-| P4 | Interpretability and AI alignment | 5/13 |  |  |
-| P5 | Research methods in machine learning | 4/13 |  |  |
-| P6 | Research apprenticeship and qualifying exams | 0/13 |  |  |
+| P2 | Probabilistic machine learning and generative models | 13/13 | yes | yes |
+| P3 | Large language models | 13/13 | yes | yes |
+| P4 | Interpretability and AI alignment | 6/13 |  |  |
+| P5 | Research methods in machine learning | 6/13 |  |  |
+| P6 | Research apprenticeship and qualifying exams | 3/13 |  |  |
 <!-- /ai-table -->
 
 ## Queue of future schools (one at a time, in this order)
@@ -99,3 +99,4 @@ Decisions so far:
 - 2026-11-07: C20 reviewed (15 fixes plus two follow-ups).
 - 2026-11-07: C16, C22 and C23 reviewed with follow-ups; C21 and C24 written and in review; P3 and P4 being written; re-typing audit found 16 code items to rework in C11, C13, C14 and C16 (fixes running); BRIEF updated with Digital Omnibus details
 - 2026-11-07: C11, C13, C14 and C16 re-typing fixes done; C21 and C24 reviewed with follow-ups; P1, P2 and P3 written and in review; P4, P5 and P6 being written
+- 2026-11-07: P2 and P3 reviewed with follow-ups; trial site build passes; P1 in review; P4, P5 and P6 being written

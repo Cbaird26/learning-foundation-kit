@@ -1,0 +1,163 @@
+@lesson
+title: Superposition and sparse dictionary learning
+summary: Analyze a toy model in which more features than dimensions share a space, compute its interference and expected error, and compute the loss and a gradient step of a sparse autoencoder that tries to undo the sharing.
+objective: Explain superposition, and why sparsity and a ReLU make it worthwhile in the toy model of Elhage and colleagues (2022).
+objective: Compute the reconstruction and expected error of a small toy model whose features share dimensions.
+objective: Compute the loss of a sparse autoencoder and take one gradient step on its decoder.
+objective: State the open problems in using sparse autoencoders to find a model's features.
+reading: Interpretable Machine Learning by Christoph Molnar for background on learned features; for this topic read the toy models of superposition paper (Elhage and colleagues, 2022) and the sparse autoencoder papers (Bricken and colleagues, 2023; Cunningham and colleagues, 2023).
+
+@article
+Individual neurons in trained networks are often **polysemantic**: one neuron responds to several unrelated things. If features were simply neurons, that would be strange. One explanation is that the network represents more features than it has dimensions, packing them as non-orthogonal directions, and tolerates the resulting interference because features are rarely active together. A network cannot have more than $m$ orthogonal directions in $m$ dimensions, but it can have many nearly orthogonal ones.
+
+### The toy model
+
+Elhage and colleagues (2022), "Toy models of superposition", studied a small model of this idea. Take $n$ features $\mathbf{x} \in [0,1]^n$, each nonzero with probability $p$ (**sparsity** is $1 - p$), and a hidden space of dimension $m < n$. The model compresses and reconstructs,
+
+$$\mathbf{h} = \mathbf{W}\mathbf{x}, \qquad \hat{\mathbf{x}} = \operatorname{ReLU}(\mathbf{W}^\top \mathbf{h} + \mathbf{b}),$$
+
+with $\mathbf{W} \in \mathbb{R}^{m \times n}$, trained to minimize the (importance-weighted) squared error. Column $\mathbf{w}_i$ of $\mathbf{W}$ is the direction of feature $i$. The reconstruction of feature $i$ is $\hat{x}_i = \operatorname{ReLU}\big(\sum_j (\mathbf{w}_i^\top \mathbf{w}_j)\, x_j + b_i\big)$: it reads its own value (through $\lVert\mathbf{w}_i\rVert^2$) plus **interference** $\mathbf{w}_i^\top \mathbf{w}_j\, x_j$ from every other active feature. Their finding: when features are dense, the model stores only the most important $m$ features in an orthogonal basis; as sparsity grows, it moves to superposition, storing more features than dimensions in non-orthogonal directions, in geometric arrangements such as pairs of antipodal directions or regular polygons, with phase changes between configurations.
+
+### A computation
+
+Place $n = 3$ features in $m = 2$ dimensions at angles $90^\circ$, $210^\circ$, $330^\circ$ with unit norm, so $\mathbf{w}_i^\top\mathbf{w}_j = \cos 120^\circ = -0.5$ for $i \ne j$, and take $\mathbf{b} = \mathbf{0}$. If only feature 1 is active, $\mathbf{x} = (1,0,0)$, then $\hat{\mathbf{x}} = \operatorname{ReLU}(1, -0.5, -0.5) = (1, 0, 0)$: perfect, because the ReLU removes *negative* interference. If features 1 and 2 are both active, $\hat{x}_1 = \operatorname{ReLU}(1 - 0.5) = 0.5$, $\hat{x}_2 = 0.5$ and $\hat{x}_3 = \operatorname{ReLU}(-0.5 - 0.5) = 0$: squared error $0.25 + 0.25 = 0.5$. With all three active, every output is $\operatorname{ReLU}(1 - 0.5 - 0.5) = 0$, squared error 3. With independent activations of probability $p$, the expected squared error is
+
+$$E_{\text{super}}(p) = 3p^2(1-p)\cdot 0.5 + p^3 \cdot 3 = 1.5\,p^2(1-p) + 3p^3 .$$
+
+The alternative is to store two features orthogonally and drop the third, with expected error $p$ (the dropped feature is active with probability $p$ and fully lost). At $p = 0.1$: $E_{\text{super}} = 0.0165$ against $0.1$. Superposition wins when $E_{\text{super}}(p) < p$, i.e. for $p < (-1 + \sqrt{1 + 8/3})/2 \approx 0.457$. At $p = 0.5$ it loses ($0.5625$ against $0.5$). That is the trade-off in one line: interference costs only when features co-occur, and sparse features rarely do.
+
+### Sparse autoencoders
+
+If activations are superpositions of many sparse features, then an unsupervised method that explains an activation vector $\mathbf{x}$ as a sparse combination of directions should recover them. A **sparse autoencoder** (SAE; Bricken and colleagues, 2023; Cunningham and colleagues, 2023) is trained on a model's activations,
+
+$$\mathbf{f} = \operatorname{ReLU}(\mathbf{W}_e \mathbf{x} + \mathbf{b}_e), \quad \hat{\mathbf{x}} = \mathbf{W}_d \mathbf{f}, \quad L = \lVert \mathbf{x} - \hat{\mathbf{x}} \rVert_2^2 + \lambda \lVert \mathbf{f} \rVert_1,$$
+
+where $\mathbf{f}$ has many more entries than $\mathbf{x}$ (an overcomplete dictionary), the columns of $\mathbf{W}_d$ are the candidate feature directions, and the L1 penalty encourages few active features. Practical versions add a decoder bias and normalize decoder columns to unit norm, since otherwise the model can shrink $\mathbf{f}$ and grow $\mathbf{W}_d$ to cut the penalty for free.
+
+```python
+def sae_loss(x, W_e, b_e, W_d, lam):
+    f = [max(0.0, sum(w * xi for w, xi in zip(row, x)) + b)
+         for row, b in zip(W_e, b_e)]
+    x_hat = [sum(W_d[i][k] * f[k] for k in range(len(f)))
+             for i in range(len(x))]
+    recon = sum((xi - xh) ** 2 for xi, xh in zip(x, x_hat))
+    return recon + lam * sum(f)
+```
+
+Here `W_e` has one row per feature and `W_d` one row per output coordinate. The gradient of the reconstruction term with respect to the decoder is $-2(\mathbf{x} - \hat{\mathbf{x}})\mathbf{f}^\top$; the L1 term does not involve the decoder.
+
+### Open problems
+
+SAEs reconstruct imperfectly and replacing activations with reconstructions raises the model's loss; L1 shrinks activations; some latents never fire; and as the dictionary grows, a latent for a broad concept may split into several for specific cases (**feature splitting**), so the "features" depend on the dictionary size. The central open question is whether SAE latents are the model's own features or one of many useful decompositions. One view holds that the sparsity assumption fits the data and that latents pass tests such as causal steering and automated interpretability scores. The opposing view holds that a dictionary is a modeling choice that can find human-recognizable patterns whether or not the network uses them, that features need not be linear directions, and that superposition may not be the only reason neurons are polysemantic. These disagreements are active, and the field has no agreed standard for validating a decomposition.
+
+@example
+title: One SAE loss and one decoder step
+problem: An SAE has $\mathbf{W}_e = \begin{pmatrix} 1 & 0 \\ 0 & 1 \\ 1 & 1 \end{pmatrix}$, $\mathbf{b}_e = (0, 0, -2)$ and $\mathbf{W}_d = \begin{pmatrix} 1 & 0 & 0.5 \\ 0 & 1 & 0.5 \end{pmatrix}$. For the input $\mathbf{x} = (1, 2)$ and $\lambda = 0.1$, compute the loss, then take one gradient step on $\mathbf{W}_d$ with step size $0.1$ and compute the new loss.
+step: Encode: $\mathbf{f} = \operatorname{ReLU}(1,\ 2,\ 1 + 2 - 2) = (1, 2, 1)$, with $\lVert\mathbf{f}\rVert_1 = 4$.
+step: Decode: $\hat{\mathbf{x}} = (1 + 0.5,\ 2 + 0.5) = (1.5, 2.5)$, so the residual is $\mathbf{x} - \hat{\mathbf{x}} = (-0.5, -0.5)$, the reconstruction error is $0.5$, and the loss is $0.5 + 0.1 \times 4 = 0.9$.
+step: The decoder gradient is $-2\,(\mathbf{x} - \hat{\mathbf{x}})\,\mathbf{f}^\top$, and both rows equal $-2(-0.5)(1, 2, 1) = (1, 2, 1)$. A step with size $0.1$ gives $\mathbf{W}_d = \begin{pmatrix} 0.9 & -0.2 & 0.4 \\ -0.1 & 0.8 & 0.4 \end{pmatrix}$.
+step: New reconstruction: $\hat{\mathbf{x}} = (0.9 - 0.4 + 0.4,\ -0.1 + 1.6 + 0.4) = (0.9, 1.9)$, residual $(0.1, 0.1)$, error $0.02$, new loss $0.02 + 0.4 = 0.42$.
+answer: Loss $0.9$, then $0.42$ after the step.
+
+@mistakes
+- Forgetting that the ReLU removes only negative interference: positive overlaps between feature directions (angles under $90^\circ$) produce false activations of other features even when only one feature is active.
+- Applying the L1 penalty to the reconstruction error, or leaving it out of the loss: the penalty acts on the feature activations $\mathbf{f}$ and trades sparsity against reconstruction.
+- Calling SAE latents "the model's features" without validation: a dictionary is learned under a sparsity assumption, and its latents depend on the dictionary size, the penalty and the training data.
+- Letting the decoder shrink the penalty for free: without unit-norm decoder columns, the loss can fall by scaling $\mathbf{f}$ down and $\mathbf{W}_d$ up.
+
+@practice num
+prompt: A toy model has $\mathbf{W}$ with columns $\mathbf{w}_1 = (1, 0)$ and $\mathbf{w}_2 = (0.6, 0.8)$ and $\mathbf{b} = \mathbf{0}$, with reconstruction $\hat{\mathbf{x}} = \operatorname{ReLU}(\mathbf{W}^\top \mathbf{W} \mathbf{x})$. For the input $\mathbf{x} = (1, 0)$, what is the squared reconstruction error $\lVert \mathbf{x} - \hat{\mathbf{x}} \rVert_2^2$?
+answer: 0.36
+tol: 0.001
+check: (1 - max(0, 1.0 * 1 + 0.6 * 0)) ** 2 + (0 - max(0, 0.6 * 1 + 1.0 * 0)) ** 2
+hint: The reconstruction of feature 2 is $\mathbf{w}_2^\top\mathbf{w}_1 \cdot x_1 = 0.6$, and feature 1 is reconstructed as $\lVert\mathbf{w}_1\rVert^2 x_1 = 1$.
+solution: $\hat{x}_1 = \operatorname{ReLU}(1) = 1$ and $\hat{x}_2 = \operatorname{ReLU}(0.6 \cdot 1) = 0.6$, a positive interference the ReLU does not remove. The error is $(1 - 1)^2 + (0 - 0.6)^2 = 0.36$.
+
+@practice num
+prompt: Three features sit at unit vectors $120^\circ$ apart in two dimensions with $\mathbf{b} = \mathbf{0}$, and each is active (value 1) independently with probability $p = 0.4$. By how much is the expected squared error of this superposed model below the error of a model that stores two features orthogonally and drops the third (expected error $p$)? Use the fact that, with exactly two features active, the squared error is $0.5$, and with all three active it is $3$. Give three decimal places.
+answer: 0.064
+tol: 0.001
+check: 0.4 - (3 * 0.4**2 * 0.6 * 0.5 + 0.4**3 * 3)
+hint: The probability that exactly two of three features are active is $3p^2(1-p)$, and that all three are is $p^3$; one or none active costs nothing.
+solution: $E_{\text{super}} = 3(0.16)(0.6)(0.5) + 0.064 \times 3 = 0.144 + 0.192 = 0.336$. Dropping a feature costs $p = 0.4$, so the difference is $0.4 - 0.336 = 0.064$. Superposition still wins at $p = 0.4$, which is below the break-even of about $0.457$.
+
+@practice num
+prompt: A sparse autoencoder has $\mathbf{W}_e = \begin{pmatrix} 1 & 1 \\ 1 & -1 \end{pmatrix}$, $\mathbf{b}_e = (0, 0)$ and $\mathbf{W}_d = \begin{pmatrix} 0.4 & 0.4 \\ 0.4 & -0.4 \end{pmatrix}$ and uses $\lambda = 0.25$. For the input $\mathbf{x} = (3, 1)$, what is the loss $\lVert \mathbf{x} - \hat{\mathbf{x}} \rVert_2^2 + \lambda \lVert \mathbf{f} \rVert_1$?
+answer: 1.9
+tol: 0.001
+check: (lambda f: (3 - (0.4 * f[0] + 0.4 * f[1])) ** 2 + (1 - (0.4 * f[0] - 0.4 * f[1])) ** 2 + 0.25 * sum(f))([max(0, 3 + 1), max(0, 3 - 1)])
+hint: Encode first: $\mathbf{f} = \operatorname{ReLU}(\mathbf{W}_e \mathbf{x})$, then decode and compute the residual.
+solution: $\mathbf{f} = \operatorname{ReLU}(4, 2) = (4, 2)$. The reconstruction is $\hat{\mathbf{x}} = (0.4 \cdot 6,\ 0.4 \cdot 2) = (2.4, 0.8)$, so the residual is $(0.6, 0.2)$ and the squared error is $0.36 + 0.04 = 0.40$. The penalty is $0.25 \times 6 = 1.5$, and the loss is $1.9$.
+
+@practice code
+prompt: Write `decoder_step(x, W_e, b_e, W_d, lam, lr)` that returns the decoder matrix (a list of rows) after one gradient-descent step on the sparse autoencoder loss $\lVert\mathbf{x} - \hat{\mathbf{x}}\rVert_2^2 + \lambda\lVert\mathbf{f}\rVert_1$ with respect to $\mathbf{W}_d$ only, where $\mathbf{f} = \operatorname{ReLU}(\mathbf{W}_e\mathbf{x} + \mathbf{b}_e)$ and $\hat{\mathbf{x}} = \mathbf{W}_d \mathbf{f}$. Here `W_e` has one row per feature, `W_d` has one row per output coordinate, and the input `W_d` must not be modified. The gradient for entry $(i, k)$ is $-2(x_i - \hat{x}_i) f_k$. For example, with `x = [1.0]`, `W_e = [[1.0]]`, `b_e = [0.0]`, `W_d = [[0.0]]`, `lam = 0.5`, `lr = 0.1` the result is `[[0.2]]`.
+starter:
+```python
+def decoder_step(x, W_e, b_e, W_d, lam, lr):
+    return W_d
+```
+tests:
+```python
+got = decoder_step([1.0], [[1.0]], [0.0], [[0.0]], 0.5, 0.1)
+assert abs(got[0][0] - 0.2) < 1e-9
+W_e = [[1.0, 0.0], [0.0, 1.0], [1.0, -1.0]]
+b_e = [0.0, 0.5, -1.0]
+W_d = [[1.0, 0.0, 0.5], [0.0, 1.0, -0.5]]
+got = decoder_step([2.0, -1.0], W_e, b_e, W_d, 0.3, 0.1)
+want = [[0.6, 0.0, 0.1], [0.0, 1.0, -0.5]]
+assert all(abs(a - b) < 1e-9 for ra, rb in zip(got, want) for a, b in zip(ra, rb))
+assert W_d == [[1.0, 0.0, 0.5], [0.0, 1.0, -0.5]]
+same = decoder_step([2.0, -1.0], W_e, b_e, W_d, 5.0, 0.1)
+assert all(abs(a - b) < 1e-9 for ra, rb in zip(same, want) for a, b in zip(ra, rb))
+dead = decoder_step([-1.0], [[1.0]], [0.0], [[0.7]], 0.1, 0.5)
+assert abs(dead[0][0] - 0.7) < 1e-9
+```
+model:
+```python
+def decoder_step(x, W_e, b_e, W_d, lam, lr):
+    """One gradient step on the decoder of a sparse autoencoder."""
+    f = [max(0.0, sum(w * xi for w, xi in zip(row, x)) + b)
+         for row, b in zip(W_e, b_e)]
+    x_hat = [sum(W_d[i][k] * f[k] for k in range(len(f)))
+             for i in range(len(x))]
+    new = []
+    for i, row in enumerate(W_d):
+        resid = x[i] - x_hat[i]
+        new.append([w + 2 * lr * resid * f[k] for k, w in enumerate(row)])
+    return new
+```
+hint: Compute the features and the reconstruction first, then update each entry by subtracting `lr` times its gradient $-2(x_i - \hat{x}_i) f_k$, building a new list so that the input is untouched.
+solution: The L1 term depends only on the features, not on the decoder, so $\lambda$ does not appear in the decoder gradient (a test checks that a large $\lambda$ gives the same result). A feature that does not fire has $f_k = 0$ and its decoder column does not move, which another test checks. Building a new matrix avoids modifying the caller's data.
+
+@practice self
+prompt: An SAE trained on one layer of a model yields a latent whose top-activating examples all concern a single topic, and steering by adding its decoder direction changes the model's outputs toward that topic. A colleague concludes that "the model represents this topic as a single feature". List three alternative explanations, and for each describe a test that would distinguish it from the colleague's conclusion.
+hint: For each alternative, ask what the dictionary, the model's computation and the intervention would each show.
+solution: First, feature splitting or merging: the latent may be one of several that jointly cover the topic, or a merge of related features at this dictionary size. Test: train SAEs with larger and smaller dictionaries and several seeds, and check whether the latent is stable, splits into sub-latents or merges; report how much of the topic's behavior is spanned by the group. Second, the latent may reflect the SAE's sparsity bias, grouping co-occurring activations that the model itself does not treat as a unit. Test: intervene on the model, not the dictionary, for example by patching activations along the direction on prompts where the topic matters and checking that downstream behavior depends on the direction as predicted, and compare with random directions and directions from a different decomposition such as a probe or a different dictionary-learning method. Third, steering success shows that the direction can influence outputs, not that the model uses it to represent the topic in normal operation (the intervention may push activations off the data distribution). Test: ablate the direction on natural prompts about the topic and measure the effect on the topic-relevant predictions relative to controls, and check that the effect appears at natural activation magnitudes. All three tests ask for evidence about the model's computation, not just the dictionary.
+rubric: Gives three distinct alternatives (dictionary-size dependence, sparsity-induced grouping, steering not equal to natural use).
+rubric: Each alternative is paired with a test that could distinguish it from the colleague's conclusion.
+rubric: Tests act on the model (patching, ablation, controls), not merely on the dictionary or on labels.
+
+@quiz num
+prompt: In the toy model with three unit-norm feature directions $120^\circ$ apart in two dimensions and $\mathbf{b} = \mathbf{0}$, the reconstruction is $\hat{\mathbf{x}} = \operatorname{ReLU}(\mathbf{W}^\top\mathbf{W}\mathbf{x})$, where $\mathbf{w}_i^\top\mathbf{w}_j = -0.5$ for $i \ne j$. For the input $\mathbf{x} = (0.5, 1, 0)$, what is the reconstructed value $\hat{x}_2$?
+answer: 0.75
+tol: 0.001
+check: max(0, -0.5 * 0.5 + 1 * 1 + (-0.5) * 0)
+hint: $\hat{x}_2 = \operatorname{ReLU}(\mathbf{w}_2^\top\mathbf{w}_1 x_1 + \lVert\mathbf{w}_2\rVert^2 x_2 + \mathbf{w}_2^\top\mathbf{w}_3 x_3)$.
+solution: $\hat{x}_2 = \operatorname{ReLU}(-0.5(0.5) + 1(1) - 0.5(0)) = \operatorname{ReLU}(0.75) = 0.75$: the active feature 1 interferes with feature 2 and lowers it from 1 to 0.75.
+
+@quiz ms
+prompt: Which of these statements about sparse autoencoders (SAEs) trained on model activations are true? Select all that apply.
+choice*: The L1 penalty on the feature activations encourages each activation vector to be explained by few dictionary features, at a cost in reconstruction error.
+choice*: Without a constraint on the decoder column norms, the loss can be reduced by shrinking the feature activations and enlarging the decoder columns.
+choice: SAE latents are guaranteed to be the features the model itself computes with.
+choice: A larger dictionary always produces exactly the same latents as a smaller one, plus extra ones.
+hint: Think about the terms of the loss, and about what an unsupervised decomposition can and cannot guarantee.
+solution: The penalty trades sparsity against reconstruction, and rescaling the decoder circumvents it unless columns are normalized. Nothing guarantees that latents are the model's own features, and features often split or change when the dictionary size changes.
+
+@quiz self
+prompt: A paper trains SAEs with 4,000, 16,000 and 64,000 latents on the same activations. A broad "animals" latent appears in the smallest dictionary, and in the largest there are many latents for particular animals and none for "animals" as a whole. What does this suggest about what "the features of a model" are, and what claims can the authors responsibly make?
+hint: Treat dictionary size as a resolution knob, and ask what each reading predicts for steering and patching.
+solution: One reading is that features are hierarchical and the dictionary size selects the level of granularity: the coarse feature is a property of the activations that a small dictionary can afford, while the fine features appear when capacity allows. On this reading no single dictionary gives "the" features, and a feature has meaning only relative to a resolution. A second reading is that the model has fine-grained features and the coarse latent is the SAE's compromise to save capacity (a merge that exploits co-occurrence). A third is that the absence of an "animals" latent at large size is itself informative, suggesting the model may not represent the category as a direction, or that the category is represented as a combination. These readings make different predictions: under the first, steering or patching along the coarse direction should affect the fine behaviors consistently; under the second, the coarse direction should be well approximated by a sum of the fine ones; under the third, the model's downstream computation should treat the fine latents separately and should not read a shared direction. The authors can responsibly claim that the decomposition is dictionary-dependent and report how features split, along with causal tests; they should avoid saying that the model contains a feature for "animals" or that it does not.
+rubric: Offers at least two competing interpretations of the splitting pattern.
+rubric: Identifies predictions or tests that distinguish them.
+rubric: States a claim scoped to what the evidence supports and avoids asserting that the model does or does not have the feature.

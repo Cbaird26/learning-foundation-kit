@@ -1,0 +1,132 @@
+@lesson
+title: Compute budgets and efficient experimentation
+summary: Estimate the compute a project needs, express tuning effort honestly, and run experiments efficiently, then analyze supplied multi-seed results and report them correctly.
+objective: Estimate training compute with the approximation of 6 times parameters times tokens and convert it to device-hours.
+objective: Compute the expected best validation score as a function of tuning budget.
+objective: Plan and account for a compute budget, including tuning and failed runs, and report energy and cost honestly.
+objective: Analyze supplied results from several seeds and report them correctly.
+reading: Look up compute-optimal training and scaling laws for language models. In Patterns, Predictions, and Actions, the chapter on optimization gives background on the cost of training.
+
+@article
+Most of a research project's cost is not the final training run: it is the dozens of small runs before it, the tuning, the ablations and the runs that crash. Budgeting those honestly decides what you can claim, and the choices you make also affect how reproducible and how costly your work is for others.
+
+### Estimating training compute
+
+For a dense transformer with $N$ parameters trained on $D$ tokens, a widely used **approximation** is that training takes about
+$$ C \approx 6\,N\,D $$
+floating-point operations (FLOPs): roughly $2ND$ for the forward pass and $4ND$ for the backward pass. It is an approximation; it ignores costs that grow with sequence length, and does not apply to sparse or otherwise different architectures. Use it for planning, not for accounting after the fact, and measure your own runs.
+
+To convert FLOPs to time, divide by what the hardware actually delivers: peak throughput $P$ (FLOP/s) times **utilization** $u$, the fraction of peak you achieve, which is often well below one and depends on code, model size, batch size and communication. The number of device-hours is
+$$ \text{device-hours} = \frac{C}{P\,u \times 3600}. $$
+Spread over $g$ devices, the elapsed time is that divided by $g$, if scaling is efficient.
+
+### How to spend a fixed budget
+
+Kaplan and colleagues (2020) reported that language-model loss follows smooth power laws in parameters, data and compute. Hoffmann and colleagues (2022) found that, for a fixed compute budget, many models had been trained with too few tokens for their size, and that parameters and tokens should be increased in roughly equal proportion; the widely quoted rule of thumb of about 20 tokens per parameter is approximate. For your project the lesson is general: a budget buys a combination of model size and data, and the best combination is not always the biggest model. Small-scale studies can guide choices only if the effect you study is known to carry over with scale, which you must argue, not assume.
+
+### Tuning budget, honestly
+
+Dodge and colleagues (2019) propose reporting **expected validation performance as a function of tuning budget**: if you could afford only $k$ random hyperparameter trials, what best validation score would you expect? Given $n$ observed scores sorted $v_{(1)} \le \dots \le v_{(n)}$, and treating them as random draws with replacement, the expected maximum of $k$ draws is
+$$ \mathbb{E}[\max_k] = \sum_{i=1}^{n} v_{(i)} \left[ \left(\tfrac{i}{n}\right)^{k} - \left(\tfrac{i-1}{n}\right)^{k} \right]. $$
+With $k = 1$ this is the mean. A curve of this quantity against $k$ shows whether method A beats method B at every budget or only at a large one, which is the fair way to compare methods that differ in tuning sensitivity.
+
+### Efficient experimentation
+
+- **Ladder of experiments**: a sanity run on a tiny subset, a pilot to estimate noise, then the main runs, then ablations. Fail early and cheaply.
+- **Cache** data preprocessing and pretrained features; **checkpoint** long runs so a crash does not lose everything.
+- **Log everything**: configuration, seed, code version, metrics. A run you cannot reconstruct is wasted.
+- **Keep a reserve** (a reasonable planning habit is about a quarter to a third of the budget) for reruns, reviewer requests and mistakes.
+- **Profile** before buying more compute; a data-loading bottleneck wastes devices.
+
+### Energy, cost and honesty
+
+Strubell, Ganesh and McCallum (2019) estimated the energy and carbon costs of training large language-processing models, including the extra cost of hyperparameter search, and argued for reporting training time and compute. Report your totals including tuning and failed runs. Rules on compute funding, allocations and reporting differ between institutions and funders; check the ones that apply.
+
+### This week's deliverable
+
+Analyzing supplied multi-seed results and reporting them correctly means: state the number of seeds and what varied, give means with standard deviations, give the paired difference with an interval and an effect size, say what the interval implies, and avoid claims that go beyond it.
+
+@example
+title: From FLOPs to device-hours, and a tuning curve
+problem: A model has $N = 350$ million parameters and is trained on $D = 7$ billion tokens. Each device has a peak of $2 \times 10^{14}$ FLOP/s and you achieve 40% utilization. How many FLOPs and device-hours is that? Separately, four tuning trials gave validation accuracies 0.80, 0.84, 0.82 and 0.86; what is the expected best of two random trials?
+step: Compute: $C \approx 6 \times 3.5\times 10^{8} \times 7\times 10^{9} = 1.47 \times 10^{19}$ FLOPs.
+step: Delivered throughput: $2\times 10^{14} \times 0.40 = 8 \times 10^{13}$ FLOP/s.
+step: Time: $1.47\times 10^{19} / 8\times 10^{13} = 183{,}750$ s, which is $183{,}750/3600 \approx 51.04$ device-hours.
+step: Sort the trial scores: 0.80, 0.82, 0.84, 0.86. With $n = 4$ and $k = 2$ the weights are $(i/4)^2 - ((i-1)/4)^2 = 1/16, 3/16, 5/16, 7/16$.
+step: Expected best of two: $0.80/16 + 3(0.82)/16 + 5(0.84)/16 + 7(0.86)/16 = 0.8425$. For comparison the mean (budget 1) is 0.83.
+answer: About $1.47 \times 10^{19}$ FLOPs, or 51.04 device-hours; expected best validation accuracy with two trials is 0.8425.
+
+@mistakes
+- Using peak throughput instead of achieved throughput: without a utilization factor the device-hours are too small.
+- Applying $6ND$ as if exact, or to architectures it does not describe, and presenting the result as measured compute.
+- Budgeting only the final run and forgetting tuning, ablations, failed runs and reruns.
+- Comparing a heavily tuned method with a lightly tuned baseline, then reporting both as best-of-their-search without the number of trials.
+
+@practice num
+prompt: A dense transformer has $N = 2\times 10^{9}$ parameters and is trained on $D = 4\times 10^{10}$ tokens. Using the approximation $C \approx 6ND$, how many floating-point operations does training take? Give your answer in FLOPs.
+answer: 4.8e20
+tol: 1%
+unit: FLOPs
+check: 6 * 2e9 * 4e10
+hint: Multiply $6$, the parameter count and the token count.
+solution: $6 \times 2\times 10^{9} \times 4\times 10^{10} = 4.8 \times 10^{20}$ FLOPs, noting that this is an approximation for planning.
+
+@practice num
+prompt: A training run needs $1.2\times 10^{20}$ FLOPs. Each device has a peak of $3 \times 10^{14}$ FLOP/s and you achieve a utilization of 35%. How many device-hours does the run need? Give your answer to the nearest hundredth.
+answer: 317.46
+tol: 0.01
+unit: device-hours
+check: 1.2e20 / (3e14 * 0.35) / 3600
+hint: Delivered throughput is peak times utilization; divide FLOPs by it to get seconds, then divide by 3600.
+solution: Delivered throughput is $3\times 10^{14} \times 0.35 = 1.05 \times 10^{14}$ FLOP/s. The time is $1.2\times 10^{20}/1.05\times 10^{14} \approx 1.143 \times 10^{6}$ s, which is about 317.46 device-hours. On 8 devices with perfect scaling the elapsed time would be about 39.7 hours.
+
+@practice num
+prompt: Five random hyperparameter trials gave validation accuracies 0.71, 0.74, 0.69, 0.77 and 0.73. Treating them as draws with replacement, what is the expected maximum of 2 random trials? Give your answer to four decimal places.
+answer: 0.7432
+tol: 0.0001
+check: sum(v * ((i / 5) ** 2 - ((i - 1) / 5) ** 2) for i, v in enumerate(sorted([0.71, 0.74, 0.69, 0.77, 0.73]), 1))
+hint: Sort the scores. The weights for $k = 2$ and $n = 5$ are $(i/5)^2 - ((i-1)/5)^2$.
+solution: Sorted: 0.69, 0.71, 0.73, 0.74, 0.77, with weights 0.04, 0.12, 0.20, 0.28, 0.36. The sum is $0.0276 + 0.0852 + 0.1460 + 0.2072 + 0.2772 = 0.7432$. The mean is 0.728, so two trials already add about 1.5 points.
+
+@practice ms
+prompt: Which of these belong in an honest accounting of a project's compute? Select all that apply.
+choice*: Hyperparameter tuning runs, including those for the baselines.
+choice*: Failed or abandoned runs and reruns.
+choice*: Ablation and control runs.
+choice: Only the final training run behind the main table.
+choice: Only the runs whose results are reported in the paper.
+hint: The question is what the project actually consumed, not what ended up in the final table.
+solution: The cost of a result includes tuning, ablations, controls and the runs that did not make it into the paper. Counting only the final run or only reported runs understates the cost and hides how much search stands behind the headline number.
+
+@practice self
+prompt: Methods A and B were run on the same 8 seeds. Accuracy for A: 77.1, 78.0, 76.4, 77.8, 77.2, 76.9, 77.5, 76.8. Accuracy for B: 78.3, 78.9, 77.2, 78.5, 78.4, 77.6, 78.1, 77.7. Pair the runs by seed. Write the results paragraph (110 to 160 words) as it should appear in a paper, using the t critical value 2.365 for a 95% interval with 7 degrees of freedom. Report means with standard deviations, the paired difference with its interval and an effect size, and say what you can and cannot conclude.
+solution: Over 8 seeds, A reached a mean accuracy of 77.21 (standard deviation 0.53) and B 78.09 (standard deviation 0.55). Because both methods used the same seeds, we analyzed paired differences, B minus A. The mean difference was 0.875 points with a sample standard deviation of 0.225, so the standard error is 0.080 and the 95% t interval is [0.69, 1.06] points; B was better on every seed (differences from 0.6 to 1.2). The paired effect size is $\bar{d}/s_d \approx 3.9$. Within this setting, B improves on A by roughly 0.7 to 1.1 points, a difference well above seed-to-seed noise. We cannot conclude that the gain holds on other data sets or at other tuning budgets, because only one setting and eight seeds were run.
+hint: Compute the eight differences first (B minus A), then their mean, sample standard deviation and standard error.
+rubric: Correct paired computations (mean difference 0.875, standard deviation 0.225, interval about [0.69, 1.06]).
+rubric: Reports means with standard deviations, an effect size and the number of seeds, and says that runs were paired.
+rubric: States a conclusion scoped to the tested setting and does not overgeneralize.
+
+@quiz num
+prompt: Four random trials gave validation accuracies 0.62, 0.66, 0.64 and 0.70. Treating them as draws with replacement, what is the expected maximum of 3 random trials? Give your answer to four decimal places.
+answer: 0.6803
+tol: 0.0001
+check: sum(v * ((i / 4) ** 3 - ((i - 1) / 4) ** 3) for i, v in enumerate(sorted([0.62, 0.66, 0.64, 0.70]), 1))
+hint: Sort the scores; the weights are $(i/4)^3 - ((i-1)/4)^3$.
+solution: Sorted: 0.62, 0.64, 0.66, 0.70, with weights $1/64, 7/64, 19/64, 37/64$. The sum is $0.6803$, a little above the mean of 0.655 and below the maximum 0.70.
+
+@quiz num
+prompt: Training compute is approximated by $6ND$. A model's parameter count is multiplied by 4 and its token count by 2. By what factor does the approximate compute grow?
+answer: 8
+tol: 0.001
+check: (6 * 4 * 2) / 6
+hint: Compute grows with the product of the parameter and token counts.
+solution: $6 (4N)(2D) = 8 \times 6ND$, so the approximate compute grows by a factor of 8.
+
+@quiz mc
+prompt: Which statement best describes the main finding of Hoffmann and colleagues (2022) on compute-optimal training?
+choice*: For a fixed compute budget, model size and number of training tokens should be scaled up together in roughly equal proportion, and many large models had been trained on too few tokens.
+choice: The largest possible model is always optimal for any compute budget.
+choice: Training tokens are irrelevant once a model has enough parameters.
+choice: Hyperparameter tuning is unnecessary for models trained at the compute-optimal point.
+hint: Think of a fixed budget as buying both parameters and data.
+solution: The paper reported that, at a given compute, performance improves by balancing parameters and tokens, and that earlier large models were undertrained relative to their size. It does not say the biggest model is always best, nor that data or tuning stop mattering.

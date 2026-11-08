@@ -65,3 +65,6 @@ Log:
 - P3 done (0 errors, 97 + 3 exam, code in 7 lessons); review started P3. P2 done (0 errors, 97 + 3 exam, code in 6 lessons); review started P2. P1 done (0 errors, 96 + 3 exam, code in 6 lessons); review started P1
 - started P5, P6
 - Note: the 46 courses reused from the Coding school keep that school's style, where 52 practice items (at similarity 0.9 or more) ask learners to rewrite a function shown in the lesson; left as is in both schools for now
+- P2 reviewed (9 fixes: GP exactness wording, items off example data, "largely displaced" made historical, Frechet/precision-recall quiz data, Kirchenbauer 2023 watermark attribution, Omnibus Article 50(2) grace period, reading line); follow-up by me: L01 mistake about swapping precision and variance stated exactly (assumed precision off by 1/beta^2)
+- P3 reviewed (12 fixes: items off article and example data, extrapolate made into size_for_target, Chinchilla schedule versus parameter-count attributions separated, FLAN/T0 year, position reference); follow-up by me: L05 emergence summary says neither strong claim is established by the evidence so far
+- Trial build (Nov 7): build_site.py works with the finished courses (16.3 MB, 65 courses embedded, 481 runnable code blocks); test scripts retargeted from C2 to C15
