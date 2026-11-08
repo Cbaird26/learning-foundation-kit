@@ -2,7 +2,7 @@
 title: Networks of spiking neurons
 summary: Simulate a small network of integrate-and-fire neurons coupled by exponential synapses, and measure its activity with rasters, population rates and spike coincidences.
 objective: Write the equations of a current-based spiking network with a weight matrix, and estimate the effect of one presynaptic spike and of a presynaptic rate.
-objective: Simulate a network with Euler steps in a fixed update order, including a synaptic delay.
+objective: Simulate a network with Euler steps in a fixed update order, including synaptic delays that differ between connections.
 objective: Summarize network activity with a population rate and a coincidence count, and explain how excitation and inhibition change spike timing in a pair of neurons.
 reading: Neuronal Dynamics, the chapter on networks of neurons: populations of integrate-and-fire neurons, synaptic input and spiking networks.
 @article
@@ -141,10 +141,10 @@ hint: Count the spikes of all neurons per bin first, then convert each count to 
 solution: A spike exactly at 10.0 ms belongs to the bin that starts at 10 ms, so edges are counted once. Dividing by the bin width in seconds (`bin_ms / 1000`) gives hertz; dividing by the number of neurons gives a rate per neuron even when one neuron is silent.
 
 @practice code
-prompt: Write `simulate_delayed(W, I_ext, n_steps, dt, tau_s, delay_steps)` that extends the article's network simulation with a synaptic delay. The neuron parameters are $\tau_m = 20$ ms, $R = 10$ MΩ, $E_L = -70$ mV, $V_{\text{th}} = -50$ mV, $V_{\text{reset}} = -65$ mV. In step `k`: for every neuron, take an Euler step using the input $I_i^{\text{ext}} + \sum_j W_{ij} s_j$ (all from the old traces) and fire and reset if $V \ge V_{\text{th}}$; then decay every trace by `dt * (-s / tau_s)`; then record each spike time `(k + 1) * dt` and schedule its jump to the trace for the end of step `k + delay_steps`; finally add `1.0` to the traces of all spikes scheduled for step `k`, so a delay of zero reproduces the instantaneous case. Return the list of spike-time lists, one per neuron.
+prompt: Write `simulate_synapse_delays(W, D, I_ext, n_steps, dt, tau_s)` for a current-based network in which every connection has its own delay: `D[i][j]` is the delay, in steps, of the connection from neuron `j` onto neuron `i`, and each connection has its own synaptic trace `s[i][j]` (so the input to neuron `i` is `I_ext[i] + sum_j W[i][j] * s[i][j]`). The neuron parameters are $\tau_m = 20$ ms, $R = 10$ MΩ, $E_L = -70$ mV, $V_{\text{th}} = -50$ mV, $V_{\text{reset}} = -65$ mV, with all voltages starting at $E_L$ and all traces at 0. In step `k`: update every voltage by an Euler step from the old traces and fire and reset if $V \ge V_{\text{th}}$; decay every trace by `dt * (-s / tau_s)`; then, for each neuron `j` that fired, record the spike time `(k + 1) * dt` and schedule a jump of `1.0` for every trace `s[i][j]` at the end of step `k + D[i][j]`; finally apply the jumps scheduled for step `k`. Return the list of spike-time lists, one per neuron.
 starter:
 ```python
-def simulate_delayed(W, I_ext, n_steps, dt, tau_s, delay_steps):
+def simulate_synapse_delays(W, D, I_ext, n_steps, dt, tau_s):
     return [[] for _ in W]
 ```
 tests:
@@ -154,45 +154,52 @@ def same(a, b):
 
 
 W = [[0.0, 0.8], [0.8, 0.0]]
-r = simulate_delayed(W, [2.4, 2.2], 1500, 0.1, 4.0, 0)
+r = simulate_synapse_delays(W, [[0, 0], [0, 0]], [2.4, 2.2], 1500, 0.1, 4.0)
 assert same(r[0], [35.8, 64.2, 91.7, 118.1, 148.5])
 assert same(r[1], [40.2, 73.7, 109.5, 148.2])
-r = simulate_delayed(W, [2.4, 2.2], 1500, 0.1, 4.0, 30)
+r = simulate_synapse_delays(W, [[0, 30], [30, 0]], [2.4, 2.2], 1500, 0.1, 4.0)
 assert same(r[0], [35.8, 63.5, 90.2, 117.2, 147.6])
-assert same(r[1], [41.6, 74.6, 110.1, 148.5])
-r = simulate_delayed(W, [2.5, 2.3], 3000, 0.1, 5.0, 4000)
-assert same(r[0][:3], [32.2, 59.9, 87.6]) and same(r[1][:3], [40.7, 76.5, 112.3])
-r = simulate_delayed([[0.0]], [2.5], 600, 0.1, 5.0, 10)
-assert same(r[0], [32.2, 59.9])
+r = simulate_synapse_delays(W, [[0, 0], [40, 0]], [2.4, 2.2], 1500, 0.1, 4.0)
+assert same(r[0], [35.8, 63.8, 91.0, 117.4, 148.2])
+assert same(r[1], [42.2, 75.1, 110.1, 148.2])
+W3 = [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [1.5, 0.0, 0.0]]
+D3 = [[0, 0, 0], [0, 0, 0], [100, 0, 0]]
+r = simulate_synapse_delays(W3, D3, [2.6, 1.9, 1.9], 2000, 0.1, 5.0)
+assert same(r[0][:2], [29.3, 54.3])
+assert same(r[1][:3], [55.7, 105.1, 155.0])
+assert same(r[2][:3], [64.9, 114.9, 164.9])
 ```
 model:
 ```python
-def simulate_delayed(W, I_ext, n_steps, dt, tau_s, delay_steps):
-    """Spike times of a current-based LIF network with a synaptic delay."""
+def simulate_synapse_delays(W, D, I_ext, n_steps, dt, tau_s):
+    """Spike times of a current-based LIF network with per-synapse delays."""
     N = len(W)
     tau, R, E_L, V_th, V_reset = 20.0, 10.0, -70.0, -50.0, -65.0
-    V, s = [E_L] * N, [0.0] * N
+    V = [E_L] * N
+    s = [[0.0] * N for _ in range(N)]
     spikes = [[] for _ in range(N)]
     due = {}
     for k in range(n_steps):
         fired = []
         for i in range(N):
-            I = I_ext[i] + sum(W[i][j] * s[j] for j in range(N))
+            I = I_ext[i] + sum(W[i][j] * s[i][j] for j in range(N))
             V[i] += dt / tau * (-(V[i] - E_L) + R * I)
             if V[i] >= V_th:
                 fired.append(i)
                 V[i] = V_reset
-        for j in range(N):
-            s[j] += dt * (-s[j] / tau_s)
+        for i in range(N):
+            for j in range(N):
+                s[i][j] += dt * (-s[i][j] / tau_s)
         for j in fired:
             spikes[j].append((k + 1) * dt)
-            due.setdefault(k + delay_steps, []).append(j)
-        for j in due.pop(k, []):
-            s[j] += 1.0
+            for i in range(N):
+                due.setdefault(k + D[i][j], []).append((i, j))
+        for i, j in due.pop(k, []):
+            s[i][j] += 1.0
     return spikes
 ```
-hint: Keep a dictionary from step index to the list of neurons whose jump is due then. Schedule after recording the spike, and apply the jumps due at step `k` at the end of step `k`.
-solution: With a delay longer than the simulation no jump is ever applied, so the network behaves as uncoupled, which the third test uses; with a delay of zero the scheduled step is the current one and the jump is applied at once, which gives the article's behavior. A 3 ms delay shifts the interaction and changes the later spike times, as the second test shows.
+hint: Keep one trace per connection, as a table `s[i][j]`. When neuron `j` fires, schedule a jump for each `(i, j)` pair at step `k + D[i][j]`, and apply the jumps due now at the end of the step.
+solution: With a delay of zero everywhere the code reproduces the instantaneous network (first test). Giving each connection its own trace is what lets two targets of the same presynaptic neuron receive its spikes at different times: in the last test neuron 2 hears neuron 0 ten milliseconds later than neuron 1 does, so it fires about 9 ms later in the first cycle. A single trace per presynaptic neuron could not represent this.
 
 @quiz text
 prompt: What does this program print?
