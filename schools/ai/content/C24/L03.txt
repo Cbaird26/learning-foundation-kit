@@ -1,0 +1,212 @@
+@lesson
+title: Reproducible experiments: seeds, versions and tracking
+summary: Make a training run repeatable by fixing seeds, versioning code, data and settings, and recording every run so that results can be compared and rebuilt.
+objective: Explain how a seed makes a pseudorandom process repeatable and where nondeterminism still creeps in.
+objective: Write seeded splitting and fold-assignment code and fingerprint a configuration.
+objective: Report a result as a mean and spread over several seeds and keep a run record that lets someone else rebuild it.
+reading: Made With ML, the lessons on experiment tracking and on reproducibility (versioning code, data and models); look up "experiment tracking" in the course index.
+@article
+You train a model and get 84% accuracy. A week later you rerun it and get 81%. Which result is real, and which settings produced the better one? If you cannot answer, the experiment was not reproducible. An experiment is **reproducible** when someone else, or you next month, can rerun it from its record and get the same result, or the same result within a known amount of random variation.
+
+### Seeds
+
+A computer's "random" numbers come from a deterministic procedure started from a **seed**. A tiny example is a linear congruential generator: $x_{t+1} = (5 x_t + 3) \bmod 16$. From the seed $x_0 = 4$ it produces $7, 6, 1, \dots$ every time (the first step is $5 \cdot 4 + 3 = 23$, and $23 \bmod 16 = 7$). Real generators are far better, but the principle is identical: the same seed gives the same sequence. Random choices in a training run include weight initialization, shuffling, dropout masks, data augmentation and train/validation splits. Fix the seed for each, and give a function its own generator object instead of relying on one global state, so that adding a random call elsewhere does not change this function's results.
+
+```python
+import random
+
+def shuffle_split(items, frac, seed):
+    """Shuffle a copy of items with its own generator, then split it."""
+    rng = random.Random(seed)
+    items = list(items)
+    rng.shuffle(items)
+    cut = int(len(items) * frac)
+    return items[:cut], items[cut:]
+
+a = shuffle_split(range(10), 0.7, seed=3)
+b = shuffle_split(range(10), 0.7, seed=3)
+print(a == b)   # True: same seed, same split
+```
+
+### Where seeds are not enough
+
+A seed fixes the pseudorandom stream, not everything else. Floating-point addition is not associative: $(10^{16} + 1) - 10^{16}$ gives 0 while $(10^{16} - 10^{16}) + 1$ gives 1, so summing the same numbers in a different order, as parallel hardware does, changes the last digits. Accelerator kernels may choose different algorithms from run to run, library versions change defaults, and data may have changed upstream. Therefore reproducibility has three further parts.
+
+1. **Version the code**: record the commit identifier of the training code.
+2. **Version the data**: record an identifier of the exact data set (a content hash, or a snapshot name in a data versioning tool).
+3. **Record the settings**: every hyperparameter, the seed, the library versions and the hardware.
+
+### Tracking runs
+
+An **experiment tracker** is a service or file that stores one **run record** per training run: the settings, the code and data versions, metrics over time and the resulting artifacts. A good run record lets you answer "what produced this model?". A simple, tool-independent tool is a **configuration fingerprint**: serialize the settings in a canonical form (sorted keys) and compute a short checksum, so two runs with equal settings get equal identifiers and any change to a setting changes the identifier. A **model registry** then stores the trained models with links back to their run records and a stage such as "candidate" or "in production".
+
+### Results are distributions
+
+Because of random initialization, one run is one sample. Report the **mean and sample standard deviation over several seeds**. If three seeds give accuracies 0.80, 0.84 and 0.82, the mean is 0.82 and the sample standard deviation (dividing by $n - 1 = 2$) is 0.02. A difference between two methods that is smaller than this seed-to-seed spread is not evidence that one method is better. Also keep the seed used for choosing a final model separate from those used for the reported estimate, so that you do not select the luckiest run and report it as typical.
+@example
+title: Reporting a result over seeds
+problem: A method is trained with four different seeds and reaches test accuracies 0.62, 0.66, 0.64 and 0.68. Report the mean and the sample standard deviation, and say whether a competing method with mean 0.65 is clearly different.
+step: The mean is $(0.62 + 0.66 + 0.64 + 0.68)/4 = 0.65$.
+step: The deviations from the mean are $-0.03, 0.01, -0.01, 0.03$; their squares are $0.0009, 0.0001, 0.0001, 0.0009$, which sum to $0.0020$.
+step: The sample variance divides by $n - 1 = 3$: $0.0020/3 \approx 0.000667$, so the sample standard deviation is $\sqrt{0.000667} \approx 0.0258$.
+step: The competing method's mean of 0.65 equals ours, so the two are not different at all; even a gap of 0.01 would be smaller than the 0.026 spread across seeds and could not be called an improvement.
+answer: Mean 0.65, sample standard deviation about 0.026; the competing mean of 0.65 is identical.
+@mistakes
+- Seeding only one source of randomness (for example the weights but not the data shuffle) and calling the run reproducible.
+- Using one global random state, so that adding an unrelated random call changes every result.
+- Reporting the single best seed as the result; select with validation data and report the mean and spread over seeds.
+- Recording the hyperparameters but not the code version or the data version, so the run cannot be rebuilt.
+@practice num
+prompt: A linear congruential generator uses $x_{t+1} = (5 x_t + 3) \bmod 16$. Starting from the seed $x_0 = 7$, what is $x_3$?
+answer: 8
+check: __import__('functools').reduce(lambda x, _: (5 * x + 3) % 16, range(3), 7)
+hint: Apply the rule three times, reducing modulo 16 after each step.
+solution: $x_1 = (35 + 3) \bmod 16 = 38 \bmod 16 = 6$, then $x_2 = (30 + 3) \bmod 16 = 33 \bmod 16 = 1$, then $x_3 = (5 + 3) \bmod 16 = 8$.
+@practice text
+prompt: What does this program print?
+```python
+a = (1e16 + 1.0) - 1e16
+b = (1e16 - 1e16) + 1.0
+print(a, b)
+```
+answer: 0.0 1.0
+check: run("a = (1e16 + 1.0) - 1e16\nb = (1e16 - 1e16) + 1.0\nprint(a, b)")
+hint: At the size $10^{16}$, adding 1.0 to a float is lost to rounding.
+solution: A 64-bit float near $10^{16}$ cannot represent the extra 1.0, so `1e16 + 1.0` equals `1e16` and `a` is 0.0, while `b` adds 1.0 to an exact 0. The same numbers summed in a different order give different results, which is why parallel hardware can break exact reproducibility.
+@practice ms
+prompt: To let a colleague rebuild a training run exactly, which items belong in its run record? Select all that apply.
+choice*: The random seed or seeds used.
+choice*: An identifier of the exact version of the data set.
+choice*: The commit identifier of the training code.
+choice: The time of day at which the run was launched.
+hint: Ask which items could change the numbers the run produces.
+solution: The seed, the data version and the code version all change what the run computes, so they must be recorded (along with the hyperparameters and library versions). The time of day at which the run was launched has no effect on the result.
+@practice code
+prompt: Write `kfold_indices(n, k, seed)` that returns a list of `k` lists of example indices for k-fold cross-validation. Shuffle `range(n)` with `random.Random(seed)`, then cut it into `k` consecutive folds whose sizes differ by at most one, with the larger folds first (for `n = 10` and `k = 3` the sizes are `[4, 3, 3]`). Every index must appear in exactly one fold. Raise `ValueError` if `k > n` or `k < 2`.
+starter:
+```python
+import random
+
+def kfold_indices(n, k, seed):
+    pass
+```
+tests:
+```python
+folds = kfold_indices(10, 3, 0)
+assert [len(f) for f in folds] == [4, 3, 3]
+assert sorted(i for f in folds for i in f) == list(range(10))
+assert kfold_indices(12, 4, 5) == kfold_indices(12, 4, 5)
+assert kfold_indices(20, 4, 0) != kfold_indices(20, 4, 1)
+assert [len(f) for f in kfold_indices(7, 7, 2)] == [1] * 7
+assert raises(ValueError, kfold_indices, 3, 5, 0)
+assert raises(ValueError, kfold_indices, 5, 1, 0)
+```
+model:
+```python
+import random
+
+def kfold_indices(n, k, seed):
+    """Seeded k-fold split of range(n) into near-equal folds."""
+    if k < 2 or k > n:
+        raise ValueError("need 2 <= k <= n")
+    order = list(range(n))
+    random.Random(seed).shuffle(order)
+    base, extra = divmod(n, k)
+    folds = []
+    start = 0
+    for i in range(k):
+        size = base + (1 if i < extra else 0)
+        folds.append(order[start:start + size])
+        start += size
+    return folds
+```
+hint: Use `divmod(n, k)` for the base fold size and the number of folds that get one extra index, then slice the shuffled list.
+solution: With `base, extra = divmod(n, k)`, the first `extra` folds have `base + 1` indices and the rest have `base`, so the sizes sum to `n` and differ by at most one. Creating the generator from the seed inside the function makes the result repeatable, and the last tests check the argument errors and the case of one index per fold.
+@practice code
+prompt: Write `best_run(runs, metric, higher_is_better)`. `runs` is a list of dictionaries like `{"id": "r1", "metrics": {"acc": 0.8, "loss": 0.5}}`. Return the `id` of the run with the best value of `metric`, ignoring runs whose `metrics` lack that key. On a tie, return the earliest run in the list. Raise `ValueError` if no run has the metric. For example, with `metric="loss"` and `higher_is_better=False`, the smaller loss wins.
+starter:
+```python
+def best_run(runs, metric, higher_is_better):
+    pass
+```
+tests:
+```python
+runs = [
+    {"id": "r1", "metrics": {"acc": 0.80, "loss": 0.50}},
+    {"id": "r2", "metrics": {"acc": 0.85, "loss": 0.45}},
+    {"id": "r3", "metrics": {"loss": 0.30}},
+    {"id": "r4", "metrics": {"acc": 0.85, "loss": 0.60}},
+]
+assert best_run(runs, "acc", True) == "r2"
+assert best_run(runs, "loss", False) == "r3"
+assert best_run(runs, "loss", True) == "r4"
+assert best_run(runs[:1], "acc", False) == "r1"
+assert raises(ValueError, best_run, runs, "f1", True)
+```
+model:
+```python
+def best_run(runs, metric, higher_is_better):
+    """Id of the run with the best value of a metric (earliest on ties)."""
+    best_id, best_value = None, None
+    for run in runs:
+        if metric not in run["metrics"]:
+            continue
+        value = run["metrics"][metric]
+        better = (
+            best_value is None
+            or (higher_is_better and value > best_value)
+            or (not higher_is_better and value < best_value)
+        )
+        if better:
+            best_id, best_value = run["id"], value
+    if best_id is None:
+        raise ValueError("no run has metric " + metric)
+    return best_id
+```
+hint: Keep the best id and value so far; skip runs without the metric, and replace the best only when a value is strictly better.
+solution: Requiring a strictly better value keeps the earliest run on a tie (runs r2 and r4 share the best accuracy and r2 wins). Skipping runs without the metric explains why r3, which only logged a loss, never wins on accuracy, and the final test checks the error when nobody logged the metric.
+@quiz code
+prompt: Write `config_fingerprint(config)` for a dictionary of settings. Serialize it with `json.dumps(config, sort_keys=True, separators=(",", ":"))`, then compute `h = 0` and, for each character `ch` of that text, `h = (h * 31 + ord(ch)) % 1000003`. Return `h`. Two configurations with the same settings in a different key order must have the same fingerprint. For example, `config_fingerprint({"a": 1})` returns `665032`.
+starter:
+```python
+import json
+
+def config_fingerprint(config):
+    pass
+```
+tests:
+```python
+assert config_fingerprint({"a": 1}) == 665032
+assert config_fingerprint({"lr": 0.1, "seed": 3}) == 615448
+assert config_fingerprint({"seed": 3, "lr": 0.1}) == 615448
+assert config_fingerprint({"lr": 0.1, "seed": 4}) == 615479
+assert config_fingerprint({"lr": 0.1, "seed": 4}) != config_fingerprint({"lr": 0.1, "seed": 3})
+```
+model:
+```python
+import json
+
+def config_fingerprint(config):
+    """Order-independent checksum of a configuration dictionary."""
+    text = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    h = 0
+    for ch in text:
+        h = (h * 31 + ord(ch)) % 1000003
+    return h
+```
+hint: Sorting the keys before serializing makes the text, and so the fingerprint, independent of key order.
+solution: `sort_keys=True` produces the same text for equal dictionaries, and the rolling checksum turns that text into one integer. A real tracker uses a stronger hash, but the idea is the same: equal settings give equal identifiers and any changed setting changes the identifier.
+@quiz num
+prompt: Four runs with different seeds reach accuracies 0.50, 0.54, 0.52 and 0.56. What is the sample standard deviation (dividing by $n - 1$), to four decimal places?
+answer: 0.0258
+tol: 0.0001
+check: __import__('statistics').stdev([0.50, 0.54, 0.52, 0.56])
+hint: The mean is 0.53; compute the squared deviations, sum them and divide by 3.
+solution: The deviations are $-0.03, 0.01, -0.01, 0.03$, with squares summing to $0.0020$. Dividing by 3 gives $0.000667$, and the square root is about $0.0258$.
+@quiz self
+prompt: A teammate says, "I set the random seed to 42 at the top of my script, so my training results are fully reproducible." Give two reasons this may be false and say what you would record or change to make it reproducible.
+hint: Think about what a seed does not control, and what else determines the numbers a run produces.
+solution: First, the seed fixes only the pseudorandom streams that the code draws from. Other sources of variation remain: data loading in parallel workers may use separate generators, parallel floating-point sums are not associative so the order of operations changes the last digits, and some accelerator kernels are nondeterministic. Second, the results also depend on things the seed does not cover: the data may have changed since the last run, the code may have changed, and library versions may differ. To fix this, give each random component its own seeded generator, record the code commit, the data version, the library versions, the hardware and all hyperparameters in a run record, enable deterministic kernel options where they exist, and report the mean and spread over several seeds, since exact bitwise equality is often not achievable.
+rubric: Names at least two real sources of non-reproducibility other than a missing seed, such as floating-point order, parallel data loading, changed data or library versions.
+rubric: Proposes recording the code version, data version and settings in a run record.
+rubric: Recognizes that results should be reported over several seeds with a spread rather than from one run.

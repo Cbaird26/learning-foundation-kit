@@ -1,0 +1,195 @@
+@lesson
+title: Propensity scores, matching and weighting
+summary: Estimate treatment effects by modeling the probability of treatment and either weighting by its inverse or matching on it, and check the result with balance diagnostics.
+objective: Define the propensity score and state the Rosenbaum and Rubin balancing result.
+objective: Compute an inverse probability weighting (IPW) estimate of the ATE by hand and in code.
+objective: Describe matching and trimming, and check covariate balance with standardized mean differences.
+reading: Causal Inference: What If (Hernán and Robins), Part II: the chapter on inverse probability weighting and the one on propensity scores.
+@article
+Stratifying on one binary covariate is easy. With twenty covariates, some continuous, the number of strata explodes and most cells are empty. Rosenbaum and Rubin (1983) showed that we can summarize all covariates in a single number, the probability of treatment.
+
+### The propensity score
+
+The **propensity score** is $e(\mathbf{z}) = P(T = 1 \mid \mathbf{Z} = \mathbf{z})$. **Balancing theorem (Rosenbaum and Rubin, 1983).** If $\mathbf{Z}$ satisfies conditional exchangeability, $Y(t) \perp T \mid \mathbf{Z}$, and positivity holds, then $Y(t) \perp T \mid e(\mathbf{Z})$. Proof sketch: given $e(\mathbf{Z})$, $P(T = 1 \mid Y(0), Y(1), e(\mathbf{Z})) = \mathbb{E}[P(T=1 \mid Y(0), Y(1), \mathbf{Z}) \mid Y(0), Y(1), e(\mathbf{Z})] = \mathbb{E}[e(\mathbf{Z}) \mid \dots] = e(\mathbf{Z})$, which does not depend on the potential outcomes. So adjusting for the scalar $e(\mathbf{Z})$ suffices whenever adjusting for $\mathbf{Z}$ does. In practice $e$ is unknown and is estimated, often by logistic regression of $T$ on $\mathbf{Z}$.
+
+### Inverse probability weighting
+
+The idea is to build a **pseudo-population** in which treatment is independent of $\mathbf{Z}$, by weighting each unit by the inverse of the probability of the treatment it actually received. Under consistency, exchangeability given $\mathbf{Z}$ and positivity,
+
+$$\mathbb{E}\!\left[\frac{T\,Y}{e(\mathbf{Z})}\right] = \mathbb{E}[Y(1)],$$
+
+because $\mathbb{E}\big[T Y(1)/e(\mathbf{Z}) \mid \mathbf{Z}\big] = \mathbb{E}[T \mid \mathbf{Z}]\,\mathbb{E}[Y(1) \mid \mathbf{Z}]/e(\mathbf{Z}) = \mathbb{E}[Y(1) \mid \mathbf{Z}]$ (the factorization uses exchangeability), and then we average over $\mathbf{Z}$. Similarly for $Y(0)$ with weight $1/(1 - e)$. The **Horvitz–Thompson IPW estimator** is
+
+$$\hat\tau_{\text{IPW}} = \frac{1}{n}\sum_{i=1}^{n}\left[\frac{T_i Y_i}{e_i} - \frac{(1 - T_i) Y_i}{1 - e_i}\right].$$
+
+A common variant, the **Hájek** (normalized) estimator, divides each weighted sum by the sum of its weights, so it is a difference of weighted means and lies within the range of the observed outcomes:
+
+$$\hat\tau_{\text{Hájek}} = \frac{\sum_i T_i Y_i / e_i}{\sum_i T_i / e_i} - \frac{\sum_i (1 - T_i) Y_i/(1 - e_i)}{\sum_i (1 - T_i)/(1 - e_i)}.$$
+
+Eight patients, with covariate $Z$ (binary) and known propensities $e(0) = 0.25$, $e(1) = 0.75$: in $Z = 0$ one of four is treated (outcome 7; the three untreated have 5, 4, 6); in $Z = 1$ three of four are treated (outcomes 9, 10, 8; the untreated one has 6). The stratified ATE is $0.5(7 - 5) + 0.5(9 - 6) = 2.5$. The IPW estimate: treated terms sum to $7/0.25 + (9 + 10 + 8)/0.75 = 28 + 36 = 64$, untreated terms to $(5 + 4 + 6)/0.75 + 6/0.25 = 20 + 24 = 44$, so $\hat\tau_{\text{IPW}} = (64 - 44)/8 = 2.5$, the same here.
+
+```python
+def ipw_ate(rows):
+    """rows: list of (t, y, e). Horvitz-Thompson IPW estimate of the ATE."""
+    total = 0.0
+    for t, y, e in rows:
+        total += t * y / e - (1 - t) * y / (1 - e)
+    return total / len(rows)
+
+rows = [(1, 7, .25), (0, 5, .25), (0, 4, .25), (0, 6, .25),
+        (1, 9, .75), (1, 10, .75), (1, 8, .75), (0, 6, .75)]
+print(ipw_ate(rows))
+```
+
+This prints `2.5`.
+
+### Positivity, extreme weights and trimming
+
+A unit with $e = 0.01$ who was treated has weight 100: a single observation can dominate the estimate and its variance explodes. Remedies are **trimming** (dropping units with $e$ outside, say, $[0.1, 0.9]$, which changes the estimand to the effect in the remaining population), **stabilized** or Hájek weights, and, most importantly, asking whether comparable untreated units exist at all (the overlap or positivity problem). Weights are correct only if the propensity model is correct: a misspecified $e$ biases the estimate.
+
+### Matching
+
+**Nearest-neighbor matching** pairs each treated unit with the untreated unit with the closest propensity score (optionally within a maximum distance, a **caliper**, and with or without replacement), and averages the outcome differences of the pairs. It estimates the ATT (the effect on the treated, for whom matches are found). Matching and weighting are two ways to make the groups comparable.
+
+### Checking balance
+
+A good propensity model should balance covariates in the weighted (or matched) sample. For a covariate with group means $\bar{z}_1, \bar{z}_0$ and variances $s_1^2, s_0^2$, the **standardized mean difference** is
+
+$$\text{SMD} = \frac{\bar{z}_1 - \bar{z}_0}{\sqrt{(s_1^2 + s_0^2)/2}}.$$
+
+A common rule of thumb treats $|\text{SMD}| < 0.1$ after adjustment as adequate. Balance can only be checked on measured covariates, and good balance does not prove there is no unmeasured confounding.
+
+@example
+title: IPW by hand
+problem: Four patients have $(T, Y, e)$ equal to $(1, 10, 0.5)$, $(0, 6, 0.5)$, $(1, 8, 0.25)$ and $(0, 5, 0.75)$. Compute the Horvitz–Thompson IPW estimate of the ATE.
+step: Treated terms $T Y/e$: $10/0.5 = 20$ and $8/0.25 = 32$, which sum to $52$.
+step: Untreated terms $(1 - T) Y/(1 - e)$: $6/0.5 = 12$ and $5/0.25 = 20$, which sum to $32$.
+step: $\hat\tau_{\text{IPW}} = (52 - 32)/4 = 5$.
+step: Note that the weights of the treated sum to $2 + 4 = 6$, not 4. The Hájek version divides by the weight totals: the treated mean is $52/6 \approx 8.667$; the untreated weights are $1/0.5 = 2$ and $1/0.25 = 4$, which also sum to 6, so the untreated mean is $32/6 \approx 5.333$ and $\hat\tau_{\text{Hájek}} \approx 3.333$.
+answer: $\hat\tau_{\text{IPW}} = 5$ and $\hat\tau_{\text{Hájek}} \approx 3.33$.
+
+@example
+title: Nearest-neighbor matching
+problem: Two treated units have propensity scores 0.6 and 0.8 and outcomes 10 and 14. The untreated pool has propensity scores 0.3, 0.55, 0.75, 0.9 with outcomes 4, 7, 9, 12. Match each treated unit to its nearest untreated unit without replacement and estimate the ATT.
+step: Treated unit with $e = 0.6$: distances to the pool are $0.3, 0.05, 0.15, 0.3$; the nearest is $0.55$ (outcome 7).
+step: Treated unit with $e = 0.8$: distances are $0.5, 0.25, 0.05, 0.1$; the nearest is $0.75$ (outcome 9), which is still available.
+step: The pair differences are $10 - 7 = 3$ and $14 - 9 = 5$, so the estimated ATT is $(3 + 5)/2 = 4$.
+answer: The matched estimate of the ATT is $4$.
+
+@mistakes
+- Using the propensity score as a prediction target to maximize: its purpose is balance, not classification accuracy.
+- Ignoring extreme weights. A few units with $e$ near 0 or 1 can drive the whole estimate.
+- Believing that good balance on measured covariates removes unmeasured confounding.
+- Weighting treated units by $1/(1 - e)$ or untreated units by $1/e$: each unit gets the inverse probability of the treatment it received.
+
+@practice num
+prompt: Three treated units have propensity scores 0.5, 0.25 and 0.2. What is the sum of their inverse probability weights $1/e$?
+answer: 11
+check: 1 / 0.5 + 1 / 0.25 + 1 / 0.2
+hint: A treated unit's weight is $1/e$.
+solution: The weights are $2$, $4$ and $5$, which sum to $11$: the three treated units stand in for 11 units of the pseudo-population.
+
+@practice num
+prompt: In a stratum of 80 patients, 24 received the treatment. Using the stratum fraction treated as the propensity score, what weight does an untreated patient in this stratum get in IPW? Give four decimal places.
+answer: 1.4286
+tol: 0.0001
+check: 1 / (1 - 24 / 80)
+hint: The propensity score is $24/80$; an untreated unit is weighted by $1/(1 - e)$.
+solution: $e = 24/80 = 0.3$, so an untreated unit has weight $1/(1 - 0.3) = 1/0.7 \approx 1.4286$.
+
+@practice mc
+prompt: A treated patient has an estimated propensity score of 0.01. What is the consequence for the IPW estimate?
+choice*: The patient receives weight 100 and can dominate the estimate, so its variance is large; trimming or checking overlap is advisable.
+choice: The patient is ignored, because a small propensity score gives a small weight.
+choice: The estimate is unbiased and has the lowest possible variance.
+choice: The patient is matched with a control at random.
+hint: The weight of a treated unit is $1/e$.
+solution: A treated unit with $e = 0.01$ has weight $1/0.01 = 100$. Units that were treated despite a tiny chance of it are rare, so each stands for many units; with such weights the estimator is very noisy and sensitive to model error. Trimming the weights or restricting to the region of overlap is the standard remedy.
+
+@practice code
+prompt: Write `hajek_ate(rows)` that returns the Hájek (normalized) IPW estimate of the ATE: the weighted mean outcome of treated units with weights $1/e$ minus the weighted mean outcome of untreated units with weights $1/(1 - e)$. Here `rows` is a list of `(t, y, e)` tuples with `t` in `{0, 1}` and $0 < e < 1$, and both arms are nonempty. For example, `hajek_ate([(1, 4, 0.5), (0, 2, 0.5)])` returns `2.0`.
+starter:
+```python
+def hajek_ate(rows):
+    pass
+```
+tests:
+```python
+assert abs(hajek_ate([(1, 4, 0.5), (0, 2, 0.5)]) - 2.0) < 1e-9
+r = [(1, 10, 0.5), (0, 6, 0.5), (1, 8, 0.25), (0, 5, 0.75)]
+assert abs(hajek_ate(r) - 10 / 3) < 1e-9
+r = [(1, 5, 0.8), (1, 7, 0.8), (0, 3, 0.4), (0, 1, 0.4), (0, 2, 0.4)]
+assert abs(hajek_ate(r) - 4.0) < 1e-9
+r = [(1, 9, 0.9), (0, 3, 0.1), (1, 5, 0.3), (0, 1, 0.3)]
+assert abs(hajek_ate(r) - 4.125) < 1e-9
+```
+model:
+```python
+def hajek_ate(rows):
+    """Normalized IPW estimate of the ATE from (t, y, e) rows."""
+    num1 = den1 = num0 = den0 = 0.0
+    for t, y, e in rows:
+        if t == 1:
+            num1 += y / e
+            den1 += 1 / e
+        else:
+            num0 += y / (1 - e)
+            den0 += 1 / (1 - e)
+    return num1 / den1 - num0 / den0
+```
+hint: Accumulate, for each arm, the sum of weight times outcome and the sum of weights; the estimate is the ratio for treated minus the ratio for untreated.
+solution: Each arm's estimate is a weighted mean: the weighted sum of outcomes divided by the sum of weights. The third test has weights that sum to different totals than $n$, so the Horvitz–Thompson estimator (which gives $1.0$ there) fails it.
+
+@practice num
+prompt: Six units have $(T, Y, e)$ equal to $(1, 12, 0.5)$, $(1, 9, 0.25)$, $(0, 6, 0.5)$, $(0, 4, 0.25)$, $(0, 8, 0.75)$ and $(1, 7, 0.75)$. Compute the Horvitz–Thompson IPW estimate of the ATE to two decimal places.
+answer: 3.33
+tol: 0.01
+check: sum(t * y / e - (1 - t) * y / (1 - e) for t, y, e in [(1, 12, 0.5), (1, 9, 0.25), (0, 6, 0.5), (0, 4, 0.25), (0, 8, 0.75), (1, 7, 0.75)]) / 6
+hint: Compute the treated terms $Y/e$ and the untreated terms $Y/(1 - e)$ separately, add each group, and divide the difference by 6.
+solution: The treated terms are $12/0.5 + 9/0.25 + 7/0.75 = 24 + 36 + 9.333 = 69.333$. The untreated terms are $6/0.5 + 4/0.75 + 8/0.25 = 12 + 5.333 + 32 = 49.333$. The difference is $20$, and $20/6 \approx 3.33$.
+
+@quiz ms
+prompt: Which of these are needed for the IPW estimator to be consistent for the ATE when the propensity score is estimated? Select all that apply.
+choice*: Conditional exchangeability given the covariates used in the propensity model.
+choice*: Positivity: every unit has a probability strictly between 0 and 1 of each treatment.
+choice*: A correctly specified model for the propensity score.
+choice: A correctly specified model for the outcome.
+hint: Look at what the derivation used: exchangeability, positivity, and the value of $e(\mathbf{Z})$.
+solution: The derivation of $\mathbb{E}[T Y/e(\mathbf{Z})] = \mathbb{E}[Y(1)]$ uses consistency, conditional exchangeability and positivity, and it needs the true $e$ (or a consistent estimate). IPW does not model the outcome at all.
+
+@quiz code
+prompt: Write `propensity_by_stratum(rows)` that takes a list of `(z, t)` pairs (a stratum label `z` and treatment `t` in `{0, 1}`) and returns a dictionary mapping each stratum to its fraction of treated units. For example, `propensity_by_stratum([("a", 1), ("a", 0), ("b", 1)])` returns `{"a": 0.5, "b": 1.0}`.
+starter:
+```python
+def propensity_by_stratum(rows):
+    return {}
+```
+tests:
+```python
+assert propensity_by_stratum([("a", 1), ("a", 0), ("b", 1)]) == {"a": 0.5, "b": 1.0}
+assert propensity_by_stratum([]) == {}
+got = propensity_by_stratum([(0, 1), (0, 0), (0, 0), (0, 0), (1, 1), (1, 1), (1, 1), (1, 0)])
+assert got == {0: 0.25, 1: 0.75}
+got = propensity_by_stratum([("x", 0), ("x", 0), ("y", 1)])
+assert got == {"x": 0.0, "y": 1.0}
+```
+model:
+```python
+def propensity_by_stratum(rows):
+    """Fraction of treated units in each stratum."""
+    counts = {}
+    for z, t in rows:
+        n, k = counts.get(z, (0, 0))
+        counts[z] = (n + 1, k + t)
+    return {z: k / n for z, (n, k) in counts.items()}
+```
+hint: Keep, for each stratum, the number of units and the number treated, then divide.
+solution: One pass collects the pair (units, treated) per stratum; the propensity score is the ratio. The fourth test has a stratum with no treated units, whose propensity score of 0.0 shows a positivity violation that IPW could not handle.
+
+@quiz self
+prompt: An analyst estimates propensity scores for 5,000 users and finds that 40 treated users have scores below 0.02. The IPW estimate of the ATE changes by 30% when those 40 users are dropped. Explain what is going on, and what the analyst should do and report.
+hint: Compute the weights of those users, and think about overlap.
+solution: Treated users with $e < 0.02$ have weights above 50, so 40 users carry the influence of thousands of observations; the estimate is then driven by a few units and has high variance, and any error in the propensity model near 0 is amplified. This also signals a positivity problem: for such users there are almost no comparable untreated users, so the data say little about their potential outcomes. The analyst should check overlap (for example, a table of score ranges by arm), consider trimming or restricting to the region of overlap (reporting that the estimand is now the effect in that population), try normalized (Hájek) weights, and report both estimates and the sensitivity of the result to the trimming rule.
+rubric: Explains that large weights make a few units dominate and inflate variance.
+rubric: Connects the problem to a positivity or overlap violation.
+rubric: Proposes trimming, normalization or restriction, and reports the effect on the estimand and on the estimate.

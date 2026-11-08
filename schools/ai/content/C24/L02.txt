@@ -1,0 +1,221 @@
+@lesson
+title: Data pipelines and data validation
+summary: Build a data pipeline that checks its inputs, and write validation functions that catch missing values, out-of-range values, duplicates and leakage before they reach training.
+objective: Describe the stages of a training data pipeline and where each kind of check belongs.
+objective: Write a validation function that returns readable errors for a row and a pass or fail verdict for a batch.
+objective: Split data by time to avoid leakage and detect duplicates and train/serve skew.
+reading: Made With ML, the lessons on data (exploration, preprocessing and splitting); look up "data validation" and "data splits" in the course index.
+@article
+A model is only as good as the data it is trained on, and data fails quietly. A column is renamed upstream, a sensor starts reporting temperatures in the wrong unit, a join drops half the rows. The code still runs; the model just gets worse. A **data pipeline** is the chain of steps that turns raw records into the tables a model trains and predicts on, and a **validation** step is a test that the data satisfies what the rest of the pipeline assumes.
+
+### Stages and checks
+
+A typical pipeline has these stages: **ingest** (read raw records), **clean** (fix or drop bad records), **transform** (compute features), **split** (train, validation, test) and **store** (write a versioned table, often in a feature store, a service that keeps feature definitions and values consistent between training and serving). Put a check at each boundary:
+
+| check | question | example |
+|---|---|---|
+| schema | are the expected fields present with the right types? | `age` is an integer |
+| range | are values plausible? | $0 \le \text{age} \le 120$ |
+| completeness | how many values are missing? | at most 2% of `income` |
+| uniqueness | are there duplicate records? | one row per `user_id` and day |
+| distribution | does the batch look like the last one? | the mean is within a set band |
+
+The last row is the subject of weeks 9 and 10; this week we write the first four.
+
+### A validation function
+
+Describe the **schema** as a dictionary from field name to the allowed type and range. The function below returns a list of error strings, which is better than raising on the first problem: one run then shows everything that is wrong.
+
+```python
+schema = {"age": (int, 0, 120), "income": (float, 0.0, 1e7)}
+
+def validate_row(row, schema):
+    """Return a list of error strings; an empty list means the row is valid."""
+    errors = []
+    for field, (typ, low, high) in schema.items():
+        value = row.get(field)
+        if value is None:
+            errors.append(field + ": missing")
+        elif not isinstance(value, (int, float)) or isinstance(value, bool):
+            errors.append(field + ": not a number")
+        elif typ is int and not isinstance(value, int):
+            errors.append(field + ": not an integer")
+        elif not low <= value <= high:
+            errors.append(field + ": out of range")
+    return errors
+
+print(validate_row({"age": 34, "income": 52000.0}, schema))   # []
+print(validate_row({"age": -2}, schema))
+```
+
+The second call prints `['age: out of range', 'income: missing']`. At the batch level you decide what to do: fail the pipeline, drop the bad rows, or alert and continue. A common rule is to compute the **fraction of bad rows** and fail when it exceeds a budget. If 3 of 4 rows are bad the budget of 5% is far exceeded, but a single bad row in 10,000 may just be dropped and logged.
+
+### Leakage and splitting
+
+**Data leakage** means the model sees, during training, information that will not be available at prediction time. A feature recorded after the outcome is the classic case. Leakage also comes from the split: if the same user appears in both training and test data, or if you shuffle time-ordered data at random, the test set no longer resembles the future. For data that arrive over time, split by time: train on records before a **cutoff** and evaluate on records at or after it. Two further traps: **duplicates** (the same record in both train and test inflates the score), and **train/serve skew**, where a feature is computed one way in the training pipeline and another way in the online service. Defend against skew by using one shared implementation of each transformation for both.
+
+### What to log
+
+Every pipeline run should record the row counts at each stage (for example 1,250 in, 50 duplicates removed, 1,200 out), the fraction missing for each field, and the version of the schema. A sudden change in those counts is often the first sign that something upstream changed.
+@example
+title: Validating a small batch
+problem: With the schema `age` in $[0, 120]$ (an integer) and `income` in $[0, 10^7]$, validate the rows (1) `{"age": 34, "income": 52000.0}`, (2) `{"age": -2, "income": 40000.0}`, (3) `{"age": 41}` and (4) `{"age": 29, "income": None}`. Report the errors and the fraction of bad rows, and say whether the batch passes a budget of 10%.
+step: Row 1: age 34 is an integer within $[0, 120]$ and income 52000.0 is within range, so it has no errors.
+step: Row 2: age $-2$ is below 0, so the error is `age: out of range`; income is fine.
+step: Row 3 has no `income` key, so `row.get` returns `None` and the error is `income: missing`. Row 4 has `income` set to `None`, which gives the same error.
+step: Three of the four rows have errors, so the fraction of bad rows is $3/4 = 0.75$.
+step: The budget allows at most 10% bad rows, and $0.75 > 0.10$, so the batch fails and the pipeline should stop and alert instead of training.
+answer: Rows 2, 3 and 4 are bad (fraction 0.75), so the batch fails the 10% budget.
+@mistakes
+- Shuffling time-ordered data into random train and test sets, so the model is evaluated on the "past" it has already seen.
+- Checking only types and ignoring ranges: a temperature of 9999 is a valid float and an obviously wrong value.
+- Raising an error on the first bad value, which hides the others and makes each fix a separate run.
+- Computing a feature one way for training and another way in the online service (train/serve skew), so the model sees inputs in production that it never saw in training.
+@practice num
+prompt: A raw table has 1,250 rows. A uniqueness check finds 50 rows that exactly repeat an earlier row, and they are removed. Among the remaining rows, 3% have a missing `income`. How many rows have a missing `income`?
+answer: 36
+tol: 0.01
+check: 0.03 * (1250 - 50)
+hint: First find how many rows remain after removing the duplicates.
+solution: After removing duplicates $1250 - 50 = 1200$ rows remain, and $0.03 \times 1200 = 36$ of them have no income.
+@practice ms
+prompt: A bank trains a model at the time of a loan application to predict whether the loan will default within 12 months. Which of these features would leak the target? Select all that apply.
+choice*: The number of payments missed in months 1 to 12 after the loan was issued.
+choice*: A flag, recorded by the collections team after a default, saying that the borrower was contacted.
+choice: The applicant's stated annual income on the application form.
+choice: The applicant's credit score on the day of the application.
+hint: Ask for each feature whether its value is known at the moment the prediction is made.
+solution: The missed-payment count and the collections flag are produced after the application, and they are consequences of the outcome, so they leak it. The stated income and the credit score on the application day are known when the prediction is made.
+@practice text
+prompt: What does this program print?
+```python
+ranges = {"t": (-40, 60)}
+rows = [{"t": 21}, {"t": 99}, {"t": None}, {"t": -40}]
+bad = [i for i, r in enumerate(rows)
+       if r["t"] is None or not ranges["t"][0] <= r["t"] <= ranges["t"][1]]
+print(bad)
+```
+answer: [1, 2]
+check: run("ranges = {'t': (-40, 60)}\nrows = [{'t': 21}, {'t': 99}, {'t': None}, {'t': -40}]\nbad = [i for i, r in enumerate(rows)\n       if r['t'] is None or not ranges['t'][0] <= r['t'] <= ranges['t'][1]]\nprint(bad)")
+hint: Row 3 sits exactly on the lower bound, and the bounds are inclusive.
+solution: The value 99 (index 1) is above 60 and the `None` (index 2) is missing, so both are bad. The value $-40$ equals the lower bound and is valid, so the program prints `[1, 2]`.
+@practice code
+prompt: Write `validate_batch(rows, ranges, max_bad_fraction)`. `rows` is a nonempty list of dictionaries; `ranges` maps a field name to a `(low, high)` pair. A row is bad if any field in `ranges` is missing, is `None`, or has a value outside `[low, high]` (inclusive). Return the tuple `(fraction_bad, passed)`, where `fraction_bad` is the share of bad rows and `passed` is `fraction_bad <= max_bad_fraction`. For example, with ranges `{"a": (0, 10)}`, the rows `[{"a": 5}, {"a": 50}]` give `(0.5, False)` at a budget of `0.25`.
+starter:
+```python
+def validate_batch(rows, ranges, max_bad_fraction):
+    pass
+```
+tests:
+```python
+r = {"a": (0, 10), "b": (0, 1)}
+good = {"a": 3, "b": 0.5}
+assert validate_batch([{"a": 5}, {"a": 50}], {"a": (0, 10)}, 0.25) == (0.5, False)
+frac, ok = validate_batch([good, good, good, good], r, 0.0)
+assert frac == 0.0 and ok is True
+rows = [good, {"a": 3, "b": None}, {"a": 11, "b": 0.5}, {"a": 3}, good, good, good, good]
+frac, ok = validate_batch(rows, r, 0.5)
+assert abs(frac - 3 / 8) < 1e-9 and ok is True
+frac, ok = validate_batch(rows, r, 0.3)
+assert abs(frac - 3 / 8) < 1e-9 and ok is False
+frac, ok = validate_batch([{"a": 10, "b": 0}, {"a": 0, "b": 1}], r, 0.0)
+assert frac == 0.0 and ok is True
+```
+model:
+```python
+def validate_batch(rows, ranges, max_bad_fraction):
+    """Fraction of bad rows and whether it is within the budget."""
+    def is_bad(row):
+        for field, (low, high) in ranges.items():
+            value = row.get(field)
+            if value is None or not low <= value <= high:
+                return True
+        return False
+
+    bad = sum(1 for row in rows if is_bad(row))
+    fraction = bad / len(rows)
+    return fraction, fraction <= max_bad_fraction
+```
+hint: Write a small helper that says whether one row is bad, count the bad rows, and divide by the number of rows.
+solution: A row is bad if any required field is missing, `None` or outside its inclusive range, so the helper returns as soon as it finds one problem. The fraction of bad rows is compared with the budget using `<=`; the last test checks that values equal to the bounds are valid.
+@practice code
+prompt: Write `time_split(records, cutoff)`. `records` is a list of `(timestamp, features)` pairs, not necessarily sorted. Return `(train, test)`: `train` holds the records with `timestamp < cutoff` and `test` those with `timestamp >= cutoff`, each in the original order. If either part would be empty, raise `ValueError`. For example, `time_split([(5, "x"), (1, "y")], 3)` returns `([(1, "y")], [(5, "x")])`.
+starter:
+```python
+def time_split(records, cutoff):
+    pass
+```
+tests:
+```python
+assert time_split([(5, "x"), (1, "y")], 3) == ([(1, "y")], [(5, "x")])
+tr, te = time_split([(4, "a"), (2, "b"), (3, "c"), (1, "d"), (3, "e")], 3)
+assert tr == [(2, "b"), (1, "d")]
+assert te == [(4, "a"), (3, "c"), (3, "e")]
+assert raises(ValueError, time_split, [(1, "a"), (2, "b")], 5)
+assert raises(ValueError, time_split, [(6, "a"), (7, "b")], 5)
+assert raises(ValueError, time_split, [], 5)
+```
+model:
+```python
+def time_split(records, cutoff):
+    """Split records into those before the cutoff and those at or after it."""
+    train = [r for r in records if r[0] < cutoff]
+    test = [r for r in records if r[0] >= cutoff]
+    if not train or not test:
+        raise ValueError("both parts must be nonempty")
+    return train, test
+```
+hint: Use two list comprehensions with opposite conditions on the timestamp, then check that both lists have records.
+solution: Records exactly at the cutoff belong to the test part, so the two comprehensions together cover every record once and none appears in both. Raising when a part is empty stops a pipeline from silently evaluating on nothing; the tests check both empty cases.
+@quiz code
+prompt: Write `missing_rates(rows, fields)`. `rows` is a nonempty list of dictionaries and `fields` a list of field names. Return a dictionary mapping each field to the fraction of rows in which the field is absent or `None`. For example, `missing_rates([{"a": 1}, {"a": None, "b": 2}], ["a", "b"])` returns `{"a": 0.5, "b": 0.5}`.
+starter:
+```python
+def missing_rates(rows, fields):
+    pass
+```
+tests:
+```python
+assert missing_rates([{"a": 1}, {"a": None, "b": 2}], ["a", "b"]) == {"a": 0.5, "b": 0.5}
+rows = [{"x": 1, "y": 2}, {"x": 3, "y": None}, {"x": None}, {"x": 0, "y": 5}]
+got = missing_rates(rows, ["x", "y"])
+assert abs(got["x"] - 0.25) < 1e-9 and abs(got["y"] - 0.5) < 1e-9
+assert missing_rates([{"x": 0}], ["x"]) == {"x": 0.0}
+assert missing_rates([{"x": 1}, {"x": 2}, {"x": 3}], ["z"]) == {"z": 1.0}
+```
+model:
+```python
+def missing_rates(rows, fields):
+    """Fraction of rows in which each field is absent or None."""
+    rates = {}
+    for field in fields:
+        missing = sum(1 for row in rows if row.get(field) is None)
+        rates[field] = missing / len(rows)
+    return rates
+```
+hint: Use `row.get(field) is None`; note that the value 0 is present, not missing.
+solution: `row.get(field)` returns `None` both for an absent key and for a stored `None`, so one test covers both. Testing `is None` rather than truthiness keeps a legitimate value of 0 from being counted as missing, which the third test checks.
+@quiz text
+prompt: What does this program print?
+```python
+rows = [(1, "a"), (2, "b"), (1, "a"), (3, "c"), (2, "b")]
+seen = set()
+keep = []
+for r in rows:
+    if r not in seen:
+        seen.add(r)
+        keep.append(r)
+print(len(keep), keep[-1])
+```
+answer: 3 (3, 'c')
+check: run("rows = [(1, 'a'), (2, 'b'), (1, 'a'), (3, 'c'), (2, 'b')]\nseen = set()\nkeep = []\nfor r in rows:\n    if r not in seen:\n        seen.add(r)\n        keep.append(r)\nprint(len(keep), keep[-1])")
+hint: The loop keeps only the first occurrence of each pair, in order.
+solution: The distinct pairs in order of first appearance are `(1, 'a')`, `(2, 'b')` and `(3, 'c')`, so `keep` has 3 entries and its last entry is `(3, 'c')`; the program prints `3 (3, 'c')`.
+@quiz mc
+prompt: A pipeline computes the feature "average order value" in a nightly batch job for training, while the online service computes it inside the web application with slightly different rounding and a different handling of canceled orders. What is this problem called, and what is the standard defense?
+choice*: Train/serve skew; use one shared implementation of the transformation for training and serving.
+choice: Data leakage; split the data by time instead of at random.
+choice: Concept drift; retrain the model every night.
+choice: Overfitting; add regularization to the model.
+hint: The problem is a mismatch between how a feature is computed in two places, not a property of the model or of the split.
+solution: When the same feature is computed differently in training and in production, the model receives inputs in production that differ from what it learned from: train/serve skew. Sharing one implementation (or reading both from a single feature store) removes the mismatch. Leakage, concept drift and overfitting are different problems with different remedies.

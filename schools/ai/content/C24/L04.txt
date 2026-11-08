@@ -1,0 +1,236 @@
+@lesson
+title: Testing machine learning code
+summary: Write unit, property and behavioral tests for feature transformations, gradients and model wrappers, using tolerances for floating-point results.
+objective: Write unit tests for a transformation that cover typical cases, edge cases and invariants.
+objective: Check a hand-written gradient against finite differences and test floating-point results with a tolerance.
+objective: Test a model wrapper for input validation, determinism and output ranges.
+reading: Made With ML, the lesson on testing machine learning systems (code, data and models); look up "testing" in the course index.
+@article
+A model that trains without errors can still be wrong. A feature function that divides by a standard deviation of zero, a wrapper that accepts a row with the wrong number of columns, a gradient with a sign error: none of these crash, and each quietly lowers the quality of the model. **Tests** are small programs that check that code does what you intend, and they are the cheapest way to catch these failures. Machine learning code is harder to test than ordinary code because the outputs are numbers with rounding error and often depend on random seeds, so tests must use tolerances and fixed seeds.
+
+### Kinds of tests
+
+| kind | what it checks | example |
+|---|---|---|
+| unit test | one function on a known input | `standardize([2, 4, 6])` has mean 0 |
+| edge-case test | boundaries and degenerate inputs | an empty list, a constant column, one example |
+| property test | a rule that holds for many inputs | the output has the same length as the input |
+| invariance test | the output does not change under an irrelevant change | shuffling the rows does not change a mean |
+| regression test | the output matches a stored, trusted value | the model's score on a fixed batch is 0.7312 |
+| integration test | several parts work together | raw rows go through the pipeline and the model without error |
+
+Data tests (week 2) check the data; the tests of this week check the code.
+
+### Testing a transformation
+
+The **standardization** of values $x_1, \dots, x_n$ is $z_i = (x_i - \mu)/\sigma$, where $\mu$ is the mean and $\sigma$ the population standard deviation. Two mathematical facts become tests: the standardized values have mean 0 and standard deviation 1. A third test is an edge case: when every value is equal, $\sigma = 0$ and the formula divides by zero, so you must decide what to return (here zeros).
+
+```python
+import math
+
+def standardize(values):
+    """Return (x - mean) / std for each value; zeros if std is 0."""
+    n = len(values)
+    mean = sum(values) / n
+    std = math.sqrt(sum((x - mean) ** 2 for x in values) / n)
+    if std == 0:
+        return [0.0] * n
+    return [(x - mean) / std for x in values]
+
+z = standardize([2.0, 4.0, 6.0, 8.0])
+assert abs(sum(z) / len(z)) < 1e-9                       # mean is 0
+assert abs(sum(v * v for v in z) / len(z) - 1) < 1e-9    # variance is 1
+assert standardize([3.0, 3.0, 3.0]) == [0.0, 0.0, 0.0]   # constant column
+assert len(standardize([1.0])) == 1                      # one example
+```
+
+Notice that the float checks use a **tolerance** (`< 1e-9`) rather than `==`: computed floats differ from exact values in their last digits, and a different Python or machine can change those digits.
+
+### Testing gradients
+
+A hand-derived gradient is a common source of silent bugs. The **central finite difference** $\dfrac{f(x + h) - f(x - h)}{2h}$ approximates the derivative with error of order $h^2$, so for a small $h$ such as $10^{-5}$ it should match the analytic gradient to about six digits. This gradient check is a regression guard for every hand-written backward pass.
+
+### Testing a model wrapper
+
+Production code usually wraps a trained model in a function or class that validates its input, calls the model and post-processes the result. Test the wrapper separately from the model by giving it a tiny stand-in model, such as a function that sums its inputs. Check that it rejects rows of the wrong length, rejects missing values, returns the same output when called twice with the same input (determinism), and keeps outputs in their valid range (a probability must lie in $[0, 1]$).
+
+### Two more habits
+
+A **behavioral test** states how the model should respond to a change in the input: raising a house's floor area while holding the rest fixed should not lower the predicted price. And an **overfit-one-batch test** trains on eight examples for a few hundred steps and asserts that the training loss falls near zero: if it does not, the training loop, the loss or the gradients are broken, and no amount of data will fix that. Run all tests automatically in a test runner on every change.
+@example
+title: Finding a bug with an edge-case test
+problem: A function scales a list to the range $[0, 1]$: `scale01(v)` returns `[(x - lo) / (hi - lo) for x in v]` with `lo = min(v)` and `hi = max(v)`. Design tests that expose a bug, then fix it.
+step: Typical case: `scale01([2, 4, 6])` should be `[0.0, 0.5, 1.0]`; this passes, because $(4 - 2)/(6 - 2) = 0.5$.
+step: Property test: for any input, every output lies in $[0, 1]$ and the minimum maps to 0 and the maximum to 1. This also passes on varied inputs.
+step: Edge case: a constant column such as `[5, 5, 5]` has `lo == hi`, so the denominator is $0$ and the call raises `ZeroDivisionError`. This test fails and exposes the bug.
+step: Fix: decide a rule (return zeros for a constant column), add `if hi == lo: return [0.0] * len(v)`, and keep the constant-column test so the bug cannot return.
+answer: The constant-column edge case raises `ZeroDivisionError`; guarding `hi == lo` fixes it, and the test stays as a regression test.
+@mistakes
+- Comparing computed floats with `==`: use `abs(a - b) < tol`, with a tolerance sized to the numbers involved.
+- Testing only typical inputs: most bugs live at the edges (empty input, one example, a constant column, a missing value).
+- Testing with random data and no seed, so a failure cannot be reproduced.
+- Never checking a hand-written gradient numerically; a sign error or a missing factor trains slowly and silently.
+@practice num
+prompt: The list `[2, 4, 6, 8]` is standardized with the mean and the population standard deviation (dividing by $n$). What is the standardized value of the entry 8, to four decimal places?
+answer: 1.3416
+tol: 0.0001
+check: (8 - 5) / (sum((x - 5) ** 2 for x in [2, 4, 6, 8]) / 4) ** 0.5
+hint: The mean is 5; the population variance is the average of the squared deviations $9, 1, 1, 9$.
+solution: The variance is $(9 + 1 + 1 + 9)/4 = 5$, so $\sigma = \sqrt{5} \approx 2.2361$ and the value for 8 is $3/2.2361 \approx 1.3416$.
+@practice mc
+prompt: A test calls a model wrapper twice with the identical input row and asserts that the two outputs are equal. Which property is this test checking?
+choice*: Determinism: the same input gives the same output.
+choice: Accuracy: the model's predictions are close to the true labels.
+choice: Calibration: predicted probabilities match observed frequencies.
+choice: Robustness: small changes to the input leave the output unchanged.
+hint: The test varies nothing between the two calls.
+solution: Calling twice with an identical input and comparing outputs checks determinism. It says nothing about accuracy or calibration, which need labels, and nothing about robustness, which needs changed inputs.
+@practice text
+prompt: What does this program print?
+```python
+def scale01(v):
+    lo, hi = min(v), max(v)
+    return [(x - lo) / (hi - lo) for x in v]
+
+try:
+    scale01([3, 3, 3])
+except ZeroDivisionError:
+    print("constant column")
+else:
+    print("ok")
+```
+answer: constant column
+check: run("def scale01(v):\n    lo, hi = min(v), max(v)\n    return [(x - lo) / (hi - lo) for x in v]\n\ntry:\n    scale01([3, 3, 3])\nexcept ZeroDivisionError:\n    print('constant column')\nelse:\n    print('ok')")
+hint: For a constant list, what are `lo` and `hi`, and what is `hi - lo`?
+solution: Every entry is 3, so `lo` and `hi` are both 3 and the denominator `hi - lo` is 0. The first division raises `ZeroDivisionError`, so the `except` branch prints `constant column`.
+@practice code
+prompt: Write `gradient_matches(f, grad_f, point, h=1e-5, tol=1e-6)`. `f` takes a list of floats and returns a float; `grad_f` takes the same list and returns the list of partial derivatives; `point` is a list of floats. For each coordinate, compute the central difference `(f(point + h e_i) - f(point - h e_i)) / (2 h)` (change only coordinate `i`, on a copy of the list) and return `True` only if every one is within `tol` of the corresponding entry of `grad_f(point)`. For example, for `f = lambda v: v[0] ** 2` and `grad_f = lambda v: [2 * v[0]]` at `[3.0]` the function returns `True`.
+starter:
+```python
+def gradient_matches(f, grad_f, point, h=1e-5, tol=1e-6):
+    pass
+```
+tests:
+```python
+f = lambda v: v[0] ** 2 * v[1] + v[1]
+good = lambda v: [2 * v[0] * v[1], v[0] ** 2 + 1]
+bad = lambda v: [2 * v[0] * v[1], v[0] ** 2]
+assert gradient_matches(f, good, [1.5, 2.0]) is True
+assert gradient_matches(f, bad, [1.5, 2.0]) is False
+sign = lambda v: [-2 * v[0] * v[1], v[0] ** 2 + 1]
+assert gradient_matches(f, sign, [1.5, 2.0]) is False
+p = [0.7, -1.2]
+gradient_matches(f, good, p)
+assert p == [0.7, -1.2]
+assert gradient_matches(lambda v: 3 * v[0], lambda v: [3.0], [10.0]) is True
+```
+model:
+```python
+def gradient_matches(f, grad_f, point, h=1e-5, tol=1e-6):
+    """True if grad_f agrees with central finite differences of f."""
+    analytic = grad_f(point)
+    for i in range(len(point)):
+        up = list(point)
+        down = list(point)
+        up[i] += h
+        down[i] -= h
+        numeric = (f(up) - f(down)) / (2 * h)
+        if abs(numeric - analytic[i]) > tol:
+            return False
+    return True
+```
+hint: For each index, make two copies of the point, one with `h` added and one with `h` subtracted at that index only.
+solution: The central difference at coordinate `i` moves only that coordinate by plus and minus `h`, so it approximates the partial derivative; comparing it with `grad_f` coordinate by coordinate catches a wrong term (the second test), a wrong sign (the third) and, with copies, leaves the caller's list unchanged (the fourth).
+@practice code
+prompt: Write a class `SafeModel` with `__init__(self, model, n_features)` and `predict(self, row)`. `model` is a function that takes a list of numbers and returns a number. `predict` raises `ValueError` if `row` does not have exactly `n_features` entries or if any entry is `None` or is NaN (a value `v` with `v != v`); otherwise it returns `model(row)` clipped to the interval $[0, 1]$. For example, with `model=sum` and `n_features=2`, `predict([0.4, 0.5])` returns `0.9` and `predict([0.8, 0.9])` returns `1.0`.
+starter:
+```python
+class SafeModel:
+    def __init__(self, model, n_features):
+        pass
+
+    def predict(self, row):
+        pass
+```
+tests:
+```python
+m = SafeModel(lambda r: r[0] + r[1], 2)
+assert abs(m.predict([0.4, 0.5]) - 0.9) < 1e-9
+assert m.predict([0.8, 0.9]) == 1.0
+assert m.predict([-0.5, 0.2]) == 0.0
+assert raises(ValueError, m.predict, [0.1])
+assert raises(ValueError, m.predict, [0.1, None])
+assert raises(ValueError, m.predict, [0.1, float("nan")])
+assert m.predict([0.2, 0.3]) == m.predict([0.2, 0.3])
+```
+model:
+```python
+class SafeModel:
+    """Validate rows, call the model and clip its output to [0, 1]."""
+
+    def __init__(self, model, n_features):
+        self.model = model
+        self.n_features = n_features
+
+    def predict(self, row):
+        if len(row) != self.n_features:
+            raise ValueError("wrong number of features")
+        for v in row:
+            if v is None or v != v:
+                raise ValueError("missing value")
+        return min(1.0, max(0.0, self.model(row)))
+```
+hint: Check the length first, then each value (`v is None or v != v` catches both kinds of missing value), then clip with `min` and `max`.
+solution: A NaN is the only float that differs from itself, so `v != v` detects it; testing `None` first avoids comparing `None` with itself later. Clipping with `min(1.0, max(0.0, y))` keeps outputs in range, and the tests cover the three error cases, both ends of the range and determinism.
+@quiz code
+prompt: Write `is_order_invariant(f, items, seed, trials=5)`. It shuffles a copy of `items` with `random.Random(seed)` `trials` times, and returns `True` only if `f` of every shuffled copy is within `1e-9` of `f(items)`. `f` takes a list and returns a float. For example, with `f = lambda v: sum(v) / len(v)` and `items = [1.0, 5.0, 9.0]` it returns `True`; with `f = lambda v: v[0]` it returns `False`.
+starter:
+```python
+import random
+
+def is_order_invariant(f, items, seed, trials=5):
+    pass
+```
+tests:
+```python
+mean = lambda v: sum(v) / len(v)
+assert is_order_invariant(mean, [1.0, 5.0, 9.0], 0) is True
+assert is_order_invariant(lambda v: v[0], [1.0, 5.0, 9.0, 2.0], 0, 20) is False
+assert is_order_invariant(max, [3.0, 1.0, 4.0, 1.5], 7) is True
+assert is_order_invariant(lambda v: v[-1] - v[0], [1.0, 2.0, 4.0, 8.0], 3, 20) is False
+data = [2.0, 4.0]
+is_order_invariant(mean, data, 1)
+assert data == [2.0, 4.0]
+```
+model:
+```python
+import random
+
+def is_order_invariant(f, items, seed, trials=5):
+    """True if f gives the same value for shuffled copies of items."""
+    rng = random.Random(seed)
+    expected = f(list(items))
+    for _ in range(trials):
+        copy = list(items)
+        rng.shuffle(copy)
+        if abs(f(copy) - expected) > 1e-9:
+            return False
+    return True
+```
+hint: Make a fresh copy for every trial, shuffle it with one generator created from the seed, and compare `f` of the copy with `f(items)`.
+solution: One `random.Random(seed)` makes the shuffles repeatable, and copying keeps the caller's list unchanged (the last test). A function that reads a particular position, such as the first element, gives different values on some shuffles, so with enough trials the check returns `False`.
+@quiz mc
+prompt: A hand-derived gradient and a central finite difference disagree by about 2 at one coordinate, though the analytic formula looks right on paper. What is the most reasonable first step?
+choice*: Check the analytic gradient for a bug, and test it at a simple point whose derivative you can compute by hand.
+choice: Decrease the learning rate until the training loss stops rising.
+choice: Loosen the tolerance until the gradient check passes.
+choice: Conclude that the finite difference must be wrong, since it is only an approximation.
+hint: A central difference with a small $h$ is accurate to about $h^2$, so a discrepancy of 2 is far too large to be approximation error.
+solution: An error of order $h^2$ is tiny for $h = 10^{-5}$, so a discrepancy of 2 points to a bug in the analytic gradient (or in the function it differentiates). Testing at a simple point isolates it. Changing the learning rate or the tolerance only hides the problem.
+@quiz self
+prompt: You are given `fit_scaler(rows)`, which computes a mean and standard deviation for each column of a table, and `transform(rows, scaler)`, which standardizes rows with them. List five tests you would write, naming for each the kind of test (unit, edge case, property, invariance, regression) and what it asserts.
+hint: Think about constant columns, the mean and variance of the output, the shape of the output, and what the scaler should be fitted on.
+solution: (1) Unit test: on a column `[2, 4, 6, 8]` the transformed values equal the hand-computed z-scores within a tolerance. (2) Property test: the transformed training data has column means near 0 and standard deviations near 1, and the output has the same number of rows and columns as the input. (3) Edge case: a constant column does not raise and gives zeros; also a table with one row. (4) Invariance test: shuffling the rows before fitting gives the same mean and standard deviation. (5) Regression or leakage test: fit the scaler on the training rows only and assert that transforming test rows with it does not change the stored mean and standard deviation, and that the same function is used in training and serving; a stored expected output for a fixed small table guards later changes.
+rubric: Gives at least five distinct tests and correctly labels the kind of each.
+rubric: Includes the constant-column edge case and a tolerance for floating-point comparisons.
+rubric: Includes a test that the scaler is fitted on training data only or applied identically in training and serving.

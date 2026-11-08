@@ -49,3 +49,4 @@ Log:
 - C17 reviewed (34 fixes: items off article and example data, 13 code items made into variants (log_softmax, iterative topological order and resettable backward, drop_last, masked decay, dropout backward, global-norm clipping, broadcasting), topological-order mistake corrected, cross-course references removed); follow-up by me: L11 residual num now has one active and one inactive ReLU
 - started C24
 - C20 done (0 errors, 0 warnings, 96; EU AI Act Articles 5 and 50, Gender Shades, NISTIR 8280 and vision attributions passed to the reviewer with verified facts); review started C20; started P1
+- C19 reviewed (27 fixes: items off example data, BPE 'bust', underflow claim corrected (1,000 words), kappa 'no more than', Mitchell 2018, Caliskan year removed, Dickens excerpt labeled, project split and greedy-decoding steps fixed); follow-up by me: L08 overflow test now checks the exact average 2.0

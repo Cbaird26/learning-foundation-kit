@@ -1,0 +1,236 @@
+@lesson
+title: Temporal-difference learning
+summary: Update value estimates after every step by bootstrapping from the next estimate, and compare TD(0), n-step returns and Monte Carlo on a random walk.
+objective: Compute TD errors and apply the TD(0) update by hand and in code.
+objective: Compute n-step returns and explain how they interpolate between TD(0) and Monte Carlo.
+objective: Compare Monte Carlo and TD estimates on a random walk and explain the bias and variance of their targets.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the chapter on temporal-difference learning (TD prediction, advantages of TD methods, optimality of TD(0)) and the chapter on n-step bootstrapping.
+@article
+Monte Carlo waits for the end of an episode before it learns anything. If you are driving and the road ahead is blocked, you do not wait until the end of the trip to revise your estimate of how long it will take; you update as soon as you see the delay. **Temporal-difference** (TD) learning, introduced by Sutton (1988), does exactly that: it updates the estimate of a state from the very next reward and the current estimate of the next state. It combines MC's learning from experience with DP's bootstrapping.
+
+### TD(0)
+
+Recall $v_\pi(s) = \mathbb{E}[R_{t+1} + \gamma\,v_\pi(S_{t+1}) \mid S_t = s]$. Replace the expectation by one sample and the unknown $v_\pi(S_{t+1})$ by the current estimate $V(S_{t+1})$:
+
+$$V(S_t) \leftarrow V(S_t) + \alpha\,\big[\,\underbrace{R_{t+1} + \gamma V(S_{t+1})}_{\text{TD target}} - V(S_t)\,\big].$$
+
+The bracket is the **TD error**, $\delta_t = R_{t+1} + \gamma V(S_{t+1}) - V(S_t)$, with $V(\text{terminal}) = 0$. A positive $\delta_t$ means things went better than expected. Each update uses one transition, so TD works online, step by step, in continuing tasks as well as episodic ones. For a fixed policy, TD(0) converges to $v_\pi$ if the step size shrinks appropriately; with a small constant $\alpha$ it converges in the mean.
+
+Bias and variance. The MC target $G_t$ is an unbiased sample of $v_\pi(S_t)$, but depends on a long chain of random events, so its variance is high. The TD target depends on one random reward and one random next state, so its variance is lower, but it is **biased** while $V(S_{t+1})$ is wrong. This is the same bias-variance trade-off you know from supervised learning, and in practice TD is often faster on stochastic tasks.
+
+### $n$-step returns
+
+Interpolate between the two targets with the **$n$-step return**
+
+$$G_{t:t+n} = R_{t+1} + \gamma R_{t+2} + \cdots + \gamma^{n-1} R_{t+n} + \gamma^{n} V(S_{t+n}),$$
+
+which uses $n$ real rewards and then bootstraps. If the episode ends before $t + n$, it is the ordinary return $G_t$. With $n = 1$ it is the TD(0) target, and as $n$ grows it approaches the MC target. Intermediate $n$ often works best. (TD($\lambda$) averages all $n$-step returns with weights $(1 - \lambda)\lambda^{n-1}$.)
+
+### A random walk
+
+Five states A, B, C, D, E sit in a row; the episode starts in C, and each step moves left or right with probability $\tfrac12$. Stepping off the right end of E gives reward 1 and ends the episode; stepping off the left end of A gives reward 0 and ends it. With $\gamma = 1$ the true values are $v(A), \dots, v(E) = \tfrac16, \tfrac26, \tfrac36, \tfrac46, \tfrac56$, the probability of finishing on the right. Both methods start with $V = 0.5$ everywhere and $\alpha = 0.1$ and see these three episodes, in order: C, D, E, right; then C, B, A, left; then C, D, C, D, E, right. After all three:
+
+| state | A | B | C | D | E |
+|---|---|---|---|---|---|
+| true $v$ | 0.167 | 0.333 | 0.500 | 0.667 | 0.833 |
+| TD(0) | 0.450 | 0.500 | 0.500 | 0.505 | 0.595 |
+| every-visit MC | 0.450 | 0.450 | 0.591 | 0.636 | 0.595 |
+
+After the first episode TD changed only E, because only the last step carried a nonzero TD error, while MC updated every state visited at once. TD passes information backward one state per visit; MC passes it all the way back at the end of each episode, with more noise: C's MC estimate rose after the first episode and then jumped again in the third, on one lucky trajectory.
+
+### What TD(0) converges to in a fixed data set
+
+If you repeatedly present the same finite batch of experience, batch MC converges to the values that minimize the squared error to the observed returns, while batch TD(0) converges to the values that would be exactly right if the observed transitions were the true model (the **certainty-equivalence** estimate). TD(0) can therefore be more efficient with limited data.
+
+### In code
+
+```python
+def walk(path, end_reward):
+    """Transitions (state, reward, next_state) of a path through A..E."""
+    steps = [(path[i], 0.0, path[i + 1]) for i in range(len(path) - 1)]
+    steps.append((path[-1], end_reward, None))
+    return steps
+
+def td0(episodes, gamma, alpha, init):
+    V = {s: init for s in 'ABCDE'}
+    for episode in episodes:
+        for s, r, s2 in episode:
+            target = r + gamma * (V[s2] if s2 is not None else 0.0)
+            V[s] += alpha * (target - V[s])
+    return V
+
+eps = [walk('CDE', 1.0), walk('CBA', 0.0), walk('CDCDE', 1.0)]
+V = td0(eps, 1.0, 0.1, 0.5)
+print([round(V[s], 3) for s in 'ABCDE'])
+```
+
+This prints `[0.45, 0.5, 0.5, 0.505, 0.595]`, the TD row of the table. The terminal state is represented by `None` and has value 0.
+
+@example
+title: TD updates and n-step returns by hand
+problem: (a) A walk has $V(\text{A}) = 0.4$ and $V(\text{B}) = 0.8$ with $\gamma = 1$ and $\alpha = 0.5$. The agent moves from A to B and receives reward 0.2. Apply the TD(0) update to A. (b) An episode has rewards $R_1 = 3$, $R_2 = 0$, $R_3 = 4$ and ends after three steps. The estimates are $V(S_1) = 5$ and $V(S_2) = 1$, and $\gamma = 0.5$. Compute the 1-step, 2-step and 3-step returns from $S_0$.
+step: The TD error is $\delta = 0.2 + 1 \times 0.8 - 0.4 = 0.6$.
+step: The update is $V(\text{A}) \leftarrow 0.4 + 0.5 \times 0.6 = 0.7$.
+step: One-step return: $G_{0:1} = 3 + 0.5 \times V(S_1) = 3 + 2.5 = 5.5$.
+step: Two-step return: $G_{0:2} = 3 + 0.5 \times 0 + 0.25 \times V(S_2) = 3 + 0.25 = 3.25$.
+step: Three-step return: the episode ends at step 3, so there is no bootstrap term and $G_{0:3} = 3 + 0 + 0.25 \times 4 = 4$, the ordinary Monte Carlo return.
+answer: (a) $V(\text{A}) = 0.7$. (b) The returns are $5.5$, $3.25$ and $4$.
+
+@mistakes
+- Using $V(S_{t+1})$ for a terminal next state: it is 0, and the final reward alone forms the target.
+- Updating from the TD error without the step size, or using $G_t$ in place of the bootstrapped target.
+- Bootstrapping from the value of the wrong state, or from $V(S_t)$ itself instead of $V(S_{t+1})$.
+- Concluding that TD is "wrong because it is biased": its bias vanishes as the estimates converge, and its lower variance often makes it learn faster.
+
+@practice num
+prompt: Under a policy, the agent moves from state $s$ to state $s'$ and receives reward 0.2. The current estimates are $V(s) = 0.4$ and $V(s') = 0.7$, and $\gamma = 0.9$. What is the TD error $\delta$? Give your answer to two decimal places.
+answer: 0.43
+tol: 0.01
+check: 0.2 + 0.9 * 0.7 - 0.4
+hint: $\delta = R + \gamma V(s') - V(s)$.
+solution: $\delta = 0.2 + 0.9 \times 0.7 - 0.4 = 0.2 + 0.63 - 0.4 = 0.43$: the transition was better than the current estimate of $s$ predicted.
+
+@practice num
+prompt: With $\gamma = 1$ and $\alpha = 0.2$, the agent moves from $s$ to $s'$ and receives reward 1. The estimates are $V(s) = 0.3$ and $V(s') = 0.6$. What is $V(s)$ after the TD(0) update?
+answer: 0.56
+tol: 0.001
+check: 0.3 + 0.2 * (1 + 1 * 0.6 - 0.3)
+hint: Compute the TD error first, then move $V(s)$ a fraction $\alpha$ of the way.
+solution: $\delta = 1 + 0.6 - 0.3 = 1.3$, so $V(s) = 0.3 + 0.2 \times 1.3 = 0.56$.
+
+@practice mc
+prompt: Which statement correctly compares the Monte Carlo target $G_t$ with the TD(0) target $R_{t+1} + \gamma V(S_{t+1})$?
+choice*: $G_t$ is an unbiased sample of $v_\pi(S_t)$ with higher variance; the TD target has lower variance but is biased when $V(S_{t+1})$ is inaccurate.
+choice: Both targets are unbiased, but TD has higher variance because it uses an estimate.
+choice: The TD target is unbiased because it uses the true next reward, and $G_t$ is biased because it uses many rewards.
+choice: Both targets have zero variance in a stochastic environment, so they differ only in speed.
+hint: One target contains a learned estimate; the other contains only observed rewards from many random steps.
+solution: The return $G_t$ contains only observed rewards, so its expectation is exactly $v_\pi(S_t)$, but it sums many random terms. The TD target replaces the whole future by the current estimate, which reduces randomness but injects the estimate's error as bias.
+
+@practice code
+prompt: A transition list for one episode has the form `[(state, reward, next_state), ...]`, where `next_state` is `None` when the transition ends the episode (the value of `None` is 0). Write `td_errors(transitions, V, gamma)` that returns the list of TD errors $\delta_t = r + \gamma V(s') - V(s)$ for the transitions, using the fixed dictionary `V` (no updates). For example, `td_errors([('a', 1.0, None)], {'a': 0.25}, 0.9)` returns `[0.75]`.
+starter:
+```python
+def td_errors(transitions, V, gamma):
+    pass
+```
+tests:
+```python
+V = {'A': 0.2, 'B': 0.4, 'C': 0.5, 'D': 0.6, 'E': 0.9}
+up = [('C', 0.0, 'D'), ('D', 0.0, 'E'), ('E', 1.0, None)]
+down = [('C', 0.0, 'B'), ('B', 0.0, 'A'), ('A', 0.0, None)]
+want = [0.1, 0.3, 0.1]
+got = td_errors(up, V, 1.0)
+assert len(got) == 3 and all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+want = [-0.14, -0.22, -0.2]
+got = td_errors(down, V, 0.9)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+assert td_errors([], V, 0.9) == []
+assert abs(td_errors([('a', 1.0, None)], {'a': 0.25}, 0.9)[0] - 0.75) < 1e-9
+```
+model:
+```python
+def td_errors(transitions, V, gamma):
+    """TD error of every transition under the fixed estimates V."""
+    errors = []
+    for s, r, s2 in transitions:
+        nxt = V[s2] if s2 is not None else 0.0
+        errors.append(r + gamma * nxt - V[s])
+    return errors
+```
+hint: Look up `V[s2]` only when `s2` is not `None`; otherwise the next value is 0.0.
+solution: Each transition contributes reward plus discounted next value minus the current value. The terminal transitions test the `None` case: the target is just the reward, so the error is $1 - 0.9 = 0.1$ for state E in the first test.
+
+@practice code
+prompt: Write `n_step_return(rewards, values, gamma, t, n)` for an episode of length $T$ = `len(rewards)`. `rewards[k]` is $R_{k+1}$ and `values[k]` is the estimate $V(S_k)$ for $k = 0, \dots, T-1$ (the terminal state after the last step has value 0 and is not in the list). Return $G_{t:t+n} = \sum_{i=0}^{m-1}\gamma^i R_{t+i+1} + \gamma^n V(S_{t+n})$ where $m = \min(n, T - t)$; the last term is included only if $t + n < T$.
+starter:
+```python
+def n_step_return(rewards, values, gamma, t, n):
+    pass
+```
+tests:
+```python
+rw = [1, 0, 2, 5]
+vals = [3.0, 4.0, 6.0, 8.0]
+want = [3.0, 2.5, 2.5, 2.125, 2.125]
+for n in range(1, 6):
+    assert abs(n_step_return(rw, vals, 0.5, 0, n) - want[n - 1]) < 1e-9
+assert abs(n_step_return(rw, vals, 0.5, 2, 1) - 6.0) < 1e-9
+assert abs(n_step_return(rw, vals, 0.5, 2, 3) - 4.5) < 1e-9
+assert abs(n_step_return(rw, vals, 0.5, 3, 2) - 5.0) < 1e-9
+assert abs(n_step_return([2], [1.0], 0.9, 0, 1) - 2.0) < 1e-9
+```
+model:
+```python
+def n_step_return(rewards, values, gamma, t, n):
+    """n-step return from time t, truncated at the end of the episode."""
+    T = len(rewards)
+    m = min(n, T - t)
+    g = sum(gamma ** i * rewards[t + i] for i in range(m))
+    if t + n < T:
+        g += gamma ** n * values[t + n]
+    return g
+```
+hint: Add up `m` discounted rewards, and add the bootstrap term `gamma ** n * values[t + n]` only if the episode has not ended by time `t + n`.
+solution: When the episode ends within `n` steps, the return is the plain Monte Carlo return, with no bootstrap term. The tests for `n = 4` and `n = 5` from time 0 agree because `t + n >= T`, and the test at `t = 3` ends the episode within one step.
+
+@quiz code
+prompt: Write `batch_td0(episodes, gamma, alpha, passes, v0)` for batch TD(0). Each episode is a list of `(state, reward, next_state)` transitions (`next_state` is `None` at the end; its value is 0). Start every state that appears (as `state`) with value `v0`. In each of `passes` passes, go through all transitions of all episodes in order, accumulate the increment `alpha * (r + gamma * V[next] - V[s])` for each state using the values `V` from the start of the pass (do not change `V` during the pass), and add the accumulated increments to `V` at the end of the pass. Return `V`.
+starter:
+```python
+def batch_td0(episodes, gamma, alpha, passes, v0):
+    pass
+```
+tests:
+```python
+E = [[('A', 0.0, 'B'), ('B', 1.0, None)], [('B', 0.0, None)],
+     [('B', 1.0, None)]]
+V = batch_td0(E, 1.0, 0.1, 1, 0.0)
+assert abs(V['A'] - 0.0) < 1e-9 and abs(V['B'] - 0.2) < 1e-9
+V = batch_td0(E, 1.0, 0.1, 2, 0.0)
+assert abs(V['A'] - 0.02) < 1e-9 and abs(V['B'] - 0.34) < 1e-9
+V = batch_td0(E, 1.0, 0.1, 0, 0.5)
+assert V == {'A': 0.5, 'B': 0.5}
+V = batch_td0(E, 1.0, 0.1, 300, 0.0)
+assert abs(V['A'] - 2 / 3) < 1e-4 and abs(V['B'] - 2 / 3) < 1e-4
+```
+model:
+```python
+def batch_td0(episodes, gamma, alpha, passes, v0):
+    """Batch TD(0): sum the increments over all data, then apply them."""
+    V = {s: v0 for ep in episodes for s, _, _ in ep}
+    for _ in range(passes):
+        inc = {s: 0.0 for s in V}
+        for ep in episodes:
+            for s, r, s2 in ep:
+                nxt = V[s2] if s2 is not None else 0.0
+                inc[s] += alpha * (r + gamma * nxt - V[s])
+        for s in V:
+            V[s] += inc[s]
+    return V
+```
+hint: Use two dictionaries: the values `V` that stay fixed during a pass and an increment dictionary that you add to `V` after the pass.
+solution: The increments in a pass are computed from the values at its start, so state A's first pass sees `V['B'] = 0` and does not move. After many passes the values approach the certainty-equivalence estimate: state B ended with reward 1 in two of three visits, so $V(B) = 2/3$, and A always leads to B, so $V(A) = 2/3$ as well.
+
+@quiz num
+prompt: An episode has rewards $R_1 = 2$, $R_2 = -1$, $R_3 = 4$ and the estimate of the state three steps later is $V(S_3) = 10$. With $\gamma = 0.9$, what is the 3-step return $G_{0:3}$ (three rewards plus the discounted bootstrap)? Give your answer to two decimal places.
+answer: 11.63
+tol: 0.01
+check: 2 + 0.9 * (-1) + 0.9 ** 2 * 4 + 0.9 ** 3 * 10
+hint: Discount the rewards by $1, \gamma, \gamma^2$ and the bootstrap value by $\gamma^3$.
+solution: $2 - 0.9 + 0.81 \times 4 + 0.729 \times 10 = 2 - 0.9 + 3.24 + 7.29 = 11.63$.
+
+@quiz text
+prompt: What does this program print?
+```python
+V = {'x': 0.0, 'y': 0.0}
+steps = [('x', 1, 'y'), ('y', 2, None), ('x', 1, 'y')]
+for s, r, s2 in steps:
+    nxt = V[s2] if s2 else 0.0
+    V[s] += 0.5 * (r + nxt - V[s])
+print(V)
+```
+answer: {'x': 1.25, 'y': 1.0}
+check: run("V = {'x': 0.0, 'y': 0.0}\nsteps = [('x', 1, 'y'), ('y', 2, None), ('x', 1, 'y')]\nfor s, r, s2 in steps:\n    nxt = V[s2] if s2 else 0.0\n    V[s] += 0.5 * (r + nxt - V[s])\nprint(V)")
+hint: Apply the TD(0) update with $\gamma = 1$ and $\alpha = 0.5$ three times in order; the third update uses the new value of `y`.
+solution: Step 1: $V(x) = 0 + 0.5(1 + 0 - 0) = 0.5$. Step 2: $V(y) = 0 + 0.5(2 + 0 - 0) = 1.0$. Step 3: $V(x) = 0.5 + 0.5(1 + 1.0 - 0.5) = 1.25$. It prints `{'x': 1.25, 'y': 1.0}`.
