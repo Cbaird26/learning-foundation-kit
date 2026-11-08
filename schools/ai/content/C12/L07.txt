@@ -1,0 +1,192 @@
+@lesson
+title: Stochastic gradient descent and mini-batches
+summary: Use gradients computed on single examples or mini-batches to minimize an average loss, and explain the noise, the step-size schedules and the cost trade-offs.
+objective: Write the stochastic gradient descent update for a finite-sum objective and show that the mini-batch gradient is unbiased.
+objective: Quantify how batch size and step size set the noise level of the iterates.
+objective: State the Robbins–Monro conditions on step sizes and count updates per epoch.
+reading: Mathematics for Machine Learning, the chapter on continuous optimization: stochastic gradient descent (in the section on gradient descent).
+@article
+To find the average height of a million people, you do not need to measure everyone before taking your first guess: after each person you can nudge your estimate toward what you just saw. The estimate wobbles, but it gets there at a tiny fraction of the cost. Training on a data set of millions of examples works the same way.
+
+### The finite-sum objective
+
+Training losses are averages over examples:
+
+$$f(\mathbf{w}) = \frac{1}{n}\sum_{i=1}^{n} f_i(\mathbf{w}),$$
+
+where $f_i$ is the loss on example $i$. The full gradient $\nabla f = \frac1n\sum_i\nabla f_i$ costs $n$ gradient evaluations. **Stochastic gradient descent** (SGD; the idea goes back to the stochastic approximation method of Robbins and Monro, 1951) picks a random index $i_k$ and steps along the gradient of that one term:
+
+$$\mathbf{w}_{k+1} = \mathbf{w}_k - \eta_k\,\nabla f_{i_k}(\mathbf{w}_k).$$
+
+With a **mini-batch** $\mathcal{B}_k$ of $B$ indices drawn uniformly, the step uses $\mathbf{g}_k = \frac1B\sum_{i\in\mathcal{B}_k}\nabla f_i(\mathbf{w}_k)$. One pass through the data is an **epoch**; it takes $\lceil n/B\rceil$ updates when the data are split into consecutive batches.
+
+### Why it works: unbiasedness
+
+If the index is uniform on $\{1,\dots,n\}$, then $\mathbb{E}[\nabla f_{i}(\mathbf{w})] = \frac1n\sum_i\nabla f_i(\mathbf{w}) = \nabla f(\mathbf{w})$. The stochastic gradient is an **unbiased estimate** of the full gradient, and so is a mini-batch average. Its **variance** is what hurts. If single-example gradients have covariance with total variance $\sigma^2$ (the expected squared distance from the mean gradient), a mini-batch of $B$ independent draws has variance $\sigma^2/B$. Quadrupling the batch halves the noise standard deviation, at four times the cost per step.
+
+### A worked case: estimating a mean
+
+Let $f_i(w) = \tfrac12(w - a_i)^2$ with data $a = (2, 4, 9, 1)$. Then $f(w) = \tfrac12\cdot\frac14\sum(w - a_i)^2$ is minimized at the mean $\bar a = 4$, and $\nabla f_i(w) = w - a_i$ has variance $\sigma^2 = \frac14\sum(a_i - \bar a)^2 = 9.5$ over the choice of $i$, at every $w$. Starting from $w = 0$ with $\eta = 0.5$ and visiting the examples in order, SGD gives
+
+| step | example $a_i$ | SGD $w$ | full-batch GD $w$ |
+|---|---|---|---|
+| 1 | 2 | 1.0 | 2.0 |
+| 2 | 4 | 2.5 | 3.0 |
+| 3 | 9 | 5.75 | 3.5 |
+| 4 | 1 | 3.375 | 3.75 |
+
+Full-batch descent moves smoothly toward $4$; SGD jumps with the data, overshooting after the large value $9$.
+
+### Constant step size leaves a noise floor
+
+For this problem with uniformly random examples, the update is $w_{k+1} = (1 - \eta)w_k + \eta a_{i_k}$, so the error $e_k = w_k - \bar a$ satisfies $e_{k+1} = (1-\eta)e_k + \eta(a_{i_k} - \bar a)$. The noise terms are independent with variance $\sigma^2$, so in the long run $\operatorname{Var}(e) = \eta^2\sigma^2 / (1 - (1-\eta)^2) = \eta\sigma^2/(2 - \eta)$. With a mini-batch of size $B$ the noise variance is $\sigma^2/B$, giving $\eta\sigma^2/\big(B(2-\eta)\big)$. **A constant step size converges only to a neighborhood of the minimizer whose size shrinks with $\eta$ and with $B$.** For $\eta = 0.2$ and $B = 1$ the long-run variance is $0.2\cdot 9.5/1.8 \approx 1.06$.
+
+The general picture, for a strongly convex and smooth $f$ with bounded gradient variance and a constant step $\eta$ small enough, is the same: the error decreases linearly at first (as in week 6) and then stalls at a level proportional to $\eta\sigma^2$. Exceptions are **interpolation** problems, where a single $\mathbf{w}$ makes every $\nabla f_i$ vanish, so the noise vanishes at the solution.
+
+### Step-size schedules
+
+To converge exactly we need $\eta_k \to 0$, but not too fast. The **Robbins–Monro conditions** are
+$$\sum_{k}\eta_k = \infty \quad\text{and}\quad \sum_{k}\eta_k^2 < \infty .$$
+The first lets the iterates travel any distance; the second makes the accumulated noise finite. The schedule $\eta_k = c/k$ satisfies both. For convex problems, SGD with $\eta_k \propto 1/\sqrt{k}$ and an averaged iterate has error $O(1/\sqrt{k})$, and for strongly convex problems a step of order $1/(\mu k)$ gives $O(1/k)$. Compared with full-batch gradient descent's linear rate these look slow, but each step costs $B$ rather than $n$ gradient evaluations. In practice, learning rates are decayed in stages or by a smooth schedule, and the batch size trades hardware efficiency against noise.
+
+### In code
+
+```python
+def sgd_epoch(params, data, lr, batch_size):
+    a, b = params
+    for start in range(0, len(data), batch_size):
+        batch = data[start:start + batch_size]
+        errs = [a * x + b - y for x, y in batch]
+        ga = sum(e * x for e, (x, y) in zip(errs, batch)) / len(batch)
+        gb = sum(errs) / len(batch)
+        a, b = a - lr * ga, b - lr * gb
+    return [a, b]
+```
+
+Libraries shuffle the data every epoch and handle batches in tensors; the update rule is the one above.
+
+@example
+title: Two SGD steps by hand
+problem: Minimize $f(w) = \frac13\sum_{i=1}^{3}\tfrac12(w - a_i)^2$ with $a = (3, 6, 0)$ by SGD from $w_0 = 1$ with $\eta = 0.5$, using the examples in the order $a_1, a_2$. Then compute the full gradient at $w_0$ and compare.
+step: The gradient of one term is $w - a_i$. Step 1 uses $a_1 = 3$: $w_1 = 1 - 0.5(1 - 3) = 2$.
+step: Step 2 uses $a_2 = 6$: $w_2 = 2 - 0.5(2 - 6) = 4$.
+step: The full gradient at $w_0 = 1$ is $w_0 - \bar a = 1 - 3 = -2$, since $\bar a = 3$. A full-batch step with $\eta = 0.5$ would give $w = 1 + 1 = 2$, the same as SGD's first step because $a_1 = \bar a$.
+step: The second SGD step used the example $a_2 = 6$, which lies above the mean, so it overshot the minimizer $w^\star = 3$ to $4$; that is the noise of a single example.
+answer: $w_1 = 2$ and $w_2 = 4$; the full gradient at $w_0$ is $-2$.
+
+@example
+title: Updates per epoch
+problem: A data set has $n = 50{,}000$ examples. How many parameter updates and how many per-example gradient evaluations occur in $3$ epochs with batch sizes $B = 1$, $B = 128$ and $B = n$?
+step: Updates per epoch are $\lceil n/B\rceil$: $50{,}000$ for $B = 1$; $\lceil 390.6\rceil = 391$ for $B = 128$; and $1$ for $B = n$.
+step: Over $3$ epochs: $150{,}000$, $1{,}173$ and $3$ updates.
+step: Gradient evaluations per epoch are always $n = 50{,}000$ (every example is used once), so $150{,}000$ in total in all three cases.
+step: The batch size changes how often we move, not how much data we read. Small batches update often with noisy steps; large batches update rarely with accurate ones.
+answer: $150{,}000$, $1{,}173$ and $3$ updates; $150{,}000$ gradient evaluations in every case.
+
+@mistakes
+- Treating the stochastic gradient as the true gradient: a single step may point uphill for the full loss, and only the average over many steps follows the true gradient.
+- Expecting a constant step size to converge to the exact minimizer: the iterates keep fluctuating at a level set by $\eta$ and $B$ unless the noise vanishes at the solution.
+- Using a decay such as $\eta_k = 1/\sqrt{k}$ and claiming the Robbins–Monro conditions hold: $\sum\eta_k^2$ then diverges like the harmonic series.
+- Comparing methods by number of updates instead of gradient evaluations: a batch of $B$ examples costs $B$ gradients per update.
+
+@practice num
+prompt: Minimize $f(w) = \frac13\sum_i \tfrac12(w - a_i)^2$ for $a = (1, 5, 6)$ by SGD from $w_0 = 0$ with step size $\eta = 0.4$, using the examples in the order $a = 5, 1, 6$ (one step per example). What is $w$ after the three steps?
+answer: 3.36
+tol: 0.001
+check: float(run("w = 0.0\nfor a in [5, 1, 6]:\n    w = w - 0.4 * (w - a)\nprint(w)"))
+hint: Each step is $w \leftarrow w - 0.4(w - a_i)$, which equals $0.6\,w + 0.4\,a_i$.
+solution: Step 1: $w = 0.6\cdot 0 + 0.4\cdot 5 = 2$. Step 2: $w = 0.6\cdot 2 + 0.4\cdot 1 = 1.6$. Step 3: $w = 0.6\cdot 1.6 + 0.4\cdot 6 = 3.36$.
+
+@practice num
+prompt: SGD with a constant step size $\eta = 0.1$ and mini-batches of size $B = 4$ estimates a mean. The per-example gradient noise has variance $\sigma^2 = 19$. Using the long-run formula $\operatorname{Var}(e) = \eta\sigma^2/\big(B(2 - \eta)\big)$, what is the long-run variance of the error?
+answer: 0.25
+tol: 0.001
+check: 0.1 * 19 / (4 * (2 - 0.1))
+hint: Substitute $\eta = 0.1$, $\sigma^2 = 19$ and $B = 4$ directly into the formula.
+solution: The numerator is $0.1\cdot 19 = 1.9$ and the denominator is $4\cdot 1.9 = 7.6$, so the variance is $1.9/7.6 = 0.25$.
+
+@practice mc
+prompt: Which procedure gives an unbiased estimate of the full gradient $\nabla f(\mathbf{w}) = \frac1n\sum_i\nabla f_i(\mathbf{w})$?
+choice*: Draw an index uniformly at random and use $\nabla f_i(\mathbf{w})$.
+choice: Always use the gradient of the first example in the data set.
+choice: Draw the index with probability proportional to the example's current loss and use $\nabla f_i(\mathbf{w})$ without reweighting.
+choice: Use the example with the largest gradient norm.
+hint: Unbiased means the expected value over the random choice equals the full gradient.
+solution: With a uniform index, $\mathbb{E}[\nabla f_i] = \frac1n\sum_i\nabla f_i = \nabla f$. The other procedures weight examples unequally (a fixed example, a loss-proportional draw without importance weights, or the largest gradient), so their expectation is not the full gradient.
+
+@practice ms
+prompt: Which of these step-size schedules satisfy both Robbins–Monro conditions, $\sum_k\eta_k = \infty$ and $\sum_k\eta_k^2 < \infty$ (for $k = 1, 2, \dots$)? Select all that apply.
+choice*: $\eta_k = 1/k$
+choice*: $\eta_k = 1/k^{0.75}$
+choice: $\eta_k = 1/\sqrt{k}$
+choice: $\eta_k = 1/k^2$
+choice: $\eta_k = 0.1$ (constant)
+hint: A series $\sum k^{-p}$ converges exactly when $p > 1$. Apply this to $\eta_k$ and to $\eta_k^2$.
+solution: For $\eta_k = k^{-p}$, $\sum\eta_k = \infty$ needs $p \le 1$ and $\sum\eta_k^2 < \infty$ needs $2p > 1$, so $\tfrac12 < p \le 1$. Both $p = 1$ and $p = 0.75$ qualify. The value $p = \tfrac12$ gives $\sum\eta_k^2 = \sum 1/k = \infty$, $p = 2$ gives $\sum\eta_k < \infty$, and a constant step gives $\sum\eta_k^2 = \infty$.
+
+@practice code
+prompt: Write `sgd_epoch(params, data, lr, batch_size)` for the model $\hat y = a x + b$ with per-example loss $\tfrac12(\hat y - y)^2$. Here `params` is `[a, b]`, and `data` is a list of `(x, y)` pairs. Process the data in the given order in consecutive mini-batches of `batch_size` examples (the last batch may be smaller). For each batch, average the gradients of the batch's examples and update `a` and `b` once with step size `lr`. Return the new `[a, b]` after one pass over the data, and do not modify `params`. For example, `sgd_epoch([0.0, 0.0], [(1, 2)], 0.5, 1)` returns `[1.0, 1.0]`.
+starter:
+```python
+def sgd_epoch(params, data, lr, batch_size):
+    return list(params)
+```
+tests:
+```python
+d = [(0, 1), (1, 3), (2, 5), (3, 7)]
+r = sgd_epoch([0.0, 0.0], d, 0.1, 2)
+assert all(abs(u - v) < 1e-9 for u, v in zip(r, [1.5525, 0.7425]))
+r = sgd_epoch([0.0, 0.0], d, 0.1, 4)
+assert all(abs(u - v) < 1e-9 for u, v in zip(r, [0.85, 0.4]))
+r = sgd_epoch([0.0, 0.0], d, 0.1, 3)
+assert all(abs(u - v) < 1e-9 for u, v in zip(r, [2.0533333333, 0.84]))
+r = sgd_epoch([2.0, 1.0], d, 0.1, 2)
+assert all(abs(u - v) < 1e-9 for u, v in zip(r, [2.0, 1.0]))
+p = [0.0, 0.0]
+sgd_epoch(p, d, 0.1, 1)
+assert p == [0.0, 0.0]
+```
+model:
+```python
+def sgd_epoch(params, data, lr, batch_size):
+    """One epoch of mini-batch SGD for y = a * x + b with squared loss."""
+    a, b = params
+    for start in range(0, len(data), batch_size):
+        batch = data[start:start + batch_size]
+        errs = [a * x + b - y for x, y in batch]
+        ga = sum(e * x for e, (x, y) in zip(errs, batch)) / len(batch)
+        gb = sum(errs) / len(batch)
+        a -= lr * ga
+        b -= lr * gb
+    return [a, b]
+```
+hint: Loop over batch start indices with `range(0, len(data), batch_size)`; for each batch compute the errors with the current `a` and `b`, average $e\,x$ and $e$, then update.
+solution: The gradient of $\tfrac12(ax + b - y)^2$ is $(e\,x, e)$ with $e = ax + b - y$, and a batch averages it over its own examples, dividing by the actual batch length so that a smaller last batch is still averaged correctly. The third test, with batch size 3, has a last batch of one example. Because the updates are sequential, the second batch sees the parameters after the first update.
+
+@quiz text
+prompt: What does this program print?
+```python
+w = 0.0
+for a in [4, 2, 6]:
+    w = w - 0.5 * (w - a)
+print(w)
+```
+answer: 4.0
+check: run("w = 0.0\nfor a in [4, 2, 6]:\n    w = w - 0.5 * (w - a)\nprint(w)")
+hint: Each step moves $w$ halfway toward the current value of `a`.
+solution: Step 1 moves from 0 halfway to 4, giving 2.0. Step 2 moves halfway to 2, so it stays at 2.0. Step 3 moves halfway to 6, giving 4.0.
+
+@quiz num
+prompt: A training set has $n = 1000$ examples and is processed in mini-batches of $B = 64$ examples (the last batch of each epoch is smaller). How many parameter updates happen in $5$ epochs?
+answer: 80
+check: 5 * ceil(1000 / 64)
+hint: One epoch takes $\lceil n/B\rceil$ updates, because the last partial batch still triggers an update.
+solution: Since $1000/64 = 15.625$, one epoch takes $16$ updates (15 full batches and one batch of 40). Five epochs take $5 \times 16 = 80$ updates.
+
+@quiz self
+prompt: You train a model with SGD and a constant learning rate. The training loss falls quickly, then stays at a noisy plateau well above what you know is achievable. Explain the cause, and give two different changes that would lower the plateau, with the cost of each.
+hint: Think about the long-run variance $\eta\sigma^2/(B(2-\eta))$ and what each symbol represents.
+solution: With a constant step size, SGD does not converge to the minimizer but to a neighborhood whose size grows with the step size $\eta$ and the gradient noise $\sigma^2/B$: the stochastic gradient does not vanish at the minimizer, so each step keeps kicking the iterates. One remedy is to decay the learning rate (for example a schedule like $1/k$, which meets the Robbins–Monro conditions): this lowers the plateau at the cost of slower progress later and an extra schedule to tune. Another remedy is a larger batch size, which divides the noise variance by $B$ at the cost of $B$ times more gradient evaluations per update. Averaging the iterates is a third option that reduces the fluctuation without changing the step.
+rubric: Attributes the plateau to gradient noise with a constant step size, not to a bug or to convexity.
+rubric: Names two valid remedies (smaller or decaying step, larger batch, iterate averaging) and links each to the noise formula.
+rubric: States a concrete cost for each remedy.

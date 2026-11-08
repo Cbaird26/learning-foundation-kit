@@ -1,0 +1,263 @@
+@lesson
+title: Least squares with the normal equations and QR
+summary: Fit a linear model by least squares using the normal equations and using a QR factorization built with Gram–Schmidt, and explain why QR is the safer method.
+objective: Derive the normal equations and use them to fit a line by hand.
+objective: Build a QR factorization with modified Gram–Schmidt and solve a least-squares problem with back substitution.
+objective: Explain why forming $\mathbf{X}^\top\mathbf{X}$ squares the condition number.
+reading: Python for Data Analysis, 3rd edition: the section on linear algebra with NumPy (`numpy.linalg`, including `lstsq` and `qr`); also look up "linear least squares" and "QR decomposition" in a numerical linear algebra text.
+@article
+Fit a line to four points and you have solved a **least-squares problem**: there are more equations than unknowns, no exact solution, and we want the best compromise. This is linear regression, and it is the first model of machine learning that you can solve exactly. The two standard algorithms differ in how they treat rounding error.
+
+### The problem and the normal equations
+
+Let $\mathbf{X}$ be an $n \times d$ **design matrix** with one example per row ($n \ge d$, full column rank), and $\mathbf{y}$ the targets. We seek the weights $\mathbf{w}$ minimizing the sum of squared errors
+$$L(\mathbf{w}) = \lVert \mathbf{y} - \mathbf{X}\mathbf{w} \rVert_2^2 .$$
+Its gradient is $\nabla L = -2\mathbf{X}^\top(\mathbf{y} - \mathbf{X}\mathbf{w})$. Setting it to zero gives the **normal equations**
+$$\mathbf{X}^\top\mathbf{X}\,\mathbf{w} = \mathbf{X}^\top\mathbf{y}.$$
+They say that the residual $\mathbf{y} - \mathbf{X}\mathbf{w}$ is orthogonal to every column of $\mathbf{X}$. The matrix $\mathbf{X}^\top\mathbf{X}$ is $d \times d$, symmetric and (for full column rank) invertible, so we can solve the system with Gaussian elimination from Lesson 5. To fit a line $\hat{y} = w_0 + w_1 x$, the matrix $\mathbf{X}$ has a column of ones and a column of the $x$ values.
+
+```python
+def solve(A, b):
+    """Gaussian elimination with partial pivoting (Lesson 5)."""
+    n = len(A)
+    U = [[float(v) for v in row] for row in A]
+    c = [float(v) for v in b]
+    for k in range(n):
+        p = max(range(k, n), key=lambda r: abs(U[r][k]))
+        U[k], U[p] = U[p], U[k]
+        c[k], c[p] = c[p], c[k]
+        for i in range(k + 1, n):
+            m = U[i][k] / U[k][k]
+            for j in range(k, n):
+                U[i][j] -= m * U[k][j]
+            c[i] -= m * c[k]
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        x[i] = (c[i] - sum(U[i][j] * x[j] for j in range(i + 1, n))) / U[i][i]
+    return x
+
+def normal_equations(X, y):
+    n, d = len(X), len(X[0])
+    XtX = [[sum(X[i][a] * X[i][b] for i in range(n)) for b in range(d)]
+           for a in range(d)]
+    Xty = [sum(X[i][a] * y[i] for i in range(n)) for a in range(d)]
+    return solve(XtX, Xty)
+```
+
+### The cost of squaring
+
+The method is simple, but forming $\mathbf{X}^\top\mathbf{X}$ **squares the condition number**: in the 2-norm, $\kappa(\mathbf{X}^\top\mathbf{X}) = \kappa(\mathbf{X})^2$. With $\kappa(\mathbf{X}) = 10^{8}$ (nearly dependent columns), $\kappa(\mathbf{X}^\top\mathbf{X}) = 10^{16}$ and Lesson 6 says no digits survive. A classic example is $\mathbf{X} = \begin{bmatrix} 1 & 1 \\ \varepsilon & 0 \\ 0 & \varepsilon \end{bmatrix}$ with $\varepsilon = 10^{-8}$: the exact $\mathbf{X}^\top\mathbf{X}$ has diagonal entries $1 + 10^{-16}$, which round to 1 in double precision, so the computed matrix is $\begin{bmatrix} 1 & 1 \\ 1 & 1 \end{bmatrix}$ and is exactly singular.
+
+### QR factorization
+
+A **QR factorization** writes $\mathbf{X} = \mathbf{Q}\mathbf{R}$ with $\mathbf{Q}$ an $n \times d$ matrix with **orthonormal columns** ($\mathbf{Q}^\top\mathbf{Q} = \mathbf{I}$) and $\mathbf{R}$ a $d \times d$ upper triangular matrix with positive diagonal. Then $\mathbf{y}$ splits into a part $\mathbf{Q}\mathbf{Q}^\top\mathbf{y}$ in the column space of $\mathbf{X}$ and a perpendicular remainder that no choice of $\mathbf{w}$ can change. Since $\mathbf{X}\mathbf{w} = \mathbf{Q}(\mathbf{R}\mathbf{w})$ also lies in that column space,
+$$\lVert \mathbf{y} - \mathbf{X}\mathbf{w} \rVert^2 = \lVert \mathbf{Q}^\top\mathbf{y} - \mathbf{R}\mathbf{w} \rVert^2 + \text{(a constant)},$$
+and the minimum is reached by solving the triangular system $\mathbf{R}\mathbf{w} = \mathbf{Q}^\top\mathbf{y}$ by back substitution. The condition number now involved is $\kappa(\mathbf{R}) = \kappa(\mathbf{X})$, not its square.
+
+**Gram–Schmidt** builds $\mathbf{Q}$ and $\mathbf{R}$ column by column. In the modified version, for column $j$: start with $\mathbf{v} = \mathbf{x}_j$; for each earlier $\mathbf{q}_k$ set $r_{kj} = \mathbf{q}_k^\top \mathbf{v}$ and update $\mathbf{v} \leftarrow \mathbf{v} - r_{kj}\mathbf{q}_k$; then $r_{jj} = \lVert \mathbf{v} \rVert_2$ and $\mathbf{q}_j = \mathbf{v}/r_{jj}$. Updating $\mathbf{v}$ after each projection (rather than projecting the original column on all $\mathbf{q}_k$ at once, as in the classical version) keeps the computed $\mathbf{q}$'s much closer to orthogonal. For nearly dependent columns even modified Gram–Schmidt can lose orthogonality; library routines use **Householder reflections**, which keep it to machine precision, and this is what `np.linalg.qr` does.
+
+@example
+title: A line fit by the normal equations
+problem: Fit $\hat{y} = w_0 + w_1 x$ to the points $(0, 1), (1, 3), (2, 4), (3, 7)$ by least squares.
+step: The design matrix has rows $[1, 0], [1, 1], [1, 2], [1, 3]$. Then $\mathbf{X}^\top\mathbf{X} = \begin{bmatrix} 4 & 6 \\ 6 & 14 \end{bmatrix}$ and $\mathbf{X}^\top\mathbf{y} = [1 + 3 + 4 + 7,\; 0 + 3 + 8 + 21] = [15, 32]$.
+step: The determinant is $4 \cdot 14 - 6 \cdot 6 = 20$, so $w_0 = (14 \cdot 15 - 6 \cdot 32)/20 = 0.9$ and $w_1 = (4 \cdot 32 - 6 \cdot 15)/20 = 1.9$.
+step: Check orthogonality: the residuals are $1 - 0.9 = 0.1$, $3 - 2.8 = 0.2$, $4 - 4.7 = -0.7$ and $7 - 6.6 = 0.4$. They sum to 0, and $0\cdot0.1 + 1\cdot0.2 + 2\cdot(-0.7) + 3\cdot0.4 = 0$, so the residual is orthogonal to both columns.
+answer: $\hat{y} = 0.9 + 1.9x$.
+
+@example
+title: Least squares through QR
+problem: For $\mathbf{X}$ with columns $\mathbf{x}_1 = [2, 2, 1]$ and $\mathbf{x}_2 = [3, 0, 3]$ and $\mathbf{y} = [3, 3, 6]$, find $\mathbf{Q}$, $\mathbf{R}$ and the least-squares $\mathbf{w}$.
+step: First column: $r_{11} = \sqrt{4 + 4 + 1} = 3$ and $\mathbf{q}_1 = [2, 2, 1]/3$.
+step: Second column: $r_{12} = \mathbf{q}_1^\top \mathbf{x}_2 = (6 + 0 + 3)/3 = 3$, so $\mathbf{v} = \mathbf{x}_2 - 3\mathbf{q}_1 = [1, -2, 2]$, with $r_{22} = 3$ and $\mathbf{q}_2 = [1, -2, 2]/3$. Thus $\mathbf{R} = \begin{bmatrix} 3 & 3 \\ 0 & 3 \end{bmatrix}$.
+step: Project the target: $\mathbf{q}_1^\top \mathbf{y} = (6 + 6 + 6)/3 = 6$ and $\mathbf{q}_2^\top \mathbf{y} = (3 - 6 + 12)/3 = 3$.
+step: Back substitution on $\mathbf{R}\mathbf{w} = [6, 3]$: $w_2 = 3/3 = 1$ and $w_1 = (6 - 3 \cdot 1)/3 = 1$.
+step: Check with the normal equations: $\mathbf{X}^\top\mathbf{X} = \begin{bmatrix} 9 & 9 \\ 9 & 18 \end{bmatrix}$ and $\mathbf{X}^\top\mathbf{y} = [18, 27]$; the vector $\mathbf{w} = [1, 1]$ satisfies both equations.
+answer: $\mathbf{R} = \begin{bmatrix} 3 & 3 \\ 0 & 3 \end{bmatrix}$ and $\mathbf{w} = [1, 1]$.
+
+@mistakes
+- Solving least squares by computing $(\mathbf{X}^\top\mathbf{X})^{-1}$ explicitly: use a solve (or QR), which is cheaper and more accurate than the inverse.
+- Forgetting that $\mathbf{X}^\top\mathbf{X}$ squares the condition number, so the normal equations can fail on data where QR succeeds.
+- Using classical Gram–Schmidt on nearly dependent columns: the computed $\mathbf{Q}$ stops being orthogonal; update the vector after each projection, or use Householder reflections.
+- Leaving out the column of ones when the model has an intercept.
+
+@practice num
+prompt: A model has the design matrix $\mathbf{X}$ with rows $[1, 1], [1, 2], [1, 4]$ and targets $\mathbf{y} = [2, 3, 7]$. What is the second entry of $\mathbf{X}^\top\mathbf{y}$?
+answer: 36
+check: sum(r[1] * t for r, t in zip([[1, 1], [1, 2], [1, 4]], [2, 3, 7]))
+hint: The second entry is the dot product of the second column of $\mathbf{X}$ with $\mathbf{y}$.
+solution: The second column is $[1, 2, 4]$, so the entry is $1\cdot2 + 2\cdot3 + 4\cdot7 = 2 + 6 + 28 = 36$.
+
+@practice num
+prompt: Gram–Schmidt is applied to the columns $\mathbf{x}_1 = [3, 4, 0]$ and $\mathbf{x}_2 = [3, 4, 5]$. What is the entry $r_{22}$ of $\mathbf{R}$?
+answer: 5
+check: norm([3 - 5 * 0.6, 4 - 5 * 0.8, 5])
+hint: Find $\mathbf{q}_1 = \mathbf{x}_1/\lVert\mathbf{x}_1\rVert$ and $r_{12} = \mathbf{q}_1^\top\mathbf{x}_2$, subtract the projection from $\mathbf{x}_2$, and take the norm of what is left.
+solution: $r_{11} = 5$ and $\mathbf{q}_1 = [0.6, 0.8, 0]$, so $r_{12} = 1.8 + 3.2 = 5$. Then $\mathbf{x}_2 - 5\mathbf{q}_1 = [0, 0, 5]$, whose norm is $r_{22} = 5$.
+
+@practice mc
+prompt: Why do numerical analysts usually prefer solving a least-squares problem through a QR factorization of $\mathbf{X}$ over solving the normal equations?
+choice*: Forming $\mathbf{X}^\top\mathbf{X}$ squares the condition number, so the normal equations can lose twice as many digits as QR.
+choice: The normal equations give a different minimizer than QR, one that fits the data less well.
+choice: QR needs fewer than $n d$ numbers of storage, while the normal equations need all of $\mathbf{X}$.
+choice: The normal equations only apply to models with a single input feature.
+hint: Compare the condition numbers of the matrices that the two methods ask you to solve with.
+solution: In exact arithmetic both methods give the same minimizer. The difference is numerical: $\kappa(\mathbf{X}^\top\mathbf{X}) = \kappa(\mathbf{X})^2$ while QR works with $\kappa(\mathbf{R}) = \kappa(\mathbf{X})$. The normal equations apply to any number of features, and QR does not store less data.
+
+@practice code
+prompt: Write `gram_schmidt_qr(X)` for an $n \times d$ matrix `X` (list of rows, $n \ge d$, linearly independent columns) that returns `(Q, R)` computed by modified Gram–Schmidt: `Q` is an $n \times d$ list of rows with orthonormal columns, `R` is a $d \times d$ upper triangular list of rows with positive diagonal, and `Q R` equals `X`. Update the working vector after each projection.
+starter:
+```python
+import math
+
+def gram_schmidt_qr(X):
+    pass
+```
+tests:
+```python
+def check(X):
+    n, d = len(X), len(X[0])
+    Q, R = gram_schmidt_qr(X)
+    assert len(Q) == n and len(Q[0]) == d and len(R) == d
+    for a in range(d):
+        for b in range(d):
+            g = sum(Q[i][a] * Q[i][b] for i in range(n))
+            assert abs(g - (1.0 if a == b else 0.0)) < 1e-9
+            if a > b:
+                assert abs(R[a][b]) < 1e-12
+    for i in range(n):
+        for j in range(d):
+            assert abs(sum(Q[i][k] * R[k][j] for k in range(d)) - X[i][j]) < 1e-9
+    assert all(R[j][j] > 0 for j in range(d))
+
+check([[1, 1], [1, 2], [1, 4]])
+check([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
+Q, R = gram_schmidt_qr([[0, 2], [3, 0], [4, 0]])
+assert abs(R[0][0] - 5.0) < 1e-9 and abs(R[1][1] - 2.0) < 1e-9 and abs(R[0][1]) < 1e-9
+assert abs(abs(Q[2][0]) - 0.8) < 1e-9
+```
+model:
+```python
+import math
+
+def gram_schmidt_qr(X):
+    """QR factorization of X by modified Gram-Schmidt."""
+    n, d = len(X), len(X[0])
+    cols = [[X[i][j] for i in range(n)] for j in range(d)]
+    q = []
+    R = [[0.0] * d for _ in range(d)]
+    for j in range(d):
+        v = cols[j][:]
+        for k in range(j):
+            R[k][j] = sum(a * b for a, b in zip(q[k], v))
+            v = [a - R[k][j] * b for a, b in zip(v, q[k])]
+        R[j][j] = math.sqrt(sum(a * a for a in v))
+        q.append([a / R[j][j] for a in v])
+    Q = [[q[j][i] for j in range(d)] for i in range(n)]
+    return Q, R
+```
+hint: Work with the columns as lists. For column `j`, subtract the projection on each earlier `q[k]` one at a time, recording `R[k][j]`; the length of what is left is `R[j][j]`.
+solution: Each column is orthogonalized against the earlier ones, and the coefficients recorded in `R` are exactly what is needed to rebuild the column from the `q`'s, so $\mathbf{Q}\mathbf{R} = \mathbf{X}$. The tests check orthonormality, triangularity, reconstruction and a case with known answer.
+
+@practice code
+prompt: Write `qr_least_squares(X, y)` that returns the least-squares weights (a list of `d` floats) for an $n \times d$ matrix `X` with independent columns, by factoring `X = Q R` with Gram–Schmidt, forming `Q^T y`, and solving `R w = Q^T y` by back substitution. Do not form `X^T X`.
+starter:
+```python
+import math
+
+def qr_least_squares(X, y):
+    pass
+```
+tests:
+```python
+w = qr_least_squares([[1, -1], [1, 0], [1, 1]], [1, 2, 4])
+assert abs(w[0] - 7 / 3) < 1e-9 and abs(w[1] - 1.5) < 1e-9
+w = qr_least_squares([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], [1, 2, 3, 6.5])
+assert all(abs(a - b) < 1e-9 for a, b in zip(w, [1.125, 2.125, 3.125]))
+w = qr_least_squares([[2.0], [1.0]], [4.0, 2.0])
+assert abs(w[0] - 2.0) < 1e-12
+X = [[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]]
+w = qr_least_squares(X, [3, 5, 7, 9, 11])
+assert abs(w[0] - 3.0) < 1e-9 and abs(w[1] - 2.0) < 1e-9
+```
+model:
+```python
+import math
+
+def qr_least_squares(X, y):
+    """Least-squares weights via modified Gram-Schmidt QR."""
+    n, d = len(X), len(X[0])
+    q = []
+    R = [[0.0] * d for _ in range(d)]
+    for j in range(d):
+        v = [X[i][j] for i in range(n)]
+        for k in range(j):
+            R[k][j] = sum(a * b for a, b in zip(q[k], v))
+            v = [a - R[k][j] * b for a, b in zip(v, q[k])]
+        R[j][j] = math.sqrt(sum(a * a for a in v))
+        q.append([a / R[j][j] for a in v])
+    qty = [sum(a * b for a, b in zip(q[j], y)) for j in range(d)]
+    w = [0.0] * d
+    for i in range(d - 1, -1, -1):
+        s = qty[i] - sum(R[i][j] * w[j] for j in range(i + 1, d))
+        w[i] = s / R[i][i]
+    return w
+```
+hint: After the factorization, the entry `j` of `Q^T y` is the dot product of `q[j]` with `y`; then back-substitute on `R`.
+solution: Minimizing $\lVert \mathbf{y} - \mathbf{X}\mathbf{w}\rVert$ reduces to the triangular system $\mathbf{R}\mathbf{w} = \mathbf{Q}^\top\mathbf{y}$, so the answer needs one factorization, $d$ dot products and one back substitution. The last test is an exact line, so the residual is zero and the weights are $[3, 2]$.
+
+@quiz code
+prompt: Write `fit_line_normal(xs, ys)` that fits $\hat{y} = w_0 + w_1 x$ by solving the normal equations in closed form and returns `(w0, w1)`. With `n = len(xs)`, $S_x = \sum x$, $S_y = \sum y$, $S_{xx} = \sum x^2$, $S_{xy} = \sum xy$ and $D = n S_{xx} - S_x^2$, the solution is $w_1 = (n S_{xy} - S_x S_y)/D$ and $w_0 = (S_y - w_1 S_x)/n$. Raise `ValueError` if `D` is 0 (all `xs` equal).
+starter:
+```python
+def fit_line_normal(xs, ys):
+    pass
+```
+tests:
+```python
+w0, w1 = fit_line_normal([1, 2, 3], [2, 2, 5])
+assert abs(w0 - 0.0) < 1e-12 and abs(w1 - 1.5) < 1e-12
+w0, w1 = fit_line_normal([0, 2, 4, 6], [1, 2, 3, 4])
+assert abs(w0 - 1.0) < 1e-12 and abs(w1 - 0.5) < 1e-12
+w0, w1 = fit_line_normal([-1, 1], [5, 1])
+assert abs(w0 - 3.0) < 1e-12 and abs(w1 + 2.0) < 1e-12
+assert raises(ValueError, fit_line_normal, [2, 2, 2], [1, 2, 3])
+```
+model:
+```python
+def fit_line_normal(xs, ys):
+    """Least-squares line y = w0 + w1 x from the normal equations."""
+    n = len(xs)
+    sx = sum(xs)
+    sy = sum(ys)
+    sxx = sum(x * x for x in xs)
+    sxy = sum(x * y for x, y in zip(xs, ys))
+    d = n * sxx - sx * sx
+    if d == 0:
+        raise ValueError("all x values are equal")
+    w1 = (n * sxy - sx * sy) / d
+    w0 = (sy - w1 * sx) / n
+    return w0, w1
+```
+hint: Compute the four sums, then $D$, then $w_1$, then $w_0$ from the formulas in the prompt.
+solution: The closed form is Cramer's rule applied to $\begin{bmatrix} n & S_x \\ S_x & S_{xx}\end{bmatrix} \mathbf{w} = [S_y, S_{xy}]$. The last test has no spread in $x$, so the line is not determined and $D = 0$.
+
+@quiz text
+prompt: What does this program print?
+```python
+X = [[1, 2], [1, 3], [1, 5]]
+XtX = [[sum(r[a] * r[b] for r in X) for b in range(2)] for a in range(2)]
+print(XtX)
+```
+answer: [[3, 10], [10, 38]]
+check: run("X = [[1, 2], [1, 3], [1, 5]]\nXtX = [[sum(r[a] * r[b] for r in X) for b in range(2)] for a in range(2)]\nprint(XtX)")
+hint: Entry $(a, b)$ is the dot product of column $a$ with column $b$; the columns are $[1, 1, 1]$ and $[2, 3, 5]$.
+solution: The entries are $1+1+1 = 3$, $2+3+5 = 10$ (twice) and $4 + 9 + 25 = 38$, so the matrix is `[[3, 10], [10, 38]]`.
+
+@quiz ms
+prompt: Let $\hat{\mathbf{w}}$ be the least-squares solution for a full-column-rank matrix $\mathbf{X}$. Which of these statements are true? Select all that apply.
+choice*: The residual $\mathbf{y} - \mathbf{X}\hat{\mathbf{w}}$ is orthogonal to every column of $\mathbf{X}$.
+choice*: In exact arithmetic, the normal equations and the QR method give the same $\hat{\mathbf{w}}$.
+choice*: For the factorization $\mathbf{X} = \mathbf{Q}\mathbf{R}$ with orthonormal columns in $\mathbf{Q}$, $\mathbf{Q}^\top\mathbf{Q} = \mathbf{I}$.
+choice: $\kappa(\mathbf{X}^\top\mathbf{X}) = \sqrt{\kappa(\mathbf{X})}$ in the 2-norm.
+hint: Recall what setting the gradient to zero says, and how the condition number of $\mathbf{X}^\top\mathbf{X}$ compares with that of $\mathbf{X}$.
+solution: Setting the gradient to zero says exactly that $\mathbf{X}^\top(\mathbf{y} - \mathbf{X}\hat{\mathbf{w}}) = \mathbf{0}$. Both methods solve the same minimization, so in exact arithmetic their answers agree, and $\mathbf{Q}^\top\mathbf{Q} = \mathbf{I}$ is what orthonormal columns means. The condition number is squared, not square-rooted, by forming $\mathbf{X}^\top\mathbf{X}$.

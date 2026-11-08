@@ -1,0 +1,271 @@
+@lesson
+title: Random numbers, seeds and sampling
+summary: Explain how pseudorandom generators and seeds work, build a simple generator, and use uniform random numbers to sample from discrete and continuous distributions and to shuffle data reproducibly.
+objective: Trace a linear congruential generator and explain seeds, periods and reproducibility.
+objective: Sample from a discrete distribution by cumulative sums and from a continuous one by inverse transform.
+objective: Shuffle a list correctly with the Fisher–Yates algorithm and test randomized code by its properties.
+reading: Python for Data Analysis, 3rd edition: the NumPy section on pseudorandom number generation (`numpy.random` and `default_rng`); also read the documentation of Python's `random` module.
+@article
+Training a neural network starts from random weights, splits data at random, and shuffles mini-batches. Yet a good experiment must be **reproducible**: someone else running your code should get the same numbers. These fit together because a computer never produces truly random numbers. It produces **pseudorandom** ones: a deterministic procedure whose output looks random.
+
+### Generators and seeds
+
+A **pseudorandom number generator** holds a state, updates it by a fixed rule, and outputs a function of the state. The initial state is set by a **seed**: the same seed gives the same sequence, every time. The simplest example is the **linear congruential generator** (LCG),
+$$x_{k+1} = (a x_k + c) \bmod m, \qquad u_k = x_k / m \in [0, 1).$$
+With $a = 5$, $c = 1$, $m = 8$ and seed $x_0 = 1$ the states are $6, 7, 4, 5, 2, 3, 0, 1, 6, \ldots$ and the outputs $u$ are $0.75, 0.875, 0.5, 0.625, 0.25, 0.375, 0, 0.125$. The sequence **repeats** after at most $m$ steps; its length is the **period**. The Hull–Dobell theorem gives conditions for the full period $m$: $c$ and $m$ share no factor, $a - 1$ is divisible by every prime factor of $m$, and by 4 if $m$ is. Here $m = 8$, $a - 1 = 4$ and $c = 1$ satisfy them, so all eight values appear.
+
+Simple LCGs have defects (for $m = 2^k$ the low-order bits cycle with a short period, and consecutive outputs are correlated), so libraries use better generators. Python's `random` module uses the Mersenne Twister, with a period of $2^{19937} - 1$. Practice for reproducible work:
+
+- Create a generator object with a seed, `rng = random.Random(42)`, and **pass it to functions** that need randomness, rather than relying on hidden global state. Calling `rng.random()` advances only that generator.
+- Seed once at the start, not repeatedly inside a loop (reseeding with the same seed repeats the same numbers).
+- Record the seed with the results. With NumPy the equivalent is `np.random.default_rng(42)`; deep-learning libraries have their own seeds, and all must be set.
+
+### From uniform numbers to other distributions
+
+Everything starts from $U \sim \mathrm{Uniform}[0, 1)$.
+
+**Discrete distributions.** For probabilities $p_0, \ldots, p_{K-1}$, form the cumulative sums $P_j = p_0 + \cdots + p_j$ and return the first index $j$ with $u < P_j$. Index $j$ is chosen exactly when $u$ lands in an interval of length $p_j$. Guard the last index in code, because the sums may total $0.9999999$ instead of 1.
+
+**Inverse transform sampling.** If $F$ is the cumulative distribution function of a continuous variable and $F^{-1}$ its inverse, then $F^{-1}(U)$ has distribution $F$. For the exponential distribution with rate $\lambda$, $F(x) = 1 - e^{-\lambda x}$, so $x = -\ln(1 - u)/\lambda$. With $\lambda = 0.5$ and $u = 0.9$ this gives $x = -\ln(0.1)/0.5 \approx 4.605$.
+
+**Normal variables.** The **Box–Muller transform** turns two independent uniforms into two independent standard normals: $z_1 = \sqrt{-2\ln u_1}\cos(2\pi u_2)$ and $z_2 = \sqrt{-2\ln u_1}\sin(2\pi u_2)$ (use $1 - u_1$ in place of $u_1$ to avoid $\ln 0$).
+
+### Shuffling and splitting
+
+To shuffle a list uniformly, use **Fisher–Yates**: for $i$ from $n-1$ down to 1, pick $j$ uniformly from $0, \ldots, i$ and swap items $i$ and $j$. Every one of the $n!$ orders then has probability $1/n!$. The tempting variant that picks $j$ from the whole list at every step is biased: it produces $n^n$ equally likely sequences of swaps, and for $n \ge 3$ the number $n^n$ is not divisible by $n!$ (the factor $n - 1$ divides $n!$ but not $n^n$), so some orders must be likelier than others. A train/test split is a shuffle followed by cutting the list.
+
+```python
+import random
+
+def fisher_yates(items, rng):
+    out = list(items)
+    for i in range(len(out) - 1, 0, -1):
+        j = rng.randrange(i + 1)
+        out[i], out[j] = out[j], out[i]
+    return out
+
+rng = random.Random(7)
+a = fisher_yates(range(6), rng)
+b = fisher_yates(range(6), random.Random(7))
+print(sorted(a) == list(range(6)), a == b)   # True True
+```
+
+### Testing random code
+
+Tests must not depend on particular random values, which differ between libraries and versions. Check **properties**: the output is a permutation of the input, values lie in range, the same seed gives the same result, and frequencies over many draws are near the truth within several standard errors (Lesson 11).
+
+@example
+title: Sampling a discrete distribution
+problem: Categories $0, 1, 2$ have probabilities $0.5, 0.3, 0.2$. Which category is returned for the uniform draws $u = 0.62$ and $u = 0.95$?
+step: The cumulative sums are $P_0 = 0.5$, $P_1 = 0.8$, $P_2 = 1.0$, which split $[0, 1)$ into $[0, 0.5)$, $[0.5, 0.8)$ and $[0.8, 1.0)$.
+step: For $u = 0.62$: it is not below $0.5$ but is below $0.8$, so the answer is category 1.
+step: For $u = 0.95$: it is not below $0.8$ and is below $1.0$, so the answer is category 2.
+answer: $u = 0.62$ gives category 1 and $u = 0.95$ gives category 2.
+
+@example
+title: Inverse transform for a simple density
+problem: A variable $X$ on $[0, 1]$ has cumulative distribution function $F(x) = x^2$. Give a rule that turns a uniform $u$ into a draw of $X$, and evaluate it at $u = 0.36$.
+step: Solve $u = F(x) = x^2$ for $x$: $x = F^{-1}(u) = \sqrt{u}$, which lies in $[0, 1]$ for every $u$.
+step: At $u = 0.36$ the draw is $\sqrt{0.36} = 0.6$.
+step: Check: $P(X \le 0.6) = F(0.6) = 0.36$, which is the probability that $U \le 0.36$, as it must be.
+answer: $X = \sqrt{U}$, which gives $0.6$ at $u = 0.36$.
+
+@mistakes
+- Reseeding inside a loop: every iteration then produces the same "random" numbers.
+- Using a global random state in library code: a hidden call elsewhere changes your results; pass a generator explicitly.
+- Shuffling by swapping each item with a random position anywhere in the list: this is biased; Fisher–Yates picks only among positions up to the current one.
+- Writing tests that assert specific random values: they break when the generator or the library version changes; test properties instead.
+
+@practice num
+prompt: A linear congruential generator is defined by $x_{k+1} = (5 x_k + 3) \bmod 16$ with seed $x_0 = 7$. What is $x_3$?
+answer: 8
+check: float(run("x = 7\nfor _ in range(3):\n    x = (5 * x + 3) % 16\nprint(x)"))
+hint: Compute step by step: $x_1 = 38 \bmod 16$, then $x_2$, then $x_3$.
+solution: $x_1 = 38 \bmod 16 = 6$, $x_2 = 33 \bmod 16 = 1$, and $x_3 = 8 \bmod 16 = 8$.
+
+@practice num
+prompt: Use inverse transform sampling for the exponential distribution with rate $\lambda = 2$, $x = -\ln(1 - u)/\lambda$. What is the draw for $u = 0.75$? Give your answer to three decimal places.
+answer: 0.693
+tol: 0.001
+check: -log(1 - 0.75) / 2
+hint: $1 - u = 0.25$; the logarithm of $0.25$ is $-\ln 4$.
+solution: $x = -\ln(0.25)/2 = \ln 4 / 2 = \ln 2 \approx 0.693$.
+
+@practice mc
+prompt: Why is it good practice to pass a seeded `random.Random` instance into a function that needs randomness, instead of having the function call the module-level `random` functions?
+choice*: The function's results are then reproducible from the seed and are not changed by other code that also uses the global generator.
+choice: The seeded generator produces truly random numbers, while the global one produces pseudorandom numbers.
+choice: A seeded generator produces numbers that are uniform, while the global generator is not uniform.
+choice: Seeding makes the generator faster, because it skips the initialization step.
+hint: Think about what happens to the sequence if another part of the program also draws numbers.
+solution: A dedicated generator has its own state, so the sequence depends only on its seed and on the calls made to it. Both kinds of generators are pseudorandom and uniform, and seeding does not affect speed.
+
+@practice code
+prompt: Write `lcg(seed, n, a=1664525, c=1013904223, m=2**32)` that returns a list of `n` floats from a linear congruential generator: start with `x = seed`; for each output, update `x = (a * x + c) % m` and append `x / m`. The seed itself is not output. Return `[]` for `n = 0`.
+starter:
+```python
+def lcg(seed, n, a=1664525, c=1013904223, m=2**32):
+    pass
+```
+tests:
+```python
+v = lcg(0, 3)
+assert abs(v[0] - 1013904223 / 2**32) < 1e-12
+assert len(v) == 3 and all(0.0 <= t < 1.0 for t in v)
+assert lcg(5, 4) == lcg(5, 4)
+assert lcg(5, 4) != lcg(6, 4)
+assert lcg(1, 0) == []
+assert lcg(1, 8, a=5, c=1, m=8) == [0.75, 0.875, 0.5, 0.625, 0.25, 0.375, 0.0, 0.125]
+w = lcg(123, 1000)
+assert abs(sum(w) / 1000 - 0.5) < 0.05
+assert lcg(1, 3)[1:] == lcg(1, 3)[1:]
+```
+model:
+```python
+def lcg(seed, n, a=1664525, c=1013904223, m=2**32):
+    """First n outputs, scaled to [0, 1), of a linear congruential generator."""
+    x = seed
+    out = []
+    for _ in range(n):
+        x = (a * x + c) % m
+        out.append(x / m)
+    return out
+```
+hint: Keep `x` as the state. Inside the loop update it first, then append `x / m`.
+solution: Each call updates the state with the congruence and scales it to the unit interval. Integer arithmetic is exact, so the outputs are reproducible in any Python, and the small test with $m = 8$ matches the hand trace $6, 7, 4, 5, 2, 3, 0, 1$ divided by 8.
+
+@practice code
+prompt: Write `sample_discrete(probs, rng)` that returns an index `j` chosen with probability `probs[j]`, where `probs` is a list of nonnegative floats that sum to 1 (up to rounding) and `rng` is a `random.Random` instance. Draw one `u = rng.random()`, accumulate the probabilities in order, and return the first `j` with `u < cumulative sum`. If rounding leaves no such `j`, return the last index.
+starter:
+```python
+def sample_discrete(probs, rng):
+    pass
+```
+tests:
+```python
+import random
+assert sample_discrete([0.0, 1.0, 0.0], random.Random(1)) == 1
+assert sample_discrete([1.0], random.Random(2)) == 0
+r1, r2 = random.Random(5), random.Random(5)
+assert [sample_discrete([0.3, 0.7], r1) for _ in range(20)] == [sample_discrete([0.3, 0.7], r2) for _ in range(20)]
+rng = random.Random(3)
+draws = [sample_discrete([0.2, 0.8], rng) for _ in range(2000)]
+assert abs(sum(draws) / 2000 - 0.8) < 0.05
+rng = random.Random(4)
+draws = [sample_discrete([0.1, 0.1, 0.8], rng) for _ in range(2000)]
+assert abs(draws.count(2) / 2000 - 0.8) < 0.05
+assert all(d in (0, 1, 2) for d in draws)
+assert sample_discrete([0.5, 0.5 - 1e-12], random.Random(9)) in (0, 1)
+```
+model:
+```python
+def sample_discrete(probs, rng):
+    """Draw an index with the given probabilities using cumulative sums."""
+    u = rng.random()
+    total = 0.0
+    for j, p in enumerate(probs):
+        total += p
+        if u < total:
+            return j
+    return len(probs) - 1
+```
+hint: Draw `u` once, then walk through the probabilities adding them up and stop at the first partial sum that exceeds `u`.
+solution: The cumulative sums cut $[0, 1)$ into intervals whose lengths are the probabilities, so index `j` is returned with probability `probs[j]`. The final `return` guards the case where rounding makes the total slightly below 1. The frequency tests allow several standard errors, so they pass for any good generator.
+
+@quiz code
+prompt: Write `shuffled(items, rng)` that returns a new list containing the elements of `items` in a uniformly random order using the Fisher–Yates algorithm: for `i` from `len - 1` down to 1, choose `j = rng.randrange(i + 1)` and swap positions `i` and `j`. Do not modify `items`.
+starter:
+```python
+def shuffled(items, rng):
+    pass
+```
+tests:
+```python
+import random
+data = [3, 1, 4, 1, 5, 9]
+out = shuffled(data, random.Random(1))
+assert sorted(out) == sorted(data) and data == [3, 1, 4, 1, 5, 9]
+assert shuffled([], random.Random(1)) == []
+assert shuffled([7], random.Random(1)) == [7]
+assert shuffled(list(range(8)), random.Random(11)) == shuffled(list(range(8)), random.Random(11))
+seen = set(tuple(shuffled([1, 2, 3, 4, 5], random.Random(s))) for s in range(30))
+assert len(seen) > 5
+rng = random.Random(2)
+firsts = [shuffled([0, 1, 2], rng)[0] for _ in range(3000)]
+assert all(abs(firsts.count(k) / 3000 - 1 / 3) < 0.05 for k in range(3))
+```
+model:
+```python
+def shuffled(items, rng):
+    """Fisher-Yates shuffle returning a new list."""
+    out = list(items)
+    for i in range(len(out) - 1, 0, -1):
+        j = rng.randrange(i + 1)
+        out[i], out[j] = out[j], out[i]
+    return out
+```
+hint: Copy the list first, then loop `i` downward and swap `out[i]` with `out[j]` where `j` is between 0 and `i` inclusive.
+solution: Choosing the partner only among positions $0, \ldots, i$ makes every permutation equally likely. The tests check that the output is a permutation, that the input is untouched, that the same seed repeats, and that each item is first about a third of the time.
+
+@quiz code
+prompt: Write `max_gradient_error(f, grad, dim, trials, seed)` that draws `trials` points whose `dim` coordinates are uniform in $[-1, 1]$ (use `rng = random.Random(seed)` and `rng.uniform(-1, 1)`), and for each point computes the relative error $\lVert\mathbf{g} - \tilde{\mathbf{g}}\rVert_2 / (\lVert\mathbf{g}\rVert_2 + \lVert\tilde{\mathbf{g}}\rVert_2)$ between `grad(x)` and the central-difference gradient of `f` with step `1e-5` (treat a zero denominator as error 0). Return the largest of these errors.
+starter:
+```python
+import math
+import random
+
+def max_gradient_error(f, grad, dim, trials, seed):
+    pass
+```
+tests:
+```python
+f = lambda v: v[0] ** 2 * v[1] + v[2] ** 3 + v[1] * v[2]
+good = lambda v: [2 * v[0] * v[1], v[0] ** 2 + v[2], 3 * v[2] ** 2 + v[1]]
+bad = lambda v: [2 * v[0] * v[1], v[0] ** 2 + v[2], 3 * v[2] ** 2]
+assert max_gradient_error(f, good, 3, 20, 0) < 1e-6
+assert max_gradient_error(f, bad, 3, 20, 0) > 1e-3
+assert max_gradient_error(f, good, 3, 20, 5) == max_gradient_error(f, good, 3, 20, 5)
+assert max_gradient_error(lambda v: 1.0, lambda v: [0.0], 1, 5, 1) == 0.0
+```
+model:
+```python
+import math
+import random
+
+def max_gradient_error(f, grad, dim, trials, seed):
+    """Largest relative gradient-check error over random points in [-1, 1]^dim."""
+    rng = random.Random(seed)
+    worst = 0.0
+    for _ in range(trials):
+        x = [rng.uniform(-1, 1) for _ in range(dim)]
+        g = grad(x)
+        num = []
+        for i in range(dim):
+            up = list(x)
+            down = list(x)
+            up[i] += 1e-5
+            down[i] -= 1e-5
+            num.append((f(up) - f(down)) / 2e-5)
+        diff = math.sqrt(sum((a - b) ** 2 for a, b in zip(g, num)))
+        denom = math.sqrt(sum(a * a for a in g)) + math.sqrt(sum(b * b for b in num))
+        err = diff / denom if denom > 0 else 0.0
+        worst = max(worst, err)
+    return worst
+```
+hint: Create the generator once, loop over trials, build each random point, and compute the central-difference gradient and the relative error as in the gradient-check lesson.
+solution: Checking at several random points makes it unlikely that a bug is hidden by a special point such as the origin. The wrong gradient omits a term in its last component, which produces a large relative error at almost every random point.
+
+@quiz text
+prompt: What does this program print?
+```python
+x = 2
+outputs = []
+for _ in range(4):
+    x = (3 * x + 1) % 10
+    outputs.append(x)
+print(outputs)
+```
+answer: [7, 2, 7, 2]
+check: run("x = 2\noutputs = []\nfor _ in range(4):\n    x = (3 * x + 1) % 10\n    outputs.append(x)\nprint(outputs)")
+hint: $3 \cdot 2 + 1 = 7$; then $3 \cdot 7 + 1 = 22$, and so on, each time reduced modulo 10.
+solution: The states are $7$, $22 \bmod 10 = 2$, then $7$ and $2$ again. The generator has period 2, a reminder that the quality of an LCG depends heavily on its constants.

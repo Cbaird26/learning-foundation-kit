@@ -1,0 +1,190 @@
+@lesson
+title: The bootstrap and confidence intervals for model performance
+summary: Report the uncertainty of a test-set metric with a normal-approximation interval and a percentile bootstrap interval, and implement the bootstrap from scratch.
+objective: Explain why a test-set accuracy is a random quantity and compute its standard error and a normal-approximation confidence interval.
+objective: Describe and implement the nonparametric bootstrap and the percentile interval.
+objective: State what the bootstrap interval does and does not capture, and extend it to paired comparisons of two models.
+reading: Information Theory, Inference, and Learning Algorithms (MacKay), the chapters on inference for statistics and on Monte Carlo simulation; for the bootstrap itself look up the nonparametric bootstrap and the percentile confidence interval in an introductory statistics text.
+
+@article
+A classifier gets 164 of 200 test examples right, an accuracy of $0.82$. A second test set of 200 fresh examples would not give exactly $0.82$ again. How much would it vary, and when we write "82%", how many of those digits mean anything?
+
+### The sampling distribution of a metric
+
+If each test example is an independent draw from the population the model will face, the number correct is $\text{Binomial}(n, a)$ with $a$ the true accuracy of the (fixed, already trained) model. The estimate $\hat a = k/n$ has standard error
+
+$$\operatorname{SE}(\hat a) = \sqrt{\frac{a(1-a)}{n}} \approx \sqrt{\frac{\hat a(1 - \hat a)}{n}}.$$
+
+Here $\sqrt{0.82 \times 0.18/200} \approx 0.0272$. A **normal-approximation 95% confidence interval** is $\hat a \pm 1.96\operatorname{SE}$, here $0.82 \pm 0.053 = [0.767, 0.873]$. It rests on the central limit theorem, so it is poor when $n$ is small or $\hat a$ is near 0 or 1. Most test sets leave more uncertainty than people expect: with $n = 200$ the plausible range spans more than 10 points of accuracy.
+
+### What a confidence interval means
+
+A 95% confidence interval is produced by a procedure that, over repeated samples, covers the true value in about 95% of repetitions. For one computed interval, the true value is either inside or not. Do not read it as "the probability that the true accuracy lies in $[0.767, 0.873]$ is 95%" (that is a credible interval and needs a prior, Lesson 5).
+
+### The bootstrap
+
+For many metrics (F1, AUC, a mean loss, a difference of two models) there is no simple formula for the standard error. The **bootstrap** (Efron, 1979) replaces the unknown population by the observed sample and simulates repeated sampling from it:
+
+1. Given the $n$ test examples (each with its per-example outcome), draw $n$ examples **with replacement**: a bootstrap sample.
+2. Recompute the metric on the bootstrap sample.
+3. Repeat $B$ times (commonly $B = 1000$ to $10{,}000$), giving $\hat\theta^\ast_1, \dots, \hat\theta^\ast_B$.
+
+The standard deviation of these replicates is the **bootstrap standard error**. The **percentile interval** takes the 2.5th and 97.5th percentiles of the replicates as a 95% interval: sort them and read the values at ranks $0.025B$ and $0.975B$.
+
+Because sampling is with replacement, each bootstrap sample contains about $1 - (1 - 1/n)^n \to 1 - 1/e \approx 63.2\%$ of the distinct examples, and some appear twice or more. For accuracy, the per-example outcome is 0 or 1, so a bootstrap sample is just $n$ draws from the list of 0s and 1s, and the bootstrap interval for 164 correct out of 200 is close to the normal interval above.
+
+### Conditions and limits
+
+The bootstrap assumes the examples are **independent and identically distributed** draws from the target population. It fails or needs modification when:
+
+- examples are clustered or correlated (many images from one patient, many sentences from one document): resample whole clusters instead of single examples;
+- the statistic depends on extremes (the maximum, a very high quantile), for which the bootstrap is inconsistent;
+- the sample is very small, where percentile intervals tend to be too narrow (refinements such as bias-corrected intervals exist).
+
+Equally important is what it does not cover. The interval above captures **test-set sampling variability for one fixed trained model**. It does not capture variability from random initialization or training-data selection (you need several training runs or a resampled training set), or from a shift between the test and deployment populations. Say which source of variation your interval reflects.
+
+### Comparing two models on the same test set
+
+To compare models $A$ and $B$ evaluated on the same examples, bootstrap the **paired** difference: in each replicate, draw one set of example indices and compute the metric for both models on those same examples, then take the difference. Resampling the pairs together preserves the correlation between the models' errors, which is why paired intervals for a difference are typically much narrower than combining two separate intervals. If the interval excludes 0 the data are inconsistent with equal performance at that level; the next lesson adds formal tests.
+
+### In code
+
+```python
+import random
+
+def bootstrap_means(values, B, seed):
+    rng = random.Random(seed)
+    n = len(values)
+    means = []
+    for _ in range(B):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    return sorted(means)
+
+correct = [1] * 164 + [0] * 36
+means = bootstrap_means(correct, 1000, 0)
+print(means[25], means[975])
+```
+
+The two printed values are the percentile interval endpoints, near $0.77$ and $0.87$; they change a little with the seed, which is itself Monte Carlo error that shrinks as $B$ grows.
+
+@example
+title: Normal and percentile intervals for accuracy
+problem: A classifier is correct on 164 of 200 test examples. Give the standard error, the normal-approximation 95% interval, and say how the percentile endpoints are chosen if $B = 1000$ bootstrap accuracies are sorted.
+step: The estimate is $\hat a = 164/200 = 0.82$.
+step: The standard error is $\sqrt{0.82 \times 0.18/200} = \sqrt{0.000738} \approx 0.0272$.
+step: The normal interval is $0.82 \pm 1.96(0.0272) = 0.82 \pm 0.0532$, which is $[0.767, 0.873]$.
+step: For the percentile interval with $B = 1000$, take the sorted replicates at rank $0.025 \times 1000 = 25$ and rank $0.975 \times 1000 = 975$. These are typically within about $0.005$ of the normal-interval endpoints for this large $n$ and moderate $\hat a$.
+answer: $\operatorname{SE} \approx 0.027$; the normal interval is $[0.767, 0.873]$; the percentile interval uses ranks $25$ and $975$.
+
+@example
+title: A paired bootstrap on eight examples
+problem: Models $A$ and $B$ are evaluated on the same 8 test examples. Correctness of $A$ is $[1,1,0,1,0,1,1,0]$ and of $B$ is $[1,0,0,1,1,1,1,1]$ (1 means correct). Compute the observed accuracy difference $B - A$ and the difference in three bootstrap resamples whose index lists (counting from 0) are $[1,1,2,3,5,6,6,0]$, $[4,7,7,4,0,2,3,5]$ and $[0,3,5,6,2,0,3,5]$.
+step: The per-example differences $d_i = B_i - A_i$ are $[0, -1, 0, 0, 1, 0, 0, 1]$.
+step: The observed accuracy difference is the mean of $d$: $1/8 = 0.125$ (accuracies $6/8$ and $5/8$).
+step: Resample 1 picks $d_1, d_1, d_2, d_3, d_5, d_6, d_6, d_0 = -1, -1, 0, 0, 0, 0, 0, 0$, with mean $-2/8 = -0.25$.
+step: Resample 2 picks $d_4, d_7, d_7, d_4, d_0, d_2, d_3, d_5 = 1, 1, 1, 1, 0, 0, 0, 0$, with mean $0.5$. Resample 3 picks only zeros, with mean $0$.
+step: The replicates $-0.25$, $0.5$ and $0$ straddle 0 widely: with only 8 examples (and only 3 informative ones) a bootstrap interval for the difference would easily include 0.
+answer: Observed difference $0.125$; resample differences $-0.25$, $0.5$ and $0$.
+
+@mistakes
+- Resampling without replacement: that returns the original sample every time and gives zero variability; the bootstrap draws with replacement.
+- Bootstrapping the two models' scores separately when they were evaluated on the same examples: use the same resampled indices for both (paired), which preserves the correlation of their errors.
+- Treating the interval as covering all sources of uncertainty: it reflects the sampling of test examples, not retraining randomness or distribution shift.
+- Ignoring dependence between examples: resample clusters (patients, documents, sessions), not individual rows.
+
+@practice num
+prompt: A model scores an accuracy of $0.9$ on $n = 100$ independent test examples. What is the standard error of the accuracy estimate, $\sqrt{\hat a(1 - \hat a)/n}$?
+answer: 0.03
+tol: 0.0005
+check: (0.9 * 0.1 / 100) ** 0.5
+hint: Compute $\hat a(1 - \hat a)/n$ first, then take the square root.
+solution: $0.9 \times 0.1/100 = 0.0009$, and $\sqrt{0.0009} = 0.03$.
+
+@practice num
+prompt: A bootstrap sample of size $n = 5$ is drawn with replacement from 5 examples. What is the probability that a particular example does not appear in the bootstrap sample at all? Give five decimal places.
+answer: 0.32768
+tol: 0.00001
+check: (1 - 1 / 5) ** 5
+hint: Each of the 5 draws misses the example with probability $1 - 1/5$, independently.
+solution: $(4/5)^5 = 0.32768$. As $n \to \infty$ this tends to $1/e \approx 0.368$.
+
+@practice tuple
+prompt: You have $B = 1000$ bootstrap accuracies sorted from smallest to largest. For a 95% percentile interval, the lower endpoint is the replicate at rank $0.025B$ and the upper endpoint is the replicate at rank $0.975B$ (counting ranks from 1). Give the two ranks as a tuple (lower, upper).
+answer: (25, 975)
+check: (round(0.025 * 1000), round(0.975 * 1000))
+hint: Multiply $B$ by $0.025$ and by $0.975$.
+solution: $0.025 \times 1000 = 25$ and $0.975 \times 1000 = 975$, so the interval runs from the 25th to the 975th smallest replicate, leaving 2.5% in each tail.
+
+@practice mc
+prompt: A bootstrap confidence interval is computed by resampling a fixed test set of 500 examples for one trained model. Which source of variability does this interval NOT capture?
+choice*: Variability from random initialization and training, which would give a different trained model on another run.
+choice: Variability from which examples happened to land in the test set.
+choice: The binomial randomness of the number of correct predictions.
+choice: Variability in the accuracy estimate due to the finite size of the test set.
+hint: The bootstrap resamples test examples; the trained model stays fixed in every replicate.
+solution: Each replicate re-evaluates the same trained model on resampled test examples, so the interval reflects test-set sampling error only. Training randomness would need repeated training runs, or resampling the training data too, and the other three choices all describe test-set sampling.
+
+@practice code
+prompt: Write `bootstrap_ci(correct, B, seed)` where `correct` is a nonempty list of 0/1 outcomes (1 = correct). Create `rng = random.Random(seed)`. For each of `B` replicates draw `n = len(correct)` elements with replacement using `correct[rng.randrange(n)]`, and record the mean of the replicate. Sort the `B` means and return the tuple `(lo, hi)` = `(means[int(0.025 * B)], means[int(0.975 * B)])`. Import `random` yourself.
+starter:
+```python
+import random
+
+def bootstrap_ci(correct, B, seed):
+    return (0.0, 1.0)
+```
+tests:
+```python
+assert bootstrap_ci([1] * 10, 100, 0) == (1.0, 1.0)
+assert bootstrap_ci([0] * 10, 100, 0) == (0.0, 0.0)
+data = [1] * 30 + [0] * 30
+lo, hi = bootstrap_ci(data, 200, 1)
+assert lo <= 0.5 <= hi
+assert 0.25 < lo < 0.5 and 0.5 < hi < 0.75
+assert bootstrap_ci(data, 200, 1) == (lo, hi)
+assert bootstrap_ci(data, 200, 2) != (lo, hi)
+```
+model:
+```python
+import random
+
+def bootstrap_ci(correct, B, seed):
+    """95% percentile bootstrap interval for the mean of 0/1 outcomes."""
+    rng = random.Random(seed)
+    n = len(correct)
+    means = []
+    for _ in range(B):
+        sample = [correct[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    means.sort()
+    return means[int(0.025 * B)], means[int(0.975 * B)]
+```
+hint: Build a list of replicate means, sort it, and index it at `int(0.025 * B)` and `int(0.975 * B)`.
+solution: Each replicate resamples the outcomes with replacement and averages them; the percentile interval reads off the sorted means. The all-correct and all-wrong tests check that a constant sample gives a zero-width interval, and the last tests check reproducibility and that different seeds give different resamples.
+
+@quiz num
+prompt: A model is correct on 300 of 400 test examples. What is the half-width of the normal-approximation 95% confidence interval, $1.96\sqrt{\hat a(1 - \hat a)/n}$? Give three decimal places.
+answer: 0.042
+tol: 0.001
+check: 1.96 * (0.75 * 0.25 / 400) ** 0.5
+hint: The estimate is $\hat a = 0.75$; compute its standard error first.
+solution: $\operatorname{SE} = \sqrt{0.75 \times 0.25/400} = \sqrt{0.00046875} \approx 0.02165$, and $1.96 \times 0.02165 \approx 0.0424$.
+
+@quiz ms
+prompt: Which statements about the bootstrap are true? Select all that apply.
+choice*: The bootstrap draws samples with replacement from the observed data.
+choice*: For a paired comparison of two models on one test set, the same resampled examples should be used for both models.
+choice*: If the test examples come in correlated clusters (for example, several per patient), resampling should be done by cluster.
+choice: A 95% bootstrap interval contains the true metric with probability 95% for the particular data set observed.
+choice: The bootstrap on a fixed test set also measures variability due to retraining the model with different seeds.
+hint: Recall what is resampled in each replicate, and what a confidence level refers to.
+solution: Resampling with replacement is the core of the method; pairing preserves the correlation between the models' errors; and clustered data violate independence, so clusters are the resampling unit. A confidence level describes the long-run coverage of the procedure, not the probability for one computed interval, and the bootstrap over test examples holds the trained model fixed.
+
+@quiz self
+prompt: You have two classifiers, $A$ and $B$, evaluated on the same 1000 test examples, and you want an interval for the difference in accuracy. Describe a paired bootstrap procedure, say what you would report, and explain why it can be much narrower than combining two separate intervals.
+hint: Think about the per-example correctness vectors and how many examples both models get right or wrong together.
+solution: Record for each test example whether $A$ and $B$ are correct. In each of $B_0 = 10{,}000$ replicates, draw 1000 indices with replacement, compute the accuracy of $A$ and of $B$ on those same indices, and store the difference. Sort the differences and report the observed difference with the 2.5th and 97.5th percentiles, noting that the interval reflects test-set sampling for these two fixed models. Examples that both models get right (or both wrong) contribute identically to both accuracies in every replicate, so they cancel in the difference; only the examples where the models disagree create variability. Two separate intervals ignore this positive correlation between the models' errors and add their variances, so the combined interval is wider than the paired one when the errors are correlated.
+rubric: Uses the same resampled indices for both models in each replicate and computes the difference.
+rubric: Reports the observed difference with percentile endpoints and states what source of variability the interval covers.
+rubric: Explains the narrowing through the correlated errors: agreeing examples cancel and only disagreements matter.

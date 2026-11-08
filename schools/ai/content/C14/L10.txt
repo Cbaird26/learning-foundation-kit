@@ -1,0 +1,204 @@
+@lesson
+title: Sampling bias, data leakage and train-test contamination
+summary: Recognize how a sample can misrepresent a population, how information from the answer or the test set can leak into a model, and split data so that test results can be trusted.
+objective: Explain selection, response and survivorship bias and compute the bias of a skewed sample.
+objective: Correct a biased sample with weights when the selection probabilities are known.
+objective: Identify target leakage, duplicate contamination and preprocessing leakage.
+objective: Split data randomly, by group or by time, and check a split for overlap.
+reading: Computational and Inferential Thinking: look up the chapters on sampling and on testing hypotheses, and the sections on training and test sets in the chapter on classification.
+
+@article
+A city wants to know how long residents spend commuting, and asks people through a transit phone app. Of the 1,000 residents, 600 drive (average 40 minutes) and 400 bike (average 25 minutes), so the true average is $(600 \cdot 40 + 400 \cdot 25)/1000 = 34$ minutes. But the app reaches 20% of drivers and 80% of bike commuters: 120 drivers and 320 cyclists respond. The survey average is $(120 \cdot 40 + 320 \cdot 25)/440 \approx 29.1$ minutes. The survey is large, careful and wrong, by almost five minutes. More data would not fix it.
+
+### Sampling bias
+
+A sample is **representative** if it reflects the population on what we measure. Several things break this:
+
+- **Selection bias**: who is in the data depends on something related to the outcome (the app reaches cyclists more than drivers).
+- **Nonresponse bias**: people who answer differ from those who do not.
+- **Survivorship bias**: only the cases that survived appear (analyzing only companies that still exist).
+- **Measurement bias**: the instrument itself errs in a systematic way.
+
+If the **selection probability** of each group is known, we can correct with **inverse probability weighting**: weight each response by one over its probability of being selected. Drivers get weight $1/0.2 = 5$ and cyclists $1/0.8 = 1.25$, and the weighted mean is $\dfrac{120 \cdot 5 \cdot 40 + 320 \cdot 1.25 \cdot 25}{120 \cdot 5 + 320 \cdot 1.25} = \dfrac{34{,}000}{1{,}000} = 34$, the true value. The method works only if the probabilities are known or well estimated, and no one in a group has probability zero. For a model, the same issue appears as **dataset shift**: the data you train on differ from the data the model will meet.
+
+### Data leakage
+
+**Data leakage** means that information unavailable at prediction time reaches the model during training or evaluation, so that measured performance is better than real performance. The model looks excellent in testing and fails in use. The main forms:
+
+1. **Target leakage**: a feature is computed from, or affected by, the outcome. To predict whether a patient will be readmitted within 30 days, a column "days until next admission" contains the answer. A feature "refund issued" in a fraud model is recorded after fraud is found.
+2. **Train-test contamination**: test rows are in the training data, directly or in disguise: exact duplicates, the same customer in both sets, near-duplicates after cleaning, or several images from one patient.
+3. **Preprocessing leakage**: a scaler, imputer or feature selector is fitted on the entire data set before splitting, so statistics of the test rows influence the training. Selecting the 10 features most correlated with the label using all rows, and only then splitting, can make pure noise look predictive.
+4. **Temporal leakage**: using the future to predict the past, for example shuffling rows of a time series randomly, so that training rows come after test rows.
+
+### Splitting properly
+
+A **train-test split** reserves test rows that the model never sees until the end. The right split depends on how the model will be used:
+
+- A **random split** is fine when rows are independent. Make it reproducible with a seed.
+- A **group split** keeps all rows of one entity (a patient, a user, a house) on the same side, when rows from the same entity are related.
+- A **time split** trains on rows before a cutoff and tests on rows after it, when the model will predict the future.
+- A **stratified split** keeps class proportions similar in both sets, useful for rare classes.
+
+Do all choices (scaling, features, hyperparameters) with the training rows, or with a separate validation set cut from them, and touch the test rows once. Each time you look at test performance and change something, the test set becomes part of training in effect. A simple check for contamination is to count the key values (customer IDs, text hashes) that appear on both sides of the split; the count should be zero unless overlap is intended.
+
+### Reading results with suspicion
+
+Surprisingly high accuracy is a warning sign. When a model is nearly perfect on a hard problem, ask first whether a feature knows the answer, then whether the test rows were seen. Document how the data were collected, who is missing, and what the split was; week 11 turns this into a datasheet.
+
+@example
+title: Estimating the bias of a survey
+problem: A population of 1,000 has 500 people in group X (mean 6 hours of screen time) and 500 in group Y (mean 2 hours). A poll reaches 300 people from X and 100 from Y. Compute the true mean, the poll mean, and the bias.
+step: The true mean weights the groups by their sizes in the population: $(500 \cdot 6 + 500 \cdot 2)/1000 = 4$ hours.
+step: The poll mean weights them by who answered: $(300 \cdot 6 + 100 \cdot 2)/400 = 2000/400 = 5$ hours.
+step: The bias is the poll mean minus the true mean: $5 - 4 = 1$ hour. The poll overstates screen time because group X, with higher values, is overrepresented ($75\%$ of the poll against $50\%$ of the population).
+step: A correction with the selection probabilities: group X was reached at rate $300/500 = 0.6$ and group Y at $100/500 = 0.2$, giving weights $1/0.6$ and $1/0.2$. The weighted mean is $\dfrac{300 \cdot (1/0.6) \cdot 6 + 100 \cdot 5 \cdot 2}{300/0.6 + 100 \cdot 5} = \dfrac{3000 + 1000}{500 + 500} = 4$ hours, the true mean.
+answer: True mean 4 hours, poll mean 5 hours, bias +1 hour; weighting by the inverse selection probabilities recovers 4.
+
+@mistakes
+- Fitting a scaler, imputer or feature selector on all the data before the split, which lets test information into training.
+- Randomly shuffling a time series and testing on rows that come before the training rows.
+- Leaving the same customer, patient or image source on both sides of a split.
+- Choosing a model by its test score again and again and then reporting that score as an honest estimate.
+
+@practice num
+prompt: A population has 500 people in group X (mean 6 hours) and 500 in group Y (mean 2 hours). A survey gets answers from 300 people in X and 100 in Y. By how many hours does the survey mean exceed the population mean?
+answer: 1
+unit: hours
+check: (300 * 6 + 100 * 2) / 400 - (500 * 6 + 500 * 2) / 1000
+hint: Compute the survey mean using the responders as weights, and the population mean using the group sizes.
+solution: The survey mean is $(300 \cdot 6 + 100 \cdot 2)/400 = 5$ hours and the population mean is $(500 \cdot 6 + 500 \cdot 2)/1000 = 4$ hours, so the survey overstates by 1 hour.
+
+@practice mc
+prompt: A model predicts whether a patient will be readmitted to the hospital within 30 days of discharge. Which feature is an example of target leakage?
+choice*: The number of days until the patient's next admission.
+choice: The patient's age at discharge.
+choice: The number of admissions in the year before discharge.
+choice: The primary diagnosis recorded at discharge.
+hint: Ask which feature could not be known at the moment of discharge, or is computed from the outcome.
+solution: The days until the next admission is determined by the outcome we want to predict, so it is unavailable at discharge and contains the answer. The other features are all known at discharge.
+
+@practice text
+prompt: What does this program print?
+```python
+train = [1, 2, 3, 4]
+test = [4, 5, 1]
+print(sorted(set(train) & set(test)))
+```
+answer: [1, 4]
+check: run("train = [1, 2, 3, 4]\ntest = [4, 5, 1]\nprint(sorted(set(train) & set(test)))")
+hint: The operator `&` keeps the values that are in both sets.
+solution: The values 1 and 4 appear in both lists, so the intersection is `{1, 4}` and sorting gives `[1, 4]`. Overlapping keys between a training set and a test set are a sign of contamination.
+
+@practice code
+prompt: Write `overlap_keys(train, test, key)` where `train` and `test` are lists of dictionaries. It returns the sorted list of distinct values of `row[key]` that occur in at least one row of each list. If there is no overlap, return `[]`. For example, if both lists have a row with `key` value 7, the result contains 7 once.
+starter:
+```python
+def overlap_keys(train, test, key):
+    return None
+```
+tests:
+```python
+tr = [{"id": 1}, {"id": 2}, {"id": 2}, {"id": 5}]
+te = [{"id": 2}, {"id": 5}, {"id": 5}, {"id": 9}]
+assert overlap_keys(tr, te, "id") == [2, 5]
+assert overlap_keys(tr, [{"id": 7}], "id") == []
+assert overlap_keys([], te, "id") == []
+assert overlap_keys([{"u": "b"}, {"u": "a"}], [{"u": "a"}, {"u": "b"}], "u") == ["a", "b"]
+```
+model:
+```python
+def overlap_keys(train, test, key):
+    """Sorted distinct key values present in both train and test rows."""
+    return sorted({r[key] for r in train} & {r[key] for r in test})
+```
+hint: Build a set of key values for each list and intersect the two sets.
+solution: Sets remove duplicates, and the intersection keeps the values in both lists; sorting makes the result predictable. A result that is not empty means the split puts the same entity on both sides.
+
+@practice code
+prompt: Write `train_test_split(rows, test_fraction, seed)` that returns a pair `(train, test)` of lists. Shuffle the indices of `rows` with `random.Random(seed)`, put the first `int(len(rows) * test_fraction)` shuffled rows in `test` and the rest in `train`. Every row must appear in exactly one list, the same seed must give the same split, and `rows` must not be modified.
+starter:
+```python
+def train_test_split(rows, test_fraction, seed):
+    return list(rows), []
+```
+tests:
+```python
+rows = [{"id": i} for i in range(10)]
+tr, te = train_test_split(rows, 0.2, 0)
+assert len(te) == 2 and len(tr) == 8
+ids = sorted(r["id"] for r in tr + te)
+assert ids == list(range(10))
+tr2, te2 = train_test_split(rows, 0.2, 0)
+assert tr == tr2 and te == te2
+assert [r["id"] for r in rows] == list(range(10))
+big = [{"id": i} for i in range(25)]
+tr, te = train_test_split(big, 0.2, 7)
+assert len(te) == 5 and not ({r["id"] for r in tr} & {r["id"] for r in te})
+assert train_test_split([], 0.5, 1) == ([], [])
+```
+model:
+```python
+import random
+
+
+def train_test_split(rows, test_fraction, seed):
+    """Reproducible random split into (train, test)."""
+    rng = random.Random(seed)
+    idx = list(range(len(rows)))
+    rng.shuffle(idx)
+    n_test = int(len(rows) * test_fraction)
+    test = [rows[i] for i in idx[:n_test]]
+    train = [rows[i] for i in idx[n_test:]]
+    return train, test
+```
+hint: Shuffle a list of indices with a seeded `random.Random`, then slice it into the test part and the rest.
+solution: Shuffling indices rather than the rows leaves the input untouched, and a seeded generator makes the result repeatable. The tests check the properties of a good split: right sizes, no row in both sets, no row lost, and the same result for the same seed.
+
+@quiz code
+prompt: Write `time_split(rows, time_key, cutoff)` where `rows` is a list of dictionaries. It returns `(train, test)`: `train` holds the rows with `row[time_key] < cutoff` and `test` holds the rows with `row[time_key] >= cutoff`. Each list is sorted by the time value, and rows with equal times keep their original relative order. An empty input gives `([], [])`.
+starter:
+```python
+def time_split(rows, time_key, cutoff):
+    return list(rows), []
+```
+tests:
+```python
+rows = [{"id": "a", "t": 5}, {"id": "b", "t": 1}, {"id": "c", "t": 3},
+        {"id": "d", "t": 7}, {"id": "e", "t": 3}]
+tr, te = time_split(rows, "t", 4)
+assert [r["id"] for r in tr] == ["b", "c", "e"]
+assert [r["id"] for r in te] == ["a", "d"]
+tr, te = time_split(rows, "t", 3)
+assert [r["id"] for r in tr] == ["b"]
+assert [r["id"] for r in te] == ["c", "e", "a", "d"]
+assert time_split([], "t", 0) == ([], [])
+assert [r["id"] for r in rows] == ["a", "b", "c", "d", "e"]
+```
+model:
+```python
+def time_split(rows, time_key, cutoff):
+    """Train on rows before the cutoff, test on rows at or after it."""
+    ordered = sorted(rows, key=lambda r: r[time_key])
+    train = [r for r in ordered if r[time_key] < cutoff]
+    test = [r for r in ordered if r[time_key] >= cutoff]
+    return train, test
+```
+hint: Sort by the time value (Python's sort is stable), then separate the rows on either side of the cutoff.
+solution: A stable sort orders the rows by time while keeping ties in their original order, and then comparing with the cutoff divides them. A row exactly at the cutoff goes to the test side, which the second test checks, so no training row is later than any test row.
+
+@quiz ms
+prompt: Which of these situations involve data leakage or train-test contamination? Select all that apply.
+choice*: The same customer appears in both the training rows and the test rows, with slightly different records.
+choice*: The 20 features most correlated with the label are selected using all the rows, and then the data are split.
+choice: A forecasting model is trained on January to September rows and tested on October to December rows.
+choice: The test set is used once, after all choices have been made, to report the final score.
+hint: Ask whether any information about the test rows or the answer reaches the training stage.
+solution: A customer on both sides lets the model memorize related records, and selecting features with the labels of all rows lets test labels guide training. Training on earlier months and testing on later ones mimics real use, and using the test set once at the end is the correct protocol.
+
+@quiz self
+prompt: You are asked to build a model that predicts, at the time a customer opens an account, whether they will default on a loan within a year. The data have one row per loan with 40 columns, including the repayment history for the first year. Identify at least three leakage or bias risks, and describe a split and a check that would address them.
+hint: Think about which columns are known at account opening, who is in the data, whether customers repeat, and time.
+solution: Target leakage: the repayment history for the first year is only known after the outcome and must be dropped, as must any column recorded after account opening (collection status, account closure). Selection bias: the data contain only customers whose loans were approved, so the model sees nothing about the rejected applicants and may misjudge them; this limits where it can be used, and I would state it. Contamination: a customer with several loans could appear on both sides, so I would split by customer, and I would count customers appearing in both sets and require zero. Temporal leakage: lending conditions change over time, so I would train on earlier loans and test on later ones with a time split, and fit all scalers and encoders on the training rows only. I would use the test rows once, at the end.
+rubric: Identifies target leakage from first-year repayment or other post-outcome columns.
+rubric: Names a bias or contamination risk such as approved-only data or the same customer on both sides.
+rubric: Describes a concrete split (by customer or by time) and a check such as counting overlapping IDs.

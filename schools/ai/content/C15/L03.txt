@@ -1,0 +1,292 @@
+@lesson
+title: Logistic regression and maximum likelihood
+summary: Derive the logistic regression loss as the negative log-likelihood of a Bernoulli model, compute its gradient, train it by gradient descent from scratch and verify the gradient numerically.
+objective: Write the Bernoulli likelihood of a logistic model and derive its negative log-likelihood and gradient.
+objective: Train logistic regression by gradient descent in plain Python and check the analytic gradient against finite differences.
+objective: Interpret the weights as log-odds, locate the decision boundary, and explain why the maximum likelihood estimate fails to exist on separable data.
+reading: The Elements of Statistical Learning, the chapter on linear methods for classification: the section on logistic regression.
+@article
+A clinic wants the probability that a patient has a condition from two measurements. A linear model $\mathbf{w}^\top\mathbf{x}$ can be any real number, so it is not a probability. **Logistic regression** passes the linear score through the sigmoid, and learns the weights by maximum likelihood.
+
+### The model
+
+For a label $y \in \{0, 1\}$ and features $\mathbf{x}$ (with a leading 1 for the intercept), the model says
+
+$$P(y = 1 \mid \mathbf{x}) = \sigma(z), \quad z = \mathbf{w}^\top\mathbf{x}, \quad \sigma(z) = \frac{1}{1 + e^{-z}}.$$
+
+The sigmoid maps $\mathbb{R}$ to $(0, 1)$, equals $1/2$ at $z = 0$, and has derivative $\sigma'(z) = \sigma(z)(1 - \sigma(z))$. Taking the logarithm of the odds gives the **logit**, which is linear: $\log\frac{p}{1-p} = \mathbf{w}^\top\mathbf{x}$. Increasing feature $j$ by one unit multiplies the odds of $y = 1$ by $e^{w_j}$. The set where $P(y = 1 \mid \mathbf{x}) = 1/2$ is $\mathbf{w}^\top\mathbf{x} = 0$, a hyperplane, so the **decision boundary** is linear.
+
+### Maximum likelihood
+
+Write $p_i = \sigma(\mathbf{w}^\top\mathbf{x}_i)$. A single label is a Bernoulli variable with probability $p_i^{y_i}(1 - p_i)^{1 - y_i}$. For independent examples the likelihood is the product, and the **negative log-likelihood** averaged over examples is the cross-entropy loss
+
+$$L(\mathbf{w}) = -\frac{1}{n}\sum_{i=1}^{n}\Big[y_i \log p_i + (1 - y_i)\log(1 - p_i)\Big].$$
+
+Minimizing $L$ is the same as maximizing the likelihood. A confident wrong prediction is punished heavily: for $y = 1$ the loss is $-\log p$, which is $0.105$ at $p = 0.9$ but $2.30$ at $p = 0.1$.
+
+### The gradient
+
+Let $\ell_i$ be the loss of one example and $z_i = \mathbf{w}^\top\mathbf{x}_i$. Since $\frac{dp}{dz} = p(1 - p)$,
+
+$$\frac{d\ell}{dz} = -\frac{y}{p}\,p(1-p) + \frac{1-y}{1-p}\,p(1-p) = -y(1-p) + (1-y)p = p - y.$$
+
+By the chain rule, $\partial z/\partial w_j = x_{ij}$, so
+
+$$\nabla_{\mathbf{w}} L = \frac{1}{n}\mathbf{X}^\top(\mathbf{p} - \mathbf{y}).$$
+
+This is the same shape as the linear regression gradient, with the prediction replaced by the predicted probability. The Hessian is $\frac{1}{n}\mathbf{X}^\top\mathbf{S}\mathbf{X}$ with $\mathbf{S} = \operatorname{diag}\big(p_i(1 - p_i)\big)$, which is positive semidefinite, so $L$ is convex: gradient descent with a small enough step reaches the global minimum. Since $p_i(1-p_i) \le 1/4$, a step size below $8/\lambda_{\max}(\mathbf{X}^\top\mathbf{X}/n)$ is safe. Newton's method, which solves $\mathbf{H}\,\Delta = \nabla L$ at each step, is known in this setting as iteratively reweighted least squares.
+
+### When the maximum does not exist
+
+If a hyperplane separates the two classes perfectly, scaling $\mathbf{w}$ up makes every probability more extreme and the loss keeps falling toward 0 without reaching it. The gradient never vanishes, the weights grow forever, and the model becomes overconfident. A penalty such as $\lambda\lVert\mathbf{w}\rVert^2$ (last week's idea applied to this loss) restores a finite solution.
+
+### Training from scratch, with a gradient check
+
+The code uses a numerically stable sigmoid and compares the analytic gradient with central finite differences, $\big(L(\mathbf{w} + \epsilon\mathbf{e}_j) - L(\mathbf{w} - \epsilon\mathbf{e}_j)\big)/2\epsilon$, which is the standard test for a gradient you have derived.
+
+```python
+import math
+
+X = [[1, 0, 1], [1, 1, 0], [1, 1, 2], [1, 2, 1],
+     [1, 2, 3], [1, 3, 1], [1, 3, 3], [1, 0, 0]]
+y = [0, 1, 0, 1, 1, 0, 1, 0]
+
+def sigmoid(z):
+    if z >= 0:
+        return 1 / (1 + math.exp(-z))
+    e = math.exp(z)
+    return e / (1 + e)
+
+def nll(X, y, w):
+    total = 0.0
+    for row, t in zip(X, y):
+        p = sigmoid(sum(a * b for a, b in zip(w, row)))
+        total -= math.log(p) if t == 1 else math.log(1 - p)
+    return total / len(X)
+
+def gradient(X, y, w):
+    n = len(X)
+    errs = [sigmoid(sum(a * b for a, b in zip(w, row))) - t
+            for row, t in zip(X, y)]
+    return [sum(e * row[j] for e, row in zip(errs, X)) / n
+            for j in range(len(w))]
+
+w = [0.0, 0.0, 0.0]
+for step in range(1, 1001):
+    g = gradient(X, y, w)
+    w = [wj - 0.5 * gj for wj, gj in zip(w, g)]
+    if step in (1, 10, 1000):
+        print(step, [round(v, 4) for v in w], round(nll(X, y, w), 5))
+
+point = [0.5, -0.25, 0.1]
+eps = 1e-6
+for j in range(3):
+    up = point[:]
+    up[j] += eps
+    dn = point[:]
+    dn[j] -= eps
+    numeric = (nll(X, y, up) - nll(X, y, dn)) / (2 * eps)
+    print(j, round(numeric, 6), round(gradient(X, y, point)[j], 6))
+```
+
+Eight examples with two features give the weights $(-1.523, 0.763, 0.274)$ and a loss of $0.580$ after 1000 steps; at $\mathbf{w} = \mathbf{0}$ the loss is $\log 2 \approx 0.693$ for any data set, since every probability is $1/2$. With NumPy, `p = 1 / (1 + np.exp(-X @ w))` and `X.T @ (p - y) / n` do the same work for all examples at once.
+
+@example
+title: One gradient step for logistic regression
+problem: Two patients have a measurement $x = 1$ with label 0 and $x = 3$ with label 1. For the model $P(y = 1 \mid x) = \sigma(w_0 + w_1 x)$, take one step of gradient descent from $\mathbf{w} = (0, 0)$ with step size 1, and compute the new loss.
+step: At $\mathbf{w} = \mathbf{0}$ every score is 0, so every predicted probability is $\sigma(0) = 0.5$. The errors $p - y$ are $0.5$ and $-0.5$.
+step: The gradient is $\frac{1}{n}\mathbf{X}^\top(\mathbf{p} - \mathbf{y})$ with rows $(1, 1)$ and $(1, 3)$: the intercept component is $\frac{1}{2}(0.5 - 0.5) = 0$ and the slope component is $\frac{1}{2}\big(0.5 \cdot 1 - 0.5 \cdot 3\big) = -0.5$.
+step: Update: $\mathbf{w} = (0, 0) - 1 \cdot (0, -0.5) = (0, 0.5)$.
+step: New scores are $0.5$ and $1.5$, so the probabilities are $\sigma(0.5) \approx 0.6225$ and $\sigma(1.5) \approx 0.8176$. The loss is $-\frac{1}{2}\big[\log(1 - 0.6225) + \log(0.8176)\big] \approx \frac{1}{2}(0.9741 + 0.2014) \approx 0.588$, down from $\log 2 \approx 0.693$.
+answer: $\mathbf{w} = (0, 0.5)$ and the loss falls from $0.693$ to $0.588$.
+
+@example
+title: Reading a fitted model
+problem: A fitted model is $P(y = 1 \mid x) = \sigma(-3 + 0.8x)$. Find the probability at $x = 4$, the decision boundary, and the effect of one extra unit of $x$ on the odds.
+step: At $x = 4$ the score is $-3 + 3.2 = 0.2$, so $P = \sigma(0.2) \approx 0.550$.
+step: The boundary is where the score is zero: $-3 + 0.8x = 0$, so $x = 3.75$. Above it the model predicts class 1.
+step: The log-odds are $-3 + 0.8x$, so one more unit of $x$ adds $0.8$ to the log-odds, which multiplies the odds by $e^{0.8} \approx 2.23$. It does not add a fixed amount to the probability: from $x = 4$ to $x = 5$ the probability goes from $0.550$ to $\sigma(1) \approx 0.731$.
+answer: $P(4) \approx 0.550$; the boundary is $x = 3.75$; each unit multiplies the odds by about $2.23$.
+
+@mistakes
+- Computing $\log(1 - p)$ or $\exp(-z)$ naively for large $|z|$: overflow or $\log 0$ breaks training. Use a stable sigmoid and compute the loss from the score.
+- Reading a weight as a change in probability: a weight changes the log-odds, and the probability change depends on where you are on the curve.
+- Forgetting that a perfectly separable data set has no finite maximum likelihood estimate, then wondering why the weights keep growing.
+- Skipping the gradient check: a sign or factor error in a hand-derived gradient can leave the loss looking nearly reasonable while the model trains badly.
+
+@practice num
+prompt: A logistic model has $\mathbf{w} = (-2, 1, 0.5)$, with the first weight the intercept, and is applied to $\mathbf{x} = (1, 3, 2)$. What probability does it assign to $y = 1$? Give three decimal places.
+answer: 0.881
+tol: 0.001
+check: 1 / (1 + math.exp(-(-2 * 1 + 1 * 3 + 0.5 * 2)))
+hint: First compute the score $z = \mathbf{w}^\top\mathbf{x}$, then apply the sigmoid.
+solution: The score is $-2 + 3 + 1 = 2$, so $P = 1/(1 + e^{-2}) \approx 0.881$.
+
+@practice num
+prompt: A logistic model has score $z = 2$ for an example whose true label is $y = 0$, so it assigns probability $p = \sigma(2) \approx 0.8808$ to the wrong class. Using the natural logarithm, what is that example's loss $-\log(1 - p)$? Give three decimal places.
+answer: 2.127
+tol: 0.001
+check: -math.log(1 - 1 / (1 + math.exp(-2)))
+hint: The loss for a label of 0 is $-\log(1 - p)$, and $1 - p \approx 0.1192$.
+solution: $1 - \sigma(2) = 1/(1 + e^{2}) \approx 0.1192$, and $-\log 0.1192 \approx 2.127$ nats: a confident wrong prediction is expensive.
+
+@practice mc
+prompt: Logistic regression with no penalty is trained by gradient descent on training data that a straight line separates perfectly. What happens?
+choice*: The loss keeps decreasing toward 0 while the weights grow without bound, because the likelihood has no finite maximizer.
+choice: The weights converge to the unique minimizer, where the gradient is exactly zero.
+choice: The loss increases after some point, because the sigmoid saturates and the gradient has the wrong sign.
+choice: The weights converge to the weights that maximize the margin, with a finite norm.
+hint: Scaling the weights up makes each probability more extreme in the right direction. What does that do to the loss?
+solution: With perfect separation, multiplying $\mathbf{w}$ by a constant above 1 moves every probability closer to its label, so the loss shrinks without a minimum. The gradient never reaches zero at any finite $\mathbf{w}$. A penalty on $\lVert\mathbf{w}\rVert$ gives a finite solution.
+
+@practice code
+prompt: Write `nll(X, y, w)` that returns the mean negative log-likelihood (in nats) of logistic regression: $\frac{1}{n}\sum_i\big[\log(1 + e^{-z_i})\text{ for }y_i = 1,\ \log(1 + e^{z_i})\text{ for }y_i = 0\big]$, where $z_i = \mathbf{w}^\top\mathbf{x}_i$. `X` is a list of rows (constant column included), `y` a list of 0/1 labels. It must not overflow for scores such as 800.
+starter:
+```python
+import math
+
+def nll(X, y, w):
+    pass
+```
+tests:
+```python
+import math
+assert abs(nll([[1, 0]], [1], [0, 0]) - math.log(2)) < 1e-9
+assert abs(nll([[1, 1], [1, -1]], [1, 0], [1, 1]) - 0.41003759580) < 1e-6
+assert abs(nll([[1, 0]], [0], [800, 0]) - 800.0) < 1e-6
+assert abs(nll([[1, 0]], [1], [-800, 0]) - 800.0) < 1e-6
+assert abs(nll([[1, 0]], [1], [800, 0])) < 1e-9
+```
+model:
+```python
+import math
+
+def nll(X, y, w):
+    """Mean negative log-likelihood of a logistic model, computed stably."""
+    total = 0.0
+    for row, t in zip(X, y):
+        z = sum(a * b for a, b in zip(w, row))
+        total += max(z, 0.0) - t * z + math.log1p(math.exp(-abs(z)))
+    return total / len(X)
+```
+hint: For either label the loss equals $\max(z, 0) - y z + \log(1 + e^{-|z|})$, which never exponentiates a large positive number.
+solution: Writing the loss in terms of the score avoids computing $\log$ of a probability that has rounded to 0 or 1, and `exp(-abs(z))` never overflows. The tests with scores of 800 fail for a version that forms the probability first and takes its log.
+
+@practice code
+prompt: Write `train_logreg(X, y, lr, steps)` that starts from all-zero weights and runs exactly `steps` steps of gradient descent with step size `lr` on the mean negative log-likelihood of logistic regression, then returns the weights as a list. The gradient is $\frac{1}{n}\mathbf{X}^\top(\mathbf{p} - \mathbf{y})$ with $\mathbf{p}_i = \sigma(\mathbf{w}^\top\mathbf{x}_i)$. `X` includes the constant column; `y` holds 0/1 labels.
+starter:
+```python
+import math
+
+def train_logreg(X, y, lr, steps):
+    w = [0.0] * len(X[0])
+    return w
+```
+tests:
+```python
+X = [[1, -1], [1, 0], [1, 1], [1, 2]]
+y = [0, 1, 0, 1]
+got = train_logreg(X, y, 1.0, 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.25]))
+assert train_logreg(X, y, 1.0, 0) == [0.0, 0.0]
+got = train_logreg(X, y, 1.0, 2000)
+assert all(abs(a - b) < 1e-4 for a, b in zip(got, [-0.454092, 0.908184]))
+got = train_logreg([[1, 5]], [1], 0.5, 3)
+assert got[1] > 0 and got[0] > 0
+```
+model:
+```python
+import math
+
+def train_logreg(X, y, lr, steps):
+    """Batch gradient descent for logistic regression, started at zero."""
+    n = len(X)
+    w = [0.0] * len(X[0])
+    for _ in range(steps):
+        errs = []
+        for row, t in zip(X, y):
+            z = sum(a * b for a, b in zip(w, row))
+            errs.append(1 / (1 + math.exp(-z)) - t)
+        g = [sum(e * row[j] for e, row in zip(errs, X)) / n
+             for j in range(len(w))]
+        w = [wj - lr * gj for wj, gj in zip(w, g)]
+    return w
+```
+hint: Each step computes the probability of every example from the current weights, forms the errors $p - y$, and updates all weights from $\frac{1}{n}\mathbf{X}^\top(\mathbf{p} - \mathbf{y})$.
+solution: The structure is the same as linear regression, with the sigmoid inside the error. The one-step test checks the sign and the $1/n$ factor: from zero weights the errors are $\pm 0.5$, giving the gradient $(0, -0.25)$.
+
+@quiz code
+prompt: Write `numeric_gradient(X, y, w, eps)` that approximates the gradient of the mean negative log-likelihood with central finite differences: component $j$ is $\big(L(\mathbf{w} + \epsilon\mathbf{e}_j) - L(\mathbf{w} - \epsilon\mathbf{e}_j)\big)/(2\epsilon)$. Use the provided `nll(X, y, w)`. Return a list. Do not modify `w` in place.
+starter:
+```python
+import math
+
+def nll(X, y, w):
+    total = 0.0
+    for row, t in zip(X, y):
+        z = sum(a * b for a, b in zip(w, row))
+        total += max(z, 0.0) - t * z + math.log1p(math.exp(-abs(z)))
+    return total / len(X)
+
+def numeric_gradient(X, y, w, eps):
+    pass
+```
+tests:
+```python
+X = [[1, 0.5], [1, -1.5]]
+y = [1, 0]
+w = [0.2, -0.4]
+got = numeric_gradient(X, y, w, 1e-5)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.09498724, -0.64248086]))
+assert w == [0.2, -0.4]
+got = numeric_gradient([[1, 2]], [1], [0.0, 0.0], 1e-5)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [-0.5, -1.0]))
+assert len(numeric_gradient([[1, 2, 3]], [0], [0.0, 0.0, 0.0], 1e-5)) == 3
+```
+model:
+```python
+import math
+
+def nll(X, y, w):
+    total = 0.0
+    for row, t in zip(X, y):
+        z = sum(a * b for a, b in zip(w, row))
+        total += max(z, 0.0) - t * z + math.log1p(math.exp(-abs(z)))
+    return total / len(X)
+
+def numeric_gradient(X, y, w, eps):
+    """Central-difference approximation of the gradient of nll."""
+    grad = []
+    for j in range(len(w)):
+        up = list(w)
+        dn = list(w)
+        up[j] += eps
+        dn[j] -= eps
+        grad.append((nll(X, y, up) - nll(X, y, dn)) / (2 * eps))
+    return grad
+```
+hint: For each coordinate make two copies of `w`, one with `eps` added and one with `eps` subtracted at that coordinate, and difference the losses.
+solution: Copying `w` for each coordinate avoids changing the caller's weights, which the second assertion checks. A central difference has error of order $\epsilon^2$, so $10^{-5}$ gives agreement with the analytic gradient to about $10^{-10}$; a one-sided difference would only reach about $10^{-5}$.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+
+p = [0.9, 0.2, 0.6]
+y = [1, 0, 1]
+loss = -sum(math.log(a) if t else math.log(1 - a) for a, t in zip(p, y)) / 3
+print(round(loss, 3))
+```
+answer: 0.28
+check: run("import math\n\np = [0.9, 0.2, 0.6]\ny = [1, 0, 1]\nloss = -sum(math.log(a) if t else math.log(1 - a) for a, t in zip(p, y)) / 3\nprint(round(loss, 3))")
+hint: The three losses are $-\log 0.9$, $-\log 0.8$ and $-\log 0.6$; average them.
+solution: The losses are about $0.1054$, $0.2231$ and $0.5108$, whose mean is $0.27978$. Rounded to three decimals this is $0.28$, which Python prints without a trailing zero.
+
+@quiz num
+prompt: In a logistic regression model, a feature has fitted weight $0.7$. Holding all other features fixed, by what factor does one extra unit of that feature multiply the odds of $y = 1$? Give three decimal places.
+answer: 2.014
+tol: 0.001
+check: math.exp(0.7)
+hint: The log-odds are linear in the features, so adding one unit adds the weight to the log-odds.
+solution: The log-odds increase by $0.7$, so the odds are multiplied by $e^{0.7} \approx 2.014$.

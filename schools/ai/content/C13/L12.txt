@@ -1,0 +1,182 @@
+@lesson
+title: Comparing models: paired tests and multiple comparisons
+summary: Test whether one model beats another with paired and McNemar tests, a sign-flip permutation test, and correct p-values when many comparisons are made.
+objective: Compute a paired t statistic and a McNemar statistic and state the assumptions behind them.
+objective: Carry out an exact sign-flip permutation test on paired differences.
+objective: Explain the family-wise error rate and the false discovery rate, and apply the Bonferroni, Holm and Benjamini-Hochberg procedures.
+reading: Information Theory, Inference, and Learning Algorithms (MacKay), the chapters on inference and hypothesis testing in the statistics sections; look up the paired t-test, McNemar's test, the permutation test and the Bonferroni, Holm and Benjamini-Hochberg corrections.
+
+@article
+A new training recipe scores higher than the baseline in five out of five runs. Is that evidence of a real improvement, or luck? A **hypothesis test** gives a principled answer, with one caution that matters more in machine learning than anywhere else: the more comparisons you make, the easier it is to fool yourself.
+
+### Hypothesis tests and p-values
+
+A test starts from a **null hypothesis** $H_0$ (for example, "the two models have the same expected score"), a **test statistic** $T$ whose distribution under $H_0$ is known, and the observed value $t_{\text{obs}}$. The **p-value** is the probability, if $H_0$ were true, of a statistic at least as extreme as the one observed. We reject $H_0$ at **level** $\alpha$ (commonly 0.05) when $p \le \alpha$, which makes the probability of a false rejection, when $H_0$ is true, at most $\alpha$. The p-value is not the probability that $H_0$ is true, and a small p-value says nothing about whether the effect is large enough to matter.
+
+### The paired t-test
+
+Suppose models $A$ and $B$ are evaluated on the same $n$ units (seeds, data sets, or test folds), giving scores $a_i$ and $b_i$. Form the differences $d_i = b_i - a_i$, with mean $\bar d$ and sample standard deviation $s_d$ (divisor $n - 1$). Under $H_0\colon \mathbb{E}[d] = 0$, if the $d_i$ are independent draws from a normal distribution,
+
+$$t = \frac{\bar d}{s_d/\sqrt{n}} \sim t_{n-1}.$$
+
+Reject at the two-sided 5% level when $|t|$ exceeds the 97.5th percentile of $t_{n-1}$: $2.776$ for 4 degrees of freedom, $2.262$ for 9, $2.093$ for 19. Pairing removes the variation shared by both models on the same unit (hard data sets are hard for both), so it is more powerful than comparing two separate averages.
+
+**A warning on cross-validation.** The scores from $k$ folds are not independent: training sets overlap heavily, so $s_d^2/n$ underestimates the true variance of $\bar d$ and the naive test rejects too often. Dietterich (1998) studied this, and Nadeau and Bengio proposed the **corrected resampled t-test**, which replaces $1/k$ in the variance of $\bar d$ by $1/k + n_{\text{test}}/n_{\text{train}}$. Independent runs on independent data splits avoid the problem.
+
+### McNemar's test
+
+To compare two classifiers on the same test set, count the examples where they disagree: $b$ = examples $A$ gets right and $B$ wrong, $c$ = examples $A$ gets wrong and $B$ right. Examples where both are right or both wrong carry no information about which is better. Under $H_0$ (equal error rates), each disagreement is equally likely to go either way, so $b \sim \text{Binomial}(b + c, \tfrac12)$. The usual statistic is
+
+$$\chi^2 = \frac{(b - c)^2}{b + c},$$
+
+approximately $\chi^2_1$ when $b + c$ is large enough (a common rule of thumb is at least 25); otherwise use the exact binomial test. For $b = 15$ and $c = 5$, $\chi^2 = 100/20 = 5.0$ and $p \approx 0.025$; the exact two-sided binomial p-value is $0.041$.
+
+### A permutation (sign-flip) test
+
+If $H_0$ says the differences are symmetric around 0, then flipping the sign of any $d_i$ gives an equally likely data set. Enumerate the $2^n$ sign patterns, compute $|\text{sum of signed } d_i|$ for each, and let the p-value be the fraction of patterns whose statistic is at least as large as the observed $|\sum d_i|$. For $d = (1, 2, 3)$ the observed sum is 6, only two of the eight patterns reach 6 in absolute value (all plus, all minus), and $p = 2/8 = 0.25$. With $n = 5$ the smallest possible two-sided p-value is $2/32 = 0.0625$: five wins out of five cannot reach the 5% level by this test. It needs no normality assumption, only symmetry.
+
+### Many comparisons
+
+If you run $m$ tests at level $\alpha$ and all null hypotheses are true and independent, the probability of at least one false rejection is $1 - (1 - \alpha)^m$: for $m = 20$ and $\alpha = 0.05$ it is $0.64$. This **family-wise error rate** (FWER) is why trying 20 variants, or 20 benchmarks, and reporting the one that "worked" is misleading. Corrections:
+
+- **Bonferroni:** test each hypothesis at level $\alpha/m$. It controls the FWER at $\alpha$ under any dependence, but is conservative.
+- **Holm:** sort the p-values $p_{(1)} \le \dots \le p_{(m)}$; reject $H_{(k)}$ for $k = 1, 2, \dots$ while $p_{(k)} \le \alpha/(m - k + 1)$, and stop at the first failure. It controls the FWER and rejects at least as many hypotheses as Bonferroni.
+- **Benjamini–Hochberg** (1995): controls the **false discovery rate** (FDR), the expected fraction of false rejections among all rejections. Find the largest $k$ with $p_{(k)} \le k\alpha/m$ and reject all hypotheses $H_{(1)}, \dots, H_{(k)}$. It is more powerful than FWER methods and is valid for independent tests and certain forms of positive dependence.
+
+Pre-specify the comparisons, report all that you ran, and keep the test set out of every selection step.
+
+### In code
+
+```python
+from itertools import product
+
+def sign_flip_p(d):
+    obs = abs(sum(d))
+    hits = 0
+    for signs in product([1, -1], repeat=len(d)):
+        if abs(sum(s * x for s, x in zip(signs, d))) >= obs - 1e-12:
+            hits += 1
+    return hits / 2 ** len(d)
+
+print(sign_flip_p([2, 1, 4, 3]))
+```
+
+This prints `0.125`: only the all-positive and all-negative patterns reach $|\sum d_i| = 10$, so $p = 2/16$.
+
+@example
+title: A paired t-test over five seeds
+problem: The accuracy (in points) of a new recipe minus the baseline over five matched seeds is $0.8, 1.2, 0.5, 1.1, 0.9$. Run a two-sided paired t-test at the 5% level.
+step: The mean difference is $\bar d = (0.8 + 1.2 + 0.5 + 1.1 + 0.9)/5 = 0.9$.
+step: Deviations from the mean: $-0.1, 0.3, -0.4, 0.2, 0$, with squares $0.01, 0.09, 0.16, 0.04, 0$ summing to $0.30$.
+step: Sample standard deviation: $s_d = \sqrt{0.30/4} = \sqrt{0.075} \approx 0.2739$, so the standard error is $0.2739/\sqrt5 \approx 0.1225$.
+step: The statistic is $t = 0.9/0.1225 \approx 7.35$ with $4$ degrees of freedom. The critical value is $2.776$, and $7.35 > 2.776$, so we reject $H_0$ ($p \approx 0.002$).
+step: Caveat: this assumes the five differences are independent and roughly normal; with $n = 5$ the normality is hard to check, so a permutation test (smallest possible $p = 0.0625$ here) would not reject, which is a reminder of how little information five runs carry.
+answer: $t \approx 7.35$ on 4 degrees of freedom, which is significant at the 5% level ($p \approx 0.002$) under the normal assumption.
+
+@example
+title: Holm and Benjamini–Hochberg on four p-values
+problem: Four comparisons give the p-values $0.01, 0.04, 0.03, 0.005$. With $\alpha = 0.05$, find which hypotheses are rejected by Bonferroni, Holm and Benjamini–Hochberg.
+step: Sort: $p_{(1)} = 0.005$, $p_{(2)} = 0.01$, $p_{(3)} = 0.03$, $p_{(4)} = 0.04$, with $m = 4$.
+step: Bonferroni: the per-test threshold is $0.05/4 = 0.0125$. Only $0.005$ and $0.01$ pass, so 2 rejections.
+step: Holm thresholds $\alpha/(m - k + 1)$ are $0.0125, 0.0167, 0.025, 0.05$. We compare $0.005 \le 0.0125$ (reject), $0.01 \le 0.0167$ (reject), $0.03 > 0.025$ (stop). So Holm rejects 2.
+step: Benjamini–Hochberg thresholds $k\alpha/m$ are $0.0125, 0.025, 0.0375, 0.05$. We have $p_{(4)} = 0.04 \le 0.05$, so the largest qualifying $k$ is 4 and all 4 are rejected.
+answer: Bonferroni and Holm reject the two smallest p-values; Benjamini–Hochberg rejects all four (controlling the false discovery rate, a weaker guarantee than the family-wise error rate).
+
+@mistakes
+- Reading the p-value as the probability that the null hypothesis is true: it is the probability of data this extreme if the null were true.
+- Running a paired t-test on cross-validation folds as if they were independent: the overlap of training sets makes the naive test too optimistic.
+- Reporting the best of many variants or benchmarks with an uncorrected p-value: with 20 independent tests at 0.05 you expect about one false hit, and the chance of at least one is $0.64$.
+- Equating statistical significance with importance: with a large test set a tiny difference can have a very small p-value, so report the effect size with an interval too.
+
+@practice num
+prompt: Paired score differences between two models have mean $\bar d = 0.6$ and sample standard deviation $s_d = 1.5$ over $n = 9$ matched units. What is the paired t statistic?
+answer: 1.2
+tol: 0.001
+check: 0.6 / (1.5 / 9 ** 0.5)
+hint: Divide the mean difference by its standard error $s_d/\sqrt{n}$.
+solution: The standard error is $1.5/3 = 0.5$, so $t = 0.6/0.5 = 1.2$, far below the critical value $2.306$ for 8 degrees of freedom.
+
+@practice num
+prompt: You run $m = 10$ independent tests, each at level $0.05$, and every null hypothesis is true. What is the probability of at least one false rejection? Give four decimal places.
+answer: 0.4013
+tol: 0.0001
+check: 1 - 0.95 ** 10
+hint: The probability that none of the tests rejects is $(1 - 0.05)^{10}$.
+solution: $1 - 0.95^{10} = 1 - 0.5987 = 0.4013$.
+
+@practice num
+prompt: Classifiers $A$ and $B$ are evaluated on the same test set. $A$ is right and $B$ wrong on 12 examples; $A$ is wrong and $B$ right on 4 examples. What is McNemar's statistic $(b - c)^2/(b + c)$?
+answer: 4
+check: (12 - 4) ** 2 / (12 + 4)
+hint: Only the examples where the classifiers disagree enter the statistic.
+solution: $(12 - 4)^2/(12 + 4) = 64/16 = 4$, which is above the 5% critical value $3.84$ of $\chi^2_1$.
+
+@practice mc
+prompt: A team compares a new method with a baseline on 20 independent benchmarks, tests each at level $0.05$, and one benchmark shows a significant improvement. Which statement is best supported?
+choice*: If the new method were no better anywhere, the chance of at least one significant result among 20 tests is about 64%, so a single hit is weak evidence without a correction for multiple comparisons.
+choice: A single significant result among 20 tests proves that the new method is better on that benchmark, because its p-value is below 0.05.
+choice: The result is invalid because a test may only be run once per method.
+choice: Multiple comparisons matter only if the benchmarks are correlated, never if they are independent.
+hint: Compute $1 - 0.95^{20}$ and compare it with the nominal level of one test.
+solution: With 20 independent true nulls, $P(\text{at least one false rejection}) = 1 - 0.95^{20} \approx 0.64$, so one hit is what chance alone often produces. A Bonferroni or Holm correction would require $p \le 0.0025$ for that single test to be declared significant. Independence makes the correction less necessary only in the sense that the formula is exact; it does not remove the problem.
+
+@practice code
+prompt: Write `sign_flip_p(d)` that returns the exact two-sided sign-flip permutation p-value for a list `d` of at most 12 numbers: enumerate all $2^n$ sign patterns (use `itertools.product([1, -1], repeat=n)`), and return the fraction of patterns for which the absolute value of the signed sum is at least `abs(sum(d))` minus $10^{-12}$. For example, `sign_flip_p([1, 2, 3])` returns `0.25`.
+starter:
+```python
+from itertools import product
+
+def sign_flip_p(d):
+    return 1.0
+```
+tests:
+```python
+assert abs(sign_flip_p([1, 2, 3]) - 0.25) < 1e-12
+assert abs(sign_flip_p([1, 1]) - 0.5) < 1e-12
+assert abs(sign_flip_p([0, 0, 0]) - 1.0) < 1e-12
+assert abs(sign_flip_p([1, 1, 1, 1, 1]) - 0.0625) < 1e-12
+assert abs(sign_flip_p([-1, 2, 3]) - 0.5) < 1e-12
+assert abs(sign_flip_p([0.5, 0.5, 0.5, 0.5]) - 0.125) < 1e-12
+```
+model:
+```python
+from itertools import product
+
+def sign_flip_p(d):
+    """Exact two-sided sign-flip permutation p-value for the sum of d."""
+    observed = abs(sum(d))
+    hits = 0
+    for signs in product([1, -1], repeat=len(d)):
+        total = sum(s * x for s, x in zip(signs, d))
+        if abs(total) >= observed - 1e-12:
+            hits += 1
+    return hits / 2 ** len(d)
+```
+hint: For each sign pattern compute the signed sum, count the patterns whose absolute sum reaches the observed absolute sum, and divide by $2^n$.
+solution: The observed pattern itself and its mirror image always count, so the p-value is at least $2/2^n$ unless the sum is 0, in which case every pattern counts. The tolerance protects against floating-point differences, and the tests with $[-1, 2, 3]$ and $[0, 0, 0]$ check negative values and a zero sum.
+
+@quiz num
+prompt: You test $m = 8$ hypotheses and want the family-wise error rate to be at most $0.05$ using the Bonferroni correction. At what level should each individual test be run?
+answer: 0.00625
+tol: 0.00001
+check: 0.05 / 8
+hint: Bonferroni divides the overall level by the number of tests.
+solution: $0.05/8 = 0.00625$.
+
+@quiz ms
+prompt: Which statements are true? Select all that apply.
+choice*: A paired t-test is applied to the per-unit differences of two models' scores, not to the two score lists separately.
+choice*: McNemar's test uses only the examples on which the two classifiers disagree.
+choice*: Benjamini–Hochberg controls the expected proportion of false discoveries among the rejected hypotheses, not the probability of any false rejection.
+choice: The p-value is the probability that the null hypothesis is true given the data.
+choice: Holm's procedure always rejects fewer hypotheses than Bonferroni's.
+hint: Recall what each procedure uses as input and what each controls.
+solution: The paired test works on the differences; McNemar's statistic depends only on the disagreement counts $b$ and $c$; and Benjamini–Hochberg targets the false discovery rate. The p-value is computed assuming the null is true and is not its posterior probability. Holm rejects at least as many hypotheses as Bonferroni while keeping the same family-wise guarantee.
+
+@quiz self
+prompt: A researcher trains 6 variants of a model, evaluates all of them on the same test set, picks the one with the highest accuracy, and reports that it beats the baseline with $p = 0.03$ in a paired test. Explain what is wrong with this analysis, what the correct handling of the selection and the multiple comparisons would be, and what data design would give an honest estimate.
+hint: Think about how many comparisons were really made, and about which data were used both to choose and to evaluate.
+solution: The reported $p$ comes from one comparison, but the winner was selected as the best of 6, so the relevant question is how often the best of six variants would beat the baseline by this much if none were better; with six chances the probability of some $p \le 0.03$ is roughly $1 - 0.97^6 \approx 0.17$ for independent tests, far above 0.03. Using the same test set to choose and to evaluate also inflates the winner's score (the winner's curse), so the accuracy and its interval are biased upward. A correct analysis applies a multiple-comparison correction across all 6 comparisons (Bonferroni would use $0.05/6 \approx 0.0083$, Holm is less conservative), and reports all variants tried. The honest design is to choose among variants using a validation set or cross-validation, then evaluate the single chosen model once on a held-out test set, with an interval from the bootstrap or a test on independent runs.
+rubric: Identifies that the winner was selected from 6 candidates, so a single-comparison p-value is misleading, and quantifies or explains the inflated false-positive probability.
+rubric: Names an appropriate correction (Bonferroni, Holm or a false discovery rate method) and the need to report all comparisons.
+rubric: Proposes a separate validation set for selection and a single evaluation on held-out test data, noting the upward bias of the selected score.

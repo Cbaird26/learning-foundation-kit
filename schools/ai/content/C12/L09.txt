@@ -1,0 +1,237 @@
+@lesson
+title: Adaptive methods: AdaGrad, RMSProp and Adam
+summary: Write and run the AdaGrad, RMSProp and Adam updates, and explain what per-coordinate scaling, momentum and bias correction each contribute.
+objective: Compute AdaGrad, RMSProp and Adam updates by hand for given gradients.
+objective: Explain why bias correction is needed in Adam and why its early steps have size about the learning rate.
+objective: Implement AdaGrad and Adam from scratch and state what is and is not guaranteed about their convergence.
+reading: Mathematics for Machine Learning does not cover these methods in depth; look up the topic "adaptive learning rates" in a deep learning text, and read the Adam paper (Kingma and Ba, 2014) for the algorithm.
+@article
+In a model with word embeddings, a common word's parameters receive a gradient at nearly every step, and a rare word's parameters only occasionally. A single learning rate is too large for the first group and too small for the second. **Adaptive methods** give every parameter its own step size, learned from the history of its gradients.
+
+### AdaGrad
+
+**AdaGrad** (Duchi, Hazan and Singer, 2011) accumulates the squared gradient of each coordinate and divides the step by its square root:
+
+$$G_{k,j} = G_{k-1,j} + g_{k,j}^2, \qquad x_{k+1,j} = x_{k,j} - \frac{\eta}{\sqrt{G_{k,j}} + \varepsilon}\,g_{k,j},$$
+
+where $\mathbf{g}_k = \nabla f(\mathbf{x}_k)$ and $\varepsilon$ is a tiny constant (such as $10^{-8}$) that prevents division by zero. Coordinates with large past gradients get small steps; coordinates with small gradients get relatively large steps. Take two coordinates with gradients $\mathbf{g}_1 = (2, 0.1)$ and $\mathbf{g}_2 = (1, 0.1)$ and ignore $\varepsilon$. At step 1 the update is $\eta\,(1, 1)$: every coordinate moves by exactly $\eta$, whatever its scale. At step 2, $G = (5, 0.02)$ and the steps are $\eta\,(1/\sqrt5,\; 0.1/\sqrt{0.02}) = \eta\,(0.447,\; 0.707)$: the coordinate with the large gradient has slowed down more. Since $G$ only grows, the effective step size only shrinks, which suits convex problems but can stall training too early on long runs.
+
+### RMSProp
+
+**RMSProp**, introduced in lecture slides by Tieleman and Hinton (2012), replaces the sum by an exponential moving average, so old gradients are forgotten:
+
+$$v_{k,j} = \rho\,v_{k-1,j} + (1 - \rho)\,g_{k,j}^2, \qquad x_{k+1,j} = x_{k,j} - \frac{\eta}{\sqrt{v_{k,j}} + \varepsilon}\,g_{k,j},$$
+
+with $\rho$ typically $0.9$ to $0.99$. Dividing by the root-mean-square of recent gradients normalizes the step: if a gradient keeps a steady size $g$, then $v \to g^2$ and the step approaches $\eta\,\operatorname{sign}(g)$.
+
+### Adam
+
+**Adam** (Kingma and Ba, 2014) keeps a moving average of the gradient (momentum) and of its square (scaling):
+
+$$\mathbf{m}_k = \beta_1\mathbf{m}_{k-1} + (1 - \beta_1)\mathbf{g}_k, \qquad \mathbf{v}_k = \beta_2\mathbf{v}_{k-1} + (1 - \beta_2)\mathbf{g}_k^2,$$
+$$\hat{\mathbf{m}}_k = \frac{\mathbf{m}_k}{1 - \beta_1^k}, \qquad \hat{\mathbf{v}}_k = \frac{\mathbf{v}_k}{1 - \beta_2^k}, \qquad \mathbf{x}_{k+1} = \mathbf{x}_k - \eta\,\frac{\hat{\mathbf{m}}_k}{\sqrt{\hat{\mathbf{v}}_k} + \varepsilon},$$
+
+with squares and square roots taken coordinatewise and the usual defaults $\beta_1 = 0.9$, $\beta_2 = 0.999$, $\varepsilon = 10^{-8}$.
+
+**Why the bias correction?** The averages start at $\mathbf{m}_0 = \mathbf{v}_0 = \mathbf{0}$. If the gradient were a constant $g$, then $m_k = (1 - \beta_1^k)\,g$: far too small for small $k$. Dividing by $1 - \beta_1^k$ removes this bias. At step 1, $\hat m_1 = g_1$ and $\hat v_1 = g_1^2$, so the first update is $\eta\,g_1/(|g_1| + \varepsilon) \approx \eta\,\operatorname{sign}(g_1)$ in every coordinate. With $g_1 = (2, -0.05)$ and then $g_2 = (1, -0.05)$, step 2 uses $\hat m_2 = (1.474, -0.05)$ and $\hat v_2 \approx (2.499, 0.0025)$, so the update factors are $(0.932, -1.000)$ times $\eta$. Two coordinates whose gradients differ by a factor of 20 still move by nearly the same amount.
+
+| method | memory of gradient | per-coordinate scale | notes |
+|---|---|---|---|
+| AdaGrad | none | sum of squares (never forgets) | step size only decreases |
+| RMSProp | none | moving average of squares | forgets old gradients |
+| Adam | moving average (momentum) | moving average of squares, bias-corrected | defaults $\beta_1=0.9$, $\beta_2=0.999$ |
+
+### What is and is not guaranteed
+
+Adam's step size is roughly $\eta$ per coordinate, regardless of gradient scale, which makes $\eta$ easier to tune across problems, and it is widely used for training neural networks, for example transformers. But it is not a universal fix. Reddi, Kale and Kumar (2018) gave convex examples on which Adam does not converge and proposed a variant, AMSGrad, with a convergence guarantee. In practice adaptive methods can generalize differently from SGD with momentum, and the best choice depends on the model. A common refinement is AdamW, which applies weight decay separately from the adaptive scaling (Loshchilov and Hutter).
+
+### In code
+
+```python
+import math
+
+def adagrad(grad, x0, lr, steps, eps=1e-8):
+    x = list(x0)
+    acc = [0.0] * len(x)
+    for _ in range(steps):
+        g = grad(x)
+        acc = [a + gi * gi for a, gi in zip(acc, g)]
+        x = [xi - lr * gi / (math.sqrt(a) + eps)
+             for xi, gi, a in zip(x, g, acc)]
+    return x
+```
+
+With PyTorch, `torch.optim.Adam(params, lr=1e-3)` runs exactly the formulas above on every parameter tensor.
+
+@example
+title: Two AdaGrad steps by hand
+problem: AdaGrad with $\eta = 0.5$ (ignore $\varepsilon$) sees the gradients $g_1 = (3, 0.4)$ and $g_2 = (1, 0.4)$ for two coordinates. Find the two step vectors.
+step: After the first gradient, $G_1 = (9, 0.16)$ and $\sqrt{G_1} = (3, 0.4)$.
+step: First step $= 0.5\,g_1/\sqrt{G_1} = 0.5\,(1, 1) = (0.5, 0.5)$, which is $\eta\,\operatorname{sign}(g)$.
+step: After the second gradient, $G_2 = (10, 0.32)$ and $\sqrt{G_2} = (3.162, 0.566)$.
+step: Second step $= 0.5\,(1/3.162,\; 0.4/0.566) = (0.158, 0.354)$.
+answer: The steps are $(0.5, 0.5)$ and then about $(0.158, 0.354)$: the coordinate with the big first gradient slows down more.
+
+@example
+title: Bias correction at step 2
+problem: Adam with $\beta_1 = 0.9$ and $\beta_2 = 0.999$ sees the one-dimensional gradients $g_1 = 6$ and $g_2 = 6$. Find $m_2$, $\hat m_2$ and $\hat v_2$, and the update size in units of $\eta$ (ignore $\varepsilon$).
+step: $m_1 = 0.1 \cdot 6 = 0.6$ and $m_2 = 0.9\cdot 0.6 + 0.1 \cdot 6 = 1.14$.
+step: $\hat m_2 = m_2/(1 - 0.9^2) = 1.14/0.19 = 6$. The correction restores the true gradient.
+step: $v_1 = 0.001\cdot 36 = 0.036$ and $v_2 = 0.999\cdot 0.036 + 0.001\cdot 36 = 0.071964$; $\hat v_2 = 0.071964/(1 - 0.999^2) = 0.071964/0.001999 = 36$.
+step: The update is $\eta\,\hat m_2/\sqrt{\hat v_2} = \eta\cdot 6/6 = \eta$. Without the correction it would be $\eta \cdot 1.14/\sqrt{0.071964} \approx 4.25\,\eta$, an inflated step, because $m$ and $v$ are biased by different amounts.
+answer: $m_2 = 1.14$, $\hat m_2 = 6$, $\hat v_2 = 36$, and the update has size exactly $\eta$.
+
+@mistakes
+- Thinking AdaGrad's step grows with gradient size: it divides by the square root of the accumulated squares, so each coordinate's first step has size $\eta$ whatever the scale.
+- Leaving out the bias correction in Adam: early steps are then badly scaled, since $\mathbf{m}$ and $\mathbf{v}$ start at zero and are biased low by different factors.
+- Treating $\varepsilon$ as a formality: it sits inside the denominator, so with tiny gradients a large $\varepsilon$ turns Adam into something close to momentum SGD.
+- Assuming Adam always converges on convex problems because it is popular: counterexamples exist, and the learning rate still needs tuning.
+
+@practice num
+prompt: AdaGrad with $\eta = 0.5$ (ignore $\varepsilon$) sees a one-dimensional gradient sequence $g_1 = 1$ and $g_2 = 0.5$. What is the size of the second step? Give your answer to three decimal places.
+answer: 0.224
+tol: 0.001
+check: 0.5 * 0.5 / sqrt(1 ** 2 + 0.5 ** 2)
+hint: The accumulator after two gradients is $G_2 = g_1^2 + g_2^2$, and the step is $\eta\,g_2/\sqrt{G_2}$.
+solution: $G_2 = 1 + 0.25 = 1.25$ and $\sqrt{1.25} \approx 1.118$. The step is $0.5\cdot 0.5/1.118 \approx 0.224$.
+
+@practice num
+prompt: Adam with $\beta_1 = 0.9$ sees the one-dimensional gradients $g_1 = 4$ and $g_2 = 2$, with $m_0 = 0$. What is the bias-corrected first moment $\hat m_2$? Give your answer to three decimal places.
+answer: 2.947
+tol: 0.001
+check: (0.9 * (0.1 * 4) + 0.1 * 2) / (1 - 0.9 ** 2)
+hint: First $m_1 = 0.1\cdot 4$, then $m_2 = 0.9\,m_1 + 0.1\cdot 2$; divide by $1 - \beta_1^2$.
+solution: $m_1 = 0.4$ and $m_2 = 0.36 + 0.2 = 0.56$. The correction factor is $1 - 0.81 = 0.19$, so $\hat m_2 = 0.56/0.19 \approx 2.947$, a weighted average of $4$ and $2$ with more weight on the recent gradient.
+
+@practice mc
+prompt: Why does Adam divide $\mathbf{m}_k$ and $\mathbf{v}_k$ by $1 - \beta_1^k$ and $1 - \beta_2^k$?
+choice*: The averages start at zero, so early values are biased toward zero, and the division removes that bias.
+choice: It guarantees convergence on convex problems.
+choice: It makes the update independent of the learning rate.
+choice: It reduces the variance of the stochastic gradient.
+hint: Compute $m_1$ from $m_0 = 0$ for a gradient $g$: how does it compare with $g$?
+solution: With $\mathbf{m}_0 = \mathbf{0}$, a constant gradient $g$ gives $m_k = (1 - \beta_1^k)g$, which underestimates $g$ early on, and the same holds for $\mathbf{v}$ with $\beta_2$. Dividing by the factor removes the bias. It does not guarantee convergence, does not remove $\eta$ from the update, and does not reduce gradient variance.
+
+@practice code
+prompt: Write `adagrad(grad, x0, lr, steps, eps=1e-8)` that runs AdaGrad: keep a per-coordinate accumulator of squared gradients, starting at zero, and at each step first add the new squared gradient to the accumulator, then update `x[j] -= lr * g[j] / (sqrt(acc[j]) + eps)`. Return the final point as a list, and do not modify `x0`. For example, with `grad = lambda v: [3.0, 4.0]` and `lr = 0.5`, the first step from `[0.0, 0.0]` moves each coordinate by about `-0.5`.
+starter:
+```python
+import math
+
+def adagrad(grad, x0, lr, steps, eps=1e-8):
+    return list(x0)
+```
+tests:
+```python
+import math
+g = lambda v: [3.0, 4.0]
+r = adagrad(g, [0.0, 0.0], 0.5, 1)
+assert all(abs(a + 0.5) < 1e-6 for a in r)
+r = adagrad(g, [0.0, 0.0], 0.5, 2)
+want = -0.5 * (1 + 3 / math.sqrt(18))
+assert all(abs(a - want) < 1e-6 for a in r)
+q = lambda v: [2 * (v[0] - 1), 2 * (v[1] + 2)]
+r = adagrad(q, [0.0, 0.0], 1.0, 3)
+assert abs(r[0] - 1.0) < 1e-6 and abs(r[1] + 1.6872025) < 1e-5
+start = [0.0, 0.0]
+adagrad(q, start, 1.0, 3)
+assert start == [0.0, 0.0]
+assert adagrad(q, [5.0, 5.0], 1.0, 0) == [5.0, 5.0]
+```
+model:
+```python
+import math
+
+def adagrad(grad, x0, lr, steps, eps=1e-8):
+    """AdaGrad with a per-coordinate accumulator of squared gradients."""
+    x = list(x0)
+    acc = [0.0] * len(x)
+    for _ in range(steps):
+        g = grad(x)
+        acc = [a + gi * gi for a, gi in zip(acc, g)]
+        x = [xi - lr * gi / (math.sqrt(a) + eps)
+             for xi, gi, a in zip(x, g, acc)]
+    return x
+```
+hint: Update the accumulator with the current gradient before computing the step, so the first step has size about `lr`.
+solution: The accumulator must include the current gradient, otherwise the first step divides by zero. With the gradient fixed at $(3, 4)$, the second step is $0.5 \cdot 3/\sqrt{18}$ for the first coordinate and $0.5\cdot 4/\sqrt{32}$ for the second, which are equal. In the quadratic test, the first coordinate reaches its minimizer at once and then has zero gradient.
+
+@practice code
+prompt: Write `adam(grad, x0, lr, steps, beta1=0.9, beta2=0.999, eps=1e-8)` that implements Adam with bias correction. Keep first and second moment vectors `m` and `v` starting at zero; at step `t = 1, 2, ...` update them with the current gradient, compute `m_hat = m / (1 - beta1**t)` and `v_hat = v / (1 - beta2**t)`, then `x[j] -= lr * m_hat[j] / (sqrt(v_hat[j]) + eps)`. Return the final point as a list and do not modify `x0`.
+starter:
+```python
+import math
+
+def adam(grad, x0, lr, steps, beta1=0.9, beta2=0.999, eps=1e-8):
+    return list(x0)
+```
+tests:
+```python
+g = lambda v: [2.0, -0.05]
+r = adam(g, [0.0, 0.0], 0.1, 1)
+assert abs(r[0] + 0.1) < 1e-6 and abs(r[1] - 0.1) < 1e-6
+r = adam(g, [0.0, 0.0], 0.1, 2)
+assert abs(r[0] + 0.2) < 1e-6 and abs(r[1] - 0.2) < 1e-6
+q = lambda v: [2 * (v[0] - 1), 2 * (v[1] + 2)]
+r = adam(q, [0.0, 0.0], 0.1, 300)
+assert abs(r[0] - 1.0) < 1e-3 and abs(r[1] + 2.0) < 1e-3
+start = [1.0, 2.0]
+adam(q, start, 0.1, 5)
+assert start == [1.0, 2.0]
+assert adam(q, [3.0, 4.0], 0.1, 0) == [3.0, 4.0]
+```
+model:
+```python
+import math
+
+def adam(grad, x0, lr, steps, beta1=0.9, beta2=0.999, eps=1e-8):
+    """Adam with bias-corrected first and second moment estimates."""
+    x = list(x0)
+    m = [0.0] * len(x)
+    v = [0.0] * len(x)
+    for t in range(1, steps + 1):
+        g = grad(x)
+        m = [beta1 * mi + (1 - beta1) * gi for mi, gi in zip(m, g)]
+        v = [beta2 * vi + (1 - beta2) * gi * gi for vi, gi in zip(v, g)]
+        m_hat = [mi / (1 - beta1 ** t) for mi in m]
+        v_hat = [vi / (1 - beta2 ** t) for vi in v]
+        x = [xi - lr * mh / (math.sqrt(vh) + eps)
+             for xi, mh, vh in zip(x, m_hat, v_hat)]
+    return x
+```
+hint: Count `t` from 1 so that `1 - beta1**t` is never zero, and compute both corrected moments before the update.
+solution: With a constant gradient the bias-corrected moments equal $g$ and $g^2$ exactly at every step, so each coordinate moves by $\eta\,\operatorname{sign}(g)$, regardless of its scale: the first two tests fail if the correction is omitted. The quadratic test checks that the method settles at the minimizer, and the step counter must start at 1.
+
+@quiz text
+prompt: What does this program print?
+```python
+v = 0.0
+for g in [2.0, 2.0]:
+    v = 0.9 * v + 0.1 * g * g
+    print(round(g / v ** 0.5, 4))
+```
+answer:
+```
+3.1623
+2.2942
+```
+check: run("v = 0.0\nfor g in [2.0, 2.0]:\n    v = 0.9 * v + 0.1 * g * g\n    print(round(g / v ** 0.5, 4))")
+hint: This is the RMSProp scaling factor $g/\sqrt{v}$ with $\rho = 0.9$. Compute $v$ at each step.
+solution: After the first gradient, $v = 0.1\cdot 4 = 0.4$ and $2/\sqrt{0.4} = 3.1623$. After the second, $v = 0.36 + 0.4 = 0.76$ and $2/\sqrt{0.76} = 2.2942$. Without bias correction the scale starts large and decreases toward $1$ as $v$ approaches $g^2 = 4$.
+
+@quiz num
+prompt: AdaGrad with $\eta = 0.3$ (ignore $\varepsilon$) sees the one-dimensional gradients $1, 2, 2, 4$. What is the size of the fourth step?
+answer: 0.24
+tol: 0.001
+check: 0.3 * 4 / sqrt(1 + 4 + 4 + 16)
+hint: Sum the squares of all four gradients before taking the square root.
+solution: The accumulator is $1 + 4 + 4 + 16 = 25$ with square root $5$, so the step is $0.3\cdot 4/5 = 0.24$.
+
+@quiz ms
+prompt: Which of these statements are true? Select all that apply.
+choice*: AdaGrad's accumulator never decreases, so its effective step size for each coordinate can only shrink.
+choice*: RMSProp replaces AdaGrad's sum of squared gradients by an exponential moving average.
+choice*: Adam combines a moving average of the gradient with a moving average of the squared gradient.
+choice: Adam is guaranteed to converge on every convex problem with its default settings.
+hint: Recall the counterexamples of Reddi, Kale and Kumar (2018).
+solution: AdaGrad's sum of squares only grows, RMSProp forgets old gradients through the exponential average, and Adam uses first and second moment estimates. Convex counterexamples show that Adam can fail to converge, which motivated variants such as AMSGrad.

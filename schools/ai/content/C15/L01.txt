@@ -1,0 +1,251 @@
+@lesson
+title: Linear regression in depth: normal equations, gradient descent and diagnostics
+summary: Fit a multi-feature linear model by solving the normal equations and by gradient descent, and use residuals, R-squared and the curvature of the loss to judge the fit.
+objective: Derive the gradient of the mean squared error for a model with several features and the normal equations that set it to zero.
+objective: Implement both solvers from scratch in plain Python and explain when each is preferable.
+objective: Compute residuals and $R^2$, and explain how feature scale and correlation control the speed of gradient descent.
+reading: The Elements of Statistical Learning, the chapter on linear methods for regression: the section on linear regression models and least squares.
+@article
+A delivery company wants to predict the minutes a courier needs for a trip from two numbers: the distance in kilometers and the number of stairs flights at the destination. With one feature a line fits by eye. With two or more we need a method that scales, and the same method is the base on which logistic regression, neural networks and many other models are built.
+
+### The model in matrix form
+
+Give each example a leading feature equal to 1, so the intercept becomes an ordinary weight. With $p$ features plus that constant, an example is $\mathbf{x}_i \in \mathbb{R}^{p+1}$ and the prediction is $\hat{y}_i = \mathbf{w}^\top \mathbf{x}_i$. Stack the examples as the rows of a matrix $\mathbf{X}$ with $n$ rows. All predictions are then $\mathbf{X}\mathbf{w}$, and the mean squared error is
+
+$$L(\mathbf{w}) = \frac{1}{n}\lVert \mathbf{X}\mathbf{w} - \mathbf{y} \rVert_2^2 .$$
+
+### The gradient and the normal equations
+
+Write the residual vector $\mathbf{r} = \mathbf{X}\mathbf{w} - \mathbf{y}$, so $L = \frac{1}{n}\mathbf{r}^\top\mathbf{r}$. Perturbing $\mathbf{w}$ by $\mathbf{d}$ changes $\mathbf{r}$ by $\mathbf{X}\mathbf{d}$, and the first-order change of $\mathbf{r}^\top\mathbf{r}$ is $2\,\mathbf{r}^\top\mathbf{X}\mathbf{d}$. Therefore
+
+$$\nabla_{\mathbf{w}} L = \frac{2}{n}\,\mathbf{X}^\top(\mathbf{X}\mathbf{w} - \mathbf{y}) .$$
+
+Component $j$ of this vector is $\frac{2}{n}\sum_i r_i x_{ij}$: the correlation of the errors with feature $j$. Setting the gradient to zero gives the **normal equations**
+
+$$\mathbf{X}^\top\mathbf{X}\,\mathbf{w} = \mathbf{X}^\top\mathbf{y} .$$
+
+If the columns of $\mathbf{X}$ are linearly independent, $\mathbf{X}^\top\mathbf{X}$ is invertible and the solution is unique. The Hessian of $L$ is $\frac{2}{n}\mathbf{X}^\top\mathbf{X}$, which is positive semidefinite, so $L$ is convex and this stationary point is a global minimum.
+
+Take five trips with columns $(1, \text{km}, \text{flights})$: rows $(1,1,0)$, $(1,1,1)$, $(1,2,1)$, $(1,3,3)$, $(1,4,2)$ and times $3, 4, 6, 10, 10$. Then $\mathbf{X}^\top\mathbf{X}$ has rows $(5, 11, 7)$, $(11, 31, 20)$, $(7, 20, 15)$ and $\mathbf{X}^\top\mathbf{y} = (33, 89, 60)$. Solving gives $\mathbf{w} \approx (1.408, 1.535, 1.296)$: a base time of 1.4 minutes, 1.5 per kilometer and 1.3 per flight.
+
+### Gradient descent
+
+Solving the normal equations costs about $O(p^3)$ operations and needs all of $\mathbf{X}^\top\mathbf{X}$ in memory. Gradient descent repeats $\mathbf{w} \leftarrow \mathbf{w} - \eta\nabla L$ using only matrix-vector products, which scales to huge data and extends to models with no closed form. Its behavior is set by the eigenvalues of the Hessian. It converges for every start exactly when $0 < \eta < 2/\lambda_{\max}$, and along the direction of the smallest eigenvalue $\lambda_{\min}$ the error shrinks by a factor $1 - \eta\lambda_{\min}$ per step. The ratio $\lambda_{\max}/\lambda_{\min}$, the **condition number**, therefore measures how slow descent is. For the trips above the Hessian eigenvalues are about $0.35$, $0.67$ and $19.4$, so $\eta$ must stay below $0.103$ and the slowest direction improves by only a few percent per step. Features with very different scales or strong correlation produce such a spread, which is why practitioners **standardize** features (subtract the mean, divide by the standard deviation) before running gradient descent.
+
+### Diagnostics
+
+Residuals $y_i - \hat{y}_i$ show where a fit fails. When the model has an intercept, the normal equations say the residuals sum to zero and are orthogonal to every feature column, so patterns must be looked for in other views: residuals against the predictions, or against an omitted variable. The **coefficient of determination** compares the fit with always predicting the mean $\bar{y}$:
+
+$$R^2 = 1 - \frac{\sum_i (y_i - \hat{y}_i)^2}{\sum_i (y_i - \bar{y})^2} .$$
+
+It is 1 for a perfect fit, 0 for a model no better than the mean, and negative when the model is worse. For the trips, the residual sum of squares is $10/71 \approx 0.141$ against a total of $43.2$, so $R^2 \approx 0.9967$. A high training $R^2$ says nothing about new data; with $p + 1 = n$ the fit is perfect whatever the signal.
+
+### In code
+
+```python
+X = [[1, 1, 0], [1, 1, 1], [1, 2, 1], [1, 3, 3], [1, 4, 2]]
+y = [3, 4, 6, 10, 10]
+
+def gradient(X, y, w):
+    n = len(X)
+    errs = [sum(wj * xj for wj, xj in zip(w, row)) - t
+            for row, t in zip(X, y)]
+    return [2 / n * sum(e * row[j] for e, row in zip(errs, X))
+            for j in range(len(w))]
+
+w = [0.0, 0.0, 0.0]
+for step in range(3):
+    g = gradient(X, y, w)
+    w = [wj - 0.05 * gj for wj, gj in zip(w, g)]
+    print(step + 1, [round(wj, 4) for wj in w])
+
+def solve(A, b):
+    """Gaussian elimination with partial pivoting."""
+    n = len(A)
+    M = [row[:] + [bi] for row, bi in zip(A, b)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        for r in range(c + 1, n):
+            f = M[r][c] / M[c][c]
+            M[r] = [a - f * k for a, k in zip(M[r], M[c])]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        s = sum(M[r][k] * x[k] for k in range(r + 1, n))
+        x[r] = (M[r][n] - s) / M[r][r]
+    return x
+
+XtX = [[sum(r[i] * r[j] for r in X) for j in range(3)] for i in range(3)]
+Xty = [sum(r[i] * t for r, t in zip(X, y)) for i in range(3)]
+print([round(v, 4) for v in solve(XtX, Xty)])
+```
+
+With NumPy the same two solutions are `np.linalg.solve(X.T @ X, X.T @ y)` and `w -= eta * 2 / n * X.T @ (X @ w - y)`. In practice a QR or SVD-based routine such as `np.linalg.lstsq` is preferred to forming $\mathbf{X}^\top\mathbf{X}$, which squares the condition number.
+
+@example
+title: One gradient step with two weights
+problem: Fit $\hat{y} = w_0 + w_1 x$ to the points $(1, 2)$ and $(3, 4)$ by gradient descent on the mean squared error, starting from $\mathbf{w} = (0, 0)$ with step size $\eta = 0.1$. Take one step and compare the new weights with the exact fit.
+step: Build the design matrix with a leading column of ones: $\mathbf{X} = \begin{pmatrix}1 & 1\\ 1 & 3\end{pmatrix}$ and $\mathbf{y} = (2, 4)^\top$.
+step: At $\mathbf{w} = \mathbf{0}$ the residuals are $\mathbf{X}\mathbf{w} - \mathbf{y} = (-2, -4)$.
+step: Apply $\nabla L = \frac{2}{n}\mathbf{X}^\top\mathbf{r}$ with $n = 2$: the first component is $-2 - 4 = -6$ and the second is $(1)(-2) + (3)(-4) = -14$, so $\nabla L = (-6, -14)$.
+step: Update: $\mathbf{w} = (0, 0) - 0.1\,(-6, -14) = (0.6, 1.4)$.
+step: Compare: the line through both points is $y = 1 + x$, so $\mathbf{w}^\star = (1, 1)$. The step overshot the slope ($1.4 > 1$) and undershot the intercept ($0.6 < 1$): the steep direction of the loss, the slope, moves fastest.
+answer: $\mathbf{w} = (0.6, 1.4)$, while the exact fit is $(1, 1)$.
+
+@example
+title: Normal equations and $R^2$ for a line
+problem: Fit $\hat{y} = w_0 + w_1 x$ to the points $(1, 2)$, $(2, 3)$ and $(3, 7)$ with the normal equations, then compute the residuals and $R^2$.
+step: With a column of ones, $\mathbf{X}^\top\mathbf{X} = \begin{pmatrix}3 & 6\\ 6 & 14\end{pmatrix}$ and $\mathbf{X}^\top\mathbf{y} = (12, 29)^\top$, since $2 + 3 + 7 = 12$ and $2 + 6 + 21 = 29$.
+step: The determinant is $3 \cdot 14 - 36 = 6$. By Cramer's rule $w_0 = (14 \cdot 12 - 6 \cdot 29)/6 = -1$ and $w_1 = (3 \cdot 29 - 6 \cdot 12)/6 = 2.5$.
+step: The predictions are $1.5, 4, 6.5$, so the residuals $y - \hat{y}$ are $0.5, -1, 0.5$. They sum to $0$, as the normal equations require.
+step: The residual sum of squares is $0.25 + 1 + 0.25 = 1.5$. The mean of $y$ is $4$, so the total sum of squares is $4 + 1 + 9 = 14$.
+step: $R^2 = 1 - 1.5/14 \approx 0.893$.
+answer: $\mathbf{w} = (-1, 2.5)$ and $R^2 \approx 0.893$.
+
+@mistakes
+- Forgetting the column of ones: without it the model is forced through the origin, and the residuals no longer sum to zero.
+- Running gradient descent on raw features of very different scales: the largest curvature caps the step size, so the weight on the small-scale feature barely moves. Standardize first.
+- Reading a high training $R^2$ as good predictive performance, or comparing $R^2$ across data sets with different target variance.
+- Forming $\mathbf{X}^\top\mathbf{X}$ when columns are nearly collinear: the matrix is almost singular and the solution is numerically unreliable.
+
+@practice num
+prompt: A model predicts $2.5, 3.5, 6.5, 7.5$ for targets $2, 4, 6, 8$. What is its $R^2$?
+answer: 0.95
+check: 1 - sum((p - t) ** 2 for p, t in zip([2.5, 3.5, 6.5, 7.5], [2, 4, 6, 8])) / sum((t - 5) ** 2 for t in [2, 4, 6, 8])
+hint: The mean of the targets is 5. Compare the residual sum of squares with the total sum of squares around the mean.
+solution: Each residual is $\pm 0.5$, so the residual sum of squares is $4 \times 0.25 = 1$. The deviations from the mean 5 are $-3, -1, 1, 3$, giving a total sum of squares of $20$. So $R^2 = 1 - 1/20 = 0.95$.
+
+@practice num
+prompt: The model $\hat{y} = w_0 + w_1 x$ with $\mathbf{w} = (1, 0.5)$ is evaluated on the points $(2, 3)$, $(4, 5)$ and $(0, 1)$. What is the component of the mean-squared-error gradient with respect to the slope $w_1$? Give three decimal places.
+answer: -6.667
+tol: 0.001
+check: 2 / 3 * sum((1 + 0.5 * x - y) * x for x, y in [(2, 3), (4, 5), (0, 1)])
+hint: The slope component is $\frac{2}{n}\sum_i (\hat{y}_i - y_i)\,x_i$. The predictions are 2, 3 and 1.
+solution: The errors $\hat{y} - y$ are $-1$, $-2$ and $0$. Weighting by $x$ gives $(-1)(2) + (-2)(4) + 0 = -10$, and $\frac{2}{3}(-10) \approx -6.667$.
+
+@practice mc
+prompt: Two features are measured on very different scales: one is in the thousands, the other between 0 and 1. Gradient descent on the mean squared error is slow with any safe step size. What is the best explanation and remedy?
+choice*: The Hessian has a very large condition number, so the step size is capped by the large-scale direction while the small-scale direction crawls; standardize the features.
+choice: The gradient is zero for the large-scale feature; add an intercept to restore it.
+choice: The mean squared error is not convex for badly scaled data; switch to the normal equations for a better local minimum.
+choice: The step size must be larger than $2/\lambda_{\max}$ to move the small-scale weight; increase it.
+hint: Compare the eigenvalues of $\frac{2}{n}\mathbf{X}^\top\mathbf{X}$ along the two feature directions, and recall the condition for convergence.
+solution: The curvature along the large-scale feature is huge, so convergence needs $\eta < 2/\lambda_{\max}$ and hence a tiny step, which makes the weight on the small-scale feature change very slowly. The loss stays convex, the gradient is not zero, and a step above $2/\lambda_{\max}$ diverges. Standardizing the features brings the eigenvalues close together.
+
+@practice code
+prompt: Write `gradient(X, y, w)` that returns the gradient of the mean squared error $\frac{1}{n}\sum_i (\mathbf{w}^\top\mathbf{x}_i - y_i)^2$ as a list with one entry per weight. `X` is a list of rows (lists of floats, any constant column already included), `y` a list of targets and `w` a list of weights. For example, `gradient([[1, 2]], [3], [0, 0])` returns `[-6.0, -12.0]`.
+starter:
+```python
+def gradient(X, y, w):
+    pass
+```
+tests:
+```python
+got = gradient([[1, 2]], [3], [0, 0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-6.0, -12.0]))
+got = gradient([[1, 0], [1, 2]], [1, 5], [1, 2])
+assert all(abs(a) < 1e-9 for a in got) and len(got) == 2
+got = gradient([[1, 1, 2], [1, 3, 0]], [4, 2], [0, 1, 1])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 2.0, -2.0]))
+got = gradient([[2], [4], [6]], [0, 0, 0], [1])
+assert abs(got[0] - 112 / 3) < 1e-9
+```
+model:
+```python
+def gradient(X, y, w):
+    """Gradient of the mean squared error of the linear model w."""
+    n = len(X)
+    errs = [sum(wj * xj for wj, xj in zip(w, row)) - t
+            for row, t in zip(X, y)]
+    return [2 / n * sum(e * row[j] for e, row in zip(errs, X))
+            for j in range(len(w))]
+```
+hint: First compute the error $\hat{y}_i - y_i$ of every row, then build each component as a sum of error times the feature value.
+solution: Component $j$ is $\frac{2}{n}\sum_i e_i x_{ij}$, where $e_i$ is the error of row $i$. The last test has errors 2, 4, 6 and catches a gradient that forgets to divide by $n$.
+
+@practice code
+prompt: Write `gd_fit(X, y, lr, steps)` that starts from all-zero weights and runs exactly `steps` steps of gradient descent with step size `lr` on the mean squared error of the linear model, then returns the weights as a list. `X` is a list of rows including any constant column, and `y` the targets. Do not stop early, even if the weights grow.
+starter:
+```python
+def gd_fit(X, y, lr, steps):
+    w = [0.0] * len(X[0])
+    return w
+```
+tests:
+```python
+X = [[1, 0, 0], [1, 1, 0], [1, 0, 1], [1, 1, 1]]
+y = [1, 3, 0, 2]
+got = gd_fit(X, y, 0.5, 300)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [1.0, 2.0, -1.0]))
+assert gd_fit(X, y, 0.5, 0) == [0.0, 0.0, 0.0]
+got = gd_fit(X, y, 0.5, 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.625, 1.0, -0.3125]))
+assert max(abs(v) for v in gd_fit(X, y, 1.0, 100)) > 1e3
+```
+model:
+```python
+def gd_fit(X, y, lr, steps):
+    """Gradient descent on the MSE of a linear model, started at zero."""
+    n = len(X)
+    w = [0.0] * len(X[0])
+    for _ in range(steps):
+        errs = [sum(a * b for a, b in zip(w, row)) - t
+                for row, t in zip(X, y)]
+        g = [2 / n * sum(e * row[j] for e, row in zip(errs, X))
+             for j in range(len(w))]
+        w = [wj - lr * gj for wj, gj in zip(w, g)]
+    return w
+```
+hint: Inside a loop of `steps` iterations, compute all components of the gradient from the current weights, then update every weight at once.
+solution: Compute the full gradient from the current weights before changing any of them, then subtract `lr` times it. The last test uses a step size of 1.0, above $2/\lambda_{\max} \approx 0.63$ for this data, so the weights must blow up; the two-step test catches updating weights one at a time with a stale gradient.
+
+@quiz code
+prompt: Write `r_squared(y, preds)` that returns the coefficient of determination $1 - \sum(y_i - \hat{y}_i)^2 / \sum(y_i - \bar{y})^2$ for two equal-length lists. Assume the targets are not all equal. A model worse than the mean gives a negative value.
+starter:
+```python
+def r_squared(y, preds):
+    pass
+```
+tests:
+```python
+assert abs(r_squared([1, 2, 3], [1, 2, 3]) - 1.0) < 1e-9
+assert abs(r_squared([1, 3, 5], [2, 3, 4]) - 0.75) < 1e-9
+assert abs(r_squared([1, 3, 5], [3, 3, 3])) < 1e-9
+assert abs(r_squared([0, 2], [2, 0]) - (-3.0)) < 1e-9
+```
+model:
+```python
+def r_squared(y, preds):
+    """Coefficient of determination of predictions against targets."""
+    mean = sum(y) / len(y)
+    ss_res = sum((t - p) ** 2 for t, p in zip(y, preds))
+    ss_tot = sum((t - mean) ** 2 for t in y)
+    return 1 - ss_res / ss_tot
+```
+hint: Compute the residual sum of squares and the total sum of squares about the mean, then take one minus their ratio.
+solution: The ratio compares the model's squared error with that of the constant model $\bar{y}$. The second test gives $1 - 2/8 = 0.75$ and the last gives $1 - 8/2 = -3$, so do not clip negative values to zero.
+
+@quiz text
+prompt: What does this program print?
+```python
+X = [[1, 2], [1, -2]]
+y = [4, 0]
+w = [0.0, 0.0]
+for _ in range(2):
+    errs = [w[0] * r[0] + w[1] * r[1] - t for r, t in zip(X, y)]
+    g = [sum(e * r[j] for e, r in zip(errs, X)) for j in range(2)]
+    w = [w[j] - 0.25 * g[j] for j in range(2)]
+print(w)
+```
+answer: [1.5, 0.0]
+check: run("X = [[1, 2], [1, -2]]\ny = [4, 0]\nw = [0.0, 0.0]\nfor _ in range(2):\n    errs = [w[0] * r[0] + w[1] * r[1] - t for r, t in zip(X, y)]\n    g = [sum(e * r[j] for e, r in zip(errs, X)) for j in range(2)]\n    w = [w[j] - 0.25 * g[j] for j in range(2)]\nprint(w)")
+hint: Here $2/n = 1$, so the gradient is $\mathbf{X}^\top\mathbf{r}$. After the first step the weights are $[1.0, 2.0]$.
+solution: Step 1: the errors are $-4$ and $0$, the gradient is $(-4, -8)$ and $\mathbf{w} = (1, 2)$. Step 2: the predictions are $5$ and $-3$, the errors are $1$ and $-3$, the gradient is $(-2, 8)$, and $\mathbf{w} = (1.5, 0)$.
+
+@quiz num
+prompt: Gradient descent is run on the mean squared error of a linear model with design matrix rows $(1, -1)$, $(1, 1)$ and $(1, 3)$. What is the largest step size below which it converges from every starting point? Give three decimal places.
+answer: 0.25
+tol: 0.001
+check: 2 / max(np.linalg.eigvalsh(2 / 3 * np.array([[1, -1], [1, 1], [1, 3]]).T @ np.array([[1, -1], [1, 1], [1, 3]])))
+hint: The Hessian is $\frac{2}{n}\mathbf{X}^\top\mathbf{X}$, and the bound is $2/\lambda_{\max}$.
+solution: $\mathbf{X}^\top\mathbf{X} = \begin{pmatrix}3 & 3\\ 3 & 11\end{pmatrix}$, so the Hessian is $\begin{pmatrix}2 & 2\\ 2 & 22/3\end{pmatrix}$ with trace $28/3$ and determinant $32/3$. Its eigenvalues are $8$ and $4/3$, so the bound is $2/8 = 0.25$.

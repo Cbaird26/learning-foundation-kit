@@ -1,0 +1,231 @@
+@lesson
+title: Floating-point numbers and rounding error
+summary: Explain how Python stores real numbers as doubles, predict where rounding error appears, and write summation and root-finding code that keeps it small.
+objective: Describe the format of a double and compute the spacing between neighboring doubles.
+objective: Explain why `0.1 + 0.2 != 0.3` and compare floats with a tolerance instead of `==`.
+objective: Recognize cancellation and absorption, and implement compensated (Kahan) summation and a stable quadratic formula.
+reading: Python for Data Analysis, 3rd edition: the early chapter on Python language basics and built-in data types (numeric types); then look up "floating-point arithmetic" and the IEEE 754 standard.
+@article
+Type `0.1 + 0.2` into Python and it answers `0.30000000000000004`. Is Python broken? No: nearly every machine learning computation runs on **floating-point** numbers, and this answer is exactly what the arithmetic is specified to give. Learning to predict such results is the first skill of numerical computing.
+
+### How a double is stored
+
+Python's `float` is an IEEE 754 **double**: 64 bits, split into 1 sign bit, 11 exponent bits and 52 stored fraction bits. With the implicit leading 1, a double has a 53-bit **significand**. A normal nonzero double equals $\pm\, m \times 2^{k}$ where $m$ is a binary fraction with 53 significant bits. Two consequences matter.
+
+- Only numbers of this form are representable. The decimal $0.1$ is $0.0001100110011\ldots_2$, a repeating binary fraction, so the stored value is the nearest double, $0.1000000000000000055511\ldots$.
+- The gap between neighboring doubles grows with the size of the number. In the interval $[2^k, 2^{k+1})$ the spacing is $2^{k-52}$. Near 1 it is $2^{-52} \approx 2.22 \times 10^{-16}$, called **machine epsilon** $\varepsilon$; near $2^{53}$ it is 2, so the double $2^{53}$ plus 1 is not representable.
+
+### The model of rounding
+
+Every basic operation (+, −, ×, ÷, square root) returns the exact result **rounded to the nearest double** (ties go to the one with an even last bit). Write $\mathrm{fl}(\cdot)$ for the rounded result. Then
+
+$$\mathrm{fl}(a \circ b) = (a \circ b)(1 + \delta), \qquad |\delta| \le u = 2^{-53} \approx 1.11 \times 10^{-16},$$
+
+where $u$ is the **unit roundoff**. The **relative error** of an approximation $\hat{x}$ of $x$ is $|\hat{x} - x| / |x|$. Rounding error is relative: each operation is correct to about 16 significant decimal digits, no matter how big the numbers are.
+
+Because each operation rounds, floating-point addition is **not associative**: $(a + b) + c$ and $a + (b + c)$ can differ. It is also why we compare floats with a tolerance, for example `abs(a - b) <= 1e-9 * max(abs(a), abs(b))`, and never with `==`.
+
+### Two ways accuracy is lost
+
+**Absorption.** Adding a small number to a large one can change nothing. At $10^{16}$ the spacing is 2, so $10^{16} + 1$ lands halfway between two doubles, and the tie rounds back to $10^{16}$. Then $(10^{16} + 1) - 10^{16}$ is 0, not 1.
+
+**Cancellation.** Subtracting two nearly equal numbers is exact, but it exposes the rounding errors already in them. Take $x = 10^{-15}$. The sum $1 + x$ must be a multiple of $2^{-52}$, so it becomes $5 \times 2^{-52}$, and $(1 + x) - 1 = 1.1102\ldots \times 10^{-15}$, which is 11% too large. The subtraction itself lost nothing; the damage happened when $1 + x$ was rounded.
+
+### Fighting error: compensated summation
+
+Adding $n$ numbers one at a time can accumulate error proportional to $n u$. **Kahan's compensated summation** keeps a running correction $c$ holding the low-order bits lost by each addition:
+
+```python
+def kahan_sum(xs):
+    total = 0.0
+    comp = 0.0
+    for x in xs:
+        y = x - comp
+        t = total + y
+        comp = (t - total) - y
+        total = t
+    return total
+
+naive = 0.0
+for _ in range(10):
+    naive += 0.1
+print(naive)                   # 0.9999999999999999
+print(kahan_sum([0.1] * 10))   # 1.0
+```
+
+In exact arithmetic `comp` would always be 0; in floating point it captures what was lost and feeds it into the next addition. (Recent CPython versions already use a compensated algorithm inside the built-in `sum` for floats, but other Pythons do not, so explicit loops are the way to see raw behavior.)
+
+### Fighting error: rearranging formulas
+
+The roots of $a x^2 + b x + c$ are $\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$. When $b$ is large and positive, $-b + \sqrt{b^2 - 4ac}$ subtracts two nearly equal numbers. The stable fix computes $q = -\tfrac12\big(b + \operatorname{sign}(b)\sqrt{b^2 - 4ac}\big)$, which adds numbers of the same sign, and returns the roots $q/a$ and $c/q$ (their product is $c/a$). The same idea underlies library functions such as `math.log1p(x)`, which computes $\log(1+x)$ accurately for tiny $x$.
+
+### Overflow
+
+Doubles top out near $1.8 \times 10^{308}$: `math.exp(710)` raises an `OverflowError`. Softmax code avoids it by subtracting the maximum score first, a rearrangement of exactly the kind above.
+
+@example
+title: Cancellation in a quadratic
+problem: Find the smaller-magnitude root of $x^2 + 10^6 x + 1 = 0$ with the textbook formula and with the stable formula, and say which is accurate.
+step: The exact small root is about $-1.000000000001 \times 10^{-6}$, since the roots multiply to $c/a = 1$ and the large root is near $-10^6$.
+step: Textbook formula: $\sqrt{10^{12} - 4} \approx 999999.999998$. In double precision, $-10^6 + 999999.999998$ cancels, and Python gives about $-1.0000076 \times 10^{-6}$, a relative error near $7.6 \times 10^{-6}$: only five correct digits out of sixteen.
+step: Stable formula: $q = -\tfrac12 (10^6 + 999999.999998) \approx -999999.999999$, then the small root is $c/q$, which is about $-1.000000000001 \times 10^{-6}$.
+step: Division and a sum of same-sign numbers lose at most a few units of $u$, so the stable answer matches the exact one to about 15 digits.
+answer: The stable formula is accurate; the textbook formula loses about eleven digits to cancellation.
+
+@example
+title: Spacing of doubles
+problem: What is the gap between neighboring doubles near 8, and what does `8.0 + 1e-15` evaluate to?
+step: The number 8 is $2^3$, so it lies in $[2^3, 2^4)$, where the spacing is $2^{3-52} = 2^{-49} \approx 1.78 \times 10^{-15}$.
+step: A sum is rounded to the nearest double. The value $8 + 10^{-15}$ lies $10^{-15}$ above 8, which is more than half the spacing ($0.89 \times 10^{-15}$), so it rounds up to the next double, $8 + 2^{-49}$.
+step: Check: `8.0 + 1e-15 - 8.0` evaluates to $1.7763568394002505 \times 10^{-15}$, not $10^{-15}$.
+answer: The spacing is $2^{-49} \approx 1.78 \times 10^{-15}$, and `8.0 + 1e-15` is the next double above 8.
+
+@mistakes
+- Comparing floats with `==`: results of different computations differ in the last bits, so use a relative tolerance (and an absolute one when the target may be 0).
+- Thinking error is a fixed number like $10^{-16}$: the absolute gap between doubles grows with the magnitude; the relative error bound $u$ is what stays fixed.
+- Blaming the subtraction for cancellation: the subtraction is exact; the error comes from the rounded inputs, so the fix is to avoid forming them, not to subtract differently.
+- Assuming a longer sum is only slightly less accurate: adding many tiny terms to a large running total can lose every one of them.
+
+@practice num
+prompt: What is the spacing between neighboring doubles in the interval $[1024, 2048)$? Give your answer in scientific notation, for example `1.5e-7`, correct to 1%.
+answer: 2.2737e-13
+tol: 1%
+check: 2.0 ** (10 - 52)
+hint: Use the rule that in $[2^k, 2^{k+1})$ the spacing is $2^{k-52}$, and find $k$ for 1024.
+solution: Since $1024 = 2^{10}$, the spacing is $2^{10-52} = 2^{-42} \approx 2.2737 \times 10^{-13}$.
+
+@practice text
+prompt: What does this program print?
+```python
+print(0.75 + 0.125 == 0.875, 0.1 * 3 == 0.3)
+```
+answer: True False
+check: run("print(0.75 + 0.125 == 0.875, 0.1 * 3 == 0.3)")
+hint: Which of these numbers are sums of powers of two, and so exactly representable?
+solution: $0.75$, $0.125$ and $0.875$ are $3/4$, $1/8$ and $7/8$, all exactly representable, so the first comparison is `True`. The decimal $0.1$ is not representable, and $3 \times 0.1$ rounds to $0.30000000000000004$, so the second is `False`.
+
+@practice mc
+prompt: In floating point, `(a + b) + c` can differ from `a + (b + c)`. What is the reason?
+choice*: Each addition rounds its exact result to a double, so the intermediate rounding depends on the grouping.
+choice: Python evaluates the two expressions in different orders and gives wrong answers for one of them.
+choice: Addition of floats is only exact for integers, so any fractional value breaks associativity.
+choice: Doubles store numbers in decimal, and decimal addition is not associative.
+hint: Think about what happens to the intermediate result `a + b` versus `b + c`.
+solution: Each operation returns the correctly rounded exact result, and a different grouping creates different intermediate values that round differently. Real addition is associative; rounded addition is not. Doubles are binary, and many fractions (such as 0.75) are added exactly.
+
+@practice code
+prompt: Write `close(a, b, rel=1e-9, abs_tol=0.0)` that returns `True` when `abs(a - b) <= max(rel * max(abs(a), abs(b)), abs_tol)` and `False` otherwise. For example, `close(1e10, 1e10 + 1)` is `True` and `close(1.0, 1.001)` is `False`.
+starter:
+```python
+def close(a, b, rel=1e-9, abs_tol=0.0):
+    pass
+```
+tests:
+```python
+assert close(1e10, 1e10 + 1) is True
+assert close(1.0, 1.001) is False
+assert close(0.1 + 0.2, 0.3) is True
+assert close(0.0, 1e-12) is False
+assert close(0.0, 1e-12, abs_tol=1e-9) is True
+assert close(-5.0, 5.0) is False
+```
+model:
+```python
+def close(a, b, rel=1e-9, abs_tol=0.0):
+    """Relative-plus-absolute tolerance comparison of two floats."""
+    return abs(a - b) <= max(rel * max(abs(a), abs(b)), abs_tol)
+```
+hint: Compute the difference, then compare it with the larger of the relative and absolute allowances.
+solution: The relative allowance scales with the larger magnitude, which handles big and small numbers alike; the absolute allowance is needed for comparisons with 0, where any relative tolerance is 0. The test comparing 0.0 with 1e-12 shows why the default must not accept it.
+
+@practice code
+prompt: Write `kahan_sum(xs)` that returns the sum of a list of floats using compensated (Kahan) summation: keep `total` and a correction `comp`; for each `x` compute `y = x - comp`, `t = total + y`, `comp = (t - total) - y`, `total = t`. An empty list returns `0.0`.
+starter:
+```python
+def kahan_sum(xs):
+    pass
+```
+tests:
+```python
+assert kahan_sum([]) == 0.0
+assert abs(kahan_sum([1.0] + [1e-16] * 10000) - (1.0 + 1e-12)) < 1e-15
+assert abs(kahan_sum([0.1] * 10) - 1.0) < 1e-15
+assert abs(kahan_sum([1.0] + [1e-17] * 50000) - (1.0 + 5e-13)) < 1e-15
+assert kahan_sum([2.0, 3.5]) == 5.5
+```
+model:
+```python
+def kahan_sum(xs):
+    """Compensated summation of a list of floats."""
+    total = 0.0
+    comp = 0.0
+    for x in xs:
+        y = x - comp
+        t = total + y
+        comp = (t - total) - y
+        total = t
+    return total
+```
+hint: Follow the four lines in the prompt inside a loop; `comp` starts at 0.0 and carries over from one iteration to the next.
+solution: The line `comp = (t - total) - y` recovers the part of `y` that was lost when `t` was rounded, and the next iteration subtracts it from the next term. A plain loop returns exactly 1.0 for the second test because each 1e-16 is absorbed; the compensated loop recovers the 1e-12.
+
+@quiz code
+prompt: Write `stable_roots(a, b, c)` for $a x^2 + b x + c = 0$ with $a \ne 0$ and a nonnegative discriminant. Compute `d = math.sqrt(b*b - 4*a*c)`, then `q = -(b + math.copysign(d, b)) / 2`, and return the tuple `(q / a, c / q)` ordered so that the root of smaller absolute value comes first. Assume `q` is not 0 (that is, $b$ and $c$ are not both 0).
+starter:
+```python
+import math
+
+def stable_roots(a, b, c):
+    pass
+```
+tests:
+```python
+r1, r2 = stable_roots(1.0, 3.0, 2.0)
+assert abs(r1 + 1.0) < 1e-12 and abs(r2 + 2.0) < 1e-12
+r1, r2 = stable_roots(1.0, 1e8, 1.0)
+assert abs(r1 + 1e-8) < 1e-20
+assert abs(r2 + 1e8) < 1e-6
+r1, r2 = stable_roots(2.0, -1e7, 3.0)
+assert abs(r1 - 3.0e-7) < 1e-18
+assert abs(r2 - 5e6) < 1e-3
+assert sorted(stable_roots(1.0, 0.0, -4.0)) == [-2.0, 2.0]
+```
+model:
+```python
+import math
+
+def stable_roots(a, b, c):
+    """Roots of a*x^2 + b*x + c avoiding cancellation, small |root| first."""
+    d = math.sqrt(b * b - 4 * a * c)
+    q = -(b + math.copysign(d, b)) / 2
+    roots = [q / a, c / q]
+    roots.sort(key=abs)
+    return (roots[0], roots[1])
+```
+hint: `math.copysign(d, b)` gives `d` the sign of `b`, so `b + copysign(d, b)` never cancels. Sort the two roots by absolute value.
+solution: Adding numbers of the same sign loses nothing, so `q` is accurate, and then `q / a` and `c / q` are both accurate roots (their product is `c / a`). The naive formula gives the small root of the second test with a relative error around 1e-8 or worse, which the tight tolerance rejects.
+
+@quiz text
+prompt: What does this program print?
+```python
+def total(xs):
+    s = 0.0
+    for x in xs:
+        s += x
+    return s
+
+print(int(total([1e16, 1.0, 1.0])), int(total([1.0, 1.0, 1e16])))
+```
+answer: 10000000000000000 10000000000000002
+check: run("def total(xs):\n    s = 0.0\n    for x in xs:\n        s += x\n    return s\n\nprint(int(total([1e16, 1.0, 1.0])), int(total([1.0, 1.0, 1e16])))")
+hint: At $10^{16}$ the spacing between doubles is 2, so adding 1 is a tie that rounds back to $10^{16}$.
+solution: In the first order, each 1.0 is added to $10^{16}$ and absorbed (the tie rounds to the even neighbor $10^{16}$), so the total is $10^{16}$. In the second order, $1 + 1 = 2$ first, and $2 + 10^{16}$ is exactly representable. Order matters.
+
+@quiz mc
+prompt: Which change makes the computation of $\log(1 + x)$ for $x = 10^{-12}$ more accurate in double precision?
+choice*: Use `math.log1p(x)`, which avoids forming `1 + x` and so avoids rounding away most digits of `x`.
+choice: Use `math.log(1 + x)` with `x` stored as a `float32` instead.
+choice: Compute `1 + x` twice and take the average before calling `math.log`.
+choice: Replace `math.log` with `math.log10` and multiply by `math.log(10)`.
+hint: The loss of accuracy happens when $1 + x$ is rounded to a multiple of $2^{-52}$.
+solution: For tiny $x$, `1 + x` keeps only the few digits of `x` that survive rounding to the grid near 1, and the logarithm inherits that error. `log1p` evaluates the function without ever forming the rounded sum. The other choices either keep the same rounded sum or make precision worse.

@@ -1,0 +1,263 @@
+@lesson
+title: Joining and reshaping tables
+summary: Combine two tables on a key with inner and left joins, predict how many rows a join produces, and reshape tables between wide and long form.
+objective: Explain what a join key is and compute the rows of an inner join and a left join by hand.
+objective: Predict the number of rows when keys repeat on one or both sides.
+objective: Reshape a wide table to long form (melt) and a long table to wide form (pivot).
+objective: Check a join for lost rows, duplicated rows and mismatched key types.
+reading: Computational and Inferential Thinking: look up the sections on joining tables and on pivoting in the chapters on tables.
+
+@article
+A shop keeps its customers in one table and its orders in another. To answer "how much has each customer spent?" you must put the two together. A **join** combines rows from two tables whenever they agree on a **key**: a column (or columns) that refers to the same entity in both tables. Joins are where wrangled data most often silently goes wrong, because a join that loses or duplicates rows still returns a table.
+
+### Two small tables
+
+```python
+customers = [
+    {"cust": 1, "name": "Ana"},
+    {"cust": 2, "name": "Bo"},
+    {"cust": 3, "name": "Cy"},
+]
+orders = [
+    {"order": 10, "cust": 1, "amt": 30},
+    {"order": 11, "cust": 1, "amt": 20},
+    {"order": 12, "cust": 3, "amt": 50},
+    {"order": 13, "cust": 4, "amt": 15},
+]
+```
+
+Customer 2 has no orders, and order 13 belongs to a customer who is not in the customers table.
+
+### Inner and left joins
+
+An **inner join** keeps a pair of rows only when the keys match. Joining `customers` to `orders` on `cust` gives three rows: (Ana, 30), (Ana, 20), (Cy, 50). Bo is dropped (no orders) and order 13 is dropped (no customer). A **left join** keeps every row of the left table; where the right table has no match, the right columns are filled with missing values. The left join of `customers` with `orders` has four rows: Ana twice, Bo with `amt` set to `None`, and Cy. Order 13 is still dropped, because it is not in the left table. A **right join** is the mirror image, and a **full outer join** keeps unmatched rows from both sides.
+
+```python
+def left_join(left, right, key):
+    cols = []
+    for r in right:
+        cols += [c for c in r if c != key and c not in cols]
+    out = []
+    for l in left:
+        matches = [r for r in right if r[key] == l[key]]
+        for r in matches:
+            row = dict(l)
+            row.update({c: v for c, v in r.items() if c != key})
+            out.append(row)
+        if not matches:
+            row = dict(l)
+            row.update({c: None for c in cols})
+            out.append(row)
+    return out
+```
+
+Choose the join by the question. To analyze only customers who have ordered, use an inner join. To count customers with zero orders you need the left join, because an inner join throws those customers away.
+
+### How many rows?
+
+The row count is a diagnostic. If a key value appears $a$ times in the left table and $b$ times in the right, an inner join produces $a \times b$ rows for that key. Suppose the left keys are $1, 2, 2, 3$ and the right keys are $2, 2, 3, 4$. Key 2 gives $2 \times 2 = 4$ rows and key 3 gives $1 \times 1 = 1$ row, so the inner join has 5 rows. The left join adds one row for the unmatched key 1, for 6 rows. A join can therefore have more rows than either input. When you expect a **one-to-many** join (each customer has many orders), the left table's key should be unique, and a **many-to-many** surprise usually means the key is not unique where you thought it was. Also check **key types**: the integer `1` and the string `"1"` never match, so a join that reads IDs as numbers on one side and text on the other returns nothing.
+
+### Reshaping: wide and long
+
+The same data can be **wide** (one row per store, one column per quarter) or **long** (one row per store and quarter). Long form is tidy: the quarter is a variable and is a column. **Melting** turns wide into long:
+
+```python
+wide = [{"store": "A", "q1": 5, "q2": 7}]
+long = []
+for row in wide:
+    for col in ["q1", "q2"]:
+        long.append({"store": row["store"], "quarter": col, "sales": row[col]})
+print(long)
+```
+
+This prints two rows: `{'store': 'A', 'quarter': 'q1', 'sales': 5}` and the same for `q2` with sales 7. **Pivoting** goes the other way: for every row of a long table, put the value into the dictionary for its index and column,
+
+```python
+table = {}
+for r in long:
+    table.setdefault(r["store"], {})[r["quarter"]] = r["sales"]
+```
+
+which gives `{'A': {'q1': 5, 'q2': 7}}`. If two long rows share an index and column, a pivot must **aggregate** them (sum or mean) or fail; silently keeping the last one loses data. Wide tables suit reading and some matrix methods, while long tables suit grouping and plotting.
+
+@example
+title: Joining customers to orders
+problem: Using the customers and orders tables above, compute the total amount spent by each customer with a left join, and compare the row counts of the inner and left joins.
+step: List the matches by key. Customer 1 matches orders 10 and 11, customer 2 matches nothing, customer 3 matches order 12, and order 13 has customer 4, who is not in the left table.
+step: Count rows. The inner join keeps $2 + 0 + 1 = 3$ rows. The left join keeps the same matches and adds one row for Bo, so it has 4 rows.
+step: Group the left join by customer and sum `amt`, treating `None` as 0. Ana has $30 + 20 = 50$, Bo has 0, and Cy has 50.
+step: Check for lost money. The joined amounts total $50 + 0 + 50 = 100$, but the orders table totals $30 + 20 + 50 + 15 = 115$. The difference, 15, is order 13, which has no matching customer. Finding that gap is exactly what the check is for.
+answer: Ana 50, Bo 0, Cy 50; the inner join has 3 rows and the left join 4; order 13 (amount 15) has no customer.
+
+@mistakes
+- Using an inner join when you need to keep unmatched rows, so that customers with no orders vanish from a count.
+- Joining on a key that is not unique and not noticing that the row count grew.
+- Joining on keys of different types (`1` and `"1"`), which matches nothing.
+- Pivoting a long table that has two rows for the same index and column, and keeping only the last.
+
+@practice num
+prompt: A left table has the keys 1, 1, 2, 5 and a right table has the keys 1, 2, 2, 2, 3. How many rows does the inner join on the key have?
+answer: 5
+check: sum(1 for a in [1, 1, 2, 5] for b in [1, 2, 2, 2, 3] if a == b)
+hint: For each key, multiply the number of times it appears on the left by the number of times it appears on the right.
+solution: Key 1 appears twice on the left and once on the right: $2 \times 1 = 2$ rows. Key 2 appears once on the left and three times on the right: $1 \times 3 = 3$ rows. Keys 5 and 3 have no partner. The total is 5 rows.
+
+@practice mc
+prompt: A left join of a table of 100 customers (unique `id`) with an orders table can return more than 100 rows. Why?
+choice*: Some customers have several matching orders, and each match produces its own row.
+choice: A left join adds a row for every order, including orders with no customer.
+choice: The join duplicates every customer once to keep the key unique.
+choice: Left joins always return the sum of the sizes of the two tables.
+hint: Think about what happens to one left row that has two matches on the right.
+solution: A left row with $b$ matches yields $b$ rows. Customers with several orders therefore appear several times, so the result can exceed 100 rows. Orders without a customer are dropped by a left join, and unmatched left rows appear once.
+
+@practice text
+prompt: What does this program print?
+```python
+left = [{"k": 1}, {"k": "1"}, {"k": 2}]
+right = [{"k": 1, "v": "a"}, {"k": 2, "v": "b"}]
+n = sum(1 for l in left for r in right if l["k"] == r["k"])
+print(n)
+```
+answer: 2
+check: run("left = [{'k': 1}, {'k': '1'}, {'k': 2}]\nright = [{'k': 1, 'v': 'a'}, {'k': 2, 'v': 'b'}]\nn = sum(1 for l in left for r in right if l['k'] == r['k'])\nprint(n)")
+hint: The string `"1"` is not equal to the integer `1` in Python.
+solution: The left key 1 matches the right key 1, and the left key 2 matches the right key 2, but the string `"1"` matches nothing. So there are 2 matching pairs and the program prints `2`. Mismatched key types lose rows silently.
+
+@practice code
+prompt: Write `inner_join(left, right, key)` for two tables stored as lists of dictionaries. For each left row, in order, and for each right row, in order, whose `key` value is equal, output one dictionary that holds all the left row's columns plus the right row's other columns (the other columns have different names in the two tables). Rows with no match are dropped. For example, joining `[{"k": 1, "a": "x"}]` with `[{"k": 1, "b": 5}]` on `"k"` gives `[{"k": 1, "a": "x", "b": 5}]`.
+starter:
+```python
+def inner_join(left, right, key):
+    return []
+```
+tests:
+```python
+L = [{"k": 1, "a": "x"}, {"k": 2, "a": "y"}, {"k": 2, "a": "z"}]
+R = [{"k": 2, "b": 10}, {"k": 2, "b": 20}, {"k": 3, "b": 30}]
+out = inner_join(L, R, "k")
+assert out == [
+    {"k": 2, "a": "y", "b": 10},
+    {"k": 2, "a": "y", "b": 20},
+    {"k": 2, "a": "z", "b": 10},
+    {"k": 2, "a": "z", "b": 20},
+]
+assert inner_join([{"k": 1}], [{"k": 2, "b": 0}], "k") == []
+assert inner_join([{"k": 1, "a": 0}], [{"k": "1", "b": 0}], "k") == []
+assert inner_join([], R, "k") == []
+```
+model:
+```python
+def inner_join(left, right, key):
+    """Inner join of two lists of dictionaries on one key column."""
+    out = []
+    for l in left:
+        for r in right:
+            if l[key] == r[key]:
+                row = dict(l)
+                row.update({c: v for c, v in r.items() if c != key})
+                out.append(row)
+    return out
+```
+hint: Use two nested loops, and build each output row by copying the left row and adding the right row's other columns.
+solution: Every pair of rows with equal keys produces one output row, so repeated keys multiply, as the first test shows with two left rows and two right rows for key 2. The string `"1"` is not equal to the integer 1, which the third test checks.
+
+@practice code
+prompt: Write `melt(rows, id_cols, value_cols, var_name, value_name)` that converts a wide table (a list of dictionaries) into long form. For each row, in order, and for each column in `value_cols`, in order, output a dictionary with the row's `id_cols` columns plus `var_name` set to the value column's name and `value_name` set to that cell. For example, melting `[{"s": "A", "q1": 5, "q2": 7}]` with `id_cols=["s"]`, `value_cols=["q1", "q2"]`, `var_name="quarter"`, `value_name="sales"` gives two rows.
+starter:
+```python
+def melt(rows, id_cols, value_cols, var_name, value_name):
+    return list(rows)
+```
+tests:
+```python
+rows = [{"s": "Ana", "m23": 71, "m24": 78}, {"s": "Bo", "m23": 64, "m24": 70}]
+out = melt(rows, ["s"], ["m23", "m24"], "year", "math")
+assert out == [
+    {"s": "Ana", "year": "m23", "math": 71},
+    {"s": "Ana", "year": "m24", "math": 78},
+    {"s": "Bo", "year": "m23", "math": 64},
+    {"s": "Bo", "year": "m24", "math": 70},
+]
+assert melt([], ["s"], ["m23"], "y", "v") == []
+two = [{"a": 1, "b": 2, "x": 5, "y": 6, "z": 7}]
+assert len(melt(two, ["a", "b"], ["x", "y", "z"], "var", "val")) == 3
+assert melt(two, ["a", "b"], ["x"], "var", "val") == [{"a": 1, "b": 2, "var": "x", "val": 5}]
+```
+model:
+```python
+def melt(rows, id_cols, value_cols, var_name, value_name):
+    """Convert a wide table to long form."""
+    out = []
+    for row in rows:
+        for col in value_cols:
+            new = {c: row[c] for c in id_cols}
+            new[var_name] = col
+            new[value_name] = row[col]
+            out.append(new)
+    return out
+```
+hint: For each row, loop over the value columns and create one new dictionary per column.
+solution: The output has one row for each pair of input row and value column, so a table with $n$ rows and $v$ value columns melts to $n v$ rows. Each new row copies the identifier columns and records which column the value came from.
+
+@quiz code
+prompt: Write `left_join(left, right, key)` for two tables stored as lists of dictionaries. Keep every left row, in order. For each left row output one dictionary per matching right row (matching means equal `key` values, in right-table order), holding the left columns plus the right row's other columns. A left row with no match is output once, with every right column (other than the key) set to `None`. The other columns have different names in the two tables. If `right` is empty, return copies of the left rows.
+starter:
+```python
+def left_join(left, right, key):
+    return list(left)
+```
+tests:
+```python
+S = [{"id": 1, "name": "Kim"}, {"id": 2, "name": "Lee"}, {"id": 3, "name": "Max"}]
+G = [{"id": 1, "grade": 90}, {"id": 1, "grade": 85}, {"id": 3, "grade": 70}, {"id": 9, "grade": 60}]
+out = left_join(S, G, "id")
+assert out == [
+    {"id": 1, "name": "Kim", "grade": 90},
+    {"id": 1, "name": "Kim", "grade": 85},
+    {"id": 2, "name": "Lee", "grade": None},
+    {"id": 3, "name": "Max", "grade": 70},
+]
+assert left_join(S, [], "id") == S
+assert len(left_join(S, G, "id")) == 4
+assert left_join([], G, "id") == []
+```
+model:
+```python
+def left_join(left, right, key):
+    """Left join of two lists of dictionaries on one key column."""
+    right_cols = []
+    for r in right:
+        right_cols += [c for c in r if c != key and c not in right_cols]
+    out = []
+    for l in left:
+        matches = [r for r in right if r[key] == l[key]]
+        for r in matches:
+            row = dict(l)
+            row.update({c: v for c, v in r.items() if c != key})
+            out.append(row)
+        if not matches:
+            row = dict(l)
+            row.update({c: None for c in right_cols})
+            out.append(row)
+    return out
+```
+hint: Collect the names of the right table's other columns first, so that unmatched left rows can be padded with `None`.
+solution: Each left row yields its matches, or one padded row if there are none. The padding columns come from the right table's rows, so an empty right table adds nothing. The test with two matches for id 1 checks that a left join can return more rows than the left table has.
+
+@quiz mc
+prompt: A pivot turns the long table with columns `store`, `quarter`, `sales` into one row per store and one column per quarter. The long table has two rows for store A in quarter q1. What should a careful pivot do?
+choice*: Aggregate the two values (for example, sum them) or raise an error, rather than silently keeping one.
+choice: Keep only the last value, since a pivot cell holds one number.
+choice: Average the two values, because that is the only valid choice.
+choice: Create a second column named `q1` for the extra value.
+hint: Ask what information is lost if one of the two rows is dropped without telling anyone.
+solution: A pivot cell can hold only one value, so duplicates must be combined by an aggregation chosen for the question (sum for sales, mean for a rate) or reported as an error. Keeping the last value silently loses data, and which aggregation is correct depends on the meaning of the column.
+
+@quiz self
+prompt: You join a table of 5,000 patients to a table of 12,000 lab results on `patient_id` with a left join and get 12,350 rows. Explain what the row count tells you, what two things you would check, and how you would summarize the result as one row per patient.
+hint: Compare the output size with the two inputs and think about repeated keys and unmatched patients.
+solution: A left join keeps every patient and produces one row per matching lab result, so the output size is the number of matched lab rows plus one row for each patient with no results. Since the 12,350 rows exceed the 12,000 lab rows, patients without any results contribute about 350 padded rows (if every lab result matched a patient). I would check that `patient_id` is unique in the patients table, so that no patient is duplicated, and that the key types and formats are the same in both tables (text versus number, leading zeros), and I would count the lab rows whose `patient_id` is not in the patient table. To get one row per patient I would group the joined table by `patient_id` and aggregate the lab columns (count of results, mean of a value), with a count of zero for the padded patients.
+rubric: Explains the row count as matched lab rows plus one row for each patient without results.
+rubric: Names checks such as unique keys, matching key types or unmatched lab rows.
+rubric: Proposes grouping by patient and aggregating, handling patients with no results.

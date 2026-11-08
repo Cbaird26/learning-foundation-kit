@@ -1,0 +1,342 @@
+@lesson
+title: Decision trees: splitting criteria and pruning
+summary: Grow a classification tree by choosing the split that most reduces Gini impurity or entropy, and prune it with cost-complexity pruning to control overfitting.
+objective: Compute Gini impurity, entropy and information gain for a node and for a candidate split.
+objective: Implement the exhaustive search for the best threshold split and grow a tree recursively in plain Python.
+objective: Explain why a fully grown tree overfits, and compute the effective penalty at which cost-complexity pruning removes a subtree.
+reading: The Elements of Statistical Learning, the chapter on additive models, trees and related methods: the sections on tree-based methods.
+@article
+A bank wants to explain a loan decision to a customer in a way a person can follow: "income below this value, then debt above that value, so decline." A **decision tree** produces exactly such rules: it asks a sequence of yes-or-no questions about single features and ends in a prediction. Trees handle numeric and categorical features, need no feature scaling, and capture interactions between features. This week we grow one by hand and in code; the next two weeks combine many trees into some of the most accurate tabular models.
+
+### Impurity
+
+At each node the tree holds a set of training examples. For classes with proportions $p_1, \dots, p_K$ in the node, two standard measures of how mixed it is are
+
+$$G = 1 - \sum_k p_k^2 \quad\text{(Gini impurity)}, \qquad H = -\sum_k p_k \log_2 p_k \quad\text{(entropy, in bits)}.$$
+
+Both are 0 for a pure node and largest when the classes are evenly mixed: a node of 4 zeros and 4 ones has $G = 0.5$ and $H = 1$ bit. A node with proportions $(6/8, 2/8)$ has $G = 0.375$. Why not simply count the misclassification rate $1 - \max_k p_k$? It is blunt: from a parent with 4 examples of each class, a split into $(3, 1)$ and $(1, 3)$ and a split into $(4, 2)$ and $(0, 2)$ both leave an error rate of $2/8$, although the second produced a pure child. Their weighted Gini impurities are $0.375$ and $0.333$, so Gini prefers the second. Gini and entropy are smooth and strictly concave in $p$, so they credit any split that makes the children purer, and they are the criteria used by CART (Breiman, Friedman, Olshen and Stone) and by the ID3 and C4.5 family.
+
+### Choosing a split
+
+A candidate split asks "is feature $j$ at most $t$?". It sends $n_L$ of the $n$ examples left and $n_R$ right. Its **weighted impurity** is $\frac{n_L}{n}I(\text{left}) + \frac{n_R}{n}I(\text{right})$, and the **gain** is the parent's impurity minus this (with entropy, the gain is called **information gain**). For a numeric feature only thresholds halfway between consecutive distinct values matter, so the search tries each feature and each midpoint, computing impurities from class counts. With $n$ examples and $p$ features this costs about $O(p\,n\log n)$ per node if the feature is sorted once, and $O(p\,n^2)$ in the simple implementation below.
+
+The tree is **grown greedily**: take the best split at the root, then recurse on each side, stopping when a node is pure, has too few examples, or reaches a maximum depth. A leaf predicts its majority class (or its class proportions). Greedy growth does not find the best tree overall, only a good one.
+
+Take eight points $(x_1, x_2)$: $(1,2), (2,3), (3,1), (4,4), (5,2), (6,5), (3,5), (5,4)$ with classes $0,0,0,1,1,1,1,0$. The root has $G = 0.5$. The best split is $x_1 \le 2.5$: the left side holds two class-0 points (pure), the right six points $(0,1,1,1,1,0)$ have $G = 0.444$, and the weighted impurity is $\frac{6}{8}(0.444) = 0.333$, a gain of $0.167$. With entropy the same split gives a weighted entropy of $\frac{6}{8}(0.918) = 0.689$ bits and an information gain of $0.311$ bits. Continuing without a depth limit isolates every point: six leaves and zero training error.
+
+### Overfitting and pruning
+
+A fully grown tree can memorize noise: it has zero training error whenever no two examples with different labels share all features. Two controls exist. **Pre-pruning** stops growth early (maximum depth, minimum examples per leaf, minimum gain). **Post-pruning** grows a large tree and cuts it back. The standard method is **cost-complexity pruning**: for a penalty $\alpha \ge 0$ minimize
+
+$$R_\alpha(T) = R(T) + \alpha\,|T|,$$
+
+where $R(T)$ is the training misclassification rate of tree $T$ and $|T|$ its number of leaves. For an internal node $t$ with subtree $T_t$, collapsing $T_t$ to a single leaf raises the error from $R(T_t)$ to $R(t)$ and removes $|T_t| - 1$ leaves, so it pays off once
+
+$$\alpha \ge \alpha_{\text{eff}}(t) = \frac{R(t) - R(T_t)}{|T_t| - 1}.$$
+
+**Weakest-link pruning** repeatedly collapses the node with the smallest $\alpha_{\text{eff}}$, producing a nested sequence of trees; $\alpha$ is then chosen by cross-validation (week 12). For the eight-point tree the sequence is:
+
+| tree | leaves | training error | pruned at $\alpha_{\text{eff}}$ |
+|---|---|---|---|
+| full | 6 | 0 | $0.042$ |
+| 1 | 3 | $1/8$ | $0.125$ |
+| 2 | 2 | $2/8$ | $0.25$ |
+| 3 | 1 | $4/8$ | |
+
+### In code
+
+```python
+X = [[1, 2], [2, 3], [3, 1], [4, 4], [5, 2], [6, 5], [3, 5], [5, 4]]
+y = [0, 0, 0, 1, 1, 1, 1, 0]
+
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def best_split(X, y):
+    n = len(y)
+    best = None
+    for j in range(len(X[0])):
+        values = sorted(set(row[j] for row in X))
+        for lo, hi in zip(values, values[1:]):
+            t = (lo + hi) / 2
+            left = [c for row, c in zip(X, y) if row[j] <= t]
+            right = [c for row, c in zip(X, y) if row[j] > t]
+            score = (len(left) * gini(left) + len(right) * gini(right)) / n
+            if best is None or score < best[2] - 1e-12:
+                best = (j, t, score)
+    return best
+
+def majority(labels):
+    return max(sorted(set(labels)), key=labels.count)
+
+def build(X, y, depth=0, max_depth=3):
+    split = best_split(X, y)
+    if gini(y) == 0 or depth == max_depth or split is None:
+        return majority(y)
+    j, t, _ = split
+    L = [i for i, row in enumerate(X) if row[j] <= t]
+    R = [i for i, row in enumerate(X) if row[j] > t]
+    return (j, t,
+            build([X[i] for i in L], [y[i] for i in L], depth + 1, max_depth),
+            build([X[i] for i in R], [y[i] for i in R], depth + 1, max_depth))
+
+def predict(tree, x):
+    while isinstance(tree, tuple):
+        j, t, left, right = tree
+        tree = left if x[j] <= t else right
+    return tree
+
+print(best_split(X, y))
+tree = build(X, y, max_depth=2)
+print(tree)
+print([predict(tree, row) for row in X])
+```
+
+A leaf is a class label and an internal node is the tuple `(feature, threshold, left, right)`. With depth limited to 2 the tree is `(0, 2.5, 0, (1, 1.5, 0, 1))` and misclassifies only the point $(5, 4)$. Libraries add pruning, categorical splits and faster sorting, but the core is these forty lines.
+
+@example
+title: Finding the best split on one feature
+problem: Six examples have a single feature $x = 1, 2, 3, 4, 5, 6$ and classes $0, 0, 1, 0, 1, 1$. Find the threshold that minimizes weighted Gini impurity.
+step: The root has three of each class, so $G = 0.5$. The candidate thresholds are $1.5, 2.5, 3.5, 4.5, 5.5$.
+step: For $x \le 2.5$ the left side $(0, 0)$ has $G = 0$ and the right side $(1, 0, 1, 1)$ has $G = 1 - (0.25^2 + 0.75^2) = 0.375$. Weighted: $\frac{4}{6}(0.375) = 0.25$.
+step: For $x \le 4.5$ the left side $(0, 0, 1, 0)$ has $G = 0.375$ and the right side $(1, 1)$ is pure: weighted $\frac{4}{6}(0.375) = 0.25$ again.
+step: The other thresholds are worse: $1.5$ and $5.5$ give $0.4$, and $3.5$ gives $\frac{3}{6}(0.444) + \frac{3}{6}(0.444) = 0.444$.
+step: Two thresholds tie at $0.25$, a gain of $0.5 - 0.25 = 0.25$. Taking the first (lowest) threshold gives $x \le 2.5$.
+answer: The best weighted impurity is $0.25$, at $x \le 2.5$ (tied with $x \le 4.5$).
+
+@example
+title: Which subtree is pruned first?
+problem: On 100 training examples, subtree $A$ has 3 leaves and misclassifies 2 examples; collapsed to a leaf it would misclassify 8. Subtree $B$ has 2 leaves and misclassifies 5; collapsed it would misclassify 9. Compute $\alpha_{\text{eff}}$ for each and say which is pruned first.
+step: Use $\alpha_{\text{eff}} = \dfrac{R(t) - R(T_t)}{|T_t| - 1}$, where the errors are fractions of the 100 examples.
+step: For $A$: $R(t) = 0.08$, $R(T_t) = 0.02$, $|T_t| - 1 = 2$, so $\alpha_{\text{eff}} = 0.06/2 = 0.03$.
+step: For $B$: $R(t) = 0.09$, $R(T_t) = 0.05$, $|T_t| - 1 = 1$, so $\alpha_{\text{eff}} = 0.04/1 = 0.04$.
+step: Weakest-link pruning collapses the node with the smallest $\alpha_{\text{eff}}$. Subtree $A$ is cut first, at $\alpha = 0.03$, because it buys the least training accuracy per leaf.
+answer: $\alpha_{\text{eff}}(A) = 0.03 < \alpha_{\text{eff}}(B) = 0.04$, so $A$ is pruned first.
+
+@mistakes
+- Choosing the split that minimizes the children's impurity without weighting by their sizes: a tiny pure child would then look better than a balanced split.
+- Trying thresholds at the data values instead of between them, or considering many thresholds that give the same partition.
+- Reporting training accuracy of an unpruned tree as its quality: a tree grown to purity has zero training error almost always.
+- Treating tree growth as optimal: each split is chosen greedily, and a slightly worse first split can lead to a better tree.
+
+@practice num
+prompt: A node contains 6 examples of class A and 2 examples of class B. What is its Gini impurity?
+answer: 0.375
+check: 1 - ((6 / 8) ** 2 + (2 / 8) ** 2)
+hint: The class proportions are $0.75$ and $0.25$.
+solution: $G = 1 - (0.75^2 + 0.25^2) = 1 - (0.5625 + 0.0625) = 0.375$.
+
+@practice num
+prompt: A parent node has 5 examples of each of two classes. A split sends 4 of one class and 1 of the other to the left child, and the reverse (1 and 4) to the right child. What is the information gain of this split in bits? Give three decimal places.
+answer: 0.278
+tol: 0.001
+check: 1 - (-(0.8 * log2(0.8) + 0.2 * log2(0.2)))
+hint: The parent entropy is 1 bit. Both children have proportions $(0.8, 0.2)$ and the same size, so the weighted entropy equals the entropy of one child.
+solution: $H(0.8, 0.2) = -(0.8\log_2 0.8 + 0.2\log_2 0.2) \approx 0.7219$ bits. Both children have this entropy, so the gain is $1 - 0.7219 \approx 0.278$ bits.
+
+@practice mc
+prompt: Why do decision tree algorithms usually choose splits using Gini impurity or entropy rather than the misclassification rate?
+choice*: Gini and entropy are smooth and strictly concave in the class proportions, so they reward splits that make the children purer even when the majority labels, and hence the error rate, do not change.
+choice: The misclassification rate cannot be computed for a node with more than two classes.
+choice: Gini impurity and entropy are always minimized by the split that gives the best test accuracy.
+choice: The misclassification rate is minimized by the trivial split that sends every example to one child.
+hint: Think of a split that leaves both children with the same majority class as the parent.
+solution: A split that leaves every child's majority label unchanged has zero gain in error rate, yet it may produce much purer children, a step toward a later useful split. Concave impurities register that progress. No impurity guarantees the best test accuracy, and the error rate is computable for any number of classes.
+
+@practice code
+prompt: Write `gini(labels)` that returns the Gini impurity $1 - \sum_k p_k^2$ of a list of class labels (any hashable values), and `0.0` for an empty list. For example, `gini([0, 0, 1, 1])` returns `0.5`.
+starter:
+```python
+def gini(labels):
+    pass
+```
+tests:
+```python
+assert abs(gini([0, 0, 1, 1]) - 0.5) < 1e-9
+assert abs(gini(['a', 'a', 'a'])) < 1e-9
+assert gini([]) == 0.0
+assert abs(gini([0, 0, 0, 1]) - 0.375) < 1e-9
+assert abs(gini([1, 2, 3]) - 2 / 3) < 1e-9
+```
+model:
+```python
+def gini(labels):
+    """Gini impurity of a list of class labels."""
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+```
+hint: Count each distinct label, convert counts to proportions by dividing by the length, and subtract the sum of squared proportions from 1.
+solution: The empty list must be handled before dividing by its length. Three equally likely classes give $1 - 3(1/9) = 2/3$, which the last test checks.
+
+@practice code
+prompt: Write `best_split(X, y)` that returns `(feature, threshold, score)` for the split of the form "feature $\le$ threshold" that minimizes the weighted Gini impurity of the two children. `X` is a list of rows of numbers and `y` the labels. Candidate thresholds are the midpoints between consecutive distinct sorted values of each feature. Break ties by choosing the lowest feature index, then the lowest threshold (replace the best only on a strict improvement of more than $10^{-12}$). Return `None` if no feature has two distinct values.
+starter:
+```python
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def best_split(X, y):
+    pass
+```
+tests:
+```python
+j, t, s = best_split([[2, 7], [3, 6], [10, 1], [11, 2]], [0, 0, 1, 1])
+assert j == 0 and abs(t - 6.5) < 1e-9 and abs(s) < 1e-9
+j, t, s = best_split([[1], [2], [3], [4], [5]], [0, 1, 0, 1, 1])
+assert j == 0 and abs(t - 3.5) < 1e-9 and abs(s - 4 / 15) < 1e-9
+j, t, s = best_split([[1], [2], [3], [4]], [0, 1, 1, 1])
+assert j == 0 and abs(t - 1.5) < 1e-9 and abs(s) < 1e-9
+assert best_split([[1], [1]], [0, 1]) is None
+j, t, s = best_split([[5, 1], [5, 2], [5, 9], [5, 10]], ['a', 'a', 'b', 'b'])
+assert j == 1 and abs(t - 5.5) < 1e-9
+```
+model:
+```python
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def best_split(X, y):
+    """Best (feature, threshold, weighted Gini) over all midpoint splits."""
+    n = len(y)
+    best = None
+    for j in range(len(X[0])):
+        values = sorted(set(row[j] for row in X))
+        for lo, hi in zip(values, values[1:]):
+            t = (lo + hi) / 2
+            left = [c for row, c in zip(X, y) if row[j] <= t]
+            right = [c for row, c in zip(X, y) if row[j] > t]
+            score = (len(left) * gini(left) + len(right) * gini(right)) / n
+            if best is None or score < best[2] - 1e-12:
+                best = (j, t, score)
+    return best
+```
+hint: Loop over features, then over midpoints of sorted distinct values; weight each child's impurity by its share of the examples.
+solution: Weighting by child size is essential: the second test has a best weighted impurity of $4/15$, which an unweighted sum would not give. The strict-improvement rule makes the first feature win the tie in the first test, and a constant feature has no midpoints, so the last test uses the second.
+
+@quiz code
+prompt: Write `build_tree(X, y, max_depth)` that grows a classification tree using the provided `gini`, `best_split` and `majority`. A leaf is the majority class label (ties go to the smallest label, as `majority` does). An internal node is the tuple `(feature, threshold, left, right)`, where `left` holds the examples with `row[feature] <= threshold`. Stop and return a leaf when the node is pure, when `max_depth` splits have already been made on the path (`max_depth = 0` gives a single leaf), or when `best_split` returns `None`. Also write `predict(tree, x)`.
+starter:
+```python
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def best_split(X, y):
+    n = len(y)
+    best = None
+    for j in range(len(X[0])):
+        values = sorted(set(row[j] for row in X))
+        for lo, hi in zip(values, values[1:]):
+            t = (lo + hi) / 2
+            left = [c for row, c in zip(X, y) if row[j] <= t]
+            right = [c for row, c in zip(X, y) if row[j] > t]
+            score = (len(left) * gini(left) + len(right) * gini(right)) / n
+            if best is None or score < best[2] - 1e-12:
+                best = (j, t, score)
+    return best
+
+def majority(labels):
+    return max(sorted(set(labels)), key=labels.count)
+
+def build_tree(X, y, max_depth):
+    pass
+
+def predict(tree, x):
+    pass
+```
+tests:
+```python
+X = [[1, 5], [2, 6], [8, 1], [9, 2], [7, 9], [6, 8]]
+y = [0, 0, 1, 1, 2, 2]
+tree = build_tree(X, y, 3)
+assert tree[0] == 0 and abs(tree[1] - 4.0) < 1e-9 and tree[2] == 0
+right = tree[3]
+assert right[0] == 0 and abs(right[1] - 7.5) < 1e-9 and right[2:] == (2, 1)
+assert [predict(tree, row) for row in X] == y
+assert build_tree(X, y, 0) == 0
+shallow = build_tree(X, y, 1)
+assert shallow[2] == 0 and shallow[3] == 1
+assert build_tree([[1], [1]], [0, 1], 3) == 0
+assert predict(build_tree([[1], [2], [3], [4]], [0, 1, 0, 1], 5), [3.2]) == 0
+```
+model:
+```python
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def best_split(X, y):
+    n = len(y)
+    best = None
+    for j in range(len(X[0])):
+        values = sorted(set(row[j] for row in X))
+        for lo, hi in zip(values, values[1:]):
+            t = (lo + hi) / 2
+            left = [c for row, c in zip(X, y) if row[j] <= t]
+            right = [c for row, c in zip(X, y) if row[j] > t]
+            score = (len(left) * gini(left) + len(right) * gini(right)) / n
+            if best is None or score < best[2] - 1e-12:
+                best = (j, t, score)
+    return best
+
+def majority(labels):
+    return max(sorted(set(labels)), key=labels.count)
+
+def build_tree(X, y, max_depth):
+    """Grow a tree of nested tuples; leaves are class labels."""
+    split = best_split(X, y)
+    if gini(y) == 0 or max_depth == 0 or split is None:
+        return majority(y)
+    j, t, _ = split
+    L = [i for i, row in enumerate(X) if row[j] <= t]
+    R = [i for i, row in enumerate(X) if row[j] > t]
+    return (j, t,
+            build_tree([X[i] for i in L], [y[i] for i in L], max_depth - 1),
+            build_tree([X[i] for i in R], [y[i] for i in R], max_depth - 1))
+
+def predict(tree, x):
+    """Follow the splits from the root to a leaf."""
+    while isinstance(tree, tuple):
+        j, t, left, right = tree
+        tree = left if x[j] <= t else right
+    return tree
+```
+hint: Check the stopping conditions first; otherwise split with `best_split`, send examples with `row[j] <= t` left, and recurse on each side with `max_depth - 1`.
+solution: Counting depth down from `max_depth` is the simplest way to enforce the limit. The last test builds a tree that isolates alternating labels on a line, so a point at $3.2$ must follow the splits at $2.5$ and $3.5$ to the leaf labeled 0. The test with identical features checks that a node without any valid split becomes a leaf.
+
+@quiz text
+prompt: What does this program print?
+```python
+def gini(labels):
+    n = len(labels)
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+print([round(gini(s), 3) for s in ([0, 0, 1, 1, 1, 1], [2, 2, 2], [0, 1])])
+```
+answer: [0.444, 0.0, 0.5]
+check: run("def gini(labels):\n    n = len(labels)\n    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))\n\nprint([round(gini(s), 3) for s in ([0, 0, 1, 1, 1, 1], [2, 2, 2], [0, 1])])")
+hint: The proportions in the first list are $1/3$ and $2/3$.
+solution: The first list has $G = 1 - (1/9 + 4/9) = 0.444$, the second is pure ($0.0$) and the third is evenly mixed ($0.5$).
+
+@quiz num
+prompt: Collapsing a subtree to a single leaf would raise the training error rate from $0.04$ (with the subtree, which has 4 leaves) to $0.10$. At what value of the cost-complexity penalty $\alpha$ does collapsing it begin to pay off? Give three decimal places.
+answer: 0.02
+tol: 0.001
+check: (0.10 - 0.04) / (4 - 1)
+hint: Divide the increase in error by the number of leaves removed, which is $|T_t| - 1$.
+solution: $\alpha_{\text{eff}} = (0.10 - 0.04)/(4 - 1) = 0.06/3 = 0.02$. For any penalty at least this large, the single leaf has cost no greater than the subtree.

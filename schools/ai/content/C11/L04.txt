@@ -1,0 +1,231 @@
+@lesson
+title: Vectorization: how array libraries such as NumPy work
+summary: Explain how an array stores its elements in one buffer with a shape and strides, apply the broadcasting rules, and rewrite loops as whole-array operations.
+objective: Compute the flat position of an element from its index, shape and strides.
+objective: Apply the broadcasting rules to find the shape of an elementwise operation or reject it.
+objective: Explain where the speed of vectorized code comes from and what it does not change, including two ways of computing a matrix product.
+reading: Python for Data Analysis, 3rd edition: the chapter "NumPy Basics: Arrays and Vectorized Computation" (the ndarray, arithmetic with arrays, broadcasting, universal functions).
+@article
+Suppose you must compute the squared distance from one point to each of a million points. A Python loop works, and it is slow. The same computation written with NumPy, the standard array library, typically runs tens to hundreds of times faster, yet it does exactly the same arithmetic. This lesson explains why, by building the key ideas in plain Python. (The site's Python has no NumPy, so the NumPy lines below are shown for reference.)
+
+### Why loops are slow and arrays are fast
+
+A Python list of floats holds pointers to separate float objects. Each `a * b` in a loop makes the interpreter look up the objects, check their types, run the multiplication and allocate a new object. An **array** instead stores all elements as raw numbers of one type in a single contiguous block of memory. An operation such as `x * y` is then one call into compiled code that loops over the block without any per-element interpretation. **Vectorization** means writing computations as whole-array operations so that all loops run in that compiled code. It changes the speed per operation, never the number of operations or the results (up to the order in which sums are accumulated).
+
+### Shape and strides
+
+An array is a flat buffer plus a **shape** such as `(3, 4)` and **strides**: for each axis, how many elements to skip in the buffer to move one step along that axis. In **row-major** order (the default), the last axis changes fastest. For shape $(d_0, d_1, d_2)$ the strides are $(d_1 d_2,\; d_2,\; 1)$, and the element at index $(i_0, i_1, i_2)$ lives at buffer position
+$$i_0 s_0 + i_1 s_1 + i_2 s_2 .$$
+For a matrix of shape $(3, 4)$ the strides are $(4, 1)$, and the element in row 2, column 1 is at position $2 \cdot 4 + 1 \cdot 1 = 9$. Strides explain a famous trick: the transpose of a $(3, 4)$ array can be a **view** of the same buffer with shape $(4, 3)$ and strides $(1, 4)$; no data is copied. Reshaping a contiguous array to another shape with the same number of elements is also free.
+
+```python
+def strides_of(shape):
+    strides = []
+    step = 1
+    for d in reversed(shape):
+        strides.append(step)
+        step *= d
+    return tuple(reversed(strides))
+
+class Array:
+    def __init__(self, data, shape):
+        self.data = list(data)
+        self.shape = tuple(shape)
+        self.strides = strides_of(shape)
+
+    def get(self, *index):
+        pos = sum(i * s for i, s in zip(index, self.strides))
+        return self.data[pos]
+
+M = Array(range(12), (3, 4))
+print(M.strides, M.get(2, 1))   # (4, 1) 9
+```
+
+### Broadcasting
+
+**Broadcasting** lets arrays of different shapes be combined elementwise without copying the smaller one. Line up the two shapes from the right, padding the shorter one on the left with 1s. Each pair of sizes must be equal or contain a 1; the result takes the larger size of each pair. Otherwise the operation raises an error. Shapes $(5, 3)$ and $(3,)$ become $(5, 3)$: a vector is added to every row. Shapes $(4, 1)$ and $(1, 3)$ become $(4, 3)$, which is how an outer sum is built. Shapes $(4, 3)$ and $(4,)$ fail, because 3 and 4 clash; a per-row quantity needs shape $(4, 1)$.
+
+### What vectorized code looks like
+
+Standardizing each column of a data matrix `X` with one example per row, or computing every squared distance from the rows of `X` to the rows of `Y` through the expanded formula of Lesson 2, becomes:
+
+```text
+Xs = (X - X.mean(axis=0)) / X.std(axis=0)
+D2 = (X**2).sum(axis=1)[:, None] + (Y**2).sum(axis=1)[None, :] - 2 * X @ Y.T
+```
+
+Here `[:, None]` turns a shape $(n,)$ array into $(n, 1)$ so that broadcasting builds an $n \times m$ table. The only heavy step, `X @ Y.T`, is one matrix product that the library hands to optimized code. Remember the warning of Lesson 2: that expanded form can lose accuracy through cancellation, and tiny negative results should be clipped to 0.
+
+### Two ways to multiply, one cost
+
+The product $\mathbf{C} = \mathbf{A}\mathbf{B}$ can be organized in two ways. The **inner-product** way computes each $C_{ij}$ as a dot product of row $i$ of $\mathbf{A}$ with column $j$ of $\mathbf{B}$. The **outer-product** way adds up $n$ matrices: $\mathbf{C} = \sum_{k=1}^{n} \mathbf{a}_k \mathbf{b}_k^\top$, where $\mathbf{a}_k$ is column $k$ of $\mathbf{A}$ and $\mathbf{b}_k^\top$ is row $k$ of $\mathbf{B}$. Each outer product costs $mp$ multiplications, so the total is $nmp$: the same as before. The two differ only in memory access order, and that is the lever libraries pull to run fast.
+
+@example
+title: Strides and flat positions
+problem: An array has shape $(2, 3, 4)$ stored in row-major order. Find its strides and the buffer position of the element with index $(1, 2, 3)$.
+step: The strides are $(3 \cdot 4,\; 4,\; 1) = (12, 4, 1)$.
+step: The position is $1 \cdot 12 + 2 \cdot 4 + 3 \cdot 1 = 12 + 8 + 3 = 23$.
+step: Check: the array has $2 \cdot 3 \cdot 4 = 24$ elements, positions 0 to 23, and the index $(1, 2, 3)$ is the last in each axis, so it must be position 23.
+answer: Strides $(12, 4, 1)$; position 23.
+
+@example
+title: Broadcasting an outer sum
+problem: Add the column $\mathbf{a} = [0, 10, 20]^\top$ (shape $(3, 1)$) to the row $\mathbf{b} = [1, 2, 3, 4]$ (shape $(4,)$). What is the shape of the result and what are its entries?
+step: Pad $\mathbf{b}$'s shape to $(1, 4)$. Compare $(3, 1)$ and $(1, 4)$ from the right: $1$ vs $4$ and $3$ vs $1$ are all compatible, so the result has shape $(3, 4)$.
+step: Entry $(i, j)$ is $a_i + b_j$. Row 0 is $[1, 2, 3, 4]$.
+step: Row 1 is $[11, 12, 13, 14]$ and row 2 is $[21, 22, 23, 24]$.
+answer: Shape $(3, 4)$ with rows $[1, 2, 3, 4]$, $[11, 12, 13, 14]$, $[21, 22, 23, 24]$.
+
+@mistakes
+- Believing that vectorization does less arithmetic: it does the same operations in compiled code, so its gain is removing interpreter overhead.
+- Expecting `(4, 3) + (4,)` to work: broadcasting aligns shapes from the right, so the 4 meets the 3; use shape `(4, 1)` for a per-row vector.
+- Assuming a transpose or reshape copies data: these are usually views that share memory, so changing one changes the other.
+- Mixing up row-major and column-major strides: in row-major order the last axis has stride 1.
+
+@practice num
+prompt: A matrix of shape $(3, 4)$ is stored in row-major order in a flat buffer. At what position in the buffer is the element in row 2, column 3 (both counted from 0)?
+answer: 11
+check: 2 * 4 + 3 * 1
+hint: Moving down one row skips a whole row of 4 elements; moving right one column skips 1.
+solution: The strides are $(4, 1)$, so the position is $2 \cdot 4 + 3 \cdot 1 = 11$, the last of the 12 elements.
+
+@practice mc
+prompt: Why is summing a million numbers with a library array method usually much faster than a Python `for` loop over a list, even though both perform a million additions?
+choice*: The loop over contiguous typed values runs in compiled code, so each addition avoids interpreter overhead and object handling.
+choice: The library approximates the sum, using fewer additions than the loop.
+choice: The library stores numbers in decimal, which the processor adds more quickly.
+choice: The library uses a faster algorithm that needs fewer than a million additions.
+hint: Compare what happens per element in the interpreter with what happens in a compiled loop.
+solution: Vectorization removes per-element interpreter overhead, such as type checks and object allocation; the arithmetic count stays at a million additions and the results are not approximate (apart from the order of accumulation). Arrays store binary numbers, not decimals.
+
+@practice tuple
+prompt: Two arrays have shapes $(5, 1, 3)$ and $(4, 1)$. Apply the broadcasting rules and enter the shape of their elementwise sum as a tuple, for example `(2, 3)`.
+answer: (5, 4, 3)
+check: tuple(np.broadcast_shapes((5, 1, 3), (4, 1)))
+hint: Pad the shorter shape on the left with 1s, giving $(1, 4, 1)$, then compare the shapes axis by axis.
+solution: The shapes $(5, 1, 3)$ and $(1, 4, 1)$ pair up as $5$ vs $1$, $1$ vs $4$ and $3$ vs $1$; each pair is compatible and the result takes the larger size, giving $(5, 4, 3)$.
+
+@practice code
+prompt: Write `flat_index(index, shape)` that returns the position of the element with the given multi-index in a row-major buffer. `index` and `shape` are tuples of equal length; compute the strides yourself. For example, `flat_index((1, 2), (3, 4))` returns `6`. Raise `IndexError` if any index is outside its axis (negative indices are not allowed).
+starter:
+```python
+def flat_index(index, shape):
+    pass
+```
+tests:
+```python
+assert flat_index((1, 2), (3, 4)) == 6
+assert flat_index((0, 0, 0), (2, 3, 4)) == 0
+assert flat_index((1, 2, 3), (2, 3, 4)) == 23
+assert flat_index((4,), (5,)) == 4
+assert flat_index((0, 3, 1), (2, 5, 2)) == 7
+assert raises(IndexError, flat_index, (3, 0), (3, 4))
+assert raises(IndexError, flat_index, (0, -1), (3, 4))
+```
+model:
+```python
+def flat_index(index, shape):
+    """Row-major buffer position of a multi-index."""
+    pos = 0
+    stride = 1
+    for i in range(len(shape) - 1, -1, -1):
+        if not 0 <= index[i] < shape[i]:
+            raise IndexError("index out of range")
+        pos += index[i] * stride
+        stride *= shape[i]
+    return pos
+```
+hint: Walk the axes from last to first, keeping a running stride that starts at 1 and is multiplied by each axis size.
+solution: The stride of an axis is the product of the sizes of all later axes, so walking backwards accumulates it. Each index is multiplied by its stride and added. The checks reject indices that would silently point into a neighboring row.
+
+@practice code
+prompt: Write `broadcast_shape(a, b)` that takes two shapes (tuples of positive integers) and returns the broadcast shape as a tuple, following the NumPy rules: align from the right, pad the shorter shape with 1s on the left, and each pair of sizes must be equal or one of them 1. Raise `ValueError` if the shapes are incompatible. For example, `broadcast_shape((4, 1), (3,))` returns `(4, 3)`.
+starter:
+```python
+def broadcast_shape(a, b):
+    pass
+```
+tests:
+```python
+assert broadcast_shape((4, 1), (3,)) == (4, 3)
+assert broadcast_shape((5, 3), (3,)) == (5, 3)
+assert broadcast_shape((2, 1, 6), (7, 1)) == (2, 7, 6)
+assert broadcast_shape((3,), (3,)) == (3,)
+assert broadcast_shape((), (2, 2)) == (2, 2)
+assert raises(ValueError, broadcast_shape, (4, 3), (4,))
+assert raises(ValueError, broadcast_shape, (2, 3), (3, 2))
+```
+model:
+```python
+def broadcast_shape(a, b):
+    """Shape that results from broadcasting shapes a and b."""
+    n = max(len(a), len(b))
+    pa = (1,) * (n - len(a)) + tuple(a)
+    pb = (1,) * (n - len(b)) + tuple(b)
+    out = []
+    for x, y in zip(pa, pb):
+        if x != y and x != 1 and y != 1:
+            raise ValueError("incompatible shapes")
+        out.append(max(x, y))
+    return tuple(out)
+```
+hint: Pad both shapes on the left with 1s to a common length, then check each pair of sizes and keep the larger.
+solution: After padding, each axis is independent: sizes must match unless one is 1, and the result keeps the non-1 size, which is the maximum. The failing cases show that `(4, 3)` with `(4,)` clashes on the last axis and that `(2, 3)` with `(3, 2)` clash on both.
+
+@quiz code
+prompt: Write `matmul_outer(A, B)` that multiplies matrices stored as lists of rows by the outer-product method: start from a zero matrix `C` of shape `m` by `p`, and for each `k` in `range(n)` add the outer product of column `k` of `A` with row `k` of `B` to `C` (so the loop over `k` is outermost). Assume the shapes match. Return `C`.
+starter:
+```python
+def matmul_outer(A, B):
+    pass
+```
+tests:
+```python
+C = matmul_outer([[1, 2], [3, 4]], [[0, 1], [5, 2]])
+assert all(abs(C[i][j] - [[10, 5], [20, 11]][i][j]) < 1e-12 for i in range(2) for j in range(2))
+C = matmul_outer([[1], [2], [3]], [[4, 5]])
+assert C == [[4, 5], [8, 10], [12, 15]]
+C = matmul_outer([[1.5, 0.0, 2.0]], [[2.0], [7.0], [0.5]])
+assert abs(C[0][0] - 4.0) < 1e-12
+assert len(matmul_outer([[1, 2, 3], [4, 5, 6]], [[1, 0], [0, 1], [1, 1]])[0]) == 2
+```
+model:
+```python
+def matmul_outer(A, B):
+    """Matrix product as a sum of n outer products (k loop outermost)."""
+    m, n, p = len(A), len(B), len(B[0])
+    C = [[0.0] * p for _ in range(m)]
+    for k in range(n):
+        for i in range(m):
+            for j in range(p):
+                C[i][j] += A[i][k] * B[k][j]
+    return C
+```
+hint: The same three loops as before, but with `k` outermost: each pass over `k` adds `A[i][k] * B[k][j]` to every entry.
+solution: Fixing `k` and looping over all `i` and `j` adds the outer product of column `k` of `A` and row `k` of `B`. Summing over `k` gives the same entries as the inner-product method, using the same $mnp$ multiplications; only the order of operations changed.
+
+@quiz text
+prompt: What does this program print?
+```python
+shape = (3, 2, 5)
+strides = []
+step = 1
+for d in reversed(shape):
+    strides.append(step)
+    step *= d
+strides.reverse()
+print(strides, 2 * strides[0] + 1 * strides[1] + 3 * strides[2])
+```
+answer: [10, 5, 1] 28
+check: run("shape = (3, 2, 5)\nstrides = []\nstep = 1\nfor d in reversed(shape):\n    strides.append(step)\n    step *= d\nstrides.reverse()\nprint(strides, 2 * strides[0] + 1 * strides[1] + 3 * strides[2])")
+hint: The loop builds strides from the last axis backward: 1, then 5, then 10; `reverse` puts them in axis order.
+solution: The stride list is $[10, 5, 1]$ (the last axis has stride 1 and each earlier stride multiplies by the next axis size). The position is $2 \cdot 10 + 1 \cdot 5 + 3 \cdot 1 = 28$.
+
+@quiz ms
+prompt: Which of these statements about array libraries such as NumPy are true? Select all that apply.
+choice*: An array stores elements of one type in a contiguous buffer, described by a shape and strides.
+choice*: The transpose of a two-dimensional array can be a view with swapped strides that shares the original buffer.
+choice: A vectorized computation performs fewer arithmetic operations than the equivalent Python loop.
+choice: Arrays of shapes $(3,)$ and $(4,)$ can be added, and the result has shape $(4,)$.
+hint: Vectorization changes where the loop runs, not how many operations it contains; broadcasting needs equal sizes or a 1.
+solution: The buffer, shape and strides description is how an array is organized, and swapping strides gives a transpose view without copying. The arithmetic count is the same in a loop and a vectorized call, and sizes 3 and 4 are incompatible because neither is 1.

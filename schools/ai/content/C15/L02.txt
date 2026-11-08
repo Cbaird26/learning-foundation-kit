@@ -1,0 +1,277 @@
+@lesson
+title: Regularization: ridge and lasso
+summary: Add an L2 or L1 penalty to least squares, solve ridge in closed form and lasso by coordinate descent, and read the coefficient paths as the penalty grows.
+objective: Derive the ridge solution $(\mathbf{X}^\top\mathbf{X} + \lambda\mathbf{I})^{-1}\mathbf{X}^\top\mathbf{y}$ and explain its shrinkage along principal directions.
+objective: Derive the soft-thresholding update and implement lasso by coordinate descent.
+objective: Tabulate coefficient paths over a range of penalties and explain why lasso produces exact zeros and ridge does not.
+reading: The Elements of Statistical Learning, the chapter on linear methods for regression: the sections on shrinkage methods, ridge regression and the lasso.
+@article
+Last week the normal equations gave one answer, $\mathbf{w} = (\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{X}^\top\mathbf{y}$. When two features are nearly copies of each other, or there are almost as many features as examples, that answer swings wildly with tiny changes in the data: the model has variance. **Regularization** adds a penalty that discourages large weights, accepting a little bias for a large drop in variance.
+
+### The two penalties
+
+Assume the features and the targets have been **centered** (mean zero), so the intercept is zero and never penalized; penalizing it would make predictions depend on the origin of $y$. Write the objective with a penalty strength $\lambda \ge 0$, a hyperparameter:
+
+$$J_{\text{ridge}}(\mathbf{w}) = \tfrac{1}{2}\lVert \mathbf{X}\mathbf{w} - \mathbf{y}\rVert_2^2 + \tfrac{\lambda}{2}\lVert \mathbf{w}\rVert_2^2, \qquad J_{\text{lasso}}(\mathbf{w}) = \tfrac{1}{2}\lVert \mathbf{X}\mathbf{w} - \mathbf{y}\rVert_2^2 + \lambda\lVert \mathbf{w}\rVert_1 .$$
+
+Ridge regression uses the squared L2 norm; the lasso (least absolute shrinkage and selection operator) uses the L1 norm. Standardize the features first, because both penalties treat all weights alike and so depend on the feature scale.
+
+### Ridge in closed form
+
+The gradient of $J_{\text{ridge}}$ is $\mathbf{X}^\top(\mathbf{X}\mathbf{w} - \mathbf{y}) + \lambda\mathbf{w}$. Setting it to zero gives
+
+$$(\mathbf{X}^\top\mathbf{X} + \lambda\mathbf{I})\,\mathbf{w} = \mathbf{X}^\top\mathbf{y}.$$
+
+For $\lambda > 0$ the matrix $\mathbf{X}^\top\mathbf{X} + \lambda\mathbf{I}$ is always invertible, even when $\mathbf{X}^\top\mathbf{X}$ is singular, because every eigenvalue is increased by $\lambda$. Write the singular value decomposition $\mathbf{X} = \mathbf{U}\mathbf{D}\mathbf{V}^\top$. In the coordinates given by $\mathbf{V}$, the ridge coefficients are the least-squares coefficients multiplied by $d_i^2/(d_i^2 + \lambda)$: directions with large singular values $d_i$ are barely shrunk, and directions along which the data barely vary are shrunk toward zero. Ridge never sets a weight exactly to zero.
+
+### The lasso and soft thresholding
+
+The L1 norm is not differentiable at zero, and there is no closed form in general. But a single weight is easy. Fix all weights except $w_j$, and let $a = \mathbf{x}_j^\top\mathbf{x}_j$ and $z = \mathbf{x}_j^\top\mathbf{r}_{-j}$, where $\mathbf{r}_{-j}$ is the **partial residual**, the targets minus the predictions of every other feature. The objective as a function of $w_j$ is, up to a constant, $\tfrac{1}{2}a w_j^2 - z w_j + \lambda|w_j|$. Its minimizer is
+
+$$w_j = \frac{S(z, \lambda)}{a}, \qquad S(z, \lambda) = \operatorname{sign}(z)\max(|z| - \lambda, 0).$$
+
+This is the **soft-thresholding** operator: if $|z| \le \lambda$, the weight is exactly zero. **Coordinate descent** (Friedman, Hastie and Tibshirani popularized it for the lasso) cycles through the coordinates applying this update until the weights stop changing. For an orthonormal design ($\mathbf{X}^\top\mathbf{X} = \mathbf{I}$) the answer needs one pass: ridge divides each least-squares coefficient by $1 + \lambda$, while the lasso subtracts $\lambda$ from its magnitude and clips at zero. Ridge shrinks proportionally; the lasso shrinks by a constant and selects.
+
+### Coefficient paths
+
+A coefficient path lists the fitted weights over a range of $\lambda$. For six centered examples with two correlated features, $\mathbf{X}^\top\mathbf{X} = \begin{pmatrix}16 & 14\\ 14 & 16\end{pmatrix}$ and $\mathbf{X}^\top\mathbf{y} = (29, 28)^\top$, so least squares gives $(1.2, 0.7)$:
+
+| $\lambda$ | ridge $w_1$ | ridge $w_2$ | lasso $w_1$ | lasso $w_2$ |
+|---|---|---|---|---|
+| 0 | 1.2000 | 0.7000 | 1.2000 | 0.7000 |
+| 2 | 1.0156 | 0.7656 | 1.1333 | 0.6333 |
+| 10 | 0.7542 | 0.6708 | 0.8667 | 0.3667 |
+| 20 | 0.5927 | 0.5473 | 0.5333 | 0.0333 |
+| 25 | 0.5367 | 0.4997 | 0.2500 | 0 |
+
+Both paths shrink toward the origin, but ridge keeps both features alive at every $\lambda$ (and even raises $w_2$ at first, because the correlated $w_1$ shrinks), while the lasso drops the weaker feature once $\lambda$ reaches 21. Ridge tends to spread weight across correlated features; the lasso tends to pick one of them.
+
+### In code
+
+```python
+X = [[-3, -2], [-1, -1], [0, -1], [1, 0], [1, 1], [2, 3]]
+y = [-5, -2, -1, 1, 3, 4]
+
+def soft(z, lam):
+    return max(abs(z) - lam, 0.0) * (1 if z > 0 else -1)
+
+def lasso(X, y, lam, sweeps=200):
+    p = len(X[0])
+    w = [0.0] * p
+    for _ in range(sweeps):
+        for j in range(p):
+            r = [t - sum(w[k] * row[k] for k in range(p) if k != j)
+                 for row, t in zip(X, y)]
+            z = sum(row[j] * ri for row, ri in zip(X, r))
+            w[j] = soft(z, lam) / sum(row[j] ** 2 for row in X)
+    return w
+
+for lam in [0, 2, 10, 20, 25]:
+    print(lam, [round(v, 4) for v in lasso(X, y, lam)])
+```
+
+The ridge solution is a one-liner in NumPy, `np.linalg.solve(X.T @ X + lam * np.eye(p), X.T @ y)`, and libraries such as scikit-learn also offer coordinate-descent lasso. The from-scratch version is the same algorithm.
+
+@example
+title: Ridge and lasso with orthogonal columns
+problem: A data set has $\mathbf{X}^\top\mathbf{X} = \begin{pmatrix}2 & 0\\ 0 & 8\end{pmatrix}$ and $\mathbf{X}^\top\mathbf{y} = (2, 12)^\top$. Find the least-squares, ridge ($\lambda = 2$) and lasso ($\lambda = 1$) weights.
+step: With a diagonal $\mathbf{X}^\top\mathbf{X}$ the problem separates by coordinate. Least squares divides: $w_1 = 2/2 = 1$ and $w_2 = 12/8 = 1.5$.
+step: Ridge adds $\lambda$ to each diagonal entry: $w_1 = 2/(2 + 2) = 0.5$ and $w_2 = 12/(8 + 2) = 1.2$.
+step: The lasso soft-thresholds the numerator $z_j = (\mathbf{X}^\top\mathbf{y})_j$ before dividing by $a_j$: $w_1 = S(2, 1)/2 = 1/2 = 0.5$ and $w_2 = S(12, 1)/8 = 11/8 = 1.375$.
+step: Compare: ridge shrank the small-curvature weight by half and the other by 20 percent. The lasso subtracted the same amount from both numerators, so the weight with less support shrank proportionally more.
+answer: Least squares $(1, 1.5)$; ridge $(0.5, 1.2)$; lasso $(0.5, 1.375)$.
+
+@example
+title: One sweep of coordinate descent
+problem: Rows of $\mathbf{X}$: $(1, 1)$, $(1, 0)$, $(0, 1)$, with targets $\mathbf{y} = (3, 1, 2)$. Starting from $\mathbf{w} = (0, 0)$, apply one sweep of lasso coordinate descent with $\lambda = 1$, updating $w_1$ and then $w_2$.
+step: Feature 1 is $\mathbf{x}_1 = (1, 1, 0)$ with $a_1 = 2$, and feature 2 is $\mathbf{x}_2 = (1, 0, 1)$ with $a_2 = 2$.
+step: Update $w_1$: the partial residual is $\mathbf{y}$ itself, because $w_2 = 0$. Then $z = \mathbf{x}_1^\top\mathbf{y} = 3 + 1 = 4$ and $w_1 = S(4, 1)/2 = 3/2 = 1.5$.
+step: Update $w_2$: the partial residual is $\mathbf{y} - 1.5\,\mathbf{x}_1 = (1.5, -0.5, 2)$, so $z = 1.5 + 2 = 3.5$ and $w_2 = S(3.5, 1)/2 = 1.25$.
+step: After one sweep $\mathbf{w} = (1.5, 1.25)$. This is not the optimum: the features overlap, so $w_1$ must now be revisited, and the sweeps converge to $\mathbf{w} = (2/3, 5/3)$.
+answer: $\mathbf{w} = (1.5, 1.25)$ after one sweep.
+
+@mistakes
+- Penalizing the intercept, or fitting ridge on uncentered data: the penalty then pulls predictions toward zero instead of toward the mean.
+- Forgetting to standardize: a feature measured in small units needs a large weight and is penalized more, so the penalty reflects units rather than usefulness.
+- Choosing $\lambda$ by training error: the training error always favors $\lambda = 0$. Choose it with validation data or cross-validation.
+- Expecting ridge to select features: it shrinks every weight but sets none exactly to zero.
+
+@practice num
+prompt: A single centered feature has $\mathbf{x} = (-1, 0, 1)$ and targets $\mathbf{y} = (-2, 0, 4)$. With the ridge objective $\tfrac{1}{2}\lVert x w - \mathbf{y}\rVert^2 + \tfrac{\lambda}{2}w^2$ and $\lambda = 2$, what is the ridge weight $w$?
+answer: 1.5
+check: sum(x * t for x, t in zip([-1, 0, 1], [-2, 0, 4])) / (sum(x * x for x in [-1, 0, 1]) + 2)
+hint: With one feature the solution is $w = \mathbf{x}^\top\mathbf{y} / (\mathbf{x}^\top\mathbf{x} + \lambda)$.
+solution: $\mathbf{x}^\top\mathbf{y} = 2 + 0 + 4 = 6$ and $\mathbf{x}^\top\mathbf{x} = 2$, so $w = 6/(2 + 2) = 1.5$. Least squares would give $3$, so ridge shrank it by half.
+
+@practice num
+prompt: Evaluate the soft-thresholding operator $S(z, \lambda) = \operatorname{sign}(z)\max(|z| - \lambda, 0)$ at $z = -3.2$ and $\lambda = 1.5$.
+answer: -1.7
+tol: 0.001
+check: -max(abs(-3.2) - 1.5, 0)
+hint: The magnitude shrinks by $\lambda$ and the sign is kept.
+solution: $|z| - \lambda = 3.2 - 1.5 = 1.7 > 0$, so the result keeps the sign of $z$: $S = -1.7$.
+
+@practice mc
+prompt: Why does the lasso set some coefficients exactly to zero while ridge regression does not?
+choice*: For the lasso, a coefficient is zero whenever $|z| \le \lambda$ (the soft-thresholding rule), because the L1 penalty has a kink at zero; the ridge penalty is smooth, so its solution divides by $a + \lambda$ and is zero only if $z$ is.
+choice: The lasso solves its problem by gradient descent, which stops at zero; ridge uses a closed form that cannot produce zeros.
+choice: Ridge shrinks only the large coefficients, and the lasso shrinks only the small ones.
+choice: The lasso penalty is larger than the ridge penalty for every weight vector, so it forces weights to zero.
+hint: Look at the single-coordinate solutions: soft thresholding for the lasso and division by $a + \lambda$ for ridge.
+solution: The kink of $|w|$ at zero means that when the correlation $z$ of a feature with the partial residual is no larger than $\lambda$ in magnitude, no nonzero weight can lower the objective. The smooth ridge penalty has zero slope at zero, so a weight is zero only if the unpenalized solution already is. The solver does not matter, and ridge shrinks every direction by a factor below 1.
+
+@practice code
+prompt: Write `soft_threshold(z, lam)` returning $\operatorname{sign}(z)\max(|z| - \lambda, 0)$ as a float, with `lam` nonnegative. For example, `soft_threshold(3.0, 1.0)` returns `2.0` and `soft_threshold(0.5, 1.0)` returns `0.0`.
+starter:
+```python
+def soft_threshold(z, lam):
+    pass
+```
+tests:
+```python
+assert abs(soft_threshold(3.0, 1.0) - 2.0) < 1e-9
+assert abs(soft_threshold(-3.0, 1.0) - (-2.0)) < 1e-9
+assert abs(soft_threshold(0.5, 1.0)) < 1e-9
+assert abs(soft_threshold(-0.5, 1.0)) < 1e-9
+assert abs(soft_threshold(0.0, 0.0)) < 1e-9
+assert abs(soft_threshold(-2.5, 0.0) - (-2.5)) < 1e-9
+```
+model:
+```python
+def soft_threshold(z, lam):
+    """Shrink z toward zero by lam, clipping at zero."""
+    shrunk = max(abs(z) - lam, 0.0)
+    return shrunk if z > 0 else -shrunk
+```
+hint: Shrink the magnitude first with `max(abs(z) - lam, 0.0)`, then restore the sign.
+solution: Take the shrunken magnitude, then give it the sign of `z`. The negative tests catch a version that loses the sign, and the tests with `lam = 0` check that nothing is changed when there is no penalty.
+
+@practice code
+prompt: Write `lasso_cd(X, y, lam, sweeps)` that minimizes $\tfrac{1}{2}\lVert \mathbf{X}\mathbf{w} - \mathbf{y}\rVert^2 + \lambda\lVert\mathbf{w}\rVert_1$ by coordinate descent. Start from all-zero weights; in each of `sweeps` sweeps update the weights one at a time in index order, each from the partial residual that uses the latest values of the other weights. The update is $w_j = S(z, \lambda)/a$, where $a = \mathbf{x}_j^\top\mathbf{x}_j$ and $z$ is $\mathbf{x}_j^\top$ times the partial residual. `X` is a list of rows; there is no intercept. Return the weights as a list. Assume every column has a nonzero norm.
+starter:
+```python
+def lasso_cd(X, y, lam, sweeps):
+    w = [0.0] * len(X[0])
+    return w
+```
+tests:
+```python
+X = [[1, 1], [1, -1], [-1, 1], [-1, -1]]
+y = [3, 1, -1, -3]
+got = lasso_cd(X, y, 1.0, 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.75, 0.75]))
+got = lasso_cd(X, y, 5.0, 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.75, 0.0]))
+X = [[2, 1], [1, 1], [0, -1], [-1, 0], [-2, -1]]
+y = [3, 2, -1, -1, -3]
+got = lasso_cd(X, y, 1.0, 300)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [16 / 15, 2 / 3]))
+got = lasso_cd(X, y, 4.0, 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.1, 0.0]))
+got = lasso_cd(X, y, 1.0, 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.4, 0.25]))
+assert lasso_cd(X, y, 100.0, 5) == [0.0, 0.0]
+```
+model:
+```python
+def lasso_cd(X, y, lam, sweeps):
+    """Lasso by cyclic coordinate descent with soft thresholding."""
+    p = len(X[0])
+    w = [0.0] * p
+    for _ in range(sweeps):
+        for j in range(p):
+            r = [t - sum(w[k] * row[k] for k in range(p) if k != j)
+                 for row, t in zip(X, y)]
+            z = sum(row[j] * ri for row, ri in zip(X, r))
+            a = sum(row[j] ** 2 for row in X)
+            shrunk = max(abs(z) - lam, 0.0)
+            w[j] = (shrunk if z > 0 else -shrunk) / a
+    return w
+```
+hint: For coordinate $j$, subtract the contribution of every other weight from `y`, compute $z$ and $a$, then apply soft thresholding.
+solution: The partial residual must use the newest weights, so the update for coordinate $j$ sees the result of the update for coordinate $j-1$ within the same sweep. The one-sweep test with $\lambda = 1$ gives $1.4$ then $0.25$ only if this is done; computing both updates from the old weights gives a different answer.
+
+@quiz code
+prompt: Write `ridge_path(X, y, lams)` that returns a list with one weight list per penalty in `lams`, each the solution of $(\mathbf{X}^\top\mathbf{X} + \lambda\mathbf{I})\mathbf{w} = \mathbf{X}^\top\mathbf{y}$. The data are centered and have no intercept. The helper `solve(A, b)` is provided and solves a linear system.
+starter:
+```python
+def solve(A, b):
+    n = len(A)
+    M = [row[:] + [bi] for row, bi in zip(A, b)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        for r in range(c + 1, n):
+            f = M[r][c] / M[c][c]
+            M[r] = [a - f * k for a, k in zip(M[r], M[c])]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        s = sum(M[r][k] * x[k] for k in range(r + 1, n))
+        x[r] = (M[r][n] - s) / M[r][r]
+    return x
+
+def ridge_path(X, y, lams):
+    pass
+```
+tests:
+```python
+X = [[1, 2], [2, 1], [-1, -1], [-2, -2]]
+y = [4, 2, -2, -4]
+path = ridge_path(X, y, [0, 1, 5])
+assert len(path) == 3
+assert all(abs(a - b) < 1e-9 for a, b in zip(path[0], [0.0, 2.0]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(path[1], [0.45, 1.45]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(path[2], [0.625, 23 / 24]))
+assert ridge_path(X, y, []) == []
+```
+model:
+```python
+def solve(A, b):
+    n = len(A)
+    M = [row[:] + [bi] for row, bi in zip(A, b)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        for r in range(c + 1, n):
+            f = M[r][c] / M[c][c]
+            M[r] = [a - f * k for a, k in zip(M[r], M[c])]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        s = sum(M[r][k] * x[k] for k in range(r + 1, n))
+        x[r] = (M[r][n] - s) / M[r][r]
+    return x
+
+def ridge_path(X, y, lams):
+    """Ridge weights for each penalty strength in lams."""
+    p = len(X[0])
+    xty = [sum(r[i] * t for r, t in zip(X, y)) for i in range(p)]
+    path = []
+    for lam in lams:
+        A = [[sum(r[i] * r[j] for r in X) + (lam if i == j else 0.0)
+              for j in range(p)] for i in range(p)]
+        path.append(solve(A, xty))
+    return path
+```
+hint: For each $\lambda$, build $\mathbf{X}^\top\mathbf{X}$, add $\lambda$ to its diagonal only, and call `solve`.
+solution: The penalty enters only on the diagonal of $\mathbf{X}^\top\mathbf{X}$, not on the off-diagonal entries. The test with $\lambda = 1$ expects $(0.45, 1.45)$, and adding $\lambda$ to every entry instead gives a different answer.
+
+@quiz text
+prompt: What does this program print?
+```python
+def soft(z, lam):
+    return max(abs(z) - lam, 0) * (1 if z > 0 else -1)
+
+print([soft(z, 2) for z in [-5, -1.5, 0, 2, 3.5]])
+```
+answer: [-3, 0, 0, 0, 1.5]
+check: run("def soft(z, lam):\n    return max(abs(z) - lam, 0) * (1 if z > 0 else -1)\n\nprint([soft(z, 2) for z in [-5, -1.5, 0, 2, 3.5]])")
+hint: Values with magnitude at most 2 are clipped to zero; the others lose 2 from their magnitude.
+solution: $-5$ becomes $-3$; $-1.5$, $0$ and $2$ all have magnitude at most 2, so they give $0$; $3.5$ becomes $1.5$.
+
+@quiz num
+prompt: In ridge regression with $\lambda = 4$, the least-squares coefficient along a principal direction with singular value $d = 3$ is multiplied by $d^2/(d^2 + \lambda)$. What is the multiplier? Give three decimal places.
+answer: 0.692
+tol: 0.001
+check: 9 / (9 + 4)
+hint: Square the singular value first: $d^2 = 9$.
+solution: $d^2/(d^2 + \lambda) = 9/13 \approx 0.692$. A direction with a smaller singular value, say $d = 1$, would be multiplied by $1/5 = 0.2$ and shrunk far more.

@@ -1,0 +1,189 @@
+@lesson
+title: Newton's method and quasi-Newton methods
+summary: Derive and run Newton's method, state its local convergence and its failure modes, and explain how BFGS builds curvature information from gradients alone.
+objective: Derive the Newton step from the quadratic model and compute it for one- and two-variable functions.
+objective: State the local quadratic convergence of Newton's method with its conditions, and name its costs and failure modes.
+objective: Write the secant equation and the BFGS update, and explain why limited-memory variants are used at scale.
+reading: Mathematics for Machine Learning, the chapter on continuous optimization; for Newton's method and quasi-Newton methods, look up the topic in a numerical optimization text (the book covers gradient-based methods in depth).
+@article
+Gradient descent looks at the slope and takes a cautious step because it does not know how fast the slope changes. What if we also measured the curvature and jumped straight to the bottom of the best-fitting bowl? That is Newton's method: it trades more computation per step for far fewer steps.
+
+### The Newton step
+
+At the current point $\mathbf{x}$ approximate $f$ by its second-order Taylor model in the step $\mathbf{d}$:
+$$m(\mathbf{d}) = f(\mathbf{x}) + \nabla f(\mathbf{x})^\top\mathbf{d} + \tfrac12\mathbf{d}^\top\mathbf{H}(\mathbf{x})\,\mathbf{d}.$$
+If $\mathbf{H}$ is positive definite, $m$ is a bowl whose bottom is where $\nabla m = \nabla f + \mathbf{H}\mathbf{d} = \mathbf{0}$, that is $\mathbf{d} = -\mathbf{H}^{-1}\nabla f$. **Newton's method** is
+$$\mathbf{x}_{k+1} = \mathbf{x}_k - \mathbf{H}(\mathbf{x}_k)^{-1}\nabla f(\mathbf{x}_k).$$
+In practice one solves $\mathbf{H}\mathbf{d} = -\nabla f$ rather than forming the inverse. There is no step size: curvature supplies the scale. For a strictly convex quadratic, the model is exact, so **one step reaches the minimizer** from any start. For a one-variable function, the update is $x \leftarrow x - f'(x)/f''(x)$, which is the root-finding Newton iteration applied to $f'$.
+
+### Local quadratic convergence
+
+For $f(x) = e^x - 2x$, we have $f' = e^x - 2$ and $f'' = e^x$, so the update is $x \leftarrow x - 1 + 2e^{-x}$; the minimizer is $\ln 2 \approx 0.693147$. From $x_0 = 0$:
+
+| step | $x_k$ | error $\lvert x_k - \ln 2\rvert$ |
+|---|---|---|
+| 1 | 1.000000 | $3.07\times10^{-1}$ |
+| 2 | 0.735759 | $4.26\times10^{-2}$ |
+| 3 | 0.694042 | $8.95\times10^{-4}$ |
+| 4 | 0.693148 | $4.0\times10^{-7}$ |
+| 5 | 0.693147 | $8.0\times10^{-14}$ |
+
+The number of correct digits roughly doubles at every step. This is **quadratic convergence**, and the theorem behind it is: *if $f$ is twice continuously differentiable, $\mathbf{H}$ is Lipschitz near a minimizer $\mathbf{x}^\star$, and $\mathbf{H}(\mathbf{x}^\star)$ is positive definite, then there is a neighborhood of $\mathbf{x}^\star$ and a constant $C$ such that starting inside it, Newton's iterates converge and $\lVert\mathbf{x}_{k+1} - \mathbf{x}^\star\rVert_2 \le C\lVert\mathbf{x}_k - \mathbf{x}^\star\rVert_2^2$.* Compare with gradient descent's linear rate, where each step gains a fixed fraction of a digit.
+
+### Costs and failure modes
+
+- **Cost.** Forming $\mathbf{H}$ needs $O(n^2)$ memory and solving the system $O(n^3)$ operations for $n$ parameters. A network with a million parameters would need $10^{12}$ Hessian entries.
+- **Only local guarantees.** Far from a minimizer, a pure Newton step can overshoot or diverge.
+- **Wrong curvature.** If $\mathbf{H}$ is singular the step is undefined; if it is indefinite, the step $-\mathbf{H}^{-1}\nabla f$ may be an ascent direction or lead to a saddle point, because Newton's method seeks any stationary point.
+- **Singular minimizers.** For $f(x) = x^4$ the step is $x \leftarrow x - 4x^3/(12x^2) = \tfrac23 x$: only linear convergence, because $f''(0) = 0$.
+
+The standard remedies are **damped Newton** ($\mathbf{x} \leftarrow \mathbf{x} + t\mathbf{d}$ with $t$ from a backtracking line search) and **regularization** (solving $(\mathbf{H} + \lambda\mathbf{I})\mathbf{d} = -\nabla f$ with $\lambda$ large enough to make the matrix positive definite).
+
+### Quasi-Newton methods
+
+**Quasi-Newton** methods keep an approximation $\mathbf{B}_k \approx \mathbf{H}$ (or of its inverse) built only from gradients. After a step $\mathbf{s}_k = \mathbf{x}_{k+1} - \mathbf{x}_k$ with gradient change $\mathbf{y}_k = \nabla f(\mathbf{x}_{k+1}) - \nabla f(\mathbf{x}_k)$, the Hessian satisfies $\mathbf{y}_k \approx \mathbf{H}\mathbf{s}_k$, so we require the **secant equation** $\mathbf{B}_{k+1}\mathbf{s}_k = \mathbf{y}_k$. The **BFGS** update (Broyden, Fletcher, Goldfarb and Shanno, 1970), in terms of the inverse approximation $\mathbf{M}_k \approx \mathbf{H}^{-1}$, is
+$$\mathbf{M}_{k+1} = \big(\mathbf{I} - \rho\,\mathbf{s}\mathbf{y}^\top\big)\mathbf{M}_k\big(\mathbf{I} - \rho\,\mathbf{y}\mathbf{s}^\top\big) + \rho\,\mathbf{s}\mathbf{s}^\top, \qquad \rho = \frac{1}{\mathbf{y}^\top\mathbf{s}},$$
+and it keeps $\mathbf{M}$ symmetric positive definite as long as the curvature condition $\mathbf{y}^\top\mathbf{s} > 0$ holds (a line search satisfying the Wolfe conditions ensures it). The step is $\mathbf{d}_k = -\mathbf{M}_k\nabla f(\mathbf{x}_k)$ followed by a line search. Under standard assumptions BFGS converges superlinearly near a minimizer, faster than gradient descent without second derivatives. It still needs $O(n^2)$ memory, so **L-BFGS** (Liu and Nocedal, 1989) stores only the last $m$ pairs $(\mathbf{s}_i, \mathbf{y}_i)$ (typically $m$ between 5 and 20) and applies $\mathbf{M}_k$ implicitly, using $O(mn)$ memory. L-BFGS is a standard choice for medium-sized smooth problems such as logistic regression; for deep networks, noisy mini-batch gradients make first-order methods the norm.
+
+### In code
+
+```python
+def newton_2d(grad, hess, x0, steps):
+    x = list(x0)
+    for _ in range(steps):
+        g = grad(x)
+        (a, b), (c, d) = hess(x)
+        det = a * d - b * c
+        step = [(d * g[0] - b * g[1]) / det, (-c * g[0] + a * g[1]) / det]
+        x = [x[0] - step[0], x[1] - step[1]]
+    return x
+```
+
+The two lines computing `step` solve the $2\times2$ system $\mathbf{H}\mathbf{d} = \mathbf{g}$ by Cramer's rule; with NumPy one writes `np.linalg.solve(H, g)`.
+
+@example
+title: A Newton step in two variables
+problem: Minimize $f(x,y) = x^2 + xy + 2y^2 - 3x + y$ by one Newton step from $(5, -5)$.
+step: The gradient is $\nabla f = (2x + y - 3,\; x + 4y + 1)$; at $(5,-5)$ it is $(2, -14)$.
+step: The Hessian is the constant matrix $\mathbf{H} = \begin{pmatrix} 2 & 1 \\ 1 & 4 \end{pmatrix}$ with $\det\mathbf{H} = 7$, positive definite, and $\mathbf{H}^{-1} = \frac17\begin{pmatrix} 4 & -1 \\ -1 & 2 \end{pmatrix}$.
+step: The step is $\mathbf{d} = -\mathbf{H}^{-1}\nabla f = -\tfrac17(4\cdot 2 + 14,\; -2 - 28) = (-22/7,\; 30/7)$.
+step: The new point is $(5 - 22/7,\; -5 + 30/7) = (13/7, -5/7) \approx (1.857, -0.714)$. The gradient there is $(26/7 - 5/7 - 3,\; 13/7 - 20/7 + 1) = (0, 0)$, so we are at the minimizer after one step.
+answer: $(13/7, -5/7)$, the exact minimizer, since $f$ is a convex quadratic.
+
+@example
+title: A BFGS update and the secant equation
+problem: Starting with $\mathbf{M}_0 = \mathbf{I}$, a step $\mathbf{s} = (1,1)^\top$ produced a gradient change $\mathbf{y} = (3,2)^\top$. Compute the BFGS inverse update $\mathbf{M}_1$ and verify the secant equation $\mathbf{M}_1\mathbf{y} = \mathbf{s}$.
+step: The curvature $\mathbf{y}^\top\mathbf{s} = 5 > 0$, so $\rho = 0.2$ and the update is allowed.
+step: Compute $\mathbf{I} - \rho\,\mathbf{s}\mathbf{y}^\top = \begin{pmatrix} 0.4 & -0.4 \\ -0.6 & 0.6 \end{pmatrix}$, since $\mathbf{s}\mathbf{y}^\top$ has both rows equal to $(3, 2)$. The other factor $\mathbf{I} - \rho\,\mathbf{y}\mathbf{s}^\top$ is its transpose.
+step: Because $\mathbf{M}_0 = \mathbf{I}$, the product is $\begin{pmatrix} 0.4 & -0.4 \\ -0.6 & 0.6 \end{pmatrix}\begin{pmatrix} 0.4 & -0.6 \\ -0.4 & 0.6 \end{pmatrix} = \begin{pmatrix} 0.32 & -0.48 \\ -0.48 & 0.72 \end{pmatrix}$, and $\rho\,\mathbf{s}\mathbf{s}^\top$ adds $0.2$ to every entry: $\mathbf{M}_1 = \begin{pmatrix} 0.52 & -0.28 \\ -0.28 & 0.92 \end{pmatrix}$.
+step: Check the secant equation: $\mathbf{M}_1\mathbf{y} = (0.52\cdot 3 - 0.28\cdot 2,\; -0.28\cdot 3 + 0.92\cdot 2) = (1.00, 1.00) = \mathbf{s}$.
+answer: $\mathbf{M}_1 = \begin{pmatrix} 0.52 & -0.28 \\ -0.28 & 0.92 \end{pmatrix}$, and it satisfies $\mathbf{M}_1\mathbf{y} = \mathbf{s}$.
+
+@mistakes
+- Calling the Newton step $\mathbf{H}\nabla f$ instead of $-\mathbf{H}^{-1}\nabla f$: the inverse curvature rescales the gradient, and the minus sign makes it a descent step when $\mathbf{H}$ is positive definite.
+- Assuming Newton's method always converges quickly: the guarantee is local, needs $\mathbf{H}(\mathbf{x}^\star)$ positive definite, and fails or needs damping far from the solution.
+- Forgetting that Newton seeks a stationary point: where the Hessian is indefinite it can walk toward a saddle point or a maximum.
+- Computing the matrix inverse explicitly: solving the linear system is cheaper and more accurate.
+
+@practice num
+prompt: One step of Newton's method for minimizing $f(x) = x^3/3 - 2x$ starting from $x_0 = 2$ gives which value of $x_1$?
+answer: 1.5
+check: 2 - (2 ** 2 - 2) / (2 * 2)
+hint: Use $x_1 = x_0 - f'(x_0)/f''(x_0)$ with $f'(x) = x^2 - 2$ and $f''(x) = 2x$.
+solution: $f'(2) = 4 - 2 = 2$ and $f''(2) = 4$, so $x_1 = 2 - 2/4 = 1.5$, moving toward the local minimizer $\sqrt2 \approx 1.414$.
+
+@practice num
+prompt: Let $f(x,y) = 2x^2 + xy + y^2 - x$, which is a convex quadratic. Newton's method is started at $(0,0)$. After one step, what is the $x$ coordinate? Give your answer to three decimal places.
+answer: 0.286
+tol: 0.001
+check: (-np.linalg.solve(np.array([[4, 1], [1, 2]]), np.array([-1, 0])))[0]
+hint: The gradient at the origin is $(-1, 0)$ and the Hessian is $\begin{pmatrix} 4 & 1 \\ 1 & 2 \end{pmatrix}$. Solve $\mathbf{H}\mathbf{d} = -\nabla f$.
+solution: The system $4d_1 + d_2 = 1$, $d_1 + 2d_2 = 0$ gives $d_2 = -d_1/2$ and $3.5d_1 = 1$, so $d_1 = 2/7 \approx 0.286$. Since $f$ is a quadratic, this is already the minimizer $(2/7, -1/7)$.
+
+@practice mc
+prompt: Newton's method is applied to $f(x) = x^4$, whose minimizer is $x = 0$. What happens?
+choice*: The iterates satisfy $x_{k+1} = \tfrac23 x_k$, converging linearly because $f''(0) = 0$.
+choice: The iterates converge quadratically, as for any smooth function.
+choice: The iterates reach $0$ in one step, as for a quadratic.
+choice: The iterates diverge, because the Hessian vanishes at the minimizer.
+hint: Compute $x - f'(x)/f''(x)$ for $f'(x) = 4x^3$ and $f''(x) = 12x^2$.
+solution: The update is $x - 4x^3/(12x^2) = x - x/3 = \tfrac23 x$, a linear contraction toward $0$. The quadratic-convergence theorem needs $f''(x^\star) > 0$, and here it is $0$; the iterates still converge, just slowly.
+
+@practice ms
+prompt: Which of these statements are true? Select all that apply.
+choice*: On a strictly convex quadratic, Newton's method with the exact Hessian reaches the minimizer in one step from any start.
+choice*: BFGS builds its curvature approximation from differences of gradients and does not need second derivatives.
+choice: The Newton step $-\mathbf{H}^{-1}\nabla f$ is a descent direction at every point where $\nabla f \neq \mathbf{0}$.
+choice: L-BFGS stores the full $n \times n$ approximation of the inverse Hessian.
+hint: Think about when $\mathbf{H}$ is indefinite, and what the "L" in L-BFGS stands for.
+solution: The quadratic model is exact for a quadratic, so one step suffices. BFGS uses the pairs $\mathbf{s}_k$ and $\mathbf{y}_k$ only. The Newton direction is a descent direction only when $\mathbf{H}$ is positive definite, and L-BFGS keeps just the last few pairs, using $O(mn)$ memory.
+
+@practice code
+prompt: Write `newton_2d(grad, hess, x0, steps)` that runs `steps` iterations of Newton's method on a function of two variables. Here `grad(x)` returns the gradient as a list `[g1, g2]`, `hess(x)` returns the Hessian as a list of rows `[[a, b], [c, d]]`, and `x0` is a list `[x, y]` that must not be modified. Solve the $2 \times 2$ system for the step (do not call any library) and return the final point as a list. For example, for $f = x^2 + y^2$, one step from `[3.0, 4.0]` returns `[0.0, 0.0]`.
+starter:
+```python
+def newton_2d(grad, hess, x0, steps):
+    return list(x0)
+```
+tests:
+```python
+import math
+g = lambda v: [2 * v[0] + v[1] - 2, v[0] + 2 * v[1]]
+h = lambda v: [[2.0, 1.0], [1.0, 2.0]]
+r = newton_2d(g, h, [1.0, 1.0], 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(r, [4 / 3, -2 / 3]))
+g2 = lambda v: [math.exp(v[0]) - 3, 2 * v[1]]
+h2 = lambda v: [[math.exp(v[0]), 0.0], [0.0, 2.0]]
+r = newton_2d(g2, h2, [0.0, 3.0], 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(r, [2.0, 0.0]))
+r = newton_2d(g2, h2, [0.0, 3.0], 2)
+assert all(abs(a - b) < 1e-6 for a, b in zip(r, [1.4060058, 0.0]))
+start = [1.0, 1.0]
+newton_2d(g, h, start, 2)
+assert start == [1.0, 1.0]
+assert newton_2d(g, h, [7.0, 8.0], 0) == [7.0, 8.0]
+```
+model:
+```python
+def newton_2d(grad, hess, x0, steps):
+    """Newton's method for two variables, solving the 2x2 system directly."""
+    x = list(x0)
+    for _ in range(steps):
+        g = grad(x)
+        (a, b), (c, d) = hess(x)
+        det = a * d - b * c
+        step = [(d * g[0] - b * g[1]) / det,
+                (-c * g[0] + a * g[1]) / det]
+        x = [x[0] - step[0], x[1] - step[1]]
+    return x
+```
+hint: For $\mathbf{H}\mathbf{d} = \mathbf{g}$ with $\mathbf{H} = \begin{pmatrix} a & b \\ c & d \end{pmatrix}$, Cramer's rule gives $d_1 = (d g_1 - b g_2)/\det$ and $d_2 = (-c g_1 + a g_2)/\det$; then subtract $\mathbf{d}$.
+solution: Each iteration evaluates the gradient and Hessian at the current point, solves for the step with the explicit $2\times 2$ inverse, and subtracts it. For the quadratic the first step lands on the minimizer, while the exponential test needs more steps to approach $\ln 3 \approx 1.0986$; a version that adds the step instead of subtracting it fails both.
+
+@quiz text
+prompt: What does this program print?
+```python
+x = 3.0
+for _ in range(2):
+    x = x - (x ** 3 - 8) / (3 * x ** 2)
+print(round(x, 4))
+```
+answer: 2.0366
+check: run("x = 3.0\nfor _ in range(2):\n    x = x - (x ** 3 - 8) / (3 * x ** 2)\nprint(round(x, 4))")
+hint: This is Newton's method for the stationary point of $x^4/4 - 8x$, with $f'(x) = x^3 - 8$ and $f''(x) = 3x^2$. Compute each step.
+solution: Step 1: $x = 3 - 19/27 \approx 2.2963$. Step 2: $f'(2.2963) \approx 4.1093$ and $f''(2.2963) \approx 15.819$, so $x \approx 2.2963 - 0.2598 = 2.0366$, approaching the minimizer $2$.
+
+@quiz num
+prompt: L-BFGS stores the last $m = 10$ pairs of vectors $(\mathbf{s}_i, \mathbf{y}_i)$ for a model with $n = 1000$ parameters. How many numbers does it store for these pairs?
+answer: 20000
+check: 2 * 10 * 1000
+hint: Each pair has two vectors of length $n$.
+solution: Each of the $10$ pairs has $2 \times 1000 = 2000$ numbers, so $20{,}000$ in total, compared with $n^2 = 10^6$ for a full $n\times n$ matrix.
+
+@quiz self
+prompt: Derive Newton's method from the second-order Taylor model of $f$, then explain two reasons why it is rarely used directly to train large neural networks, and what a practitioner does instead.
+hint: Minimize the quadratic model over the step $\mathbf{d}$, then think about the size of $\mathbf{H}$ and about what happens when $\mathbf{H}$ is not positive definite or the gradient is a noisy mini-batch estimate.
+solution: Replace $f(\mathbf{x} + \mathbf{d})$ by $m(\mathbf{d}) = f + \nabla f^\top\mathbf{d} + \tfrac12\mathbf{d}^\top\mathbf{H}\mathbf{d}$. Its gradient in $\mathbf{d}$ is $\nabla f + \mathbf{H}\mathbf{d}$, which vanishes at $\mathbf{d} = -\mathbf{H}^{-1}\nabla f$; if $\mathbf{H}$ is positive definite this is the unique minimizer of $m$, giving the update $\mathbf{x}_{k+1} = \mathbf{x}_k - \mathbf{H}^{-1}\nabla f$. First, scale: with $n$ parameters, $\mathbf{H}$ has $n^2$ entries and solving costs $O(n^3)$, impossible for millions of parameters. Second, the loss is non-convex, so $\mathbf{H}$ is indefinite in many places and the Newton step can go uphill or head for a saddle point; in addition, mini-batch noise in $\nabla f$ and $\mathbf{H}$ makes the exact solve of a noisy model pointless. Practitioners use first-order methods (SGD with momentum, Adam), which scale linearly in $n$; quasi-Newton methods with limited memory (L-BFGS) for smaller deterministic problems; or approximations to curvature such as damped or diagonal Hessian estimates.
+rubric: Derives the step $-\mathbf{H}^{-1}\nabla f$ by minimizing the quadratic model, stating the positive definiteness condition.
+rubric: Gives two correct reasons (cost in memory and operations, indefinite Hessian in non-convex problems, or noise).
+rubric: Names a practical alternative with a reason it scales.

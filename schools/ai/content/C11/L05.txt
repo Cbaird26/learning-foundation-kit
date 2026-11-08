@@ -1,0 +1,239 @@
+@lesson
+title: Solving linear systems: Gaussian elimination with pivoting
+summary: Solve $\mathbf{A}\mathbf{x} = \mathbf{b}$ by Gaussian elimination with partial pivoting and back substitution, count its cost, and explain why pivoting is needed.
+objective: Carry out forward elimination and back substitution by hand on a small system.
+objective: Explain how a tiny pivot ruins the answer and how partial pivoting prevents it.
+objective: Implement a linear solver with partial pivoting and use it to compute a determinant.
+reading: Python for Data Analysis, 3rd edition: the section on linear algebra with NumPy (`numpy.linalg`, including `solve`); also look up "Gaussian elimination" and "LU decomposition" in your linear algebra text.
+@article
+Linear regression, Gaussian processes, Newton's method and many other algorithms end in the same step: solve $\mathbf{A}\mathbf{x} = \mathbf{b}$ for a square matrix $\mathbf{A}$. You learned to do this by hand with row operations. A computer does the same, but its rounding makes one detail essential: which row to use next.
+
+### Gaussian elimination
+
+The idea is to turn the system into a triangular one. **Forward elimination** works column by column. For column $k$, pick a row with a nonzero entry in that column, called the **pivot**, and use it to eliminate the entries below it: for each row $i > k$ subtract the multiple $m_{ik} = a_{ik}/a_{kk}$ of the pivot row from row $i$, applying the same operation to $b_i$. After the last column the matrix $\mathbf{U}$ is upper triangular and we have a new right-hand side $\mathbf{c}$, with the same solutions as the original system. **Back substitution** then solves $\mathbf{U}\mathbf{x} = \mathbf{c}$ from the bottom up:
+$$x_i = \frac{1}{u_{ii}}\Big(c_i - \sum_{j > i} u_{ij} x_j\Big), \qquad i = n, n-1, \ldots, 1.$$
+
+### Why the pivot must be chosen carefully
+
+Take the system $10^{-20} x_1 + x_2 = 1$, $\; x_1 + x_2 = 2$, whose solution is very close to $x_1 = 1$, $x_2 = 1$. Eliminating with the first row as pivot uses the multiplier $m = 10^{20}$. The second row becomes $(1 - 10^{20}) x_2 = 2 - 10^{20}$, and in double precision both $1 - 10^{20}$ and $2 - 10^{20}$ round to $-10^{20}$ (absorption, Lesson 1). Then $x_2 = 1$ is fine, but back substitution computes $x_1 = (1 - 1)/10^{-20} = 0$: completely wrong. The information in the second equation was destroyed by the huge multiplier.
+
+**Partial pivoting** fixes this: at column $k$, search rows $k, \ldots, n$ for the entry of largest absolute value and swap that row into position $k$. Then every multiplier satisfies $|m_{ik}| \le 1$, so the rows are never amplified. In the example the swap puts $[1, 1]$ first with multiplier $10^{-20}$, and the solver returns $x_1 = x_2 = 1$. Partial pivoting is what practical solvers use (as part of the **LU factorization**, which stores the multipliers so that many right-hand sides can share one elimination). If every candidate pivot is zero, or nearly so, the matrix is singular and the solver should report it.
+
+```python
+def eliminate(A, b):
+    """Forward elimination with partial pivoting. Returns (U, c, swaps)."""
+    n = len(A)
+    U = [row[:] for row in A]
+    c = b[:]
+    swaps = 0
+    for k in range(n):
+        p = max(range(k, n), key=lambda r: abs(U[r][k]))
+        if abs(U[p][k]) < 1e-12:
+            raise ValueError("matrix is singular")
+        if p != k:
+            U[k], U[p] = U[p], U[k]
+            c[k], c[p] = c[p], c[k]
+            swaps += 1
+        for i in range(k + 1, n):
+            m = U[i][k] / U[k][k]
+            for j in range(k, n):
+                U[i][j] -= m * U[k][j]
+            c[i] -= m * c[k]
+    return U, c, swaps
+```
+
+### Cost and by-products
+
+Step $k$ updates about $(n-k)^2$ entries, each with one multiplication and one subtraction, so elimination costs about $\tfrac{2}{3}n^3$ flops and back substitution only about $n^2$. For $n = 1000$ that is roughly $6.7 \times 10^8$ flops. Because elimination dominates, solving for many right-hand sides should reuse the factorization.
+
+The **determinant** is a free by-product: $\det \mathbf{A} = (-1)^{s} \prod_i u_{ii}$, where $s$ is the number of row swaps. A zero pivot means $\det \mathbf{A} = 0$.
+
+One more rule: to solve $\mathbf{A}\mathbf{x} = \mathbf{b}$, never compute $\mathbf{A}^{-1}$ and multiply. Forming the inverse costs about three times as much as one solve and is usually less accurate. In code, `np.linalg.solve(A, b)` is the right call; `np.linalg.inv(A) @ b` is the wrong one.
+
+@example
+title: Elimination with pivoting by hand
+problem: Solve $x_1 + 2x_2 + x_3 = 8$, $\; 3x_1 + x_2 + 2x_3 = 11$, $\; 2x_1 + 4x_2 + 5x_3 = 25$ with partial pivoting.
+step: Column 1: the largest entry in absolute value is 3 (row 2), so swap rows 1 and 2. The rows are now $[3, 1, 2 \mid 11]$, $[1, 2, 1 \mid 8]$, $[2, 4, 5 \mid 25]$.
+step: Eliminate with multipliers $1/3$ and $2/3$: row 2 becomes $[0, \tfrac53, \tfrac13 \mid \tfrac{13}{3}]$ and row 3 becomes $[0, \tfrac{10}{3}, \tfrac{11}{3} \mid \tfrac{53}{3}]$.
+step: Column 2: the candidates are $\tfrac53$ and $\tfrac{10}{3}$, so swap. The multiplier is $\tfrac{5/3}{10/3} = \tfrac12$, and the new third row is $[0, 0, -\tfrac32 \mid -\tfrac92]$.
+step: Back substitution: $x_3 = (-\tfrac92)/(-\tfrac32) = 3$; $x_2 = (\tfrac{53}{3} - \tfrac{11}{3}\cdot 3)/\tfrac{10}{3} = 2$; $x_1 = (11 - 1\cdot 2 - 2\cdot 3)/3 = 1$.
+step: Check in the original first equation: $1 + 4 + 3 = 8$. The determinant is $(-1)^2 \cdot 3 \cdot \tfrac{10}{3} \cdot (-\tfrac32) = -15$.
+answer: $\mathbf{x} = [1, 2, 3]$ and $\det\mathbf{A} = -15$.
+
+@mistakes
+- Pivoting only when the pivot is exactly zero: a tiny nonzero pivot is just as dangerous, as the $10^{-20}$ example shows.
+- Forgetting to swap the right-hand side along with the rows of the matrix.
+- Computing the inverse to solve a system: it costs more and loses accuracy, and the factorization gives everything you need.
+- Looking only at the pivot's absolute size across all rows: partial pivoting searches only the rows at or below the current one; rows above are already finished.
+
+@practice num
+prompt: Gaussian elimination with partial pivoting is applied to $\mathbf{A} = \begin{bmatrix} 2 & 4 \\ 6 & 1 \end{bmatrix}$. After the rows are swapped to bring the largest entry of the first column to the top, what multiplier $m$ is used to eliminate the entry below the pivot? Give your answer to three decimal places.
+answer: 0.333
+tol: 0.001
+check: 2 / 6
+hint: After the swap the pivot row starts with 6 and the row below starts with 2.
+solution: The multiplier is the entry to eliminate divided by the pivot, $2/6 \approx 0.333$, whose absolute value is at most 1 as partial pivoting guarantees.
+
+@practice num
+prompt: Gaussian elimination with partial pivoting on a $3 \times 3$ matrix performs exactly one row swap and ends with the pivots $4$, $2.5$ and $-0.5$ on the diagonal of $\mathbf{U}$. What is the determinant of the original matrix?
+answer: 5
+check: -(4 * 2.5 * -0.5)
+hint: The determinant is the product of the pivots, times $-1$ for each row swap.
+solution: The product of the pivots is $4 \times 2.5 \times (-0.5) = -5$; one swap flips the sign, so $\det \mathbf{A} = 5$.
+
+@practice num
+prompt: Solve $\mathbf{U}\mathbf{x} = \mathbf{c}$ by back substitution, where $\mathbf{U} = \begin{bmatrix} 2 & 1 & -1 \\ 0 & 3 & 2 \\ 0 & 0 & 4 \end{bmatrix}$ and $\mathbf{c} = [3, 8, 8]$. What is $x_1$? Give your answer to three decimal places.
+answer: 1.833
+tol: 0.001
+check: (3 - 1 * ((8 - 2 * (8 / 4)) / 3) + 1 * (8 / 4)) / 2
+hint: Solve from the bottom: $x_3 = 8/4$, then $x_2$ from row 2, then $x_1$ from row 1.
+solution: $x_3 = 8/4 = 2$; $x_2 = (8 - 2 \cdot 2)/3 = 4/3$; $x_1 = (3 - 1 \cdot \tfrac43 + 1 \cdot 2)/2 = 11/6 \approx 1.833$.
+
+@practice code
+prompt: Write `back_substitute(U, c)` that solves $\mathbf{U}\mathbf{x} = \mathbf{c}$ for an upper triangular matrix `U` (list of rows, nonzero diagonal) and a list `c`, and returns the solution as a list of floats. For example, `back_substitute([[2, 1], [0, 4]], [5, 8])` returns `[1.5, 2.0]`.
+starter:
+```python
+def back_substitute(U, c):
+    pass
+```
+tests:
+```python
+x = back_substitute([[2, 1], [0, 4]], [5, 8])
+assert all(abs(a - b) < 1e-12 for a, b in zip(x, [1.5, 2.0]))
+assert back_substitute([[5]], [10]) == [2.0]
+x = back_substitute([[2, 1, -1], [0, 3, 2], [0, 0, 4]], [3, 8, 8])
+assert all(abs(a - b) < 1e-12 for a, b in zip(x, [11 / 6, 4 / 3, 2.0]))
+x = back_substitute([[1, 2, 3, 4], [0, 1, 2, 3], [0, 0, 1, 2], [0, 0, 0, 1]], [10, 6, 3, 1])
+assert all(abs(a - b) < 1e-12 for a, b in zip(x, [1.0, 1.0, 1.0, 1.0]))
+```
+model:
+```python
+def back_substitute(U, c):
+    """Solve U x = c for upper triangular U, from the last row up."""
+    n = len(U)
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        s = c[i]
+        for j in range(i + 1, n):
+            s -= U[i][j] * x[j]
+        x[i] = s / U[i][i]
+    return x
+```
+hint: Loop `i` from the last row down to 0; subtract `U[i][j] * x[j]` for the already-known `j > i`, then divide by `U[i][i]`.
+solution: Row $i$ involves only $x_i$ and the unknowns below it, which are already solved when we reach it, so each row yields one new value. The 4-by-4 test uses row sums so that every unknown equals 1.
+
+@practice code
+prompt: Write `solve(A, b)` that solves $\mathbf{A}\mathbf{x} = \mathbf{b}$ for a square matrix `A` (list of rows) by Gaussian elimination with partial pivoting followed by back substitution, and returns `x` as a list of floats. Raise `ValueError` if the largest absolute value among the candidate pivots in some column is below `1e-12`. Do not modify `A` or `b`.
+starter:
+```python
+def solve(A, b):
+    pass
+```
+tests:
+```python
+x = solve([[1e-20, 1.0], [1.0, 1.0]], [1.0, 2.0])
+assert all(abs(a - 1.0) < 1e-9 for a in x)
+x = solve([[0, 2, 1], [1, 1, 1], [2, 1, 0]], [7, 6, 4])
+assert all(abs(a - t) < 1e-9 for a, t in zip(x, [1.0, 2.0, 3.0]))
+x = solve([[4, 1, 0, 0], [1, 4, 1, 0], [0, 1, 4, 1], [0, 0, 1, 4]], [6, 12, 18, 19])
+assert all(abs(a - t) < 1e-9 for a, t in zip(x, [1.0, 2.0, 3.0, 4.0]))
+assert abs(solve([[4.0]], [2.0])[0] - 0.5) < 1e-12
+assert raises(ValueError, solve, [[1, 2], [2, 4]], [1, 2])
+A = [[0, 1], [1, 0]]
+b = [3, 5]
+solve(A, b)
+assert A == [[0, 1], [1, 0]] and b == [3, 5]
+```
+model:
+```python
+def solve(A, b):
+    """Solve A x = b by Gaussian elimination with partial pivoting."""
+    n = len(A)
+    U = [[float(v) for v in row] for row in A]
+    c = [float(v) for v in b]
+    for k in range(n):
+        p = max(range(k, n), key=lambda r: abs(U[r][k]))
+        if abs(U[p][k]) < 1e-12:
+            raise ValueError("matrix is singular")
+        U[k], U[p] = U[p], U[k]
+        c[k], c[p] = c[p], c[k]
+        for i in range(k + 1, n):
+            m = U[i][k] / U[k][k]
+            for j in range(k, n):
+                U[i][j] -= m * U[k][j]
+            c[i] -= m * c[k]
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        s = c[i]
+        for j in range(i + 1, n):
+            s -= U[i][j] * x[j]
+        x[i] = s / U[i][i]
+    return x
+```
+hint: Copy `A` and `b` first. For each column pick the row with the largest absolute entry at or below the diagonal, swap it up (with `b`), eliminate below, then back-substitute.
+solution: This combines forward elimination with row swaps and the bottom-up substitution. The first test fails without pivoting (it returns 0 for the first unknown), the second needs a swap because the first pivot is 0, and the singular matrix makes the second pivot vanish.
+
+@quiz code
+prompt: Write `determinant(A)` for a square matrix `A` (list of rows) using elimination with partial pivoting: the determinant is the product of the pivots times $-1$ for every row swap. If a pivot candidate column has largest absolute entry below `1e-12`, return `0.0`. Do not modify `A`.
+starter:
+```python
+def determinant(A):
+    pass
+```
+tests:
+```python
+assert abs(determinant([[0, 2], [3, 1]]) - (-6.0)) < 1e-9
+assert abs(determinant([[2, 0, 0], [0, 3, 0], [0, 0, 4]]) - 24.0) < 1e-9
+assert determinant([[1, 2], [2, 4]]) == 0.0
+assert abs(determinant([[1, 2, 1], [3, 1, 2], [2, 4, 5]]) - (-15.0)) < 1e-9
+assert abs(determinant([[7.0]]) - 7.0) < 1e-12
+A = [[0, 1], [1, 0]]
+determinant(A)
+assert A == [[0, 1], [1, 0]]
+```
+model:
+```python
+def determinant(A):
+    """Determinant by Gaussian elimination with partial pivoting."""
+    n = len(A)
+    U = [[float(v) for v in row] for row in A]
+    det = 1.0
+    for k in range(n):
+        p = max(range(k, n), key=lambda r: abs(U[r][k]))
+        if abs(U[p][k]) < 1e-12:
+            return 0.0
+        if p != k:
+            U[k], U[p] = U[p], U[k]
+            det = -det
+        det *= U[k][k]
+        for i in range(k + 1, n):
+            m = U[i][k] / U[k][k]
+            for j in range(k, n):
+                U[i][j] -= m * U[k][j]
+    return det
+```
+hint: Start `det` at 1.0; flip its sign on every swap and multiply by each pivot as you go.
+solution: Row operations of the form "subtract a multiple of another row" leave the determinant unchanged and each swap flips its sign, so the determinant of the original matrix is the signed product of the pivots on the diagonal of $\mathbf{U}$. The first test needs a swap, which fixes the sign.
+
+@quiz text
+prompt: What does this program print?
+```python
+A = [[0.0, 2.0], [3.0, 1.0]]
+col = 0
+p = max(range(col, 2), key=lambda r: abs(A[r][col]))
+A[col], A[p] = A[p], A[col]
+print(p, A)
+```
+answer: 1 [[3.0, 1.0], [0.0, 2.0]]
+check: run("A = [[0.0, 2.0], [3.0, 1.0]]\ncol = 0\np = max(range(col, 2), key=lambda r: abs(A[r][col]))\nA[col], A[p] = A[p], A[col]\nprint(p, A)")
+hint: Compare the absolute values in column 0 of rows 0 and 1; the row with the larger value is swapped to the top.
+solution: Column 0 holds 0.0 and 3.0, so the largest absolute entry is in row 1, so `p` is 1, and the two rows are exchanged. The matrix prints as `[[3.0, 1.0], [0.0, 2.0]]`.
+
+@quiz mc
+prompt: What does partial pivoting guarantee about the multipliers $m_{ik} = a_{ik}/a_{kk}$ used in Gaussian elimination?
+choice*: Each multiplier has absolute value at most 1, so no row is amplified by a huge factor during elimination.
+choice: Each multiplier is exactly representable as a double, so elimination introduces no rounding error.
+choice: Each multiplier is positive, so the matrix stays symmetric during elimination.
+choice: Each multiplier is zero, so no further elimination is needed.
+hint: The pivot is the entry of largest absolute value among the candidates in its column.
+solution: The pivot is at least as large in absolute value as every entry it is used to eliminate, so $|m_{ik}| \le 1$. This keeps the entries of the working matrix from growing rapidly, but it does not make multipliers exact, positive or zero.

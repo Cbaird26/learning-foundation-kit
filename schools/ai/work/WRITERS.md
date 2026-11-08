@@ -30,3 +30,5 @@ Runner: Brython 3.14.3 (BSD) in a Web Worker; same build as Finance and Metaphys
 Log:
 - Setup (Nov 7): pipeline copied from Metaphysics (newest validator); curriculum in work/curriculum.py; storage prefix alf; example lesson toolkit/example_ml_lesson.txt (gradient descent for a one-parameter model, validated, P-style with 2 code items); BRIEF with ML notation, plain-Python code rules, standard attributions and verified current facts (EU AI Act and the 2026 Digital Omnibus dates, US executive orders, California SB 53, NIST AI RMF).
 - AI school: reused courses validated under the newest validator (44 ok); fixed two position references in reused C8 L04 and C9 L07 (same issue remains in the Coding school's C16 L04 and C18 L07).
+- batch 1 (Nov 7): C11 C12 C13 C14 C15
+- C14 done (0 errors, 4 long-line warnings, 96 + 3 exam, no nocheck; datasheets 2018 checked); review started C14; started C16

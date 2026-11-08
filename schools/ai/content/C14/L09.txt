@@ -1,0 +1,206 @@
+@lesson
+title: Feature engineering: scaling, encoding and derived features
+summary: Turn raw columns into model-ready features by scaling numbers, encoding categories and deriving new columns, and fit every transformation on training data only.
+objective: Standardize and min-max scale a numeric column and say when scaling matters.
+objective: Encode categorical variables with one-hot and ordinal encodings.
+objective: Create derived features such as ratios, logarithms, bins and missing indicators.
+objective: Fit a scaler on the training rows and apply the same numbers to new rows.
+reading: Computational and Inferential Thinking: look up the chapters on prediction and classification, in particular the sections on standard units and on distance between examples.
+
+@article
+You want to predict whether a customer will buy from two numbers: age (20 to 70) and yearly income in dollars (20,000 to 200,000). A nearest-neighbor method compares customers by the distance between their feature values. A difference of 10 years of age is tiny next to a difference of \$10,000 of income, so income decides every comparison and age is ignored. The fix is **feature engineering**: transforming raw columns so that a model can use them well. This lesson covers three families of transformation.
+
+### Scaling numeric features
+
+**Standardization** (z-scores) rewrites each value as the number of standard deviations it lies from the mean:
+
+$$z_i = \frac{x_i - \bar{x}}{\sigma}, \qquad \sigma = \sqrt{\frac{1}{n}\sum_i (x_i - \bar{x})^2}.$$
+
+Here we use the population standard deviation, dividing by $n$, as many scalers do; the choice matters little for the idea. The scaled column has mean 0 and standard deviation 1. For incomes (in thousands) $30, 40, 50, 60, 120$, we have $\bar{x} = 60$, the squared deviations sum to $5000$, so $\sigma = \sqrt{1000} \approx 31.62$ and the z-scores are $-0.949, -0.632, -0.316, 0, 1.897$.
+
+**Min-max scaling** maps the smallest value to 0 and the largest to 1: $x'_i = (x_i - x_{\min})/(x_{\max} - x_{\min})$. The same incomes become $0, 0.111, 0.222, 0.333, 1$. Min-max scaling keeps the shape of the distribution but is sensitive to outliers: one extreme value squeezes everyone else into a narrow band.
+
+Scaling matters for methods that use distances (nearest neighbors, k-means), for methods trained by gradient descent (it makes the loss landscape rounder and lets one step size suit every feature), and for regularization (a penalty treats all coefficients alike, so the features must be on comparable scales). Decision trees split on one feature at a time and are not affected.
+
+### Encoding categories
+
+Models need numbers. **One-hot encoding** turns a category with $k$ values into $k$ columns of 0 and 1: for the categories `red`, `green`, `blue`, the value `green` becomes $(0, 1, 0)$. It adds no false order. **Ordinal encoding** maps ordered categories to integers (small $= 0$, medium $= 1$, large $= 2$) and is right only when the order is real, and the spacing is plausible. Encoding a nominal category such as a city as $1, 2, 3$ tells a linear model that city 3 is "more" than city 1, which is nonsense. A category that appears at prediction time but never in training needs a rule (all zeros, or an "other" column).
+
+### Derived features
+
+New columns computed from old ones often help more than any change of model:
+
+- **Ratios and differences**: price per square meter, days since last purchase.
+- **Transformations**: a logarithm compresses a right-skewed variable. The incomes above have a ratio of 4 between largest and smallest, while their natural logarithms $3.40, 3.69, 3.91, 4.09, 4.79$ differ by a factor of 1.4.
+- **Bins**: age groups, when the effect is not linear.
+- **Date parts**: month, weekday, hour, from a timestamp.
+- **Missing indicators**: a 0/1 column that records that a value was absent, useful when absence itself carries information.
+- **Interactions**: the product of two features, when their effect is joint.
+
+Each derived feature should make sense for the question and be computable at prediction time, from information that will actually be available then (see week 10).
+
+### Fit on training data only
+
+A scaler has **parameters**, the mean and standard deviation, learned from data. They must be computed on the **training** rows only, then applied unchanged to the validation and test rows. Computing them on all the rows lets information about the test set seep into training, a mistake called leakage (week 10). The pattern is always *fit* on the training set, then *transform* every set with the fitted numbers:
+
+```python
+def fit_scaler(train):
+    n = len(train)
+    mean = sum(train) / n
+    sd = (sum((x - mean) ** 2 for x in train) / n) ** 0.5
+    return mean, sd
+
+mean, sd = fit_scaler([30, 40, 50])
+print([round((x - mean) / sd, 3) for x in [30, 40, 50, 120]])
+```
+
+The training mean is 40 and $\sigma = \sqrt{200/3} \approx 8.165$, so this prints `[-1.225, 0.0, 1.225, 9.798]`: the new value 120 lies far outside the training range, which is information, not an error to be hidden.
+
+@example
+title: Standardizing a column by hand
+problem: Standardize the values 30, 40, 50, 60 and 120 (thousands of dollars) with the population standard deviation, and say which value is most unusual.
+step: Compute the mean: $(30 + 40 + 50 + 60 + 120)/5 = 60$.
+step: Compute the deviations from the mean: $-30, -20, -10, 0, 60$. Their squares are $900, 400, 100, 0, 3600$, with sum $5000$.
+step: The population variance is $5000/5 = 1000$, so $\sigma = \sqrt{1000} \approx 31.62$.
+step: Divide each deviation by $\sigma$: $-0.949, -0.632, -0.316, 0, 1.897$. The value 120 has the largest absolute z-score, 1.90, so it is the most unusual.
+answer: z-scores $-0.949, -0.632, -0.316, 0, 1.897$; the value 120 is the most unusual.
+
+@mistakes
+- Computing the mean and standard deviation on the whole data set before splitting, which leaks information from the test rows.
+- Encoding an unordered category as 1, 2, 3, which invents an order and a distance.
+- Min-max scaling a column with a large outlier, so that all other values end up squeezed near 0.
+- Scaling the target and forgetting to convert predictions back to the original units.
+
+@practice num
+prompt: Apply min-max scaling to the column 10, 20, 40, 50. What is the scaled value of 40?
+answer: 0.75
+check: (40 - 10) / (50 - 10)
+hint: Use $(x - x_{\min})/(x_{\max} - x_{\min})$ with the smallest and largest values of the column.
+solution: The minimum is 10 and the maximum is 50, so the scaled value of 40 is $(40 - 10)/(50 - 10) = 30/40 = 0.75$.
+
+@practice mc
+prompt: A nearest-neighbor model uses the features `distance_km` (values from 0 to 5,000) and `age` (values from 18 to 90) without scaling. What is the likely effect?
+choice*: Distances between rows are dominated by `distance_km`, so `age` has almost no influence.
+choice: Distances are dominated by `age`, because its values are smaller.
+choice: Both features have the same influence, because each is measured in its own unit.
+choice: Nothing, because nearest neighbors standardizes features automatically.
+hint: Compare the size of a typical difference in each feature when the distance is computed.
+solution: Euclidean distance adds the squared differences, and differences in `distance_km` are in the thousands while differences in `age` are at most 72. The larger scale dominates, so the neighbors are chosen almost entirely by `distance_km`. Standardizing both columns puts them on comparable scales.
+
+@practice text
+prompt: What does this program print?
+```python
+cats = ["red", "green", "blue"]
+row = [1 if "green" == c else 0 for c in cats]
+print(row, sum(row))
+```
+answer: [0, 1, 0] 1
+check: run("cats = ['red', 'green', 'blue']\nrow = [1 if 'green' == c else 0 for c in cats]\nprint(row, sum(row))")
+hint: The comprehension puts a 1 in the position of the category equal to `"green"`.
+solution: Only the second category matches, so `row` is `[0, 1, 0]` and its sum is 1. A one-hot row always has exactly one 1 for a known category.
+
+@practice code
+prompt: Write `standardize(values)` that returns the list of z-scores of a nonempty list of numbers, using the mean and the population standard deviation (dividing by `n`). If the standard deviation is 0, return a list of zeros of the same length. For example, `standardize([0, 10])` returns `[-1.0, 1.0]`.
+starter:
+```python
+def standardize(values):
+    return list(values)
+```
+tests:
+```python
+got = standardize([0, 10])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-1.0, 1.0]))
+got = standardize([2, 4, 4, 4, 5, 5, 7, 9])
+assert abs(got[0] - (-1.5)) < 1e-9 and abs(got[-1] - 2.0) < 1e-9
+got = standardize([1, 2, 3])
+assert abs(got[0] + 1.5 ** 0.5) < 1e-9 and abs(got[1]) < 1e-9
+assert standardize([5, 5, 5]) == [0.0, 0.0, 0.0]
+got = standardize([30, 40, 50, 60, 120])
+assert abs(sum(got)) < 1e-9 and abs(sum(z * z for z in got) / 5 - 1) < 1e-9
+```
+model:
+```python
+def standardize(values):
+    """z-scores using the population standard deviation."""
+    n = len(values)
+    mean = sum(values) / n
+    sd = (sum((x - mean) ** 2 for x in values) / n) ** 0.5
+    if sd == 0:
+        return [0.0] * n
+    return [(x - mean) / sd for x in values]
+```
+hint: Compute the mean, then the population standard deviation, and return `(x - mean) / sd` for each value.
+solution: The standardized column has mean 0 and population variance 1, which the last test checks. A constant column has standard deviation 0, so it must be handled before the division. Dividing by `n - 1` instead of `n` would fail the second test, where the standard deviation is exactly 2.
+
+@practice code
+prompt: Write `one_hot(values, categories)` that returns one list of 0s and 1s per value. Each list has one position for each name in `categories`, in that order, with a 1 in the position of the value's category. A value that is not in `categories` gives a list of all zeros. For example, `one_hot(["b", "a"], ["a", "b"])` returns `[[0, 1], [1, 0]]`.
+starter:
+```python
+def one_hot(values, categories):
+    return []
+```
+tests:
+```python
+assert one_hot(["a", "b", "a"], ["a", "b"]) == [[1, 0], [0, 1], [1, 0]]
+assert one_hot(["z"], ["a", "b"]) == [[0, 0]]
+assert one_hot([], ["a", "b"]) == []
+assert one_hot(["b"], ["b", "a", "c"]) == [[1, 0, 0]]
+assert one_hot(["c", "a"], ["b", "a", "c"]) == [[0, 0, 1], [0, 1, 0]]
+```
+model:
+```python
+def one_hot(values, categories):
+    """One-hot encode values over a fixed list of categories."""
+    return [[1 if v == c else 0 for c in categories] for v in values]
+```
+hint: For each value, build a row with `1 if v == c else 0` for each category `c`, in the given order.
+solution: Fixing the category list in advance makes the columns the same for training and new data, and an unseen value simply matches nothing and gives zeros. The order of `categories` decides the column order, which the last two tests check.
+
+@quiz code
+prompt: Write `scale_with_train(train, test)` where both arguments are nonempty lists of numbers. Compute the mean and the population standard deviation (dividing by `n`) of `train` only, and return the pair `(train_scaled, test_scaled)` of z-scores of the two lists using those training numbers. If the training standard deviation is 0, use 1 in its place, so values are only centered. For example, with `train=[2, 4, 6]` the training mean is 4.
+starter:
+```python
+def scale_with_train(train, test):
+    return list(train), list(test)
+```
+tests:
+```python
+tr, te = scale_with_train([2, 4, 6], [4, 10])
+assert abs(te[0]) < 1e-9
+assert abs(te[1] - 3.674234614) < 1e-6
+assert abs(sum(tr)) < 1e-9
+tr, te = scale_with_train([3, 3], [5, 3])
+assert tr == [0.0, 0.0] and te == [2.0, 0.0]
+tr, te = scale_with_train([0, 10], [20])
+assert abs(te[0] - 3.0) < 1e-9
+```
+model:
+```python
+def scale_with_train(train, test):
+    """Standardize both lists using the mean and std of the training list."""
+    n = len(train)
+    mean = sum(train) / n
+    sd = (sum((x - mean) ** 2 for x in train) / n) ** 0.5
+    if sd == 0:
+        sd = 1.0
+    return [(x - mean) / sd for x in train], [(x - mean) / sd for x in test]
+```
+hint: Compute the mean and standard deviation from `train` alone and use them for both lists.
+solution: The test values are standardized with the training mean and standard deviation, so the test z-scores can lie far outside the range of the training ones, as the first and last tests show (3.67 and 3.0). Using the test list's own statistics would make its mean 0 regardless, and would leak and distort.
+
+@quiz ms
+prompt: Which of these are good practice when building features for a prediction task? Select all that apply.
+choice*: Compute the scaling parameters on the training rows and reuse them for validation and test rows.
+choice*: Use one-hot encoding for a nominal category such as the city of a customer.
+choice: Encode the city as the integers 1, 2, 3, ... so that one column is enough, and expect a linear model to treat it as a label.
+choice: Choose the scaling parameters from the whole data set so that train and test are treated identically.
+hint: Ask whether the transformation uses only information available at training time and whether it invents an order.
+solution: Fitting on the training rows and reusing the numbers treats new data the way it will be treated in use, and one-hot encoding adds no false order. Integer codes for a nominal category invent an order, and fitting on the whole data set lets test information leak into training.
+
+@quiz self
+prompt: A table of 2,000 home sales has columns `sale_price`, `area_m2`, `year_built`, `sale_date`, `neighborhood` (30 values) and `has_garage` (yes or no). You will predict `sale_price`. Propose five engineered features, say how each is computed and why it might help, and say how you would avoid leaking test information while computing them.
+hint: Think of ratios, ages, transformations, encodings and dates, and of what each needs to be fitted on.
+solution: Five features: the age of the house at sale, `year(sale_date) - year_built`, since age matters more than a calendar year; the logarithm of `area_m2`, which compresses a right-skewed size and suits a multiplicative effect on price; one-hot columns for `neighborhood`, with an "other" column for rare or unseen values, since the neighborhoods have no order; `has_garage` as 0 or 1; and the month of `sale_date`, to capture seasonal effects. To avoid leakage I would split the data into training and test rows first, fit everything that learns from data (the scaling means and standard deviations, the list of neighborhoods kept, the threshold for the "other" column) on the training rows only, and apply these fixed numbers to the test rows. I would also check that every feature is known at the time of sale and does not use the sale price itself, for example an average price in the neighborhood computed with the test rows included.
+rubric: Proposes five sensible features with a computation and a reason for each.
+rubric: Encodes the nominal category without an invented order and handles unseen or rare values.
+rubric: Describes fitting scalers and encoders on training rows only and checking features for target information.

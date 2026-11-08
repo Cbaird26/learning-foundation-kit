@@ -1,0 +1,243 @@
+@lesson
+title: Numerical derivatives and gradient checking
+summary: Approximate derivatives and gradients with finite differences, choose a step size that balances truncation and rounding error, and use the result to catch bugs in analytic gradients.
+objective: Compute forward and central differences by hand and state their orders of accuracy.
+objective: Explain why the error of a finite difference first falls and then rises as the step size shrinks, and pick a sensible step.
+objective: Implement a numerical gradient and a gradient check with a relative-error test.
+reading: Python for Data Analysis, 3rd edition: the NumPy chapter on universal functions (to see array versions of the formulas here); also look up "finite difference" and "gradient checking" in a machine learning or numerical analysis text.
+@article
+You derive the gradient of a loss by hand, code it, and train. The loss goes down, but slowly, or oddly, or not at all. Is the model bad or is the gradient wrong? There is a way to find out with only the function itself: estimate each derivative by evaluating the loss at nearby points. This **gradient checking** is how practitioners debug hand-derived gradients and backpropagation code.
+
+### Finite differences
+
+The derivative is a limit, $f'(x) = \lim_{h \to 0} \frac{f(x+h) - f(x)}{h}$, so for a small $h$ we can use the **forward difference** $\frac{f(x+h) - f(x)}{h}$. By Taylor's theorem, $f(x+h) = f(x) + h f'(x) + \tfrac12 h^2 f''(x) + \cdots$, so the forward difference equals $f'(x) + \tfrac12 h f''(x) + \cdots$: its **truncation error** is proportional to $h$, which we write $O(h)$.
+
+Symmetry does better. The **central difference**
+$$\frac{f(x+h) - f(x-h)}{2h} = f'(x) + \tfrac16 h^2 f'''(x) + \cdots$$
+cancels the terms of even order in $h$ in the difference and has truncation error $O(h^2)$. For $f(x) = x^3$ at $x = 2$ with $h = 0.1$: the forward difference is $(2.1^3 - 8)/0.1 = 12.61$, error $0.61$; the central difference is $(2.1^3 - 1.9^3)/0.2 = 12.01$, error $0.01$, ten times smaller on this step and shrinking a hundredfold when $h$ shrinks tenfold.
+
+### Why not take $h$ extremely small?
+
+Because of Lesson 1. The numerator subtracts two nearly equal numbers, so it carries a rounding error of about $u\,|f(x)|$, and dividing by $h$ magnifies it to about $u|f(x)|/h$. The total error is therefore roughly
+$$\text{error}(h) \approx \underbrace{C h^p}_{\text{truncation}} + \underbrace{\frac{u\,|f|}{h}}_{\text{rounding}},$$
+with $p = 1$ (forward) or $p = 2$ (central). The first term falls with $h$ and the second rises. Balancing them gives the best step: about $\sqrt{u} \approx 10^{-8}$ for the forward difference and about $u^{1/3} \approx 5 \times 10^{-6}$ for the central difference, assuming $|f|$ and the derivatives are of order 1. For $f(x) = e^x$ at $x = 1$ the typical absolute errors in double precision are:
+
+| $h$ | forward difference | central difference |
+|---|---|---|
+| $10^{-1}$ | $10^{-1}$ | $5 \times 10^{-3}$ |
+| $10^{-3}$ | $10^{-3}$ | $5 \times 10^{-7}$ |
+| $10^{-5}$ | $10^{-5}$ | $6 \times 10^{-11}$ |
+| $10^{-8}$ | $7 \times 10^{-9}$ | $7 \times 10^{-9}$ |
+| $10^{-11}$ | $3 \times 10^{-5}$ | $10^{-5}$ |
+| $10^{-14}$ | $10^{-2}$ | $10^{-2}$ |
+
+The central difference reaches about $10^{-11}$ near $h = 10^{-5}$; below that, rounding dominates and the error grows again. (The last digits depend on the platform's `exp`.)
+
+### Numerical gradients and gradient checking
+
+For $f : \mathbb{R}^d \to \mathbb{R}$, the partial derivative with respect to $x_i$ is a one-dimensional derivative with the other coordinates held fixed:
+$$\frac{\partial f}{\partial x_i} \approx \frac{f(\mathbf{x} + h\mathbf{e}_i) - f(\mathbf{x} - h\mathbf{e}_i)}{2h},$$
+where $\mathbf{e}_i$ is the $i$-th unit vector. This needs $2d$ evaluations of $f$, far too many to train with when $d$ is millions, but ideal for checking a few points.
+
+To compare an analytic gradient $\mathbf{g}$ with the numerical estimate $\tilde{\mathbf{g}}$, use the **relative error**
+$$\frac{\lVert \mathbf{g} - \tilde{\mathbf{g}} \rVert_2}{\lVert \mathbf{g} \rVert_2 + \lVert \tilde{\mathbf{g}} \rVert_2},$$
+defined as 0 when both vectors are 0. A common rule of thumb with central differences in double precision: below $10^{-7}$ the gradient is almost certainly right, around $10^{-5}$ deserves a look, and above $10^{-3}$ there is a bug. Check at a few random points, not only at $\mathbf{x} = \mathbf{0}$ (where many bugs vanish), and avoid points where $f$ has a kink, such as $\operatorname{ReLU}$ at 0, where no gradient exists.
+
+```python
+def numerical_gradient(f, x, h=1e-5):
+    grad = []
+    for i in range(len(x)):
+        up = x[:]
+        down = x[:]
+        up[i] += h
+        down[i] -= h
+        grad.append((f(up) - f(down)) / (2 * h))
+    return grad
+
+f = lambda w: w[0] ** 2 * w[1] + 3 * w[1]
+print(numerical_gradient(f, [1.0, 2.0]))   # close to [4.0, 4.0]
+```
+
+Frameworks such as PyTorch compute gradients exactly by **automatic differentiation**, but gradient checking is still used to test custom operations.
+
+@example
+title: Catching a wrong gradient
+problem: For $f(w_1, w_2) = w_1^2 w_2 + 3 w_2$ at $(1, 2)$, check the proposed gradient $\mathbf{g} = [2 w_1,\; w_1^2 + 3]$ against central differences with $h = 0.1$.
+step: Compute the numerical derivatives. In $w_1$: $f(1.1, 2) = 2.42 + 6 = 8.42$ and $f(0.9, 2) = 1.62 + 6 = 7.62$, so $(8.42 - 7.62)/0.2 = 4.0$.
+step: In $w_2$: $f(1, 2.1) = 2.1 + 6.3 = 8.4$ and $f(1, 1.9) = 1.9 + 5.7 = 7.6$, so $(8.4 - 7.6)/0.2 = 4.0$. So $\tilde{\mathbf{g}} = [4, 4]$.
+step: The proposed gradient at $(1, 2)$ is $[2 \cdot 1,\; 1 + 3] = [2, 4]$. The differences are $[-2, 0]$, so $\lVert \mathbf{g} - \tilde{\mathbf{g}} \rVert = 2$.
+step: Relative error: $2/(\sqrt{20} + \sqrt{32}) \approx 2/(4.472 + 5.657) = 0.197$, far above $10^{-3}$: a bug in the first component.
+step: Fix: $\partial f / \partial w_1 = 2 w_1 w_2 = 4$ (the factor $w_2$ was forgotten). The correct gradient $[2 w_1 w_2,\; w_1^2 + 3] = [4, 4]$ matches.
+answer: The relative error is 0.197, so the gradient is wrong; the correct first component is $2 w_1 w_2$.
+
+@example
+title: Forward versus central difference
+problem: Estimate $f'(1)$ for $f(x) = x^4$ with $h = 0.1$ using both differences. The true derivative is 4.
+step: Evaluate: $f(1.1) = 1.4641$, $f(1) = 1$ and $f(0.9) = 0.6561$.
+step: Forward: $(1.4641 - 1)/0.1 = 4.641$, an error of 0.641.
+step: Central: $(1.4641 - 0.6561)/0.2 = 4.04$, an error of 0.04.
+step: The central error matches the prediction $\tfrac16 h^2 f'''(1) = \tfrac16 (0.01)(24) = 0.04$.
+answer: Forward 4.641 (error 0.641); central 4.04 (error 0.04).
+
+@mistakes
+- Using the forward difference with the central-difference step: for the same $h$ it is much less accurate, and its best $h$ is near $10^{-8}$, not $10^{-5}$.
+- Choosing $h$ as small as possible: below the optimum, rounding error in the subtraction grows like $1/h$.
+- Checking a gradient only at the origin or at a kink: many bugs vanish at 0, and nondifferentiable points make the comparison meaningless.
+- Comparing the two gradients with an absolute tolerance only: gradients can be tiny or huge, so use a relative error.
+
+@practice num
+prompt: Compute the forward difference $\frac{f(x+h) - f(x)}{h}$ for $f(x) = x^2$ at $x = 3$ with $h = 0.5$.
+answer: 6.5
+check: ((3 + 0.5) ** 2 - 3 ** 2) / 0.5
+hint: $f(3.5) = 12.25$ and $f(3) = 9$.
+solution: $(12.25 - 9)/0.5 = 6.5$. The true derivative is $2x = 6$; the forward difference has error $h f''/2 = 0.5$, which is exactly the difference.
+
+@practice num
+prompt: Compute the central difference $\frac{f(x+h) - f(x-h)}{2h}$ for $f(x) = x^3$ at $x = 1$ with $h = 0.5$.
+answer: 3.25
+check: ((1 + 0.5) ** 3 - (1 - 0.5) ** 3) / (2 * 0.5)
+hint: $f(1.5) = 3.375$ and $f(0.5) = 0.125$; the denominator is $2h = 1$.
+solution: $(3.375 - 0.125)/1 = 3.25$. The true derivative is 3, and the error $\tfrac16 h^2 f''' = \tfrac16 (0.25)(6) = 0.25$ explains the difference exactly.
+
+@practice mc
+prompt: In double precision, which step size $h$ comes closest to minimizing the total error of the central difference for a function whose value and derivatives are of order 1?
+choice*: $h = 10^{-5}$
+choice: $h = 10^{-1}$
+choice: $h = 10^{-12}$
+choice: $h = 10^{-16}$
+hint: Balance a truncation error of order $h^2$ against a rounding error of order $u/h$ with $u \approx 10^{-16}$.
+solution: Balancing $h^2$ and $10^{-16}/h$ gives $h \approx (10^{-16})^{1/3} \approx 5 \times 10^{-6}$, so $10^{-5}$ is the best choice listed. At $10^{-1}$ truncation error dominates, and at $10^{-12}$ or $10^{-16}$ rounding error destroys the difference.
+
+@practice code
+prompt: Write `numerical_gradient(f, x, h=1e-5)` where `f` takes a list of floats and returns a float, and `x` is a list of floats. Return the list of central-difference estimates of the partial derivatives. Do not modify `x`.
+starter:
+```python
+def numerical_gradient(f, x, h=1e-5):
+    pass
+```
+tests:
+```python
+g = numerical_gradient(lambda v: v[0] * v[1] ** 2, [2.0, 3.0])
+assert all(abs(a - b) < 1e-6 for a, b in zip(g, [9.0, 12.0]))
+g = numerical_gradient(lambda v: 5.0, [1.0, 2.0, 3.0])
+assert all(abs(a) < 1e-9 for a in g)
+g = numerical_gradient(lambda v: sum(t * t for t in v), [1.0, -2.0, 0.5])
+assert all(abs(a - b) < 1e-6 for a, b in zip(g, [2.0, -4.0, 1.0]))
+x = [1.0, 2.0]
+numerical_gradient(lambda v: v[0] + v[1], x)
+assert x == [1.0, 2.0]
+assert len(numerical_gradient(lambda v: v[0] ** 3, [2.0])) == 1
+assert abs(numerical_gradient(lambda v: v[0] ** 3, [2.0])[0] - 12.0) < 1e-5
+```
+model:
+```python
+def numerical_gradient(f, x, h=1e-5):
+    """Central-difference estimate of the gradient of f at x."""
+    grad = []
+    for i in range(len(x)):
+        up = list(x)
+        down = list(x)
+        up[i] += h
+        down[i] -= h
+        grad.append((f(up) - f(down)) / (2 * h))
+    return grad
+```
+hint: For each coordinate `i`, make two copies of `x`, add `h` to one and subtract `h` from the other at position `i`, and use the central difference.
+solution: Each partial derivative is a one-dimensional central difference with the other coordinates fixed. Copying `x` before changing it keeps the input intact, which the test with the sum function verifies.
+
+@practice code
+prompt: Write `grad_check(f, grad, x, h=1e-5)` that compares the analytic gradient `grad(x)` (a list of floats) with the central-difference gradient of `f` at `x` and returns the relative error $\lVert\mathbf{g} - \tilde{\mathbf{g}}\rVert_2 / (\lVert\mathbf{g}\rVert_2 + \lVert\tilde{\mathbf{g}}\rVert_2)$, or `0.0` if the denominator is 0.
+starter:
+```python
+import math
+
+def grad_check(f, grad, x, h=1e-5):
+    pass
+```
+tests:
+```python
+f = lambda v: v[0] ** 2 * v[1] + v[1] ** 3
+good = lambda v: [2 * v[0] * v[1], v[0] ** 2 + 3 * v[1] ** 2]
+bad = lambda v: [2 * v[0], v[0] ** 2 + 3 * v[1] ** 2]
+assert grad_check(f, good, [1.5, -0.5]) < 1e-7
+assert grad_check(f, bad, [1.5, -0.5]) > 1e-2
+assert grad_check(lambda v: 3.0, lambda v: [0.0, 0.0], [1.0, 2.0]) == 0.0
+e = grad_check(lambda v: v[0] ** 2, lambda v: [2 * v[0] + 1.0], [1.0])
+assert abs(e - 1.0 / 5.0) < 1e-6
+```
+model:
+```python
+import math
+
+def grad_check(f, grad, x, h=1e-5):
+    """Relative error between an analytic and a numerical gradient."""
+    g = grad(x)
+    num = []
+    for i in range(len(x)):
+        up = list(x)
+        down = list(x)
+        up[i] += h
+        down[i] -= h
+        num.append((f(up) - f(down)) / (2 * h))
+    diff = math.sqrt(sum((a - b) ** 2 for a, b in zip(g, num)))
+    denom = math.sqrt(sum(a * a for a in g)) + math.sqrt(sum(b * b for b in num))
+    if denom == 0:
+        return 0.0
+    return diff / denom
+```
+hint: Build the numerical gradient as in the previous exercise, then form the three norms and divide.
+solution: The analytic gradient and the numerical estimate agree to about $10^{-10}$ for the correct formula, but the wrong first component gives a relative error near 0.1. The last test has analytic gradient 3 and numerical gradient 2 at $x = 1$, so the relative error is $1/(3+2) = 0.2$.
+
+@quiz code
+prompt: Write `best_step(f, df, x, hs)` that returns the step size from the list `hs` for which the central difference of the scalar function `f` at `x` is closest to the true derivative value `df(x)`. If two step sizes tie, return the earlier one in the list.
+starter:
+```python
+def best_step(f, df, x, hs):
+    pass
+```
+tests:
+```python
+import math
+assert best_step(math.sin, math.cos, 1.0, [1e-1, 1e-5, 1e-13]) == 1e-5
+assert best_step(math.exp, math.exp, 0.5, [1e-13, 1e-1, 1e-5]) == 1e-5
+assert best_step(lambda t: t * t, lambda t: 2 * t, 3.0, [0.5, 0.25]) == 0.5
+assert best_step(lambda t: t ** 3, lambda t: 3 * t * t, 1.0, [1e-1, 1e-2]) == 1e-2
+```
+model:
+```python
+def best_step(f, df, x, hs):
+    """Step size whose central difference error is smallest."""
+    truth = df(x)
+    best = hs[0]
+    best_err = None
+    for h in hs:
+        err = abs((f(x + h) - f(x - h)) / (2 * h) - truth)
+        if best_err is None or err < best_err:
+            best = h
+            best_err = err
+    return best
+```
+hint: Compute the true derivative once, then loop over the step sizes keeping the one with the smallest absolute error (strictly smaller, to keep the earlier on ties).
+solution: For $x^2$ the central difference is exact for every $h$ (errors of $O(h^2)$ vanish when $f''' = 0$), so the first step size wins the tie. The sine and exponential tests show the trade-off: $10^{-1}$ is too coarse and $10^{-13}$ is swamped by rounding.
+
+@quiz text
+prompt: What does this program print?
+```python
+def central(f, x, h):
+    return (f(x + h) - f(x - h)) / (2 * h)
+
+print(central(lambda t: t * t, 2.0, 1.0), central(lambda t: t ** 3, 1.0, 1.0))
+```
+answer: 4.0 4.0
+check: run("def central(f, x, h):\n    return (f(x + h) - f(x - h)) / (2 * h)\n\nprint(central(lambda t: t * t, 2.0, 1.0), central(lambda t: t ** 3, 1.0, 1.0))")
+hint: For the first, $(3^2 - 1^2)/2$. For the second, $(2^3 - 0^3)/2$.
+solution: With $h = 1$ the first call computes $(9 - 1)/2 = 4.0$, exactly $2x$, because the central difference is exact for quadratics. The second computes $(8 - 0)/2 = 4.0$, while the true derivative is 3: a large step makes the $O(h^2)$ error visible.
+
+@quiz ms
+prompt: Which of these statements about finite differences and gradient checking are true? Select all that apply.
+choice*: The truncation error of the central difference is $O(h^2)$ and that of the forward difference is $O(h)$.
+choice*: Rounding error in $f(x+h) - f(x-h)$ is magnified by $1/(2h)$, so very small $h$ gives poor estimates.
+choice*: A numerical gradient of a function of $d$ variables needs $2d$ evaluations of the function with central differences.
+choice: Gradient checking is cheaper than backpropagation, so it is used to train large models.
+hint: Count function evaluations, and recall the two competing error terms.
+solution: The orders of accuracy, the rounding amplification and the $2d$ evaluations are all standard facts. Gradient checking costs $O(d)$ function evaluations, which is far too expensive for training; it is a debugging tool.

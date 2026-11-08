@@ -1,0 +1,210 @@
+@lesson
+title: Markov chain Monte Carlo: the Metropolis algorithm
+summary: Build a Markov chain whose stationary distribution is an unnormalized target density, run the Metropolis algorithm, and check detailed balance.
+objective: Define a stationary distribution and detailed balance, and show that detailed balance implies stationarity.
+objective: Run the Metropolis algorithm by hand for discrete and continuous targets using only ratios of the unnormalized density.
+objective: Explain burn-in, autocorrelation and the effect of the proposal step size on mixing.
+reading: Information Theory, Inference, and Learning Algorithms (MacKay), the chapter on Monte Carlo methods covering the Metropolis method; look up Markov chain Monte Carlo and detailed balance.
+
+@article
+Importance sampling needs a proposal that resembles the target, which is hard in many dimensions. **Markov chain Monte Carlo** (MCMC) takes a different route: do a random walk whose long-run visiting frequencies equal the target. Bayesian posteriors are usually known only up to the normalizing constant $p(\mathcal{D})$, and MCMC needs only that unnormalized form $\tilde p(x) \propto p(x)$.
+
+### Markov chains and stationary distributions
+
+A **Markov chain** produces $x_0, x_1, x_2, \dots$ where each state depends only on the previous one, through a transition probability $T(x \to x')$. A distribution $\pi$ is **stationary** if one step preserves it: $\sum_x \pi(x)T(x \to x') = \pi(x')$ for every $x'$. Under mild conditions (the chain is **irreducible**, able to reach every region of positive probability, and **aperiodic**) a chain with a stationary distribution $\pi$ converges to it from any start, and averages along the chain converge to expectations under $\pi$: $\frac1N\sum_t f(x_t) \to \mathbb{E}_\pi[f]$.
+
+A sufficient condition for stationarity is **detailed balance**: $\pi(x)T(x \to x') = \pi(x')T(x' \to x)$ for all $x, x'$. It implies stationarity, because summing over $x$ gives $\sum_x \pi(x)T(x \to x') = \sum_x \pi(x')T(x' \to x) = \pi(x')\sum_x T(x' \to x) = \pi(x')$.
+
+### The Metropolis algorithm
+
+Given the current state $x$ and a **symmetric proposal** $q(x' \mid x) = q(x \mid x')$ (for example $x' = x + \text{Gaussian noise}$):
+
+1. Propose $x' \sim q(\cdot \mid x)$.
+2. Compute the acceptance probability $\alpha = \min\!\big(1, \tilde p(x')/\tilde p(x)\big)$.
+3. With probability $\alpha$ move to $x'$; otherwise stay at $x$ (and record $x$ again).
+
+The normalizing constant cancels in the ratio. Moves uphill are always accepted; downhill moves are accepted with probability equal to the density ratio. This is the algorithm of Metropolis and colleagues (1953); Hastings (1970) generalized it to asymmetric proposals with $\alpha = \min\big(1, \frac{\tilde p(x')q(x \mid x')}{\tilde p(x)q(x' \mid x)}\big)$.
+
+**Why it works.** For $x' \ne x$ the transition probability is $T(x \to x') = q(x' \mid x)\min\big(1, \tilde p(x')/\tilde p(x)\big)$. Then
+$$p(x)T(x \to x') = q(x' \mid x)\,\min\!\big(p(x), p(x')\big),$$
+using $p(x)\min(1, p(x')/p(x)) = \min(p(x), p(x'))$. By symmetry of $q$ this expression is unchanged when $x$ and $x'$ swap, which is detailed balance, so $p$ is stationary. Convergence additionally needs the proposal to allow the chain to reach everywhere.
+
+### A three-state example
+
+Let the target on states $\{1, 2, 3\}$ be proportional to $(1, 2, 3)$, so $p = (1/6, 2/6, 3/6)$. The proposal picks a neighbor ($\pm 1$) with probability $1/2$ each; a proposal off the ends is rejected. From state 1 the move to 2 has $\alpha = \min(1, 2/1) = 1$, so $T(1 \to 2) = 0.5$ and $T(1 \to 1) = 0.5$. From state 2: $T(2 \to 1) = 0.5 \times \tfrac12 = 0.25$, $T(2 \to 3) = 0.5 \times 1 = 0.5$, $T(2 \to 2) = 0.25$. From state 3: $T(3 \to 2) = 0.5 \times \tfrac23 = 1/3$ and $T(3 \to 3) = 2/3$. Check detailed balance on the pair $(1, 2)$: $p(1)T(1 \to 2) = \tfrac16(0.5) = \tfrac1{12}$ and $p(2)T(2 \to 1) = \tfrac26(0.25) = \tfrac1{12}$. They match.
+
+### Practical issues
+
+Samples are **correlated**: consecutive states are close, so $N$ chain samples carry less information than $N$ independent ones. The effective sample size can be far below $N$.
+
+- **Burn-in.** Early samples depend on the starting point and are often discarded.
+- **Step size.** A tiny step is accepted almost always but moves slowly (high autocorrelation); a huge step proposes far into low-density regions and is mostly rejected. Both mix poorly. For random-walk Metropolis in high dimensions, an acceptance rate of roughly 0.2 to 0.4 is a common target.
+- **Logs.** Compute $\log\tilde p(x') - \log\tilde p(x)$ and accept if $\log u < $ this difference, with $u \sim \text{Uniform}(0, 1)$. This avoids overflow and underflow.
+- **Diagnostics.** Run several chains from different starts and compare them; trace plots (here, tables of values) and the effective sample size reveal poor mixing, but no diagnostic can prove convergence.
+
+### In code
+
+```python
+import math
+import random
+
+def metropolis(log_p, x0, step, n, seed):
+    rng = random.Random(seed)
+    x = x0
+    chain = []
+    for _ in range(n):
+        proposal = x + step * rng.gauss(0.0, 1.0)
+        if math.log(1.0 - rng.random()) < log_p(proposal) - log_p(x):
+            x = proposal
+        chain.append(x)
+    return chain
+
+chain = metropolis(lambda x: -x * x / 2, 0.0, 1.0, 2000, seed=0)
+print(round(sum(chain) / len(chain), 2))
+```
+
+The target here is the standard normal, given only through its unnormalized log-density, and the chain mean is close to 0.
+
+@example
+title: A single Metropolis step
+problem: The target is proportional to $\tilde p(x) = e^{-x^2/2}$ and the chain is at $x = 1$. A symmetric proposal suggests $x' = 1.5$. Find the acceptance probability, and say what happens if the uniform random number is $u = 0.3$ and if it is $u = 0.7$.
+step: The ratio is $\tilde p(1.5)/\tilde p(1) = \exp\big(-(2.25 - 1)/2\big) = e^{-0.625}$.
+step: Numerically $e^{-0.625} \approx 0.5353$, which is below 1, so $\alpha \approx 0.535$.
+step: With $u = 0.3 < 0.535$ the move is accepted: the next state is $1.5$.
+step: With $u = 0.7 > 0.535$ the move is rejected: the next state is $1$ again, and $1$ is recorded a second time in the chain.
+answer: $\alpha = e^{-0.625} \approx 0.535$; accepted for $u = 0.3$, rejected for $u = 0.7$.
+
+@example
+title: Detailed balance for a two-state chain
+problem: The target on two states is $\pi = (0.2, 0.8)$. The proposal always proposes the other state. Build the Metropolis transition probabilities and verify detailed balance.
+step: From state 1 the proposal is state 2, with $\alpha = \min(1, 0.8/0.2) = 1$. So $T(1 \to 2) = 1$ and $T(1 \to 1) = 0$.
+step: From state 2 the proposal is state 1, with $\alpha = \min(1, 0.2/0.8) = 0.25$. So $T(2 \to 1) = 0.25$ and $T(2 \to 2) = 0.75$.
+step: Detailed balance: $\pi(1)T(1 \to 2) = 0.2 \times 1 = 0.2$ and $\pi(2)T(2 \to 1) = 0.8 \times 0.25 = 0.2$. They are equal.
+step: Stationarity follows: the new probability of state 1 is $\pi(1)T(1 \to 1) + \pi(2)T(2 \to 1) = 0 + 0.2 = 0.2$.
+answer: $T = \begin{pmatrix} 0 & 1 \\ 0.25 & 0.75 \end{pmatrix}$, and $\pi = (0.2, 0.8)$ is stationary.
+
+@mistakes
+- Forgetting to repeat the current state on a rejection: dropping rejected steps from the chain biases the samples away from high-density regions.
+- Using the Metropolis ratio with an asymmetric proposal: then the Hastings correction $q(x \mid x')/q(x' \mid x)$ is required.
+- Treating chain samples as independent: autocorrelation makes the effective sample size much smaller than the chain length, so standard errors are underestimated.
+- Judging a chain by a high acceptance rate alone: a very small step size is accepted almost always yet explores the target slowly.
+
+@practice num
+prompt: A Metropolis chain targets $\tilde p(x) = e^{-x^2/2}$ with a symmetric proposal. The chain is at $x = 0.5$ and the proposal is $x' = 2$. What is the probability of accepting the move? Give four decimal places.
+answer: 0.1534
+tol: 0.0001
+check: min(1, exp(-(2 ** 2 - 0.5 ** 2) / 2))
+hint: Compute $\min(1, \tilde p(x')/\tilde p(x))$.
+solution: The ratio is $\exp(-(4 - 0.25)/2) = e^{-1.875} \approx 0.1534$, which is below 1, so that is the acceptance probability.
+
+@practice num
+prompt: A two-state Markov chain has stationary distribution $\pi = (0.4, 0.6)$ and $T(1 \to 2) = 0.3$. What must $T(2 \to 1)$ be for the chain to satisfy detailed balance with respect to $\pi$?
+answer: 0.2
+tol: 0.001
+check: 0.4 * 0.3 / 0.6
+hint: Detailed balance says $\pi(1)T(1 \to 2) = \pi(2)T(2 \to 1)$.
+solution: $0.4 \times 0.3 = 0.12 = 0.6 \times T(2 \to 1)$, so $T(2 \to 1) = 0.2$.
+
+@practice mc
+prompt: A random-walk Metropolis sampler for a smooth unimodal target uses a proposal step size that is extremely small compared with the width of the target. What is the most likely behavior?
+choice*: Almost every proposal is accepted, but consecutive samples are nearly identical, so the chain explores the target very slowly.
+choice: Almost every proposal is rejected, because a small step lands in a low-density region.
+choice: The chain converges to a different stationary distribution, because the step size changes the target.
+choice: The chain mixes fastest, because high acceptance means each sample is nearly independent.
+hint: Compare the density at the current point and at a point very close to it.
+solution: A tiny step changes $\tilde p$ very little, so the ratio is near 1 and moves are nearly always accepted, but each move is small, so the autocorrelation is high. The stationary distribution is the target for any step size (detailed balance does not depend on it), so only the speed of mixing changes; a large step would cause frequent rejection instead.
+
+@practice text
+prompt: A Metropolis sampler for the target $\tilde p(x) = e^{-x^2/2}$ is run with predetermined proposals and uniform numbers. What does this program print (one value per line)?
+```python
+import math
+
+x = 1.0
+proposals = [1.5, 0.2, 3.0]
+uniforms = [0.3, 0.9, 0.5]
+for xp, u in zip(proposals, uniforms):
+    if u < min(1, math.exp(-(xp ** 2 - x ** 2) / 2)):
+        x = xp
+    print(x)
+```
+answer:
+```
+1.5
+0.2
+0.2
+```
+check: run("import math\n\nx = 1.0\nproposals = [1.5, 0.2, 3.0]\nuniforms = [0.3, 0.9, 0.5]\nfor xp, u in zip(proposals, uniforms):\n    if u < min(1, math.exp(-(xp ** 2 - x ** 2) / 2)):\n        x = xp\n    print(x)")
+hint: The first move has acceptance probability about 0.535, the second moves uphill, and the third has a tiny acceptance probability.
+solution: Step 1: $\alpha \approx 0.535 > u = 0.3$, accept, $x = 1.5$. Step 2: the proposal $0.2$ has higher density, $\alpha = 1 > 0.9$, accept, $x = 0.2$. Step 3: $\alpha = e^{-(9 - 0.04)/2} \approx 0.011 < 0.5$, reject, so $x$ stays $0.2$ and is printed again.
+
+@practice code
+prompt: Write `metropolis(log_p, x0, step, n, seed)` that runs random-walk Metropolis and returns a list of the `n` states after each step (not including `x0`). `log_p` is the unnormalized log-density (it may return `-math.inf` outside the support). Use `rng = random.Random(seed)`; at each step propose `x + step * rng.gauss(0.0, 1.0)`, accept when `math.log(1.0 - rng.random()) < log_p(proposal) - log_p(x)`, and append the current state (whether or not the move was accepted). Import `math` and `random` yourself.
+starter:
+```python
+import math
+import random
+
+def metropolis(log_p, x0, step, n, seed):
+    return []
+```
+tests:
+```python
+import math
+normal = lambda x: -x * x / 2
+chain = metropolis(normal, 0.0, 1.0, 4000, 1)
+assert len(chain) == 4000
+assert chain == metropolis(normal, 0.0, 1.0, 4000, 1)
+mean = sum(chain) / len(chain)
+var = sum((x - mean) ** 2 for x in chain) / len(chain)
+assert abs(mean) < 0.3 and 0.6 < var < 1.5
+box = lambda x: 0.0 if 0 <= x <= 1 else -math.inf
+chain = metropolis(box, 0.5, 0.4, 500, 3)
+assert all(0 <= x <= 1 for x in chain)
+assert len(set(chain)) > 20
+assert metropolis(normal, 2.5, 0.0, 5, 0) == [2.5] * 5
+```
+model:
+```python
+import math
+import random
+
+def metropolis(log_p, x0, step, n, seed):
+    """Random-walk Metropolis; returns the n states visited after x0."""
+    rng = random.Random(seed)
+    x = x0
+    chain = []
+    for _ in range(n):
+        proposal = x + step * rng.gauss(0.0, 1.0)
+        if math.log(1.0 - rng.random()) < log_p(proposal) - log_p(x):
+            x = proposal
+        chain.append(x)
+    return chain
+```
+hint: Keep the current state `x`; on each iteration propose, compare the log uniform number with the log ratio, update `x` if accepted, and append `x` either way.
+solution: The acceptance test in logs avoids overflow. Rejected moves leave `x` unchanged, and the chain records it again; the box target tests that proposals outside the support are always rejected (the log ratio is minus infinity), and the zero step size test checks that nothing moves when every proposal equals the current state and the ratio is 1 (a solution that skips repeating states fails the length test).
+
+@quiz num
+prompt: A two-state Markov chain has $T(1 \to 2) = 0.1$ and $T(2 \to 1) = 0.4$. What is its stationary probability of state 1?
+answer: 0.8
+tol: 0.001
+check: 0.4 / (0.1 + 0.4)
+hint: Stationarity (here equivalent to detailed balance) requires $\pi(1)\,T(1 \to 2) = \pi(2)\,T(2 \to 1)$ with $\pi(1) + \pi(2) = 1$.
+solution: Detailed balance gives $\pi(1)(0.1) = (1 - \pi(1))(0.4)$, so $0.5\,\pi(1) = 0.4$ and $\pi(1) = 0.8$.
+
+@quiz ms
+prompt: Which statements about the Metropolis algorithm are true? Select all that apply.
+choice*: It requires the target density only up to a normalizing constant.
+choice*: With a symmetric proposal the acceptance probability is $\min(1, \tilde p(x')/\tilde p(x))$.
+choice*: Successive samples are generally correlated, so the effective sample size is smaller than the number of samples.
+choice: Rejected proposals should be removed from the output chain.
+choice: Its samples are exact independent draws from the target after any number of steps.
+hint: Think about what cancels in the ratio and what the chain records when a proposal is rejected.
+solution: The normalizing constant cancels in the ratio. The acceptance rule is the stated minimum. The chain is a dependent sequence that targets the stationary distribution only asymptotically. A rejection means the chain stays put, and that repeated state must be recorded, otherwise the visit frequencies are wrong.
+
+@quiz self
+prompt: Prove that if a Markov chain with transition probabilities $T$ satisfies detailed balance with respect to $\pi$, then $\pi$ is stationary. Then show that the Metropolis acceptance rule with a symmetric proposal satisfies detailed balance for the target $\pi \propto \tilde p$.
+hint: For the first part sum the detailed-balance equation over $x$. For the second part write $T(x \to x')$ for $x' \ne x$ and compare $\pi(x)T(x \to x')$ with $\pi(x')T(x' \to x)$.
+solution: Suppose $\pi(x)T(x \to x') = \pi(x')T(x' \to x)$ for all $x, x'$. Summing over $x$ gives $\sum_x \pi(x)T(x \to x') = \pi(x')\sum_x T(x' \to x) = \pi(x')$, since the transition probabilities out of $x'$ sum to 1; so $\pi$ is stationary. For Metropolis and $x' \ne x$, $T(x \to x') = q(x' \mid x)\min(1, \pi(x')/\pi(x))$ (the constant in $\tilde p$ cancels in the ratio). Hence $\pi(x)T(x \to x') = q(x' \mid x)\min(\pi(x), \pi(x'))$. The same computation with the roles swapped gives $\pi(x')T(x' \to x) = q(x \mid x')\min(\pi(x'), \pi(x))$. Since $q(x' \mid x) = q(x \mid x')$ the two are equal, and the case $x' = x$ is trivial, so detailed balance holds.
+rubric: Sums detailed balance over the source state and uses that transition probabilities sum to 1.
+rubric: Writes the Metropolis transition probability for $x' \ne x$ correctly.
+rubric: Uses the symmetry of the proposal and the identity $\pi(x)\min(1, \pi(x')/\pi(x)) = \min(\pi(x), \pi(x'))$.

@@ -1,0 +1,301 @@
+@lesson
+title: Softmax regression for many classes
+summary: Extend logistic regression to $K$ classes with the softmax function, derive its cross-entropy gradient, train it from scratch and verify the gradient numerically.
+objective: Compute softmax probabilities and the cross-entropy loss stably, and explain the shift invariance and the redundancy in the parameters.
+objective: Derive $\nabla_{\mathbf{W}} L = \frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$ and implement training by gradient descent.
+objective: Check an implemented gradient against finite differences, and show that two-class softmax regression is logistic regression.
+reading: The Elements of Statistical Learning, the chapter on linear methods for classification: the section on logistic regression for $K$ classes (the multilogit model).
+@article
+An email filter must put each message into one of three folders: work, family or promotions. Logistic regression gives a probability for two outcomes. For $K$ classes we need $K$ probabilities that are positive and sum to 1. **Softmax regression** (also called multinomial logistic regression) does exactly that, and its loss and gradient look almost the same as last week's.
+
+### The softmax model
+
+Keep one weight vector per class, stacked as the columns of a matrix $\mathbf{W} \in \mathbb{R}^{(p+1)\times K}$. An example $\mathbf{x}$ (with a leading 1) gets a score $z_k = \mathbf{w}_k^\top\mathbf{x}$ for each class, and the probabilities are
+
+$$p_k = P(y = k \mid \mathbf{x}) = \frac{e^{z_k}}{\sum_{m=1}^{K} e^{z_m}}.$$
+
+All $p_k$ are positive and sum to 1. Two properties matter in practice.
+
+- **Shift invariance.** Adding the same constant $c$ to every score multiplies numerator and denominator by $e^{c}$, so the probabilities do not change. Subtracting $\max_k z_k$ before exponentiating avoids overflow without changing anything: scores $(2, 1, 0)$ and $(1000, 999, 998)$ give the same probabilities, $(0.665, 0.245, 0.090)$.
+- **Redundant parameters.** Adding the same vector to every column of $\mathbf{W}$ shifts every score by $\mathbf{v}^\top\mathbf{x}$ and changes no prediction. The model has only $(p+1)(K-1)$ free parameters; one class can be fixed to zero, or a small L2 penalty can pick a unique solution.
+
+For $K = 2$ the model is logistic regression: the probability of class 2 is $1/(1 + e^{-(z_2 - z_1)})$, a sigmoid of the difference of scores, so the logistic weights equal $\mathbf{w}_2 - \mathbf{w}_1$.
+
+### Cross-entropy loss and gradient
+
+With one-hot labels, the negative log-likelihood of an example with true class $t$ is $-\log p_t$. Averaged over examples,
+
+$$L(\mathbf{W}) = -\frac{1}{n}\sum_{i=1}^{n}\log p_{i,t_i} = \frac{1}{n}\sum_i\Big[\log\sum_m e^{z_{im}} - z_{i,t_i}\Big].$$
+
+The second form, a **log-sum-exp** minus the true score, is the numerically stable way to compute it. To differentiate, let $\mathbf{y}$ be the one-hot label vector. Then $\partial \log\sum_m e^{z_m}/\partial z_k = p_k$ and $\partial z_t/\partial z_k$ is 1 when $k = t$ and 0 otherwise, so
+
+$$\frac{\partial \ell}{\partial z_k} = p_k - y_k .$$
+
+Because $z_k = \mathbf{w}_k^\top\mathbf{x}$, the chain rule gives the whole gradient in one line:
+
+$$\nabla_{\mathbf{W}} L = \frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y}),$$
+
+where $\mathbf{P}$ and $\mathbf{Y}$ are the $n \times K$ matrices of predicted probabilities and one-hot labels. For $K = 2$ this is exactly last week's gradient. Each row of $\mathbf{P} - \mathbf{Y}$ sums to zero, so each row of the gradient sums to zero too: starting from $\mathbf{W} = \mathbf{0}$, gradient descent never leaves the set where every row of $\mathbf{W}$ sums to zero, which is one way to resolve the redundancy. The loss is convex in $\mathbf{W}$.
+
+### Training and checking
+
+At $\mathbf{W} = \mathbf{0}$ every class has probability $1/K$, so the loss is $\log K$: $\log 3 \approx 1.099$ for three classes. That is a useful sanity check before training: a loss far from $\log K$ at initialization signals a bug. The code below trains on eight examples with two features and three classes, then compares one component of the gradient with a finite difference at an arbitrary point.
+
+```python
+import math
+
+X = [[1, 0, 1], [1, 1, 2], [1, 2, 0], [1, 3, 1],
+     [1, 2, 3], [1, 3, 3], [1, 1, 1], [1, 2, 2]]
+y = [1, 0, 0, 0, 1, 1, 2, 2]
+K = 3
+
+def softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) for v in z]
+    s = sum(e)
+    return [v / s for v in e]
+
+def scores(row, W):
+    return [sum(row[j] * W[j][k] for j in range(len(row))) for k in range(K)]
+
+def nll(X, y, W):
+    total = 0.0
+    for row, t in zip(X, y):
+        z = scores(row, W)
+        m = max(z)
+        lse = m + math.log(sum(math.exp(v - m) for v in z))
+        total += lse - z[t]
+    return total / len(X)
+
+def gradient(X, y, W):
+    n = len(X)
+    G = [[0.0] * K for _ in W]
+    for row, t in zip(X, y):
+        p = softmax(scores(row, W))
+        for k in range(K):
+            err = p[k] - (1 if k == t else 0)
+            for j in range(len(row)):
+                G[j][k] += row[j] * err / n
+    return G
+
+W = [[0.0] * K for _ in range(3)]
+for step in range(1, 3001):
+    G = gradient(X, y, W)
+    W = [[W[j][k] - G[j][k] for k in range(K)] for j in range(3)]
+    if step in (1, 10, 3000):
+        print(step, round(nll(X, y, W), 4))
+
+pts = [[0.1, -0.2, 0.3], [0.0, 0.4, -0.1], [-0.3, 0.2, 0.1]]
+G = gradient(X, y, pts)
+eps = 1e-6
+up = [r[:] for r in pts]
+up[1][2] += eps
+dn = [r[:] for r in pts]
+dn[1][2] -= eps
+print(round((nll(X, y, up) - nll(X, y, dn)) / (2 * eps), 6),
+      round(G[1][2], 6))
+```
+
+The loss falls from $1.0986$ to $1.0332$ after one step, $0.9513$ after ten and $0.7672$ after 3000, where the gradient is essentially zero; the two numbers in the last line agree to six decimals. These labels overlap, so a finite minimum exists; if the classes were perfectly separable, the loss would keep falling as the weights grew, as in the two-class case. In PyTorch the same model is a linear layer followed by `torch.nn.functional.cross_entropy`, which applies log-softmax internally to stay stable.
+
+@example
+title: Softmax, loss and score gradient by hand
+problem: A three-class model gives the scores $\mathbf{z} = (3, 1, 1)$ for an example whose true class is the third. Compute the probabilities, the loss in nats, and $\partial\ell/\partial\mathbf{z}$.
+step: Exponentiate: $e^3 \approx 20.086$, $e^1 \approx 2.718$ and $e^1 \approx 2.718$, with sum $\approx 25.522$.
+step: Divide: $\mathbf{p} \approx (0.7870, 0.1065, 0.1065)$.
+step: The true class is the third, so the loss is $-\log 0.1065 \approx 2.240$ nats. Compare with the uniform guess $\log 3 \approx 1.099$: the model is confidently wrong, so it does worse than guessing.
+step: With one-hot label $(0, 0, 1)$, the gradient with respect to the scores is $\mathbf{p} - \mathbf{y} = (0.7870, 0.1065, -0.8935)$. It sums to zero, and descent would lower the first score and raise the third.
+answer: $\mathbf{p} \approx (0.787, 0.107, 0.107)$, loss $\approx 2.240$, $\partial\ell/\partial\mathbf{z} \approx (0.787, 0.107, -0.894)$.
+
+@example
+title: One gradient step on a one-feature problem
+problem: Three examples have a feature $x = 1, 2, 3$ with classes $0, 1, 2$ respectively. For softmax regression with a bias and a weight on $x$, take one step with step size 1 from $\mathbf{W} = \mathbf{0}$, and compute the new loss.
+step: At $\mathbf{W} = \mathbf{0}$ all probabilities are $1/3$, so $\mathbf{P} - \mathbf{Y}$ has entries $1/3$ off the true class and $-2/3$ on it.
+step: Bias row of the gradient: for each class the three entries of $\mathbf{P} - \mathbf{Y}$ in that column are $1/3, 1/3, -2/3$, which sum to 0. So the bias row is $(0, 0, 0)$.
+step: Feature row: for class $k$ it is $\frac{1}{3}\sum_i x_i(p_{ik} - y_{ik}) = \frac{1}{3}\big(\frac{1}{3}(1 + 2 + 3) - x_{(k)}\big)$, where $x_{(k)}$ is the one $x$ with class $k$. This gives $(\frac{1}{3}, 0, -\frac{1}{3})$.
+step: Update: the slopes become $(-\frac{1}{3}, 0, \frac{1}{3})$: larger $x$ now favors class 2, as the data suggest.
+step: At $x = 1, 2, 3$ the new probabilities of the true classes are $0.2302$, $0.2889$ and $0.6652$, so the loss is $\frac{1}{3}(1.469 + 1.242 + 0.408) \approx 1.039$, down from $\log 3 \approx 1.099$.
+answer: Slopes $(-\frac{1}{3}, 0, \frac{1}{3})$, bias unchanged, loss $\approx 1.039$.
+
+@mistakes
+- Exponentiating raw scores: $e^{1000}$ overflows. Subtract the maximum score first, or compute the loss with log-sum-exp.
+- Treating the weight columns as independent and unique: adding one vector to all columns changes nothing, so individual weights are not interpretable without a convention.
+- Applying a sigmoid to each class separately and calling the result a distribution: those probabilities need not sum to 1.
+- Not checking the starting loss: at zero weights it must equal $\log K$.
+
+@practice num
+prompt: A three-class model produces the scores $\mathbf{z} = (0, 1, 3)$. What probability does softmax assign to the third class? Give four decimal places.
+answer: 0.8438
+tol: 0.0001
+check: math.exp(3) / (math.exp(0) + math.exp(1) + math.exp(3))
+hint: Compute $e^3 / (e^0 + e^1 + e^3)$; the denominator is about $23.80$.
+solution: $e^3 \approx 20.0855$, and the denominator is $1 + 2.7183 + 20.0855 = 23.8038$, so $p_3 \approx 0.8438$.
+
+@practice num
+prompt: A three-class model produces the scores $\mathbf{z} = (0, 1, 3)$ and the true class is the first. What is the cross-entropy loss in nats? Give three decimal places.
+answer: 3.170
+tol: 0.001
+check: math.log(math.exp(0) + math.exp(1) + math.exp(3)) - 0
+hint: The loss is $\log\sum_m e^{z_m} - z_t$ with $z_t = 0$.
+solution: $\log(1 + e + e^3) = \log 23.8038 \approx 3.170$, and subtracting the true score $0$ leaves $3.170$. The model puts only $4.2\%$ on the true class.
+
+@practice mc
+prompt: Softmax scores $\mathbf{z}$ are replaced by $\mathbf{z} + c\mathbf{1}$ for a constant $c$. Which statement is correct?
+choice*: The probabilities are unchanged, because $e^{c}$ cancels between numerator and denominator.
+choice: The probabilities are unchanged only when $c = 0$.
+choice: The probabilities change, because every score increases.
+choice: The probabilities still sum to 1 but the ranking of the classes changes.
+hint: Write $e^{z_k + c} = e^{c}e^{z_k}$ in both numerator and denominator.
+solution: The factor $e^{c}$ multiplies every term, including the sum in the denominator, and cancels. Scores shift together, so ranking and probabilities are unchanged. This is why subtracting the maximum score is safe.
+
+@practice code
+prompt: Write `softmax(z)` that returns the list of softmax probabilities of the list of scores `z`. It must be numerically stable: `softmax([1000.0, 1000.0])` must not raise an error and returns `[0.5, 0.5]`.
+starter:
+```python
+import math
+
+def softmax(z):
+    pass
+```
+tests:
+```python
+got = softmax([2.0, 1.0, 0.0])
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.66524096, 0.24472847, 0.09003057]))
+got = softmax([1000.0, 1000.0])
+assert all(abs(a - 0.5) < 1e-9 for a in got)
+got = softmax([-1000.0, 0.0, -1000.0])
+assert abs(got[1] - 1.0) < 1e-9 and abs(sum(got) - 1.0) < 1e-9
+assert abs(softmax([5.0])[0] - 1.0) < 1e-12
+```
+model:
+```python
+import math
+
+def softmax(z):
+    """Stable softmax: subtract the maximum before exponentiating."""
+    m = max(z)
+    e = [math.exp(v - m) for v in z]
+    total = sum(e)
+    return [v / total for v in e]
+```
+hint: Subtract `max(z)` from every score before applying `math.exp`; the result is unchanged but nothing overflows.
+solution: Shift invariance lets you subtract the largest score, so the largest exponent is $e^0 = 1$ and no term overflows. Dividing by the sum normalizes the list. The test with scores of 1000 fails for a direct implementation.
+
+@practice code
+prompt: Write `train_softmax(X, y, K, lr, steps)` that trains softmax regression by batch gradient descent from an all-zero weight matrix, for exactly `steps` steps with step size `lr`, and returns the weights `W` as a list of rows: `W[j][k]` is the weight of feature `j` for class `k`. `X` is a list of rows (constant column included), `y` a list of class indices in `range(K)`. The score of class `k` is `sum(row[j] * W[j][k])`, the gradient is $\frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$.
+starter:
+```python
+import math
+
+def train_softmax(X, y, K, lr, steps):
+    W = [[0.0] * K for _ in range(len(X[0]))]
+    return W
+```
+tests:
+```python
+X = [[1, 1], [1, 2], [1, 3]]
+y = [2, 1, 0]
+W = train_softmax(X, y, 3, 1.0, 1)
+want = [[0.0, 0.0, 0.0], [1 / 3, 0.0, -1 / 3]]
+assert all(abs(a - b) < 1e-9 for r, s in zip(W, want) for a, b in zip(r, s))
+W = train_softmax(X, y, 3, 1.0, 50)
+assert all(abs(sum(r)) < 1e-9 for r in W)
+W = train_softmax([[1, -1], [1, 0], [1, 1], [1, 2]], [0, 1, 0, 1], 2, 2.0, 100)
+assert abs(W[0][1] - (-0.22704607)) < 1e-4 and abs(W[1][1] - 0.45409213) < 1e-4
+assert abs(W[0][0] + W[0][1]) < 1e-9
+assert train_softmax(X, y, 3, 1.0, 0) == [[0.0] * 3, [0.0] * 3]
+```
+model:
+```python
+import math
+
+def train_softmax(X, y, K, lr, steps):
+    """Softmax regression by batch gradient descent, started at zero."""
+    n = len(X)
+    d = len(X[0])
+    W = [[0.0] * K for _ in range(d)]
+    for _ in range(steps):
+        G = [[0.0] * K for _ in range(d)]
+        for row, t in zip(X, y):
+            z = [sum(row[j] * W[j][k] for j in range(d)) for k in range(K)]
+            m = max(z)
+            e = [math.exp(v - m) for v in z]
+            s = sum(e)
+            for k in range(K):
+                err = e[k] / s - (1 if k == t else 0)
+                for j in range(d):
+                    G[j][k] += row[j] * err / n
+        W = [[W[j][k] - lr * G[j][k] for k in range(K)] for j in range(d)]
+    return W
+```
+hint: For each example compute the softmax of its scores, subtract the one-hot label to get the errors, and accumulate `row[j] * err / n` into the gradient. Update all weights only after the whole batch.
+solution: Accumulate the gradient over all examples before changing `W`. The first test pins down the sign and the factor $1/n$; the row-sum test holds because each gradient row sums to zero; and the two-class run shows that softmax regression with two classes is logistic regression, with the logistic weights equal to twice the second column here.
+
+@quiz code
+prompt: Write `softmax_grad(X, y, W)` returning the gradient of the mean cross-entropy loss of softmax regression with respect to `W`, as a list of rows with the same shape as `W`: `W[j][k]` is the weight of feature `j` for class `k`. `X` is a list of rows with the constant column included, `y` a list of class indices.
+starter:
+```python
+import math
+
+def softmax_grad(X, y, W):
+    pass
+```
+tests:
+```python
+G = softmax_grad([[1, 2], [1, 0]], [2, 0], [[0.0] * 3, [0.0] * 3])
+want = [[-1 / 6, 1 / 3, -1 / 6], [1 / 3, 1 / 3, -2 / 3]]
+assert all(abs(a - b) < 1e-9 for r, s in zip(G, want) for a, b in zip(r, s))
+W = [[0.1, -0.2, 0.3], [0.0, 0.4, -0.1]]
+G = softmax_grad([[1, 2], [1, 0], [1, -1]], [2, 0, 1], W)
+want = [[-0.01234377, -0.04119678, 0.05354055],
+        [0.06560724, 0.57642247, -0.6420297]]
+assert all(abs(a - b) < 1e-6 for r, s in zip(G, want) for a, b in zip(r, s))
+assert abs(sum(G[0])) < 1e-9 and abs(sum(G[1])) < 1e-9
+assert W == [[0.1, -0.2, 0.3], [0.0, 0.4, -0.1]]
+```
+model:
+```python
+import math
+
+def softmax_grad(X, y, W):
+    """Gradient of the mean cross-entropy with respect to W."""
+    n = len(X)
+    d = len(W)
+    K = len(W[0])
+    G = [[0.0] * K for _ in range(d)]
+    for row, t in zip(X, y):
+        z = [sum(row[j] * W[j][k] for j in range(d)) for k in range(K)]
+        m = max(z)
+        e = [math.exp(v - m) for v in z]
+        s = sum(e)
+        for k in range(K):
+            err = e[k] / s - (1 if k == t else 0)
+            for j in range(d):
+                G[j][k] += row[j] * err / n
+    return G
+```
+hint: For each example the error vector is the probability vector minus the one-hot label; row $j$ of the gradient accumulates feature $j$ times that error.
+solution: The gradient is $\frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$. At zero weights every probability is $1/3$, which the first test uses so that the answer can be checked by hand. The row-sum assertion is a free check: every row of a correct gradient sums to zero.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+
+z = [2.0, 0.0, 2.0]
+m = max(z)
+e = [math.exp(v - m) for v in z]
+print([round(v / sum(e), 3) for v in e])
+```
+answer: [0.468, 0.063, 0.468]
+check: run("import math\n\nz = [2.0, 0.0, 2.0]\nm = max(z)\ne = [math.exp(v - m) for v in z]\nprint([round(v / sum(e), 3) for v in e])")
+hint: After subtracting the maximum the exponents are $1, e^{-2}, 1$, whose sum is about $2.135$.
+solution: The exponentials are $1$, $e^{-2} \approx 0.1353$ and $1$, with sum $2.1353$. Dividing gives $0.468$, $0.063$ and $0.468$.
+
+@quiz num
+prompt: A softmax regression model has 4 features plus a bias term and 6 classes. After removing the redundancy by fixing the weight vector of one class to zero, how many free parameters does it have?
+answer: 25
+unit: parameters
+check: (4 + 1) * (6 - 1)
+hint: There are $p + 1$ weights per class, and only $K - 1$ classes keep free weights.
+solution: Each class has $4 + 1 = 5$ weights, and with one class fixed there are $6 - 1 = 5$ free classes, so $5 \times 5 = 25$ parameters.

@@ -1,0 +1,228 @@
+@lesson
+title: Vectors as lists: norms, dot products and distances
+summary: Implement dot products, the L1, L2 and L-infinity norms, distances and cosine similarity on Python lists, and avoid the overflow, underflow and cancellation that naive formulas cause.
+objective: Compute dot products, norms, distances and cosine similarity by hand and with list code.
+objective: State and use the Cauchy–Schwarz and triangle inequalities.
+objective: Write an overflow-safe norm and explain why expanding a squared distance can lose all accuracy.
+reading: Python for Data Analysis, 3rd edition: the chapter introducing NumPy arrays (to see how the vector operations of this lesson are written with arrays); also look up "vector norm" in your linear algebra text.
+@article
+A recommender represents each song by three numbers (how much it has of energy, of acoustic sound, of vocals) and wants the song closest to one you like. "Closest" needs a precise meaning. Every nearest-neighbor method, every embedding search and every loss function such as mean squared error rests on three vector operations: the dot product, the norm and the distance. In this course a **vector** is a Python list of floats, and we build each operation from scratch.
+
+### The dot product
+
+For $\mathbf{x}, \mathbf{y} \in \mathbb{R}^n$ the **dot product** is
+$$\mathbf{x}^\top \mathbf{y} = \sum_{i=1}^{n} x_i y_i .$$
+For $\mathbf{x} = [2, 0, 1]$ and $\mathbf{y} = [1, 5, 4]$ it is $2 + 0 + 4 = 6$. In Python: `sum(a * b for a, b in zip(x, y))`. Two caveats: `zip` silently stops at the shorter list, so a good library checks the lengths first and raises `ValueError`; and the sum is a floating-point sum, so everything from Lesson 1 applies.
+
+Geometrically, $\mathbf{x}^\top \mathbf{y} = \lVert \mathbf{x} \rVert_2 \lVert \mathbf{y} \rVert_2 \cos\theta$, where $\theta$ is the angle between the vectors. Vectors with a zero dot product are **orthogonal**.
+
+### Norms
+
+A **norm** measures length. The three most used are
+$$\lVert \mathbf{x} \rVert_1 = \sum_i |x_i|, \qquad \lVert \mathbf{x} \rVert_2 = \sqrt{\sum_i x_i^2}, \qquad \lVert \mathbf{x} \rVert_\infty = \max_i |x_i| .$$
+All satisfy $\lVert \mathbf{x} \rVert \ge 0$ with equality only for the zero vector, $\lVert c\mathbf{x} \rVert = |c|\,\lVert \mathbf{x} \rVert$, and the **triangle inequality** $\lVert \mathbf{x} + \mathbf{y} \rVert \le \lVert \mathbf{x} \rVert + \lVert \mathbf{y} \rVert$. For every vector, $\lVert \mathbf{x} \rVert_\infty \le \lVert \mathbf{x} \rVert_2 \le \lVert \mathbf{x} \rVert_1 \le \sqrt{n}\,\lVert \mathbf{x} \rVert_2$. The L2 norm is tied to the dot product: $\lVert \mathbf{x} \rVert_2^2 = \mathbf{x}^\top \mathbf{x}$.
+
+The **Cauchy–Schwarz inequality** says $|\mathbf{x}^\top \mathbf{y}| \le \lVert \mathbf{x} \rVert_2 \lVert \mathbf{y} \rVert_2$. It is exactly what makes **cosine similarity**
+$$\cos(\mathbf{x}, \mathbf{y}) = \frac{\mathbf{x}^\top \mathbf{y}}{\lVert \mathbf{x} \rVert_2 \lVert \mathbf{y} \rVert_2}$$
+always lie in $[-1, 1]$. It is undefined if either vector is zero.
+
+### Distances
+
+The distance between $\mathbf{x}$ and $\mathbf{y}$ is the norm of their difference, $d_p(\mathbf{x}, \mathbf{y}) = \lVert \mathbf{x} - \mathbf{y} \rVert_p$. Expanding the square for $p = 2$ gives an identity used throughout machine learning,
+$$\lVert \mathbf{x} - \mathbf{y} \rVert_2^2 = \lVert \mathbf{x} \rVert_2^2 + \lVert \mathbf{y} \rVert_2^2 - 2\,\mathbf{x}^\top \mathbf{y}.$$
+If both vectors have length 1, this equals $2 - 2\cos(\mathbf{x}, \mathbf{y})$: for unit vectors, small distance and large cosine are the same thing.
+
+```python
+def dot(x, y):
+    if len(x) != len(y):
+        raise ValueError("length mismatch")
+    total = 0.0
+    for a, b in zip(x, y):
+        total += a * b
+    return total
+
+def norm1(x):
+    return sum(abs(a) for a in x)
+
+def norm_inf(x):
+    return max(abs(a) for a in x)
+
+print(dot([2, 0, 1], [1, 5, 4]), norm1([3, -4, 12]), norm_inf([3, -4, 12]))
+```
+
+### Numerical traps
+
+**Overflow and underflow.** The direct formula $\sqrt{\sum x_i^2}$ squares each entry first. For $\mathbf{x} = [10^{200}, 10^{200}]$ each square overflows to `inf`, although the true norm $1.41 \times 10^{200}$ is a perfectly good double. For $[10^{-200}, 10^{-200}]$ each square underflows to 0.0 and the norm comes out 0. The remedy is to **scale**: let $m = \max_i |x_i|$ and compute $m\sqrt{\sum (x_i/m)^2}$. Every ratio lies in $[-1, 1]$, so nothing overflows, and the largest term is 1, so the sum cannot vanish. (The standard library's `math.hypot` and `math.dist` use similar care.)
+
+**Cancellation in the expanded distance.** The identity above is exact in real arithmetic, but computing $\lVert \mathbf{x} \rVert^2 + \lVert \mathbf{y} \rVert^2 - 2\mathbf{x}^\top \mathbf{y}$ subtracts large, nearly equal numbers when $\mathbf{x}$ and $\mathbf{y}$ are close. With the one-component vectors $x = 10^8 + 1$ and $y = 10^8$, the true squared distance is 1, the direct form `(x - y) ** 2` gives 1.0, and the expanded form gives 0.0: all accuracy is lost. Fast libraries still use the expanded form for large batches of distances, because it turns them into one matrix product (Lesson 4), so know what it costs and clip tiny negative results to 0.
+
+@example
+title: Three distances between two points
+problem: For $\mathbf{x} = [1, 5, -2]$ and $\mathbf{y} = [4, 1, -2]$, compute the L1, L2 and L-infinity distances.
+step: Subtract: $\mathbf{x} - \mathbf{y} = [-3, 4, 0]$.
+step: L1: $|-3| + |4| + |0| = 7$. L-infinity: $\max(3, 4, 0) = 4$.
+step: L2: $\sqrt{9 + 16 + 0} = 5$.
+step: Check the ordering $\lVert\cdot\rVert_\infty \le \lVert\cdot\rVert_2 \le \lVert\cdot\rVert_1$: $4 \le 5 \le 7$ holds.
+answer: $d_1 = 7$, $d_2 = 5$, $d_\infty = 4$.
+
+@example
+title: Cosine similarity and the distance identity
+problem: For $\mathbf{u} = [3, 4]$ and $\mathbf{w} = [4, 3]$, compute the cosine similarity and verify $\lVert \mathbf{u} - \mathbf{w} \rVert^2 = \lVert \mathbf{u} \rVert^2 + \lVert \mathbf{w} \rVert^2 - 2\,\mathbf{u}^\top \mathbf{w}$.
+step: The dot product is $12 + 12 = 24$ and both norms are $\sqrt{25} = 5$.
+step: The cosine similarity is $24 / (5 \cdot 5) = 0.96$, so the angle is $\arccos 0.96 \approx 16.26^\circ$.
+step: Left side of the identity: $\mathbf{u} - \mathbf{w} = [-1, 1]$, so the squared distance is $2$.
+step: Right side: $25 + 25 - 2 \cdot 24 = 2$. The two sides agree.
+answer: $\cos = 0.96$, and both sides of the identity equal 2.
+
+@mistakes
+- Using `zip` without checking lengths: a 3-vector and a 4-vector silently give a dot product over three entries.
+- Writing the norm as the sum of the entries or the sum of squares: the L2 norm needs the square root, and the L1 norm needs absolute values.
+- Computing cosine similarity for a zero vector: the denominator is 0, so decide to raise an error rather than return `nan`.
+- Squaring entries of very large or very small numbers before scaling: the intermediate squares overflow or underflow even when the norm is representable.
+
+@practice num
+prompt: What is the dot product of $\mathbf{x} = [2, -1, 3]$ and $\mathbf{y} = [4, 5, -2]$?
+answer: -3
+check: sum(a * b for a, b in zip([2, -1, 3], [4, 5, -2]))
+hint: Multiply entry by entry, then add.
+solution: $2 \cdot 4 + (-1)(5) + 3 \cdot (-2) = 8 - 5 - 6 = -3$.
+
+@practice num
+prompt: Compute the cosine similarity of $\mathbf{x} = [1, 2, 2]$ and $\mathbf{y} = [2, 3, 6]$. Give your answer to three decimal places.
+answer: 0.952
+tol: 0.001
+check: (1 * 2 + 2 * 3 + 2 * 6) / (sqrt(1 + 4 + 4) * sqrt(4 + 9 + 36))
+hint: The dot product is 20; find the two L2 norms.
+solution: The dot product is $2 + 6 + 12 = 20$, the norms are $\sqrt{9} = 3$ and $\sqrt{49} = 7$, so the cosine is $20/21 \approx 0.952$.
+
+@practice ms
+prompt: Which of these statements hold for every vector $\mathbf{x} \in \mathbb{R}^n$ and every pair of vectors $\mathbf{x}, \mathbf{y} \in \mathbb{R}^n$? Select all that apply.
+choice*: $\lVert \mathbf{x} \rVert_\infty \le \lVert \mathbf{x} \rVert_2$
+choice*: $|\mathbf{x}^\top \mathbf{y}| \le \lVert \mathbf{x} \rVert_2 \lVert \mathbf{y} \rVert_2$
+choice*: $\lVert \mathbf{x} + \mathbf{y} \rVert_2 \le \lVert \mathbf{x} \rVert_2 + \lVert \mathbf{y} \rVert_2$
+choice: $\lVert \mathbf{x} \rVert_1 \le \lVert \mathbf{x} \rVert_2$
+hint: Test each statement on $\mathbf{x} = [1, 1]$, where the L1 norm is 2 and the L2 norm is $\sqrt{2}$.
+solution: The largest entry cannot exceed the Euclidean length, Cauchy–Schwarz holds, and the triangle inequality holds for every norm. The L1 norm is at least the L2 norm, so the last statement is reversed (for $[1, 1]$: $2 > \sqrt{2}$).
+
+@practice code
+prompt: Write `norm2(x)` that returns the Euclidean norm of a list of floats using scaling: if `m = max(abs(a) for a in x)` is 0 (or the list is empty) return `0.0`; otherwise return `m * math.sqrt(sum((a / m) ** 2 for a in x))`. It must work when the entries are around 1e200 or 1e-200.
+starter:
+```python
+import math
+
+def norm2(x):
+    pass
+```
+tests:
+```python
+assert norm2([]) == 0.0
+assert norm2([0.0, 0.0]) == 0.0
+assert abs(norm2([5.0, 12.0]) - 13.0) < 1e-12
+assert abs(norm2([1e200, 1e200]) / 1e200 - math.sqrt(2)) < 1e-12
+assert abs(norm2([-3e-200, 4e-200]) / 1e-200 - 5.0) < 1e-12
+```
+model:
+```python
+import math
+
+def norm2(x):
+    """Overflow-safe Euclidean norm using scaling by the largest entry."""
+    if not x:
+        return 0.0
+    m = max(abs(a) for a in x)
+    if m == 0:
+        return 0.0
+    return m * math.sqrt(sum((a / m) ** 2 for a in x))
+```
+hint: Find `m` first, handle the zero case, then divide every entry by `m` before squaring.
+solution: After dividing by `m` every entry has magnitude at most 1 and the largest has magnitude exactly 1, so the squares neither overflow nor all underflow. The last two tests fail for the direct formula, which returns `inf` and `0.0`.
+
+@practice code
+prompt: Write `cosine_similarity(x, y)` for lists of floats. Raise `ValueError` if the lists have different lengths or if either has L2 norm 0; otherwise return the dot product divided by the product of the norms. For example, `cosine_similarity([1, 0], [1, 1])` is about `0.7071`.
+starter:
+```python
+import math
+
+def cosine_similarity(x, y):
+    pass
+```
+tests:
+```python
+assert abs(cosine_similarity([1, 0], [1, 1]) - math.sqrt(0.5)) < 1e-9
+assert abs(cosine_similarity([2, 4, 4], [1, 2, 2]) - 1.0) < 1e-9
+assert abs(cosine_similarity([1, 2], [-2, 1])) < 1e-9
+assert abs(cosine_similarity([3, 0], [-5, 0]) + 1.0) < 1e-9
+assert raises(ValueError, cosine_similarity, [0, 0], [1, 2])
+assert raises(ValueError, cosine_similarity, [1, 2, 3], [1, 2])
+```
+model:
+```python
+import math
+
+def cosine_similarity(x, y):
+    """Cosine of the angle between two nonzero vectors of equal length."""
+    if len(x) != len(y):
+        raise ValueError("length mismatch")
+    nx = math.sqrt(sum(a * a for a in x))
+    ny = math.sqrt(sum(b * b for b in y))
+    if nx == 0 or ny == 0:
+        raise ValueError("zero vector")
+    return sum(a * b for a, b in zip(x, y)) / (nx * ny)
+```
+hint: Check the lengths, compute the two norms, reject zeros, then divide the dot product by the product of the norms.
+solution: The three formulas are the dot product and the two norms; the only work is guarding the two error cases before dividing. Parallel vectors give 1, orthogonal vectors 0 and opposite vectors -1, which the tests check.
+
+@quiz code
+prompt: Write `nearest(query, points)` that returns the index of the point in the nonempty list `points` (each a list of floats, same length as `query`) with the smallest Euclidean distance to `query`. If two points are equally close, return the smaller index. Compute squared distances directly from differences, not with the expanded formula.
+starter:
+```python
+def nearest(query, points):
+    pass
+```
+tests:
+```python
+assert nearest([0.0, 0.0], [[3.0, 4.0], [1.0, 1.0], [-2.0, 0.5]]) == 1
+assert nearest([1.0], [[5.0]]) == 0
+assert nearest([2.0, 2.0], [[0.0, 2.0], [4.0, 2.0]]) == 0
+assert nearest([1e8 + 1, 0.0], [[1e8, 0.0], [1e8 + 3, 0.0]]) == 0
+assert nearest([0.0, 1.0], [[1.0, 0.0], [0.0, 3.0], [-1.0, 0.0]]) == 0
+```
+model:
+```python
+def nearest(query, points):
+    """Index of the closest point to query in Euclidean distance (first on ties)."""
+    best_index = 0
+    best_dist = None
+    for i, p in enumerate(points):
+        d = 0.0
+        for a, b in zip(query, p):
+            d += (a - b) ** 2
+        if best_dist is None or d < best_dist:
+            best_index = i
+            best_dist = d
+    return best_index
+```
+hint: Keep the best squared distance so far; replace it only when a new distance is strictly smaller, so ties keep the earlier index.
+solution: Comparing squared distances gives the same winner as comparing distances and avoids the square root. Using a strict `<` keeps the first of equal points. The fourth test has query 100000001 with candidates 100000000 and 100000003, a case where the expanded formula can misrank.
+
+@quiz text
+prompt: What does this program print?
+```python
+def dot(x, y):
+    return sum(a * b for a, b in zip(x, y))
+
+v = [1, 2, 2]
+print(dot(v, v) ** 0.5, dot(v, [1, 0, 0]), dot(v, v[::-1]))
+```
+answer: 3.0 1 8
+check: run("def dot(x, y):\n    return sum(a * b for a, b in zip(x, y))\n\nv = [1, 2, 2]\nprint(dot(v, v) ** 0.5, dot(v, [1, 0, 0]), dot(v, v[::-1]))")
+hint: `v[::-1]` is the reversed list `[2, 2, 1]`. Integer lists give integer dot products.
+solution: $\mathbf{v}^\top\mathbf{v} = 9$ and $9^{0.5}$ is the float `3.0`. The dot product with $[1, 0, 0]$ is the first entry, the integer 1. The dot product with $[2, 2, 1]$ is $2 + 4 + 2 = 8$.
+
+@quiz num
+prompt: Two unit vectors $\mathbf{x} = [0.6, 0.8]$ and $\mathbf{y} = [0.8, 0.6]$ are given. Use the identity for the squared distance of unit vectors to compute $\lVert \mathbf{x} - \mathbf{y} \rVert_2^2$. Give the answer to three decimal places.
+answer: 0.08
+tol: 0.001
+check: sum((a - b) ** 2 for a, b in zip([0.6, 0.8], [0.8, 0.6]))
+hint: For unit vectors the squared distance is $2 - 2\,\mathbf{x}^\top \mathbf{y}$; the dot product is $0.48 + 0.48$.
+solution: The dot product is $0.96$, so the squared distance is $2 - 2(0.96) = 0.08$. Directly, $\mathbf{x} - \mathbf{y} = [-0.2, 0.2]$ and $0.04 + 0.04 = 0.08$.

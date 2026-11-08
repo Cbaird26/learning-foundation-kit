@@ -1,0 +1,258 @@
+@lesson
+title: Support vector machines and the margin
+summary: Derive the maximum-margin classifier and its soft-margin hinge-loss form, train a linear SVM by subgradient descent, and explain support vectors through the dual.
+objective: Compute the functional and geometric margin of a point and explain why maximizing the margin means minimizing $\lVert\mathbf{w}\rVert$.
+objective: Write the soft-margin objective with the hinge loss, compute its subgradient and train a linear SVM from scratch.
+objective: Explain the role of the penalty $C$, and identify support vectors from the dual representation $\mathbf{w} = \sum_i \alpha_i y_i \mathbf{x}_i$.
+reading: The Elements of Statistical Learning, the chapter on support vector machines and flexible discriminants: the sections on the support vector classifier.
+@article
+Many lines separate two classes of points, and some are clearly better than others: a line that grazes one class will misclassify a new point that lands slightly off. The **support vector machine** (SVM; Cortes and Vapnik, 1995, building on Vapnik and Chervonenkis's earlier work on maximum-margin classifiers) picks the line farthest from both classes.
+
+### Margins
+
+Use labels $y_i \in \{-1, +1\}$ and a linear classifier $f(\mathbf{x}) = \mathbf{w}^\top\mathbf{x} + b$ that predicts $\operatorname{sign}(f(\mathbf{x}))$. The **functional margin** of example $i$ is $y_i f(\mathbf{x}_i)$: positive when it is classified correctly. The signed distance from $\mathbf{x}_i$ to the hyperplane $f = 0$ is the **geometric margin** $y_i f(\mathbf{x}_i)/\lVert\mathbf{w}\rVert_2$. For $\mathbf{w} = (3, 4)$ and $b = -5$, the point $(4, 3)$ has $f = 19$ and distance $19/5 = 3.8$.
+
+Scaling $(\mathbf{w}, b)$ by any positive constant leaves the hyperplane unchanged, so we may fix the scale by requiring the closest points to have $y_i f(\mathbf{x}_i) = 1$. The distance from the hyperplane to the closest point of each class is then $1/\lVert\mathbf{w}\rVert$, and the gap between the two classes is $2/\lVert\mathbf{w}\rVert$.
+
+### Hard and soft margins
+
+For separable data the **hard-margin SVM** maximizes the gap, which is the same as minimizing $\tfrac{1}{2}\lVert\mathbf{w}\rVert^2$ subject to $y_i(\mathbf{w}^\top\mathbf{x}_i + b) \ge 1$ for all $i$. This is a convex quadratic program with a unique solution. With six points $(3,2), (4,4), (5,3)$ labeled $+1$ and $(1,1), (0,2), (1,0)$ labeled $-1$, the solution is $\mathbf{w} = (0.8, 0.4)$ and $b = -2.2$, a gap of $2/0.894 = 2.236$. Only $(3, 2)$ and $(1, 1)$ touch the margin ($y f = 1$); every other point has $y f \ge 1.4$ and could be moved or deleted without changing the answer.
+
+Real data are rarely separable. The **soft-margin SVM** lets points violate the margin and pays for it with the **hinge loss** $\max(0, 1 - y_i f(\mathbf{x}_i))$:
+
+$$J(\mathbf{w}, b) = \tfrac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum_{i=1}^{n}\max\big(0,\, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b)\big).$$
+
+The hyperparameter $C > 0$ trades margin width against violations. Large $C$ punishes violations heavily and gives a narrow margin that fits the training set closely; small $C$ tolerates violations in exchange for a wide margin, which acts as regularization. The term $\tfrac{1}{2}\lVert\mathbf{w}\rVert^2$ is exactly the ridge penalty, so an SVM is a linear model with hinge loss and L2 regularization; logistic regression has the same form with log loss.
+
+### Training by subgradient descent
+
+The hinge loss has a kink at margin 1, so $J$ is convex but not differentiable everywhere. A **subgradient** is any slope of a line that stays below the function; at a kink there are many, and any works. For example $i$ with $y_i f(\mathbf{x}_i) < 1$ the hinge term has gradient $-y_i\mathbf{x}_i$ in $\mathbf{w}$ and $-y_i$ in $b$; for $y_i f(\mathbf{x}_i) \ge 1$ it contributes 0 (we use 0 at exactly 1). The subgradient of $J$ is
+
+$$\mathbf{g}_{\mathbf{w}} = \mathbf{w} - C\sum_{i \in V} y_i\mathbf{x}_i, \qquad g_b = -C\sum_{i\in V} y_i, \qquad V = \{i : y_i f(\mathbf{x}_i) < 1\}.$$
+
+On the six points above, with $C = 1$ and step size $0.01$ from $\mathbf{w} = \mathbf{0}$, the objective falls from $6$ to $4.647$ after one step, $0.918$ after 100, and $0.402$ after 500, close to the optimum $0.4$. With a constant step the iterates keep jittering around the optimum, so practical solvers shrink the step over time (as the Pegasos algorithm does).
+
+### The dual and support vectors
+
+Introducing a multiplier $\alpha_i \ge 0$ for each constraint gives the dual problem, whose solution satisfies
+
+$$\mathbf{w} = \sum_{i=1}^{n}\alpha_i y_i\mathbf{x}_i, \qquad \sum_i \alpha_i y_i = 0, \qquad 0 \le \alpha_i \le C.$$
+
+Only examples on or inside the margin have $\alpha_i > 0$: these are the **support vectors**. In the example, $\alpha = 0.4$ for $(3,2)$ and for $(1,1)$ and 0 elsewhere: $0.4\cdot(3,2) - 0.4\cdot(1,1) = (0.8, 0.4)$, and the labels balance. The prediction $f(\mathbf{x}) = \sum_i\alpha_i y_i\,\mathbf{x}_i^\top\mathbf{x} + b$ uses the data only through dot products. Next week this observation lets us replace the dot product with a kernel.
+
+### In code
+
+```python
+X = [[3, 2], [4, 4], [1, 1], [0, 2], [5, 3], [1, 0]]
+y = [1, 1, -1, -1, 1, -1]
+
+def score(w, b, row):
+    return sum(wj * xj for wj, xj in zip(w, row)) + b
+
+def objective(X, y, w, b, C):
+    hinge = sum(max(0.0, 1 - t * score(w, b, r)) for r, t in zip(X, y))
+    return 0.5 * sum(wj * wj for wj in w) + C * hinge
+
+def subgradient(X, y, w, b, C):
+    gw = list(w)
+    gb = 0.0
+    for r, t in zip(X, y):
+        if t * score(w, b, r) < 1:
+            for j in range(len(w)):
+                gw[j] -= C * t * r[j]
+            gb -= C * t
+    return gw, gb
+
+w, b = [0.0, 0.0], 0.0
+for step in range(1, 501):
+    gw, gb = subgradient(X, y, w, b, 1.0)
+    w = [wj - 0.01 * g for wj, g in zip(w, gw)]
+    b -= 0.01 * gb
+    if step in (1, 10, 100, 500):
+        print(step, [round(v, 4) for v in w], round(b, 3),
+              round(objective(X, y, w, b, 1.0), 4))
+```
+
+Libraries solve the dual with specialized quadratic-programming methods (sequential minimal optimization), but the objective they minimize is the one above.
+
+@example
+title: Finding the maximum-margin line by hand
+problem: Positive points $(3, 0)$ and $(4, 2)$; negative points $(1, 0)$ and $(0, -1)$. Find the hard-margin classifier $\mathbf{w}, b$ and the gap between the classes.
+step: Look for the closest opposite pair: $(3, 0)$ and $(1, 0)$ are $2$ apart; every other pair is farther. Guess that these two are the support vectors.
+step: The weight vector points along the line joining the support vectors, $(3, 0) - (1, 0) = (2, 0)$, so $\mathbf{w} = (a, 0)$. The constraints $y f = 1$ give $3a + b = 1$ and $-(a + b) = 1$, so $a = 1$ and $b = -2$.
+step: Check the other points: $(4, 2)$ gives $f = 4 - 2 = 2 \ge 1$ and $(0, -1)$ gives $f = -2$, so $y f = 2 \ge 1$. Both satisfy the constraints, so the guess is right.
+step: The gap is $2/\lVert\mathbf{w}\rVert = 2$, with boundary $x_1 = 2$ halfway between the support vectors.
+answer: $\mathbf{w} = (1, 0)$, $b = -2$, gap $2$; the support vectors are $(3, 0)$ and $(1, 0)$.
+
+@example
+title: One subgradient step
+problem: Points $(1, 1)$ with $y = +1$, $(-1, 0)$ with $y = -1$ and $(2, -1)$ with $y = +1$. With $C = 1$, start at $\mathbf{w} = (0, 0)$, $b = 0$, take one subgradient step of size $0.1$, and compare the objective before and after.
+step: At the start every score is 0, so every $y f = 0 < 1$ and all three points are in $V$. The objective is $0 + 1 \cdot 3 = 3$.
+step: Compute $\sum y_i\mathbf{x}_i = (1, 1) + (1, 0) + (2, -1) = (4, 0)$ and $\sum y_i = 1 - 1 + 1 = 1$.
+step: The subgradient is $\mathbf{g}_{\mathbf{w}} = \mathbf{0} - (4, 0) = (-4, 0)$ and $g_b = -1$.
+step: Update: $\mathbf{w} = (0.4, 0)$ and $b = 0.1$.
+step: The margins are $y f = 0.5$, $0.3$ and $0.9$, all still below 1, so the hinge terms are $0.5 + 0.7 + 0.1 = 1.3$. Add $\tfrac{1}{2}\lVert\mathbf{w}\rVert^2 = 0.08$: the objective is $1.38$.
+answer: After the step $\mathbf{w} = (0.4, 0)$, $b = 0.1$, and the objective fell from $3$ to $1.38$.
+
+@mistakes
+- Using labels $0/1$ with the hinge loss: the margin formula $y f$ needs $-1/+1$ labels.
+- Treating $C$ like a regularization strength: it is the inverse. Small $C$ means strong regularization and a wide margin.
+- Forgetting the bias in the gradient, or regularizing it: here $b$ is not in $\lVert\mathbf{w}\rVert^2$ and its gradient comes only from the hinge terms.
+- Computing the violating set with $\le 1$ instead of $< 1$: a point exactly on the margin contributes zero loss and no gradient.
+
+@practice num
+prompt: A hyperplane has $\mathbf{w} = (3, 4)$ and $b = -5$. What is the geometric margin of the point $(6, 2)$ with label $+1$, that is, its signed distance to the hyperplane?
+answer: 4.2
+tol: 0.001
+check: (3 * 6 + 4 * 2 - 5) / (3 ** 2 + 4 ** 2) ** 0.5
+hint: Compute $f = \mathbf{w}^\top\mathbf{x} + b$ and divide by $\lVert\mathbf{w}\rVert = 5$.
+solution: $f = 18 + 8 - 5 = 21$, and $21/5 = 4.2$. The label is $+1$, so the margin is positive.
+
+@practice num
+prompt: A classifier gives the scores $f = 1.4, 0.3, -0.2, -2.0$ to four examples with labels $+1, +1, +1, -1$. What is the total hinge loss $\sum_i \max(0, 1 - y_i f_i)$?
+answer: 1.9
+tol: 0.001
+check: sum(max(0, 1 - t * s) for s, t in zip([1.4, 0.3, -0.2, -2.0], [1, 1, 1, -1]))
+hint: Compute $y f$ for each example first: it is $1.4, 0.3, -0.2, 2.0$.
+solution: The hinge losses are $0$, $0.7$, $1.2$ and $0$. The last example is far on the correct side, so it costs nothing, and the total is $1.9$.
+
+@practice mc
+prompt: You train a soft-margin linear SVM and then increase $C$ from 0.01 to 100 on the same training data. What typically happens?
+choice*: The margin narrows and the model fits the training points more closely, with fewer margin violations on the training set.
+choice: The margin widens, because a larger $C$ regularizes more strongly.
+choice: Nothing changes, because $C$ affects only the dual problem.
+choice: The number of support vectors must increase, because every point gets a larger multiplier.
+hint: $C$ multiplies the total hinge loss; ask what a heavier price on violations does to the best compromise.
+solution: A larger $C$ makes violations expensive relative to $\tfrac{1}{2}\lVert\mathbf{w}\rVert^2$, so the optimizer accepts a smaller margin to reduce them. $C$ is the inverse of regularization strength, appears in the primal objective, and the multipliers are only bounded above by it; the number of support vectors usually falls as $C$ grows.
+
+@practice code
+prompt: Write `total_hinge(X, y, w, b)` that returns $\sum_i \max(0, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b))$ as a float. `X` is a list of rows, `y` a list of labels in $\{-1, +1\}$, `w` a list and `b` a number. For example, with `X = [[1.0]]`, `y = [1]`, `w = [0.5]`, `b = 0.0` the result is `0.5`.
+starter:
+```python
+def total_hinge(X, y, w, b):
+    pass
+```
+tests:
+```python
+assert abs(total_hinge([[1.0]], [1], [0.5], 0.0) - 0.5) < 1e-9
+X = [[2, 1], [1, 3], [-1, 0], [0, -2]]
+y = [1, 1, -1, -1]
+assert abs(total_hinge(X, y, [0.25, 0.25], 0.0) - 1.5) < 1e-9
+assert abs(total_hinge(X, y, [0.5, 0.5], -0.5)) < 1e-9
+assert abs(total_hinge(X, y, [-1.0, 0.0], 0.0) - 8.0) < 1e-9
+```
+model:
+```python
+def total_hinge(X, y, w, b):
+    """Sum of hinge losses of the linear classifier (w, b)."""
+    total = 0.0
+    for row, t in zip(X, y):
+        f = sum(wj * xj for wj, xj in zip(w, row)) + b
+        total += max(0.0, 1 - t * f)
+    return total
+```
+hint: For each example compute $f = \mathbf{w}^\top\mathbf{x} + b$, then add $\max(0, 1 - y f)$.
+solution: Correctly classified points beyond the margin contribute zero, which the `max` handles. The third test has a margin of at least 1 at every point, so the total is zero; the last test uses a classifier that is wrong on the first three points and exactly on the boundary for the fourth, and pays $3 + 2 + 2 + 1$.
+
+@practice code
+prompt: Write `subgradient(X, y, w, b, C)` returning a pair `(gw, gb)`: the subgradient of $J = \tfrac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum_i\max(0, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b))$. `gw` is a list. An example contributes only if $y_i f(\mathbf{x}_i) < 1$ strictly (use 0 at exactly 1). The bias is not regularized. Do not modify `w`.
+starter:
+```python
+def subgradient(X, y, w, b, C):
+    pass
+```
+tests:
+```python
+X = [[2, 1], [1, 3], [-1, 0], [0, -2]]
+y = [1, 1, -1, -1]
+w = [0.25, 0.25]
+gw, gb = subgradient(X, y, w, 0.0, 2.0)
+assert all(abs(a - c) < 1e-9 for a, c in zip(gw, [-5.75, -5.75]))
+assert abs(gb - 2.0) < 1e-9
+gw, gb = subgradient(X, y, [0.5, 0.5], -0.5, 2.0)
+assert all(abs(a - c) < 1e-9 for a, c in zip(gw, [0.5, 0.5])) and abs(gb) < 1e-9
+gw, gb = subgradient([[1.0]], [-1], [0.0], 0.0, 3.0)
+assert abs(gw[0] - 3.0) < 1e-9 and abs(gb - 3.0) < 1e-9
+assert w == [0.25, 0.25]
+```
+model:
+```python
+def subgradient(X, y, w, b, C):
+    """Subgradient of the soft-margin SVM objective at (w, b)."""
+    gw = list(w)
+    gb = 0.0
+    for row, t in zip(X, y):
+        f = sum(wj * xj for wj, xj in zip(w, row)) + b
+        if t * f < 1:
+            for j in range(len(w)):
+                gw[j] -= C * t * row[j]
+            gb -= C * t
+    return gw, gb
+```
+hint: Start `gw` as a copy of `w` (the regularizer's gradient); then for every example with $y f < 1$ subtract $C y\mathbf{x}$ from `gw` and $C y$ from `gb`.
+solution: The regularizer gives $\mathbf{w}$, and only violators add a term. In the first test the second example sits exactly on the margin ($y f = 1$) and must not contribute; using `<=` gives a different answer. The third test checks the sign for a negative label.
+
+@quiz code
+prompt: Write `train_svm(X, y, C, lr, steps)` that starts from `w = [0.0, ..., 0.0]` and `b = 0.0` and runs exactly `steps` steps of subgradient descent with a constant step size `lr` on the soft-margin objective $\tfrac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum_i\max(0, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b))$, then returns `(w, b)`. The violating set is $\{i : y_i f(\mathbf{x}_i) < 1\}$; the bias is not regularized.
+starter:
+```python
+def train_svm(X, y, C, lr, steps):
+    w = [0.0] * len(X[0])
+    b = 0.0
+    return w, b
+```
+tests:
+```python
+X = [[1, 1], [-1, -1]]
+y = [1, -1]
+w, b = train_svm(X, y, 1.0, 0.1, 0)
+assert w == [0.0, 0.0] and b == 0.0
+w, b = train_svm(X, y, 1.0, 0.1, 2)
+assert all(abs(a - 0.38) < 1e-9 for a in w) and abs(b) < 1e-9
+w, b = train_svm(X, y, 1.0, 0.1, 4)
+assert all(abs(a - 0.4878) < 1e-9 for a in w) and abs(b) < 1e-9
+w, b = train_svm(X, y, 1.0, 0.1, 300)
+assert w[0] * 1 + w[1] * 1 + b > 0 and -w[0] - w[1] + b < 0
+```
+model:
+```python
+def train_svm(X, y, C, lr, steps):
+    """Soft-margin linear SVM by subgradient descent from zero."""
+    w = [0.0] * len(X[0])
+    b = 0.0
+    for _ in range(steps):
+        gw = list(w)
+        gb = 0.0
+        for row, t in zip(X, y):
+            f = sum(wj * xj for wj, xj in zip(w, row)) + b
+            if t * f < 1:
+                for j in range(len(w)):
+                    gw[j] -= C * t * row[j]
+                gb -= C * t
+        w = [wj - lr * g for wj, g in zip(w, gw)]
+        b -= lr * gb
+    return w, b
+```
+hint: In each step compute the subgradient at the current `(w, b)` first, and only then update both `w` and `b`.
+solution: Each step is the subgradient from the previous exercise followed by $\mathbf{w} \leftarrow \mathbf{w} - \eta\mathbf{g}_{\mathbf{w}}$ and $b \leftarrow b - \eta g_b$. After two steps the weights are $0.38$ each, as a hand calculation shows; at step four the margins exceed 1, so only the shrinking term acts and the weights fall to $0.4878$.
+
+@quiz text
+prompt: What does this program print?
+```python
+w, b = [1.0, -1.0], 0.5
+pts = [([2, 1], 1), ([0, 1], -1), ([1, 0], -1), ([3, 3], 1)]
+viol = [t * (w[0] * x[0] + w[1] * x[1] + b) < 1 for x, t in pts]
+print(sum(viol))
+```
+answer: 3
+check: run("w, b = [1.0, -1.0], 0.5\npts = [([2, 1], 1), ([0, 1], -1), ([1, 0], -1), ([3, 3], 1)]\nviol = [t * (w[0] * x[0] + w[1] * x[1] + b) < 1 for x, t in pts]\nprint(sum(viol))")
+hint: Compute $y f$ for each of the four points: the values are $1.5$, $0.5$, $-1.5$ and $0.5$.
+solution: The margins $y f$ are $1.5, 0.5, -1.5, 0.5$. Three of them are below 1, so three points violate the margin (one of them, the third, is misclassified), and the program prints `3`.
+
+@quiz num
+prompt: A hard-margin SVM has weight vector $\mathbf{w} = (3, 4)$ and the closest points of each class satisfy $y f = 1$. What is the width of the gap between the two classes, $2/\lVert\mathbf{w}\rVert$? Give one decimal place.
+answer: 0.4
+tol: 0.05
+check: 2 / (3 ** 2 + 4 ** 2) ** 0.5
+hint: The norm of $(3, 4)$ is 5.
+solution: $\lVert\mathbf{w}\rVert = 5$, so the gap is $2/5 = 0.4$. Rescaling $\mathbf{w}$ and $b$ so that the closest points have $y f = 1$ is what ties the gap to $\lVert\mathbf{w}\rVert$.

@@ -1,0 +1,220 @@
+@lesson
+title: Conditioning and numerical stability
+summary: Compute a condition number, use it to predict how much error a linear solve can amplify, and tell an ill-conditioned problem apart from an unstable algorithm.
+objective: Compute the infinity-norm condition number of a small matrix and use the error bound it gives.
+objective: Explain why a small residual does not guarantee an accurate solution, and estimate the digits lost.
+objective: Distinguish conditioning (a property of the problem) from stability (a property of the algorithm), with examples.
+reading: Python for Data Analysis, 3rd edition: the section on linear algebra with NumPy (`numpy.linalg`); also look up "condition number" and "backward stability" in a numerical linear algebra text.
+@article
+Consider $\mathbf{A}\mathbf{x} = \mathbf{b}$ with $\mathbf{A} = \begin{bmatrix} 1 & 1 \\ 1 & 1.01 \end{bmatrix}$ and $\mathbf{b} = [2, 2.01]$; the solution is $\mathbf{x} = [1, 1]$. Now change the second entry of $\mathbf{b}$ by 0.001, a relative change of 0.05%. The solution jumps to $[0.9, 1.1]$, a 10% change. No algorithm can do better, because the damage is in the problem itself. Some problems amplify small input errors, and rounding errors are small input errors.
+
+### Condition numbers
+
+The **infinity norm** of a matrix is its largest absolute row sum, $\lVert \mathbf{A} \rVert_\infty = \max_i \sum_j |a_{ij}|$; it measures how much $\mathbf{A}$ can stretch a vector in the $\lVert\cdot\rVert_\infty$ norm. The **condition number** of an invertible matrix is
+$$\kappa(\mathbf{A}) = \lVert \mathbf{A} \rVert \, \lVert \mathbf{A}^{-1} \rVert \;\ge\; 1 .$$
+If $\mathbf{A}\mathbf{x} = \mathbf{b}$ and $\mathbf{A}(\mathbf{x} + \delta\mathbf{x}) = \mathbf{b} + \delta\mathbf{b}$, then
+$$\frac{\lVert \delta\mathbf{x} \rVert}{\lVert \mathbf{x} \rVert} \le \kappa(\mathbf{A}) \, \frac{\lVert \delta\mathbf{b} \rVert}{\lVert \mathbf{b} \rVert}.$$
+The relative error of the answer is at most $\kappa$ times the relative error of the data, and this can be nearly attained. A matrix with $\kappa$ near 1 is **well-conditioned**; a large $\kappa$ means **ill-conditioned**; a singular matrix has $\kappa = \infty$. For the matrix above, $\mathbf{A}^{-1} = \begin{bmatrix} 101 & -100 \\ -100 & 100 \end{bmatrix}$, so $\lVert \mathbf{A} \rVert_\infty = 2.01$, $\lVert \mathbf{A}^{-1} \rVert_\infty = 201$ and $\kappa_\infty = 404.01$. The perturbation above was amplified by a factor of 201, within the bound 404.
+
+For the family $\mathbf{A}_\varepsilon = \begin{bmatrix} 1 & 1 \\ 1 & 1+\varepsilon \end{bmatrix}$ the same calculation gives $\kappa_\infty = (2 + \varepsilon)^2/\varepsilon$, which grows like $4/\varepsilon$ as the two rows become parallel. Closeness to singular is what makes a matrix ill-conditioned. Another standard family is the **Hilbert matrix** $H_{ij} = 1/(i + j - 1)$: $\kappa_\infty$ is 748 for the $3 \times 3$ case and 28,375 for the $4 \times 4$ case, and it keeps exploding.
+
+### Residuals can mislead
+
+For a computed solution $\hat{\mathbf{x}}$ the **residual** is $\mathbf{r} = \mathbf{b} - \mathbf{A}\hat{\mathbf{x}}$. Since $\mathbf{x} - \hat{\mathbf{x}} = \mathbf{A}^{-1}\mathbf{r}$, we get
+$$\frac{\lVert \mathbf{x} - \hat{\mathbf{x}} \rVert}{\lVert \mathbf{x} \rVert} \le \kappa(\mathbf{A}) \frac{\lVert \mathbf{r} \rVert}{\lVert \mathbf{b} \rVert}.$$
+A tiny residual guarantees an accurate solution only when $\kappa$ is small. With $\kappa = 10^{12}$ a solution can satisfy the equations to machine precision and still have no correct digits.
+
+### Digits lost, stability, and what algorithms can do
+
+An algorithm is **backward stable** if the answer it returns is the exact answer to a slightly perturbed problem, with the perturbation of relative size a modest multiple of $u \approx 1.1 \times 10^{-16}$. Gaussian elimination with partial pivoting is backward stable in practice (its worst-case growth is a known theoretical exception that almost never occurs). Combining this with the bound above gives the rule of thumb: the relative error of the solution is about $\kappa(\mathbf{A})\, u$, so you lose about $\log_{10}\kappa$ of your 16 decimal digits. With $\kappa = 10^{6}$ expect about 10 correct digits.
+
+Two things should be kept apart. **Conditioning** belongs to the problem: if it is bad, no algorithm helps. **Stability** belongs to the algorithm: a well-conditioned problem can still be ruined by an unstable method. A classic example is the variance. The formula $\frac{1}{n}\sum x_i^2 - \bar{x}^2$ is exact in real arithmetic, but for the three values $10^8 + 1, 10^8 + 2, 10^8 + 3$ the two terms are near $10^{16}$, where doubles are spaced 2 apart, and the computed difference is 0.0 instead of $2/3$. The **two-pass** formula $\frac1n \sum (x_i - \bar{x})^2$ subtracts first, when the numbers are still exact, and returns 0.6667. Problem unchanged, algorithm better.
+
+### Measuring the effect
+
+To measure how the error grows with $\kappa$, build a family of systems with a known solution, solve each, and compare the computed answer with the truth. Plot (or tabulate) relative error against $\kappa$ on logarithmic axes: the points should rise roughly along a line of slope 1, until the error reaches 1 at $\kappa \approx 1/u \approx 10^{16}$, where nothing is left. Rounding makes single points scatter, so measure the perturbation amplification as well, which is far less noisy.
+
+```python
+def amplification(eps, delta):
+    """Relative change in x per relative change in b for A_eps x = b."""
+    a, b = [[1.0, 1.0], [1.0, 1.0 + eps]], [2.0, 2.0 + eps]
+    def solve2(rhs):
+        det = a[0][0] * a[1][1] - a[0][1] * a[1][0]
+        x1 = (rhs[0] * a[1][1] - a[0][1] * rhs[1]) / det
+        x2 = (a[0][0] * rhs[1] - a[1][0] * rhs[0]) / det
+        return [x1, x2]
+    x, x2 = solve2(b), solve2([b[0], b[1] + delta])
+    dx = max(abs(p - q) for p, q in zip(x, x2)) / max(abs(v) for v in x)
+    db = delta / max(abs(v) for v in b)
+    return dx / db
+
+for eps in (0.1, 0.01, 0.001):
+    print(eps, round(amplification(eps, 1e-6), 1), round((2 + eps) ** 2 / eps, 1))
+```
+
+@example
+title: A condition number and its bound
+problem: Compute $\kappa_\infty$ for $\mathbf{A} = \begin{bmatrix} 2 & 1 \\ 1 & 1 \end{bmatrix}$ and bound the relative error in $\mathbf{x}$ when $\mathbf{b}$ has a relative error of $10^{-8}$.
+step: The inverse of a $2 \times 2$ matrix is $\frac{1}{\det}\begin{bmatrix} d & -b \\ -c & a \end{bmatrix}$; here $\det = 2\cdot1 - 1\cdot1 = 1$, so $\mathbf{A}^{-1} = \begin{bmatrix} 1 & -1 \\ -1 & 2 \end{bmatrix}$.
+step: Row sums of absolute values: $\lVert \mathbf{A} \rVert_\infty = \max(3, 2) = 3$ and $\lVert \mathbf{A}^{-1} \rVert_\infty = \max(2, 3) = 3$, so $\kappa_\infty = 9$.
+step: The bound gives $\lVert \delta\mathbf{x} \rVert / \lVert \mathbf{x} \rVert \le 9 \times 10^{-8}$.
+answer: $\kappa_\infty = 9$; the relative error of $\mathbf{x}$ is at most $9 \times 10^{-8}$.
+
+@example
+title: Variance in two ways
+problem: Compute the population variance of $10^8 + 1, 10^8 + 2, 10^8 + 3$ by $\operatorname{mean}(x^2) - \operatorname{mean}(x)^2$ and by the two-pass formula, and say which is right.
+step: Exactly, the mean is $10^8 + 2$ and the deviations are $-1, 0, 1$, so the variance is $2/3$.
+step: Naive: $\operatorname{mean}(x^2) \approx 1.00000004 \times 10^{16}$ and $\operatorname{mean}(x)^2$ is nearly the same number. Doubles near $10^{16}$ are 2 apart, so the true difference $2/3$ is smaller than the spacing; Python's result is $0.0$.
+step: Two-pass: subtract the mean first. The deviations $-1, 0, 1$ are computed exactly, their squares sum to 2, and $2/3 = 0.6667$.
+answer: The two-pass formula is right (0.6667); the naive formula returns 0.0 because of cancellation.
+
+@mistakes
+- Judging accuracy by the residual alone: with a large condition number the residual can be tiny while the solution is far off.
+- Blaming the algorithm for an ill-conditioned problem: no algorithm can recover digits that the data and the rounding of its entries already destroyed.
+- Taking the determinant as a measure of conditioning: scaling a matrix by 0.1 changes its determinant a lot but leaves $\kappa$ unchanged.
+- Treating $\kappa$ as an exact prediction: it is a worst-case bound, and the actual error is often smaller.
+
+@practice num
+prompt: Compute the infinity-norm condition number $\kappa_\infty$ of $\mathbf{A} = \begin{bmatrix} 1 & 2 \\ 3 & 4 \end{bmatrix}$, whose inverse is $\begin{bmatrix} -2 & 1 \\ 1.5 & -0.5 \end{bmatrix}$.
+answer: 21
+check: max(abs(1) + abs(2), abs(3) + abs(4)) * max(abs(-2) + abs(1), abs(1.5) + abs(-0.5))
+hint: The infinity norm is the largest absolute row sum; compute it for $\mathbf{A}$ and for $\mathbf{A}^{-1}$.
+solution: $\lVert \mathbf{A} \rVert_\infty = \max(3, 7) = 7$ and $\lVert \mathbf{A}^{-1} \rVert_\infty = \max(3, 2) = 3$, so $\kappa_\infty = 21$.
+
+@practice num
+prompt: A backward-stable solver in double precision (unit roundoff about $10^{-16}$) solves a system whose matrix has $\kappa = 10^{9}$. About how many correct decimal digits should you expect in the solution? Give a whole number.
+answer: 7
+tol: 1
+check: 16 - log10(1e9)
+hint: Use the rule of thumb: the relative error is about $\kappa u$, so you lose about $\log_{10} \kappa$ of the roughly 16 digits.
+solution: The relative error is about $10^9 \times 10^{-16} = 10^{-7}$, so roughly 7 digits are correct.
+
+@practice mc
+prompt: A solver returns $\hat{\mathbf{x}}$ for $\mathbf{A}\mathbf{x} = \mathbf{b}$ with $\kappa(\mathbf{A}) = 10^{14}$, and the residual $\lVert \mathbf{b} - \mathbf{A}\hat{\mathbf{x}} \rVert / \lVert \mathbf{b} \rVert$ is $10^{-16}$. What can you conclude?
+choice*: The relative error of $\hat{\mathbf{x}}$ can still be as large as about $10^{-2}$, because the bound is $\kappa$ times the relative residual.
+choice: $\hat{\mathbf{x}}$ is accurate to about 16 digits, because the residual is at machine precision.
+choice: The solver must contain a bug, since a tiny residual is impossible for an ill-conditioned matrix.
+choice: The matrix is singular, since $\kappa$ is larger than $10^{10}$.
+hint: Multiply the condition number by the relative residual to bound the relative error.
+solution: The bound is $10^{14} \times 10^{-16} = 10^{-2}$. Backward-stable solvers do produce tiny residuals even for ill-conditioned matrices; that is the residual's limitation, not a bug. A large but finite $\kappa$ does not mean singular.
+
+@practice code
+prompt: Write `cond_inf_2x2(A)` that returns $\kappa_\infty = \lVert\mathbf{A}\rVert_\infty \lVert\mathbf{A}^{-1}\rVert_\infty$ of a $2 \times 2$ matrix given as a list of rows. Use the formula $\mathbf{A}^{-1} = \frac{1}{\det}\begin{bmatrix} d & -b \\ -c & a \end{bmatrix}$ for $\mathbf{A} = \begin{bmatrix} a & b \\ c & d \end{bmatrix}$, and the largest absolute row sum as the norm. Raise `ValueError` if the determinant is exactly 0.
+starter:
+```python
+def cond_inf_2x2(A):
+    pass
+```
+tests:
+```python
+assert abs(cond_inf_2x2([[1, 2], [3, 4]]) - 21.0) < 1e-9
+assert abs(cond_inf_2x2([[1, 0], [0, 1]]) - 1.0) < 1e-12
+assert abs(cond_inf_2x2([[2, 1], [1, 1]]) - 9.0) < 1e-9
+assert abs(cond_inf_2x2([[1, 1], [1, 1.01]]) - 404.01) < 1e-6
+assert abs(cond_inf_2x2([[10, 0], [0, 0.1]]) - 100.0) < 1e-9
+assert raises(ValueError, cond_inf_2x2, [[1, 2], [2, 4]])
+```
+model:
+```python
+def cond_inf_2x2(A):
+    """Infinity-norm condition number of a 2x2 matrix."""
+    (a, b), (c, d) = A
+    det = a * d - b * c
+    if det == 0:
+        raise ValueError("singular matrix")
+    inv = [[d / det, -b / det], [-c / det, a / det]]
+
+    def norm(M):
+        return max(abs(M[0][0]) + abs(M[0][1]), abs(M[1][0]) + abs(M[1][1]))
+
+    return norm(A) * norm(inv)
+```
+hint: Compute the determinant and the inverse, then multiply the two largest absolute row sums.
+solution: The norm is the maximum over rows of the sum of absolute entries, applied to $\mathbf{A}$ and to its inverse. The scaled diagonal matrix in the fifth test shows that $\kappa$ measures the ratio of the largest to smallest stretch, not the size of the entries.
+
+@practice code
+prompt: Write `amplification(eps, delta)` for the system $\mathbf{A}_\varepsilon \mathbf{x} = \mathbf{b}$ with $\mathbf{A}_\varepsilon = \begin{bmatrix} 1 & 1 \\ 1 & 1+\varepsilon \end{bmatrix}$ and $\mathbf{b} = [2, 2+\varepsilon]$ (exact solution $[1, 1]$). Solve it, then solve it again with $\mathbf{b}$ changed to $[2, 2+\varepsilon+\delta]$, and return the relative change in $\mathbf{x}$ divided by the relative change in $\mathbf{b}$, both measured in the infinity norm ($\max |\cdot|$). You may solve $2 \times 2$ systems by Cramer's rule.
+starter:
+```python
+def amplification(eps, delta):
+    pass
+```
+tests:
+```python
+def rel_close(a, b, tol=1e-4):
+    return abs(a - b) <= tol * abs(b)
+
+assert rel_close(amplification(0.1, 1e-6), 21.0)
+assert rel_close(amplification(0.001, 1e-6), 2001.0)
+assert rel_close(amplification(0.001, 1e-5), 2001.0)
+assert rel_close(amplification(1.0, 1e-4), 3.0)
+assert amplification(0.001, 1e-6) <= (2.001 ** 2 / 0.001) * (1 + 1e-9)
+```
+model:
+```python
+def amplification(eps, delta):
+    """Relative change of x per relative change of b for A_eps x = b."""
+    a = [[1.0, 1.0], [1.0, 1.0 + eps]]
+    b = [2.0, 2.0 + eps]
+
+    def solve2(rhs):
+        det = a[0][0] * a[1][1] - a[0][1] * a[1][0]
+        x1 = (rhs[0] * a[1][1] - a[0][1] * rhs[1]) / det
+        x2 = (a[0][0] * rhs[1] - a[1][0] * rhs[0]) / det
+        return [x1, x2]
+
+    x = solve2(b)
+    x_new = solve2([b[0], b[1] + delta])
+    dx = max(abs(p - q) for p, q in zip(x, x_new)) / max(abs(v) for v in x)
+    db = delta / max(abs(v) for v in b)
+    return dx / db
+```
+hint: Write a small `solve2` helper using Cramer's rule, call it on both right-hand sides, and form the two relative changes with the maximum absolute value as the norm.
+solution: For this family the solution changes by $\delta/\varepsilon$ in each entry, while $\mathbf{b}$ changes by $\delta/(2+\varepsilon)$ relatively, so the amplification is $(2+\varepsilon)/\varepsilon$, which stays below $\kappa_\infty = (2+\varepsilon)^2/\varepsilon$. The tests also check that it does not depend on the size of the perturbation.
+
+@quiz code
+prompt: Write `variance(xs)` that returns the population variance (divide by $n$) of a nonempty list of floats using the two-pass algorithm: first compute the mean, then average the squared deviations from it. It must give accurate results for values near $10^8$.
+starter:
+```python
+def variance(xs):
+    pass
+```
+tests:
+```python
+assert abs(variance([1, 2, 3, 4]) - 1.25) < 1e-12
+assert abs(variance([5.0]) - 0.0) < 1e-12
+assert abs(variance([1e8 + 1, 1e8 + 2, 1e8 + 3]) - 2 / 3) < 1e-6
+assert abs(variance([1e9 + 4, 1e9 + 4, 1e9 + 4])) < 1e-9
+assert abs(variance([-1.0, 1.0]) - 1.0) < 1e-12
+```
+model:
+```python
+def variance(xs):
+    """Population variance by the two-pass algorithm."""
+    n = len(xs)
+    mean = sum(xs) / n
+    return sum((x - mean) ** 2 for x in xs) / n
+```
+hint: Compute `mean` first, then average `(x - mean) ** 2`; do not use the mean of the squares.
+solution: Subtracting the mean first leaves small deviations that are computed exactly, so the squares are accurate. The formula $\operatorname{mean}(x^2) - \operatorname{mean}(x)^2$ returns 0.0 for the third test, which the tolerance of $10^{-6}$ rejects.
+
+@quiz text
+prompt: What does this program print?
+```python
+xs = [1, 2, 3, 4]
+m = sum(xs) / len(xs)
+print(m, sum((x - m) ** 2 for x in xs) / len(xs))
+```
+answer: 2.5 1.25
+check: run("xs = [1, 2, 3, 4]\nm = sum(xs) / len(xs)\nprint(m, sum((x - m) ** 2 for x in xs) / len(xs))")
+hint: The mean is 10/4; the deviations are $-1.5, -0.5, 0.5, 1.5$.
+solution: The mean is 2.5 and the squared deviations are $2.25, 0.25, 0.25, 2.25$, which sum to 5. Dividing by 4 gives 1.25 (the program divides by $n$, so this is the population variance).
+
+@quiz ms
+prompt: Which of these statements are correct? Select all that apply.
+choice*: The condition number is a property of the problem (the matrix), so a better algorithm cannot remove it.
+choice*: A well-conditioned problem can still give a poor answer if the algorithm is numerically unstable.
+choice*: Multiplying a matrix by 0.001 does not change its condition number.
+choice: A matrix with a very small determinant is always ill-conditioned.
+hint: Check the definition $\kappa = \lVert\mathbf{A}\rVert\lVert\mathbf{A}^{-1}\rVert$ under scaling, and compare the determinant of $0.001\,\mathbf{I}$ with its condition number.
+solution: Conditioning belongs to the problem, and stability to the algorithm (the variance formula is an example). Scaling $\mathbf{A}$ by $c$ scales $\mathbf{A}^{-1}$ by $1/c$, so $\kappa$ is unchanged. The matrix $0.001\,\mathbf{I}$ ($2 \times 2$) has determinant $10^{-6}$ but $\kappa = 1$, so a small determinant does not imply ill-conditioning.

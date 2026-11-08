@@ -1,0 +1,182 @@
+@lesson
+title: The multivariable chain rule in matrix form
+summary: Differentiate compositions of vector functions with Jacobian products, and derive the gradients of the standard loss functions.
+objective: State the chain rule as a product of Jacobians and check the shapes of the factors.
+objective: Explain why backpropagation multiplies from the loss end, using vector–Jacobian products.
+objective: Derive the gradients of the squared, logistic, softmax cross-entropy, hinge and L2 penalty losses.
+reading: Mathematics for Machine Learning, the chapter on vector calculus: gradients of matrices, useful identities for computing gradients, and backpropagation and automatic differentiation.
+@article
+A model is a pipeline: inputs go through a linear layer, then a nonlinearity, then a loss. To train it we need the derivative of the final loss with respect to numbers deep inside the pipeline. The chain rule tells us how, and written with Jacobians it becomes a few matrix products.
+
+### The chain rule with Jacobians
+
+Let $\mathbf{g}:\mathbb{R}^n \to \mathbb{R}^m$ and $\mathbf{h}:\mathbb{R}^m \to \mathbb{R}^p$ be differentiable. For the composition $\mathbf{f} = \mathbf{h} \circ \mathbf{g}$,
+
+$$\mathbf{J}_{\mathbf{f}}(\mathbf{x}) = \mathbf{J}_{\mathbf{h}}\big(\mathbf{g}(\mathbf{x})\big)\, \mathbf{J}_{\mathbf{g}}(\mathbf{x}),$$
+
+a $p \times m$ matrix times an $m \times n$ matrix, giving $p \times n$. The shapes must chain: the inner dimension $m$ is shared. If $p = 1$ (a scalar loss), transposing gives the gradient:
+
+$$\nabla_{\mathbf{x}} f = \mathbf{J}_{\mathbf{g}}(\mathbf{x})^\top \, \nabla_{\mathbf{z}} h(\mathbf{z})\big|_{\mathbf{z} = \mathbf{g}(\mathbf{x})}.$$
+
+**A small case.** Let $\mathbf{x} = (1,2)^\top$, $\mathbf{z} = \mathbf{W}\mathbf{x}$ with $\mathbf{W} = \begin{pmatrix} 1 & 2 \\ 3 & 0 \\ -1 & 1 \end{pmatrix}$, target $\mathbf{t} = (4,1,3)^\top$ and loss $h(\mathbf{z}) = \tfrac12 \lVert \mathbf{z} - \mathbf{t} \rVert_2^2$. Then $\mathbf{z} = (5,3,1)^\top$, the residual is $\mathbf{r} = \mathbf{z} - \mathbf{t} = (1,2,-2)^\top$, and $\nabla_{\mathbf{z}} h = \mathbf{r}$. The Jacobian of $\mathbf{z}$ with respect to $\mathbf{x}$ is $\mathbf{W}$, so $\nabla_{\mathbf{x}} h = \mathbf{W}^\top \mathbf{r} = (9, 0)^\top$.
+
+### Backpropagation is a chain of vector–Jacobian products
+
+For a pipeline $\mathbf{x} \to \mathbf{a}_1 \to \mathbf{a}_2 \to \dots \to L$ with a scalar loss $L$, the gradient is $\mathbf{J}_1^\top \mathbf{J}_2^\top \cdots \nabla_{\mathbf{a}_k} L$. Multiplying from the loss end, we only ever multiply a **matrix by a vector**: each step takes the gradient with respect to a layer's output and returns the gradient with respect to its input. This is a **vector–Jacobian product** (VJP), and running the pipeline backward this way is **reverse-mode automatic differentiation**, which neural-network practitioners call **backpropagation** (popularized for neural networks by Rumelhart, Hinton and Williams, 1986). Multiplying from the input end would form matrix–matrix products and cost far more when the output is a scalar and the layers are wide. Elementwise activations such as $\tanh$ have diagonal Jacobians, so their VJP is just an elementwise product with the local derivative.
+
+### Gradients of five standard losses
+
+Let $\mathbf{x}$ be a feature vector, $z = \mathbf{w}^\top \mathbf{x}$ a score, and $\sigma(u) = 1/(1 + e^{-u})$ the logistic sigmoid.
+
+| loss | formula | gradient with respect to $\mathbf{w}$ |
+|---|---|---|
+| squared | $\tfrac12 (z - y)^2$ | $(z - y)\,\mathbf{x}$ |
+| logistic, $y \in \{-1,+1\}$ | $\log(1 + e^{-yz})$ | $-y\,\sigma(-yz)\,\mathbf{x}$ |
+| hinge, $y \in \{-1,+1\}$ | $\max(0, 1 - yz)$ | $-y\,\mathbf{x}$ if $yz < 1$, else $\mathbf{0}$ |
+| L2 penalty | $\tfrac{\lambda}{2}\lVert \mathbf{w}\rVert_2^2$ | $\lambda \mathbf{w}$ |
+| softmax cross-entropy | $-\log p_k$ | $(\mathbf{p} - \mathbf{e}_k)\,\mathbf{x}^\top$ for the weight matrix |
+
+Each follows the same pattern: the derivative of the loss with respect to the score, times $\mathbf{x}$, since $\partial z / \partial \mathbf{w} = \mathbf{x}^\top$. For the logistic loss, $\frac{d}{dz}\log(1 + e^{-yz}) = \frac{-y e^{-yz}}{1 + e^{-yz}} = -y\,\sigma(-yz)$. The hinge loss is not differentiable at $yz = 1$; at that kink any value between the two one-sided slopes is a **subgradient**, and implementations pick one.
+
+**Softmax cross-entropy.** For logits $\mathbf{z} \in \mathbb{R}^K$, $p_j = e^{z_j}/\sum_l e^{z_l}$ and the loss for true class $k$ is $\ell = -z_k + \log \sum_l e^{z_l}$. Then $\partial \ell / \partial z_j = -[j = k] + p_j$, so
+
+$$\nabla_{\mathbf{z}} \ell = \mathbf{p} - \mathbf{e}_k.$$
+
+The gradient is the predicted distribution minus the one-hot target, and its entries sum to zero.
+
+### In code
+
+Computing $e^{z_j}$ directly overflows for large logits, so subtract $\max_j z_j$ first; the softmax does not change because the common factor cancels.
+
+```python
+import math
+
+def softmax(z):
+    m = max(z)
+    exps = [math.exp(t - m) for t in z]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+print(softmax([1.0, 0.0, -1.0]))
+```
+
+With PyTorch the same gradient comes from `loss.backward()`, which applies VJPs through every operation recorded in the forward pass; the formulas above are what it computes.
+
+@example
+title: A squared loss through a linear layer
+problem: Let $\mathbf{x} = (2, -1)^\top$, $\mathbf{W} = \begin{pmatrix} 1 & 0 \\ 2 & 1 \end{pmatrix}$, $\mathbf{t} = (3, 1)^\top$ and $h(\mathbf{z}) = \tfrac12\lVert \mathbf{z} - \mathbf{t}\rVert_2^2$ with $\mathbf{z} = \mathbf{W}\mathbf{x}$. Find the gradient of $h$ with respect to $\mathbf{x}$, and its gradient with respect to $\mathbf{W}$.
+step: Forward pass: $\mathbf{z} = (1\cdot 2 + 0\cdot(-1),\; 2 \cdot 2 + 1\cdot(-1)) = (2, 3)^\top$.
+step: Residual: $\mathbf{r} = \mathbf{z} - \mathbf{t} = (-1, 2)^\top$, which is $\nabla_{\mathbf{z}} h$.
+step: Gradient with respect to $\mathbf{x}$: $\mathbf{W}^\top \mathbf{r} = \begin{pmatrix} 1 & 2 \\ 0 & 1 \end{pmatrix}(-1, 2)^\top = (3, 2)^\top$.
+step: Gradient with respect to $\mathbf{W}$: entry $(i,j)$ is $r_i x_j$, so $\nabla_{\mathbf{W}} h = \mathbf{r}\mathbf{x}^\top = \begin{pmatrix} -2 & 1 \\ 4 & -2 \end{pmatrix}$.
+answer: $\nabla_{\mathbf{x}} h = (3,2)^\top$ and $\nabla_{\mathbf{W}} h = \begin{pmatrix} -2 & 1 \\ 4 & -2 \end{pmatrix}$.
+
+@example
+title: Softmax cross-entropy gradient
+problem: Logits $\mathbf{z} = (1, 0, -1)$ and true class $k = 1$ (the first class). Find $\mathbf{p}$ and $\nabla_{\mathbf{z}} \ell$ to three decimal places.
+step: Exponentiate: $e^1 \approx 2.718$, $e^0 = 1$, $e^{-1} \approx 0.368$; the sum is about $4.086$.
+step: Probabilities: $\mathbf{p} \approx (0.665, 0.245, 0.090)$.
+step: Subtract the one-hot vector $\mathbf{e}_1 = (1,0,0)$: $\mathbf{p} - \mathbf{e}_1 \approx (-0.335, 0.245, 0.090)$.
+step: Check: the entries sum to zero, as they must, and the true class gets a negative gradient, so a gradient step raises its logit.
+answer: $\mathbf{p} \approx (0.665, 0.245, 0.090)$ and $\nabla_{\mathbf{z}}\ell \approx (-0.335, 0.245, 0.090)$.
+
+@mistakes
+- Getting the order of Jacobians backward: the Jacobian of the outer function is on the left, $\mathbf{J}_{\mathbf{h}}\mathbf{J}_{\mathbf{g}}$, and the shapes will not multiply if you reverse them.
+- Forgetting to transpose: for a scalar loss the gradient is $\mathbf{J}_{\mathbf{g}}^\top \nabla h$, not $\mathbf{J}_{\mathbf{g}} \nabla h$.
+- Writing the softmax cross-entropy gradient as $-\mathbf{e}_k$ or as $\mathbf{p}$ alone: it is $\mathbf{p} - \mathbf{e}_k$.
+- Computing softmax with `exp(z)` on large logits: it overflows, and subtracting the maximum first fixes it without changing the result.
+
+@practice num
+prompt: A logistic regression model has weights $\mathbf{w} = (1, -1)$ and sees the example $\mathbf{x} = (2, 1)$ with label $y = +1$. For the loss $\log(1 + e^{-y\,\mathbf{w}^\top \mathbf{x}})$, what is the first component of the gradient with respect to $\mathbf{w}$? Give your answer to three decimal places.
+answer: -0.538
+tol: 0.001
+check: -1 * 2 / (1 + exp(1 * (1 * 2 + -1 * 1)))
+hint: The score is $z = \mathbf{w}^\top\mathbf{x}$. The gradient is $-y\,\sigma(-yz)\,\mathbf{x}$.
+solution: The score is $z = 2 - 1 = 1$, and $\sigma(-1) = 1/(1 + e) \approx 0.2689$. The gradient is $-0.2689\,(2, 1) \approx (-0.538, -0.269)$, so the first component is $-0.538$.
+
+@practice expr
+prompt: For one example, a model predicts $e^{w x}$ and the loss is $\ell(w) = \tfrac12\,(e^{w x} - y)^2$. Enter $d\ell/dw$ in terms of $w$, $x$ and $y$.
+answer: (e^(w*x) - y)*e^(w*x)*x
+vars: w, x, y
+domain: w: -1..1
+check: lambda w, x, y: (math.exp(w * x) - y) * math.exp(w * x) * x
+hint: The outer function is a square, the middle function is $e^{u}$ with $u = wx$, and $du/dw = x$. Multiply the three derivatives.
+solution: By the chain rule, $d\ell/dw = (e^{wx} - y)\cdot e^{wx} \cdot x$: the derivative of the square, then of the exponential, then of $wx$.
+
+@practice num
+prompt: Let $f(\mathbf{x}) = h(\mathbf{W}\mathbf{x})$ with $\mathbf{W} = \begin{pmatrix} 2 & 0 \\ 1 & 1 \end{pmatrix}$ and $h(\mathbf{z}) = z_1 z_2$. What is $\lVert \nabla f(\mathbf{x}) \rVert_2^2$ at $\mathbf{x} = (1, 2)$?
+answer: 68
+check: (4 * 1 + 2 * 2) ** 2 + (2 * 1) ** 2
+hint: Compute $\mathbf{z} = \mathbf{W}\mathbf{x}$, then $\nabla h = (z_2, z_1)$, then multiply by $\mathbf{W}^\top$.
+solution: Here $\mathbf{z} = (2, 3)$ and $\nabla h = (3, 2)$. Then $\nabla f = \mathbf{W}^\top (3,2)^\top = (2\cdot 3 + 1 \cdot 2,\; 0 \cdot 3 + 1\cdot 2) = (8, 2)$, whose squared norm is $64 + 4 = 68$. (Directly, $f = 2x_1^2 + 2x_1x_2$ gives the same gradient.)
+
+@practice mc
+prompt: A function $\mathbf{g}:\mathbb{R}^5 \to \mathbb{R}^3$ is followed by $\mathbf{h}:\mathbb{R}^3 \to \mathbb{R}^4$. What is the shape of the Jacobian of $\mathbf{h}\circ\mathbf{g}$ at a point?
+choice*: $4 \times 5$
+choice: $5 \times 4$
+choice: $3 \times 3$
+choice: $4 \times 3$
+hint: The Jacobian has one row per output and one column per input, and it equals a product of the two Jacobians.
+solution: The composition maps $\mathbb{R}^5 \to \mathbb{R}^4$, so its Jacobian has 4 rows and 5 columns. It is the product of the $4 \times 3$ Jacobian of $\mathbf{h}$ and the $3 \times 5$ Jacobian of $\mathbf{g}$; the shape $5 \times 4$ is its transpose.
+
+@practice code
+prompt: Write `softmax_ce_grad(z, k)` that returns the gradient of the softmax cross-entropy loss with respect to the logits `z`, a list of floats, when the true class is index `k`. Return a list `p - e_k`, where `p` is the softmax of `z`. It must work for logits as large as 1000 in absolute value. For example, `softmax_ce_grad([0.0, 0.0], 0)` returns `[-0.5, 0.5]`.
+starter:
+```python
+import math
+
+def softmax_ce_grad(z, k):
+    pass
+```
+tests:
+```python
+import math
+g = softmax_ce_grad([0.0, math.log(2), math.log(5)], 1)
+want = [0.125, -0.75, 0.625]
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, want))
+g = softmax_ce_grad([1000.0, 1000.0], 0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, [-0.5, 0.5]))
+g = softmax_ce_grad([-1000.0, 0.0, 1000.0], 2)
+assert all(abs(a) < 1e-9 for a in g)
+assert abs(sum(softmax_ce_grad([0.3, -1.2, 2.0, 0.5], 3))) < 1e-9
+assert softmax_ce_grad([4.0], 0) == [0.0]
+```
+model:
+```python
+import math
+
+def softmax_ce_grad(z, k):
+    """Gradient of softmax cross-entropy with respect to the logits."""
+    m = max(z)
+    exps = [math.exp(t - m) for t in z]
+    total = sum(exps)
+    grad = [e / total for e in exps]
+    grad[k] -= 1.0
+    return grad
+```
+hint: Compute the softmax after subtracting `max(z)` from every logit, then subtract 1 from the entry at index `k`.
+solution: The stable softmax gives $\mathbf{p}$; the gradient is $\mathbf{p}$ with 1 subtracted at the true class. A version without the maximum shift raises an overflow error on the logits $\pm 1000$.
+
+@quiz num
+prompt: The loss for one example is $\ell(\mathbf{w}) = \tfrac12(\mathbf{w}^\top\mathbf{x} - y)^2 + \tfrac{\lambda}{2}\lVert \mathbf{w}\rVert_2^2$ with $\mathbf{x} = (1, 2)$, $y = 3$, $\lambda = 0.5$. What is $\partial \ell/\partial w_2$ at $\mathbf{w} = (2, 1)$?
+answer: 2.5
+check: (2 * 1 + 1 * 2 - 3) * 2 + 0.5 * 1
+hint: Add the gradient of the squared term, $(z - y)\mathbf{x}$, and the gradient of the penalty, $\lambda\mathbf{w}$.
+solution: The score is $z = 2 + 2 = 4$, so the residual is $1$ and the squared term contributes $1 \cdot x_2 = 2$. The penalty contributes $\lambda w_2 = 0.5$. The total is $2.5$.
+
+@quiz ms
+prompt: Which of these statements about computing gradients of compositions are true? Select all that apply.
+choice*: For a scalar loss, multiplying the Jacobians starting from the loss end only requires matrix–vector products.
+choice*: The gradient of softmax cross-entropy with respect to the logits is the vector of predicted probabilities minus the one-hot target.
+choice*: The Jacobian of an elementwise activation applied to a vector is a diagonal matrix.
+choice: The hinge loss $\max(0, 1 - yz)$ is differentiable at every score $z$.
+hint: Think about the shapes in a product of Jacobians, and about where the hinge has a kink.
+solution: With a scalar output, each backward step multiplies a transposed Jacobian by a vector, which is the idea of reverse mode. The softmax cross-entropy gradient is $\mathbf{p} - \mathbf{e}_k$, and an elementwise function's output $i$ depends only on input $i$, so its Jacobian is diagonal. The hinge loss has a kink at $yz = 1$ where it is not differentiable.
+
+@quiz self
+prompt: A binary classifier outputs $p = \sigma(z)$ with $z = \mathbf{w}^\top\mathbf{x}$ and is trained with the binary cross-entropy $\ell = -\big[y\log p + (1-y)\log(1-p)\big]$ for a label $y \in \{0,1\}$. Derive $d\ell/dz$ and $\nabla_{\mathbf{w}}\ell$, showing each factor of the chain rule.
+hint: Use $\sigma'(z) = \sigma(z)(1 - \sigma(z))$ and multiply three derivatives: $\ell$ with respect to $p$, $p$ with respect to $z$, $z$ with respect to $\mathbf{w}$.
+solution: First, $d\ell/dp = -y/p + (1-y)/(1-p)$. Second, $dp/dz = p(1-p)$. Multiplying, $d\ell/dz = \big(-y/p + (1-y)/(1-p)\big)p(1-p) = -y(1-p) + (1-y)p = p - y$. Third, $\partial z/\partial\mathbf{w} = \mathbf{x}^\top$, so $\nabla_{\mathbf{w}}\ell = (p - y)\,\mathbf{x}$. The result has the same form as the squared-loss gradient for a linear model, with the prediction $p$ in place of $z$.
+rubric: Writes the three chain-rule factors with correct derivatives.
+rubric: Simplifies the product algebraically to $p - y$ without skipping the cancellation.
+rubric: States the final gradient $(p - y)\mathbf{x}$.
