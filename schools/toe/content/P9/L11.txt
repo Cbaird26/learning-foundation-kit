@@ -1,0 +1,136 @@
+@lesson
+title: Sensitivity analysis
+summary: Measure how a result responds to each input and assumption using derivatives, elasticities, variance shares and one-at-a-time changes, and rank what matters most.
+objective: Estimate sensitivity coefficients and elasticities with central differences.
+objective: Rank inputs by their share of the output variance using uncertainty-weighted sensitivities.
+objective: Change one assumption at a time and report its effect on the result.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on writing reusable Python functions with keyword arguments and on plotting with matplotlib, including bar charts.
+
+@article
+A result depends on measured inputs and on the assumptions behind a formula or a simulation. **Sensitivity analysis** asks how much the result changes when each of them changes. The answer tells you what to measure better, what you can ignore, and how far to trust the number.
+
+### Local sensitivity
+
+For a result $f(x_1,\dots,x_n)$ the **sensitivity coefficient** of input $x_i$ is the partial derivative $S_i = \partial f/\partial x_i$ at the nominal values. Estimate it with a central difference, changing one input at a time:
+
+$$S_i \approx \frac{f(x_i + \delta) - f(x_i - \delta)}{2\delta}.$$
+
+Because $S_i$ has units of $f$ per unit of $x_i$, different inputs cannot be compared directly. The dimensionless **elasticity** fixes that:
+
+$$E_i = \frac{x_i}{f}\,\frac{\partial f}{\partial x_i},$$
+
+the percentage change in $f$ per percentage change in $x_i$. For a power law $f \propto x_i^{\,n}$ the elasticity is exactly $n$.
+
+### Ranking by uncertainty
+
+An input matters only if it is both influential and uncertain. Its contribution to the output variance is $(S_i u_i)^2$, the same terms as in week 2, so its share is
+
+$$\text{share}_i = \frac{(S_i u_i)^2}{\sum_j (S_j u_j)^2}.$$
+
+A **tornado chart** shows the output change when each input is moved by $\pm$ one uncertainty, sorted by size. The longest bar marks the first thing to improve.
+
+### Changing an assumption
+
+Model assumptions such as neglecting air drag, small angles or constant temperature are not random inputs, but you can treat them the same way. Change one assumption per run, rerun everything else unchanged (same step size, same seed), and report the difference in the result. Compare that difference with the statistical uncertainty: an assumption that shifts the result by much more than the measurement error is a **systematic uncertainty** and belongs in the report.
+
+### Global sensitivity
+
+Local derivatives describe small changes around one point. If the inputs range widely or the model is strongly nonlinear, draw many input sets from their plausible ranges (week 9), compute the output for each, and see how strongly each input correlates with the output.
+
+```python
+import numpy as np
+
+def R(v, th_deg, g=9.8):                  # level-ground projectile range
+    return v**2 * np.sin(2 * np.radians(th_deg)) / g
+
+nom = dict(v=12.0, th_deg=40.0)
+u = dict(v=0.2, th_deg=1.0)
+base = R(**nom)
+for k in nom:
+    d = 1e-4 * nom[k]
+    S = (R(**{**nom, k: nom[k] + d}) - R(**{**nom, k: nom[k] - d})) / (2 * d)
+    print(k, S, S * nom[k] / base, abs(S * u[k]))   # S, elasticity, 1-sigma effect
+```
+
+The one-sigma effect of the speed is about $0.48$ m and that of the angle about $0.09$ m, so the speed matters five times more.
+
+@example
+title: Which input limits the range?
+problem: A projectile is launched on level ground at $v_0 = 12.0 \pm 0.2$ m/s and $\theta = 40.0^\circ \pm 1.0^\circ$ (supplied, illustrative values). With $R = v_0^2\sin 2\theta/g$ and $g = 9.8\ \text{m/s}^2$ taken as exact, find $R$, the elasticities, the dominant input and $u_R$.
+step: $R = 144\sin 80^\circ/9.8 = 14.47$ m.
+step: The elasticity with respect to $v_0$ is $2$ because $R \propto v_0^2$. For the angle, $E_\theta = \theta\cdot 2\cos 2\theta/\sin 2\theta = 2\theta\cot 2\theta = 2(0.698)(0.176) = 0.246$, with $\theta$ in radians. Near $45^\circ$ this elasticity falls to zero because $R$ is at its maximum.
+step: The relative uncertainties are $u_v/v = 0.2/12.0 = 1.67\%$ and $u_\theta/\theta = 1^\circ/40^\circ = 2.5\%$.
+step: Their contributions to $u_R/R$ are $2 \times 1.67\% = 3.33\%$ from the speed and $0.246 \times 2.5\% = 0.62\%$ from the angle.
+step: Combine in quadrature: $\sqrt{3.33^2 + 0.62^2}\,\% = 3.39\%$, so $u_R = 0.49$ m and $R = 14.5 \pm 0.5$ m. The speed carries $3.33^2/(3.33^2 + 0.62^2) = 97\%$ of the variance, so measure the speed better.
+
+@mistakes
+- Comparing raw sensitivity coefficients that have different units instead of elasticities or uncertainty-weighted effects.
+- Changing several inputs or assumptions in one run, so the cause of the change cannot be identified.
+- Evaluating derivatives away from the nominal operating point, or using finite-difference steps so small that round-off dominates.
+- Calling an input unimportant because its sensitivity is small, without checking how uncertain it is.
+
+@practice num
+prompt: The range of a projectile launched at $45^\circ$ is $R = v^2/g$ with $g = 9.8\ \text{m/s}^2$. Find the sensitivity $\partial R/\partial v$ at $v = 10$ m/s.
+answer: 2.04
+check: nderiv(lambda v: v**2 / 9.8, 10)
+tol: 0.005
+unit: m per (m/s)
+hint: Differentiate $v^2/g$ with respect to $v$.
+hint: $\partial R/\partial v = 2v/g$.
+solution: $\partial R/\partial v = 2(10)/9.8 = 2.04$ m per m/s: each extra m/s of launch speed adds about $2.04$ m of range.
+
+@practice num
+prompt: A capacitor discharges through a resistor, so that $V = V_0\,e^{-t/RC}$. At $t = 2.0$ ms with $R = 1.0\ \text{k}\Omega$ and $C = 1.0\ \mu\text{F}$ ($RC = 1.0$ ms), find the elasticity of $V$ with respect to $R$: by how many percent does $V$ change for a $1\%$ increase in $R$?
+answer: 2
+check: (lambda V: nderiv(V, 1.0) / V(1.0))(lambda r: math.exp(-2.0 / r))
+hint: Take the logarithm: $\ln V = \ln V_0 - t/(RC)$.
+hint: $E = \partial \ln V/\partial \ln R = t/(RC)$.
+solution: $\ln V = \ln V_0 - t/(RC)$ gives $E_R = \partial\ln V/\partial\ln R = t/(RC) = 2$. A $1\%$ larger $R$ slows the discharge and raises $V$ by about $2\%$ at this time.
+
+@practice num
+prompt: A result is a product $f = ab$. The input $a$ has a relative uncertainty of $3\%$ and $b$ has $4\%$. What fraction of the variance of $f$ comes from $b$?
+answer: 0.64
+check: 0.04**2 / (0.03**2 + 0.04**2)
+tol: 0.005
+hint: For a product each input contributes its relative uncertainty (elasticity $1$).
+hint: The variance shares are proportional to $3^2$ and $4^2$.
+solution: The variances are proportional to $9$ and $16$, so the share of $b$ is $16/25 = 0.64$.
+
+@practice mc
+prompt: You want to know how sensitive a simulated fall time is to the assumed drag coefficient (nominal $0.47$). Which test is correct?
+choice*: Rerun with only the drag coefficient changed (for example to $0.40$ and $0.55$), keeping every other input, the step size and the seed the same, and compare the results.
+choice: Change the drag coefficient and the step size together to save time.
+choice: Rerun with a different random seed only.
+choice: Change the drag coefficient and the launch speed together to see the combined effect.
+hint: To attribute a change to one cause, only one thing may change.
+hint: Anything else that changes between runs is mixed into the difference.
+solution: A one-at-a-time test changes the single assumption and holds everything else fixed, so the whole difference in the result is due to that assumption. The other options mix several changes together or change nothing relevant.
+
+@practice num
+prompt: The range is $R(\theta) = v^2\sin 2\theta/g$ with $v = 15$ m/s, $g = 9.8\ \text{m/s}^2$ and $\theta$ measured in degrees. Use a central difference to find how many metres $R$ changes per degree of launch angle near $\theta = 30^\circ$. Give three decimal places.
+answer: 0.401
+check: nderiv(lambda th: 15**2 * math.sin(2 * math.radians(th)) / 9.8, 30)
+tol: 1%
+unit: m per degree
+hint: Differentiate with respect to $\theta$ in radians first: $dR/d\theta = 2v^2\cos 2\theta/g$.
+hint: Multiply by $\pi/180$ to convert per radian to per degree.
+solution: $dR/d\theta = 2(225)\cos 60^\circ/9.8 = 22.96$ m per radian. Multiplying by $\pi/180 = 0.01745$ gives $0.401$ m per degree.
+
+@quiz num
+prompt: A density is computed as $\rho = m/(\pi r^2 h)$. The mass has a relative uncertainty of $0.5\%$, the radius $1\%$ and the height $2\%$ (supplied, illustrative values). What fraction of the variance of $\rho$ comes from the radius? Give three decimal places.
+answer: 0.485
+check: (2 * 0.01)**2 / (0.005**2 + (2 * 0.01)**2 + 0.02**2)
+tol: 0.005
+hint: The radius appears squared, so its elasticity is $-2$ and its contribution is $2 \times 1\%$.
+hint: The contributions to the relative uncertainty are $0.5\%$, $2\%$ and $2\%$.
+solution: The squared contributions are $0.25$, $4$ and $4$ (in %²), totalling $8.25$. The radius share is $4/8.25 = 0.485$.
+
+@quiz mc
+prompt: In a tornado chart, each bar shows the change in the output when one input is moved by plus and minus its own one-sigma uncertainty. What does the longest bar identify?
+choice: The input with the largest nominal value.
+choice*: The input whose uncertainty contributes most to the output uncertainty, which is the first to improve.
+choice: The input with the largest absolute uncertainty, whatever its effect on the output.
+choice: The input that can safely be ignored.
+hint: The bar combines how strongly the output responds with how uncertain the input is.
+hint: A large uncertainty on an input that barely affects the output gives a short bar.
+solution: The bar length is $|S_i|u_i$, the effect of input $i$ on the output. The longest bar is therefore the dominant contribution to the output uncertainty, and improving that measurement pays off most.

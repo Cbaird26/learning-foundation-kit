@@ -1,0 +1,136 @@
+@lesson
+title: Random sampling
+summary: Generate random numbers from physical distributions by inverse transform and rejection sampling, and validate a sampling estimator against a known answer using its standard error.
+objective: Turn uniform random numbers into samples of a target distribution by inverse transform sampling.
+objective: Use rejection sampling and compute its efficiency.
+objective: Validate a sampler or estimator against a known answer with a z-score built from the standard error.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on numpy random number generation and on histograms and plotting, which you need to compare a sampler with its target distribution.
+
+@article
+Computers produce **pseudo-random** numbers: a deterministic sequence that behaves statistically like independent uniform draws on $[0,1)$. A seeded generator such as `numpy.random.default_rng(seed)` makes runs repeatable. Physics usually needs other distributions, such as exponential decay times, Gaussian noise or isotropic directions, and you build them from uniform numbers.
+
+### Inverse transform sampling
+
+If $F(x)$ is the cumulative distribution function (CDF) of the target and $U$ is uniform on $(0,1)$, then $X = F^{-1}(U)$ has that distribution. For the exponential distribution with rate $\lambda$, $F(x) = 1 - e^{-\lambda x}$, so
+
+$$X = -\frac{\ln(1-U)}{\lambda},$$
+
+which simulates decay times with mean $1/\lambda$. For the density $f(x) = 2x$ on $[0,1]$ one has $F(x) = x^2$ and $X = \sqrt U$.
+
+### Rejection sampling
+
+When $F^{-1}$ is not available, propose $x$ uniformly on $[a,b]$ and accept it with probability $f(x)/M$, where $M \ge \max f$; otherwise draw again. The accepted values follow $f$. The fraction of proposals accepted is $1/\big(M(b-a)\big)$, so a tight bound $M$ wastes less work.
+
+### Directions on a sphere
+
+Isotropic directions need $\cos\theta$ uniform on $[-1,1]$ and $\phi$ uniform on $[0,2\pi)$. Taking $\theta$ itself uniform piles points up near the poles, because equal steps in $\theta$ cover less area there.
+
+### Validate against a known answer
+
+A sampler is a measuring instrument, so check it against a case with a known answer. Compare a statistic with its exact value and express the difference in standard errors:
+
+$$z = \frac{\hat\mu - \mu_{\text{exact}}}{s/\sqrt N}.$$
+
+Usually $|z| < 2$; a repeated $|z| > 3$ points to a bug. Check more than the mean: compare the variance, a histogram with the density, and a few quantiles. A passing test does not prove correctness, but a failing test shows that something is wrong, either in the sampler or in the error estimate.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+lam, N = 0.5, 100_000
+x = -np.log(1 - rng.random(N)) / lam        # inverse transform
+se = x.std(ddof=1) / np.sqrt(N)
+print(x.mean(), 1 / lam, se)
+print((x.mean() - 1 / lam) / se)            # z for the mean
+```
+
+Create the generator once, outside any loop; creating it again with the same seed inside the loop repeats the same numbers.
+
+@example
+title: Simulated decay times by inverse transform
+problem: A simulated source has half-life $T_{1/2} = 10$ min. A uniform random number $u = 0.25$ is drawn. Use inverse transform sampling to find the corresponding decay time, and cross-check it with the half-life formula.
+step: The mean lifetime is $\tau = T_{1/2}/\ln 2 = 14.43$ min, so $\lambda = 1/\tau$.
+step: Inverse transform: $t = -\tau\ln(1-u) = -14.43\,\ln(0.75) = 14.43 \times 0.2877 = 4.15$ min.
+step: Cross-check: the surviving fraction is $1 - u = 0.75$, and $2^{-t/T_{1/2}} = 0.75$ gives $t = T_{1/2}\log_2(1/0.75) = 10 \times 0.4150 = 4.15$ min. The two routes agree.
+step: Meaning: with $u$ uniform, a quarter of the simulated nuclei decay before $4.15$ min, as the definition of the distribution requires.
+
+@example
+title: Efficiency of rejection sampling
+problem: Sample the density $f(x) = 6x(1-x)$ on $[0,1]$ by proposing $x$ uniformly on $[0,1]$. Find the best bound $M$ and the fraction of proposals accepted, and the number of proposals needed for $1000$ accepted values.
+step: The density is largest at $x = 1/2$, where $f = 6(0.5)(0.5) = 1.5$. The tightest bound is $M = 1.5$.
+step: A proposal $x$ is accepted with probability $f(x)/M$; draw a second uniform number $v$ and accept if $vM \le f(x)$.
+step: The overall acceptance fraction is $\int_0^1 f\,dx\,/\,(M \cdot 1) = 1/1.5 = 2/3$.
+step: To obtain $1000$ accepted values you need about $1000/(2/3) = 1500$ proposals.
+
+@mistakes
+- Taking $\theta$ uniform when sampling isotropic directions, which concentrates points at the poles.
+- Forgetting the minus sign or confusing the rate $\lambda$ with the mean $1/\lambda$, giving negative or wrongly scaled times.
+- Accepting a sampler because its mean matches, without checking the variance or the shape of the distribution.
+- Re-creating the generator with the same seed inside a loop, so that every pass reuses the same numbers.
+
+@practice num
+prompt: Decay times follow an exponential distribution with rate $\lambda = 2\ \text{s}^{-1}$. Use inverse transform sampling to convert the uniform number $u = 0.6$ into a decay time. Give three decimal places.
+answer: 0.458
+check: root(lambda x: 1 - math.exp(-2 * x) - 0.6, 0, 10)
+tol: 0.001
+unit: s
+hint: Solve $F(x) = u$ for $x$, where $F(x) = 1 - e^{-\lambda x}$.
+hint: $x = -\ln(1-u)/\lambda = -\ln(0.4)/2$.
+solution: $x = -\ln(0.4)/2 = 0.9163/2 = 0.458$ s.
+
+@practice num
+prompt: A sampler for an exponential distribution with mean $2.0$ (and standard deviation $2.0$) is run with $N = 10\,000$ samples and gives a sample mean of $2.07$ (supplied, simulated value). Use the exact standard deviation to compute how many standard errors the sample mean lies from the exact mean.
+answer: 3.5
+check: (2.07 - 1 / 0.5) / ((1 / 0.5) / np.sqrt(1e4))
+tol: 0.05
+hint: The standard error of the mean is $\sigma/\sqrt N$.
+hint: $\sigma/\sqrt N = 2.0/100 = 0.02$.
+solution: $z = (2.07 - 2.00)/0.02 = 3.5$. A deviation of $3.5$ standard errors is unlikely to be chance, so the sampler or the code should be examined.
+
+@practice num
+prompt: Rejection sampling of the density $f(x) = 6x(1-x)$ on $[0,1]$ uses a uniform proposal on $[0,1]$ and the tightest bound $M = \max f$. What fraction of proposals is accepted?
+answer: 2/3
+check: 1 / np.max(6 * np.linspace(0, 1, 10001) * (1 - np.linspace(0, 1, 10001)))
+tol: 0.001
+hint: The acceptance fraction is the area under $f$ divided by the area of the box of height $M$ and width $1$.
+hint: The area under $f$ is $1$, and $f$ peaks at $x = 1/2$.
+solution: $\max f = f(1/2) = 1.5$, so the acceptance fraction is $1/(1.5 \times 1) = 2/3$.
+
+@practice mc
+prompt: Which recipe produces directions that are uniformly distributed over the whole sphere?
+choice: $\theta$ uniform on $[0,\pi]$ and $\phi$ uniform on $[0,2\pi)$.
+choice*: $\cos\theta$ uniform on $[-1,1]$ and $\phi$ uniform on $[0,2\pi)$.
+choice: $\cos\theta$ uniform on $[0,1]$ and $\phi$ uniform on $[0,2\pi)$.
+choice: $\theta$ uniform on $[0,\pi/2]$ and $\phi$ uniform on $[0,\pi)$.
+hint: The area element on the sphere is $\sin\theta\,d\theta\,d\phi = -d(\cos\theta)\,d\phi$.
+hint: Equal area means equal steps in $\cos\theta$, not in $\theta$.
+solution: Area is uniform in $\cos\theta$ and $\phi$, and the full sphere needs $\cos\theta \in [-1,1]$ and $\phi\in[0,2\pi)$. Uniform $\theta$ on $[0,\pi]$ crowds points near the poles, and the recipes with $\cos\theta\in[0,1]$ or with $\theta\in[0,\pi/2]$ and $\phi\in[0,\pi)$ cover only part of the sphere (a half and a quarter).
+
+@practice self
+prompt: Write a validation plan for the hit-or-miss estimator of $\pi$ from week 9, using the known value $\pi$ as the answer. Specify the sample size per run, the number of seeds, the statistic you compute, and a pass criterion. Explain what you would do if one run failed.
+hint: The expected standard error of one run is $4\sqrt{p(1-p)/N}$ with $p = \pi/4$.
+hint: Both the size of individual deviations and the run-to-run scatter should match the predicted error.
+solution: Use $N = 10^6$ points per run and 20 seeds, for example `default_rng(s)` for `s` from 0 to 19, each created once and recorded. The predicted standard error per run is $4\sqrt{p(1-p)/N} = 0.0016$. For each run compute $z = (\hat\pi - \pi)/\mathrm{SE}$. Pass if every $|z| < 3$, about 19 of 20 runs have $|z| < 2$, and the standard deviation of the 20 estimates is within about 30% of $0.0016$. Also check that the mean of the 20 estimates is within two predicted standard errors divided by $\sqrt{20}$ of $\pi$. If a run fails, first rerun with other seeds to see if it was a chance event, then look for a bug (wrong inequality, reused random array, integer division) and compare a simple case such as $N = 10$ by hand.
+rubric: Gives a sample size and a number of seeds, with the generators created once and the seeds recorded.
+rubric: Computes the predicted standard error and a z-score for each run.
+rubric: States a concrete pass criterion that includes both the individual deviations and the run-to-run scatter.
+rubric: Describes a sensible response to a failure: rerun with other seeds, then look for a bug.
+
+@quiz num
+prompt: Speeds in a two-dimensional gas are modeled by the Rayleigh distribution with CDF $F(x) = 1 - e^{-x^2/(2\sigma^2)}$ and $\sigma = 1.5$ (arbitrary speed units). Use inverse transform sampling to convert $u = 0.8$ into a speed. Give two decimal places.
+answer: 2.69
+check: root(lambda x: 1 - math.exp(-x**2 / (2 * 1.5**2)) - 0.8, 0, 50)
+tol: 0.01
+hint: Set $F(x) = u$ and solve for $x$.
+hint: $x^2/(2\sigma^2) = -\ln(1-u)$.
+solution: $x = \sigma\sqrt{-2\ln(1-u)} = 1.5\sqrt{-2\ln 0.2} = 1.5\sqrt{3.219} = 1.5 \times 1.794 = 2.69$.
+
+@quiz mc
+prompt: A sampler for a standard Gaussian (mean $0$, standard deviation $1$) is tested with $N = 10^4$ samples. The sample mean is $0.013$, and the standard error is $0.01$. Which conclusion is justified?
+choice: The sampler is biased, because the mean is not exactly zero.
+choice*: The mean is consistent with zero ($z = 1.3$); the variance and the shape should also be checked.
+choice: The sampler must be wrong, because $z$ is not zero.
+choice: The sampler is proven correct, because the mean test passed.
+hint: A sample mean fluctuates around the true mean by about one standard error.
+hint: Passing one test limits the ways a sampler can be wrong but does not prove it right.
+solution: A deviation of $1.3$ standard errors is ordinary statistical fluctuation, so there is no evidence of bias in the mean. But a sampler can have the right mean and the wrong variance or shape, so further checks are needed before it is trusted.

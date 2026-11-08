@@ -1,0 +1,175 @@
+@lesson
+title: Algorithmic complexity
+summary: Count operations for standard numerical kernels, predict how run time scales with problem size, and measure both a scaling exponent and a condition number.
+objective: State the operation count and memory scaling of dot products, matrix products, triangular solves, LU factorization, FFTs and direct pair sums.
+objective: Estimate a scaling exponent from timings with a doubling test or a log-log fit, and say why it may differ from the asymptotic one.
+objective: Measure the sensitivity of a computation by perturbing its input and comparing relative changes.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on program efficiency, profiling and timing of scientific code.
+
+@article
+Before running a large calculation you should be able to say roughly how long it will take and how much memory it needs. Two ideas make that possible: counting the work an algorithm does, and measuring how its run time scales as the problem grows.
+
+### Counting work
+
+We write $f(n) = O(g(n))$ when $f(n) \le C\,g(n)$ for some constant $C$ and all large $n$. In numerical work you usually want the **leading term with its constant**, because $\tfrac23 n^3$ and $2n^3$ differ by a factor of three.
+
+| Kernel (size $n$) | Flops | Memory |
+|---|---|---|
+| dot product | $2n-1$ | $O(n)$ |
+| matrix–vector product | $\approx 2n^2$ | $O(n^2)$ |
+| matrix–matrix product | $\approx 2n^3$ | $O(n^2)$ |
+| LU factorization | $\approx \tfrac23 n^3$ | $O(n^2)$ |
+| forward or back substitution | $\approx n^2$ | $O(n^2)$ |
+| FFT of length $n$ | $O(n\log n)$ | $O(n)$ |
+| direct sum over $N$ bodies | $N(N-1)/2$ pair terms | $O(N)$ |
+
+A **flop** is one floating-point addition, subtraction, multiplication or division. Dense matrices of doubles use $8n^2$ bytes, so $n = 10^4$ already needs 800 MB: memory often limits you before time does.
+
+### Predicting scaling
+
+If $T(n) \approx c\,n^k$, then doubling $n$ multiplies the time by $2^k$:
+
+$$k = \log_2\frac{T(2n)}{T(n)}.$$
+
+For $T = c\,n\log n$ the ratio is slightly above $2$. More generally, plot $\log T$ against $\log n$; the slope is $k$. Use **sizes spanning at least a decade** and, if you can, a few repeats at each size.
+
+### Measuring honestly
+
+```python
+import time
+import numpy as np
+
+def time_it(f, *args, repeats=5):
+    best = np.inf
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        f(*args)
+        best = min(best, time.perf_counter() - t0)
+    return best          # the minimum is the least noisy estimate
+
+ns = np.array([200, 400, 800, 1600, 3200])                # spans more than a decade
+mats = [np.random.rand(n, n) for n in ns]          # build inputs outside the timer
+ts = np.array([time_it(np.matmul, a, a) for a in mats])
+k, logc = np.polyfit(np.log(ns), np.log(ts), 1)
+print(k)
+```
+
+Do not expect exactly $3$. Small sizes are dominated by call overhead, mid sizes by cache effects, and library routines use blocking and several threads. The measured exponent is a property of **this code on this machine over this range of $n$**; the asymptotic exponent is a property of the algorithm.
+
+### Complexity is not the whole story
+
+A cheaper algorithm is only useful if it is accurate enough. The next step is to quantify how sensitive a *problem* is to perturbations of its input, independent of the algorithm. The **relative condition number** of $f$ at $x$ is
+
+$$\kappa_f(x) = \left|\frac{x\,f'(x)}{f(x)}\right|,$$
+
+the factor by which a small relative change in $x$ is amplified in $f(x)$. A backward-stable algorithm still loses about $\log_{10}\kappa$ decimal digits. You can **measure** $\kappa$ in a controlled example by perturbing the input by a relative amount $\eta$ and dividing the relative output change by $\eta$:
+
+```python
+def kappa_measured(f, x, eta=1e-8):
+    return abs((f(x * (1 + eta)) - f(x)) / f(x)) / eta
+
+print(kappa_measured(lambda x: x - 1.0, 1.0001))   # about 1.0e4
+```
+
+Subtraction near cancellation is the standard ill-conditioned problem: $f(x)=x-1$ has $\kappa = |x/(x-1)|$, which blows up as $x\to1$. Choose $\eta$ small enough for linearity but well above $u$, so the perturbation is not itself rounded away.
+
+@example
+title: Read an exponent from timings
+problem: A solver took $0.032$, $0.254$, $2.03$ and $16.1$ seconds for $n = 500, 1000, 2000, 4000$. Estimate the scaling exponent and predict the time for $n = 8000$.
+step: Each size is double the previous one, so compute the time ratios: $0.254/0.032 \approx 7.9$, $2.03/0.254 \approx 8.0$, $16.1/2.03 \approx 7.9$.
+step: The exponent is $k = \log_2(\text{ratio}) \approx \log_2 8 = 3$ for every doubling, consistent with a dense $O(n^3)$ factorization.
+step: Doubling again from $n=4000$ multiplies time by about $2^3 = 8$.
+step: Predicted time for $n=8000$: $16.1 \times 8 \approx 129$ s. This assumes memory still fits in cache or RAM; a jump in time would signal a new regime.
+
+@example
+title: Cost and memory of an LU factorization
+problem: Estimate the flops, memory and run time to LU-factor a dense $10^4\times10^4$ matrix of doubles on a machine sustaining $5\times10^{10}$ flop/s.
+step: The leading term is $\tfrac23 n^3 = \tfrac23 \times 10^{12} \approx 6.7\times10^{11}$ flops.
+step: At $5\times10^{10}$ flop/s the time is $6.7\times10^{11}/5\times10^{10} \approx 13$ s.
+step: The matrix has $10^8$ entries of 8 bytes, so it occupies $8\times10^8$ bytes $= 0.8$ GB. LU can overwrite it in place.
+step: Solving afterwards with forward and back substitution costs only $\approx 2n^2 = 2\times10^8$ flops, a factor of about $3000$ less than the factorization.
+
+@mistakes
+- Comparing only the exponents and ignoring constants: an $O(n^2)$ method with a huge constant can lose to an $O(n^3)$ method at the sizes you actually use.
+- Timing a single run, including input generation or the first call (import, cache warm-up), instead of the minimum of several repeats.
+- Treating a fitted exponent from a narrow range of $n$ as the algorithm's true asymptotic order.
+- Choosing a perturbation $\eta$ so small that it is rounded away when measuring a condition number.
+
+@practice num
+prompt: Naive matrix multiplication of two $50\times50$ matrices computes each of the $50^2$ entries with $50$ multiplications and $49$ additions. How many flops is that in total?
+answer: 247500
+check: sum(1 for i in range(50) for j in range(50) for k in range(50)) + sum(1 for i in range(50) for j in range(50) for k in range(49))
+hint: Count multiplications and additions separately for one entry.
+hint: One entry costs $50 + 49 = 99$ flops.
+solution: Each entry costs $99$ flops and there are $2500$ entries, so $99\times2500 = 247500$ flops. For general $n$ this is $n^2(2n-1)\approx 2n^3$.
+
+@practice num
+prompt: A code takes $2.0$ s for $n=1000$ and $16.5$ s for $n=2000$. Assuming $T\propto n^k$, estimate $k$ to two decimals.
+answer: 3.04
+check: math.log2(16.5 / 2.0)
+tol: 0.005
+hint: Doubling $n$ multiplies the time by $2^k$.
+hint: $2^k = 16.5/2.0 = 8.25$. Take $\log_2$.
+solution: $k = \log_2(8.25) = \ln 8.25/\ln 2 \approx 3.04$. This is close to $3$, as for dense factorization.
+
+@practice mc
+prompt: Which pair of leading-order operation counts is correct for an $n\times n$ dense lower-triangular system $Lx=b$ and an LU factorization of a dense $n\times n$ matrix?
+choice: Forward substitution $O(n^3)$, LU $O(n^3)$.
+choice*: Forward substitution $O(n^2)$, LU $O(n^3)$.
+choice: Forward substitution $O(n^2)$, LU $O(n^2)$.
+choice: Forward substitution $O(n)$, LU $O(n^2)$.
+hint: Forward substitution does one pass over the rows; row $i$ uses $i-1$ previously computed unknowns.
+solution: Row $i$ needs about $2(i-1)+1$ flops, which sums to $\approx n^2$. LU eliminates $n$ columns, each updating an $O(n^2)$ block, giving $\approx\tfrac23 n^3$.
+
+@practice num
+prompt: An FFT of length $2^{20}$ takes $0.05$ s. Assuming run time $\propto n\ln n$ with no cache effects, predict the time in seconds for length $2^{24}$.
+answer: 0.96
+check: 0.05 * (2**24 * math.log(2**24)) / (2**20 * math.log(2**20))
+tol: 1%
+hint: The size grows by a factor $2^4 = 16$.
+hint: The ratio of $\ln n$ values is $24/20$.
+solution: The ratio is $16\times 24/20 = 19.2$, so the predicted time is $0.05\times19.2 = 0.96$ s. Real timings usually exceed this once the data no longer fits in cache.
+
+@practice num
+prompt: Controlled cancellation experiment. Let $f(x)=x-1$ and $x=1.0001$. Perturb $x$ by a relative amount $\eta=10^{-8}$, compute the relative change in $f$ and divide by $\eta$. This measured condition number is close to which value? Give it to the nearest integer.
+answer: 10001
+check: abs(((1.0001 * (1 + 1e-8) - 1.0) - (1.0001 - 1.0)) / (1.0001 - 1.0)) / 1e-8
+tol: 1%
+hint: The output changes by $x\eta$, while the output itself is $x-1=10^{-4}$.
+hint: $\kappa = |x f'(x)/f(x)|$ with $f'=1$.
+solution: $\kappa = 1.0001/10^{-4} = 10001$. Measuring it numerically gives the same value to several digits. You lose about $\log_{10}10001 \approx 4$ decimal digits of accuracy in $x-1$ near this point, whatever algorithm you use.
+
+@quiz num
+prompt: A direct summation code evaluates every pair of $N=2000$ particles once. How many pair interactions does it compute?
+answer: 1999000
+check: sum(2000 - 1 - i for i in range(2000))
+hint: Particle $i$ is paired with the particles that come after it.
+hint: Sum $N-1, N-2, \dots, 0$.
+solution: The count is $N(N-1)/2 = 2000\times1999/2 = 1\,999\,000$.
+
+@quiz self
+prompt: Write a function `empirical_exponent(f, sizes, repeats=5)` that takes a function `f(n)`, times it at each size using the minimum of several repeats, and returns the fitted exponent $k$ in $T\approx c\,n^k$. State two reasons your answer might differ from the algorithm's asymptotic exponent.
+hint: For each size, time several runs and keep the smallest time.
+hint: A power law $T=cn^k$ is a straight line of slope $k$ in $\log T$ against $\log n$; `np.polyfit` can fit it.
+solution: Model code:
+
+```python
+import time
+import numpy as np
+
+def empirical_exponent(f, sizes, repeats=5):
+    times = []
+    for n in sizes:
+        best = np.inf
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            f(n)
+            best = min(best, time.perf_counter() - t0)
+        times.append(best)
+    k, _ = np.polyfit(np.log(sizes), np.log(times), 1)
+    return k
+```
+The fit can differ from the asymptotic exponent because of call overhead at small sizes, cache and memory-bandwidth effects, multithreaded or blocked library routines, and because the range of sizes is finite.
+rubric: Times with `time.perf_counter` and takes the minimum over repeats at each size.
+rubric: Fits a straight line to $\log T$ versus $\log n$ and returns the slope.
+rubric: Names at least two reasons for disagreement (overhead, cache effects, threading, narrow range of $n$).

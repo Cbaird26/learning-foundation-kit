@@ -1,0 +1,140 @@
+@lesson
+title: Reproducibility
+summary: Package data, code, seeds and environment so that anyone can rerun an analysis and get the same numbers, and document how varying one assumption changes the result.
+objective: Organize a project so that raw data are read-only and every result comes from a script with recorded seeds and library versions.
+objective: Compare numerical results with a stated tolerance instead of exact equality.
+objective: Document the effect of varying one assumption, including the systematic uncertainty it implies.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on version control and on organizing code into scripts and functions, which supports a reproducible project.
+
+@article
+A result is **reproducible** if someone else, given your data and code, can regenerate your numbers. It is **replicable** if a fresh experiment gives a consistent result. Replicability is up to nature; reproducibility is entirely up to you, and it is what makes an analysis checkable.
+
+### The reproducibility checklist
+
+- **Raw data are read-only.** Record a checksum for each file, and keep derived data elsewhere.
+- **One command regenerates everything.** Put the analysis in scripts, or in a notebook that runs top to bottom, never in a pile of manual steps.
+- **Parameters are visible.** Step sizes, sample sizes and cut values go at the top of the script or in a configuration file, not buried in the code.
+- **Seeds are recorded.** Create each random generator once, from a recorded seed.
+- **The environment is recorded.** Save the Python and library versions.
+- **Benchmarks are tests.** Keep small runs with known answers (the exact oscillator, the area of a circle) and rerun them after every change.
+- **Changes are tracked.** Use version control, with messages that say why.
+- **Limitations are written down.** State the range, the assumptions and the known problems.
+
+A tidy layout helps: `data/raw/` for original files and their `.meta.json` provenance, `src/` for code, `tests/` for benchmarks, `results/` for everything generated (safe to delete and regenerate), plus a `README.md` that says how to run it and what output to expect.
+
+### Compare with tolerances
+
+Floating-point results can differ in the last digits between machines and library versions, so test with a tolerance and not with `==`:
+
+```python
+import numpy as np
+
+assert np.isclose(result, expected, rtol=1e-8, atol=0.0)
+```
+
+Choose the tolerance from the physics. A deterministic ODE benchmark may agree to $10^{-10}$. A seeded Monte Carlo estimate should agree exactly on the same software, but across different software only within a few standard errors.
+
+### Record the run
+
+```python
+import json, platform, hashlib
+import numpy as np
+
+def sha256(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+meta = {"python": platform.python_version(), "numpy": np.__version__,
+        "seed": 12345, "data_sha256": sha256("data/raw/run1.csv")}
+with open("results/run_meta.json", "w") as f:
+    json.dump(meta, f, indent=2)
+```
+
+### Documenting an assumption study
+
+Reproducibility also covers *why* your final number is what it is. When you vary an assumption, record a small table: the baseline result, the changed assumption, the new result, and the difference expressed against the statistical uncertainty. A shift larger than the statistical error becomes a systematic uncertainty in the report. A smaller shift becomes a note that the result is insensitive to that assumption. Either way, the reader can see what you tried.
+
+@example
+title: Documenting the small-angle assumption
+problem: A pendulum of length $0.500$ m was timed at a release amplitude $\theta_0 = 0.35$ rad ($20^\circ$), giving $T = 1.420$ s and, from the small-angle formula, $g = 9.789 \pm 0.092\ \text{m/s}^2$ (supplied, illustrative values). Document the effect of dropping the small-angle assumption.
+step: Baseline: $g = 4\pi^2 L/T^2 = 9.789 \pm 0.092\ \text{m/s}^2$, which assumes $T = T_0$, the period at vanishing amplitude.
+step: Changed assumption: include the leading finite-amplitude correction $T = T_0(1 + \theta_0^2/16)$. With $\theta_0 = 0.35$ the factor is $1 + 0.1225/16 = 1.00766$. The next term of the series is about $5 \times 10^{-5}$, negligible.
+step: Since $g = 4\pi^2 L/T_0^2$ and $T_0 = T/1.00766$, the corrected value is $g = 9.789 \times 1.00766^2 = 9.94\ \text{m/s}^2$.
+step: Effect: $\Delta g = +0.150\ \text{m/s}^2$ ($+1.5\%$), which is $1.6$ times the statistical uncertainty $0.092$.
+step: Record it in the report table (baseline, change, new value, difference) and state the conclusion: the small-angle assumption biases $g$ low by about $0.15\ \text{m/s}^2$ at this amplitude, so quote the corrected value $9.94 \pm 0.09\ \text{m/s}^2$ or release from a smaller amplitude.
+
+@mistakes
+- Editing raw data files in place, so the original numbers are lost.
+- Setting a seed but not recording it or the library versions with the results.
+- Comparing floating-point results with `==` and being surprised when a different machine disagrees in the last digit.
+- Reporting that an assumption "makes little difference" without a number to show it.
+
+@practice num
+prompt: Five runs of a seeded Monte Carlo estimate of $\pi$ with different seeds gave $3.141, 3.147, 3.139, 3.150, 3.138$ (supplied, simulated values). Find the run-to-run sample standard deviation, which estimates the statistical error of a single run. Give four decimal places.
+answer: 0.0052
+check: np.std([3.141, 3.147, 3.139, 3.150, 3.138], ddof=1)
+tol: 0.0002
+hint: Use the sample standard deviation with $N-1$.
+hint: The mean is $3.143$, and the deviations are $-0.002, 0.004, -0.004, 0.007, -0.005$.
+solution: The squared deviations sum to $1.10 \times 10^{-4}$, so $s = \sqrt{1.10\times 10^{-4}/4} = 0.0052$. A single run of this size therefore has a statistical error of about $0.005$.
+
+@practice mc
+prompt: A Monte Carlo script gives slightly different estimates every time it runs, so a colleague cannot reproduce your figure. Which change fixes this properly?
+choice*: Create the generator once with `default_rng(seed)` and save the seed (and the library versions) with the results.
+choice: Increase the number of samples until the run-to-run differences vanish.
+choice: Report the estimate to fewer digits.
+choice: Ask your colleague to run it on your computer.
+hint: Reproducing a figure exactly means reproducing the pseudo-random sequence.
+hint: More samples reduce the differences but never make two unseeded runs identical.
+solution: Seeding the generator makes the sequence, and hence the estimate, repeatable, and recording the seed and versions lets others use it. More samples only shrink the differences, and rounding hides rather than fixes the problem.
+
+@practice ms
+prompt: Which of the following belong in the reproducibility record of a numerical result? Select all that apply.
+choice*: The Python and numpy version numbers.
+choice*: The random seed or seeds used.
+choice*: A checksum of each raw data file.
+choice: Only the final figure, since the code is too long to include.
+choice: A statement that the results are "about right", without parameters.
+hint: Ask what someone would need in order to rerun the analysis and check the numbers.
+hint: A record must let another person regenerate the result, not just look at it.
+solution: Versions, seeds and checksums let a reader rebuild the exact environment, random sequence and input data. A figure alone cannot be checked, and a vague statement gives no way to rerun anything.
+
+@practice num
+prompt: The small-angle formula $g = 4\pi^2L/T^2$ is applied to a pendulum released from amplitude $\theta_0 = 0.20$ rad. The exact period is $T = T_0\cdot 2K(k)/\pi$ with $k = \sin(\theta_0/2)$, where $K$ is the complete elliptic integral of the first kind. By what percentage must the small-angle estimate of $g$ be increased to give the true $g = 4\pi^2L/T_0^2$? Give two decimal places.
+answer: 0.50
+check: ((2 * special.ellipk(math.sin(0.2 / 2)**2) / math.pi)**2 - 1) * 100
+tol: 0.02
+unit: %
+hint: Since $g \propto 1/T_0^2$, the correction factor is $(T/T_0)^2$.
+hint: For small amplitude $T/T_0 \approx 1 + \theta_0^2/16$, so the factor is about $1 + \theta_0^2/8$.
+solution: $(T/T_0)^2 \approx (1 + 0.04/16)^2 \approx 1 + 0.04/8 = 1.0050$, so the estimate must be raised by about $0.50\%$. The exact elliptic-integral calculation gives $0.502\%$.
+
+@practice self
+prompt: A student measures a $470\ \text{k}\Omega$ resistor by dividing the voltage across it by the current through the combination of resistor and voltmeter, and finds an apparent resistance $R_{\text{app}} = 449 \pm 2\ \text{k}\Omega$ (supplied, illustrative data). The voltmeter has an input resistance of $10\ \text{M}\Omega$, which the student assumed to be infinite. Document the effect of this assumption as it would appear in a report: give a small results table, the corrected value and a conclusion about systematic uncertainty.
+hint: The voltmeter in parallel with the resistor changes the apparent resistance to $R_{\text{app}} = R R_m/(R + R_m)$.
+hint: Solve for $R$, then compare the shift with the statistical uncertainty of $2\ \text{k}\Omega$.
+solution: Solving $R_{\text{app}} = R R_m/(R+R_m)$ gives $R = R_{\text{app}}R_m/(R_m - R_{\text{app}}) = 449 \times 10\,000/(10\,000 - 449) = 470.1\ \text{k}\Omega$. Table: baseline (ideal voltmeter) $449 \pm 2$ k$\Omega$; changed assumption ($R_m = 10$ M$\Omega$) $470 \pm 2$ k$\Omega$; difference $+21$ k$\Omega$, or $+4.7\%$, about $10$ times the statistical uncertainty. Conclusion: the ideal-meter assumption causes a systematic error far larger than the scatter, so the loading correction must be applied and the report should quote $470 \pm 2$ k$\Omega$ plus the uncertainty from $R_m$ (its tolerance, which should be looked up or measured). Choosing a smaller test resistor would also reduce the effect.
+rubric: Uses the parallel-resistance model to correct $R_{\text{app}}$ and obtains about $470\ \text{k}\Omega$.
+rubric: Presents a table with the baseline, the changed assumption, the new value and the difference.
+rubric: Compares the $21\ \text{k}\Omega$ shift with the $2\ \text{k}\Omega$ statistical uncertainty and concludes that it is a systematic error.
+rubric: States what to report or do next, such as applying the correction and including the meter-resistance uncertainty.
+
+@quiz num
+prompt: A regression test compares a benchmark value of $2.718282$ with a rerun that gives $2.718279$. Find the relative difference in parts per million (ppm).
+answer: 1.10
+check: abs(2.718279 - 2.718282) / 2.718282 * 1e6
+tol: 0.02
+unit: ppm
+hint: The relative difference is the absolute difference divided by the reference value.
+hint: One part per million is $10^{-6}$.
+solution: $|2.718279 - 2.718282|/2.718282 = 3\times10^{-6}/2.718 = 1.10\times10^{-6}$, that is $1.10$ ppm. This passes a test with `rtol=1e-5` but fails one with `rtol=1e-8`, so the tolerance must be chosen from the physics.
+
+@quiz mc
+prompt: Why should the raw data files be stored read-only together with a checksum?
+choice: It makes the data more accurate.
+choice*: It lets anyone detect accidental changes and ensures every analysis starts from the same data.
+choice: It removes the need to record the instrument settings.
+choice: It lets the analysis be run without any code.
+hint: Think about what could go wrong if a file were edited and nobody noticed.
+hint: A checksum changes if even one character of the file changes.
+solution: Read-only storage prevents accidental edits, and the checksum reveals any change, so results can be tied to one exact version of the data. It does not improve accuracy and does not replace metadata or code.

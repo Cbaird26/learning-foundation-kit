@@ -1,0 +1,165 @@
+@lesson
+title: Stability
+summary: Derive stability limits for ODE methods and PDE schemes from amplification factors, and test a predicted limit numerically.
+objective: Find the step-size limit of an ODE method from its amplification factor $R(z)$ on the test equation $y'=\lambda y$, and recognize A-stable and stiff cases.
+objective: Perform a von Neumann analysis of a linear scheme and state the resulting limit (for example $r\le\tfrac12$ for explicit heat, $0\le\nu\le1$ for upwind).
+objective: Design a numerical test that brackets a stability limit and distinguishes instability from inaccuracy.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on stability and step-size selection when integrating differential equations numerically.
+
+@article
+A scheme can be consistent and still useless: if small errors, including rounding errors, are amplified from step to step, the computed solution is dominated by noise. **Stability** is the property that prevents this. For linear, well-posed problems, the Lax equivalence theorem says that a consistent scheme **converges if and only if it is stable**. This lesson shows how to derive a stability limit and how to confirm it by experiment.
+
+### Absolute stability for ODE methods
+
+Apply a one-step method to the test equation $y'=\lambda y$ with $\operatorname{Re}\lambda<0$. It reduces to $y_{n+1}=R(z)\,y_n$ with $z=h\lambda$, and the numerical solution decays only if $|R(z)|\le1$.
+
+| Method | $R(z)$ | Real-axis limit |
+|---|---|---|
+| explicit Euler | $1+z$ | $z\ge-2$ |
+| Heun (RK2) | $1+z+\tfrac{z^2}{2}$ | $z\ge-2$ |
+| classical RK4 | $1+z+\tfrac{z^2}{2}+\tfrac{z^3}{6}+\tfrac{z^4}{24}$ | $z\ge-2.785$ |
+| implicit Euler | $\dfrac{1}{1-z}$ | none (all $z\le0$) |
+| trapezoid rule | $\dfrac{1+z/2}{1-z/2}$ | none (all $z\le0$) |
+
+For real $\lambda<0$ the explicit limits become $h\le 2/|\lambda|$ (Euler, Heun) and $h\le2.785/|\lambda|$ (RK4). A method whose stability region contains the whole left half-plane is **A-stable**. Implicit Euler also has $R\to0$ as $z\to-\infty$, so stiff modes are damped; the trapezoid rule has $R\to-1$, so they are not damped but flip sign every step.
+
+A problem is **stiff** when stability rather than accuracy limits the step. The semi-discrete heat equation of the last lesson is the standard case: its fastest mode has $\lambda=-4\alpha/h_x^2$, so an explicit method must use a time step of order $h_x^2$ even after that mode has decayed to nothing.
+
+### von Neumann analysis
+
+For a linear, constant-coefficient scheme on a periodic grid, insert the Fourier mode $u_j^n=g^{\,n}e^{\,ij\theta}$ with $\theta=k\,\Delta x\in[-\pi,\pi]$. The **amplification factor** $g(\theta)$ must satisfy $|g(\theta)|\le1$ for every $\theta$.
+
+**Explicit (FTCS) heat equation** $u_t=\alpha u_{xx}$, $r=\alpha\Delta t/\Delta x^2$:
+
+$$u_j^{n+1}=u_j^n+r\,(u_{j+1}^n-2u_j^n+u_{j-1}^n)\ \Longrightarrow\ g=1-4r\sin^2\frac\theta2 .$$
+
+The worst mode is $\theta=\pi$, where $g=1-4r$, so stability requires $r\le\tfrac12$, i.e. $\Delta t\le \Delta x^2/(2\alpha)$.
+
+**Upwind advection** $u_t+cu_x=0$, $c>0$, $\nu=c\Delta t/\Delta x$ (the Courant number):
+
+$$u_j^{n+1}=u_j^n-\nu\,(u_j^n-u_{j-1}^n)\ \Longrightarrow\ |g|^2=1-2\nu(1-\nu)(1-\cos\theta),$$
+
+so the scheme is stable iff $0\le\nu\le1$. By contrast, central differencing in space with forward Euler in time has $g=1-i\nu\sin\theta$ and $|g|^2=1+\nu^2\sin^2\theta>1$: it is unstable for every $\nu$.
+
+The condition $\nu\le1$ is an instance of the **CFL condition**: the numerical domain of dependence must contain the physical one. It is *necessary*, not sufficient.
+
+### Testing a stability limit
+
+Always **predict, then bracket**. Start with broadband (random) initial data so that every mode is present, run a fixed number of steps at parameter values just below and above the predicted limit, and record the maximum norm:
+
+```python
+import numpy as np
+
+def ftcs_heat_growth(r, n=60, steps=400, seed=0):
+    u = np.random.default_rng(seed).standard_normal(n)
+    u[0] = u[-1] = 0.0
+    for _ in range(steps):
+        u[1:-1] += r * (u[2:] - 2 * u[1:-1] + u[:-2])
+    return np.abs(u).max()
+
+for r in (0.4, 0.5, 0.51, 0.6):
+    print(r, ftcs_heat_growth(r))
+```
+
+Below the limit the amplitude decays or stays $O(1)$; above it the highest-frequency component grows like $|g|^{n}$ and the max norm explodes by many orders of magnitude within a few hundred steps. Instability is geometric growth that increases when you refine the step count, while inaccuracy is a bounded error that shrinks with $h$. Also check that the growing pattern is grid-scale (alternating sign), as the analysis predicts.
+
+Von Neumann analysis assumes linearity, constant coefficients and periodic data. Boundary conditions, variable coefficients and nonlinearity can change the limit, so treat the formula as the starting point of a test, not a replacement for one.
+
+@example
+title: Step-size limit for Heun's method
+problem: Heun's method is applied to $y'=-400y$. Find the largest stable step and the growth factor per step at $h=0.006$.
+step: For $y'=\lambda y$: $k_1=\lambda y$, $k_2=\lambda(y+hk_1)=\lambda y(1+z)$, so $y_{n+1}=y_n\big(1+\tfrac z2(2+z)\big)=y_n\big(1+z+\tfrac{z^2}{2}\big)$.
+step: Condition $R\le1$: $z+\tfrac{z^2}{2}\le0\iff-2\le z\le0$. The condition $R\ge-1$ is $\tfrac{(z+1)^2}{2}+\tfrac32\ge0$, always true.
+step: With $z=-400h\ge-2$ the limit is $h\le0.005$.
+step: At $h=0.006$, $z=-2.4$ and $R=1-2.4+2.88=1.48$. The numerical solution grows by $48\%$ per step even though the exact solution decays like $e^{-400t}$.
+
+@example
+title: von Neumann limit for the explicit heat scheme
+problem: Derive the stability limit of the forward-time centered-space scheme for $u_t=\alpha u_{xx}$ and find the largest $\Delta t$ for $\alpha=0.5$ and $\Delta x=0.1$.
+step: Insert $u_j^n=g^{n}e^{ij\theta}$: $g=1+r(e^{i\theta}-2+e^{-i\theta})=1+2r(\cos\theta-1)=1-4r\sin^2(\theta/2)$.
+step: $g$ is real and lies between $1-4r$ (at $\theta=\pi$) and $1$ (at $\theta=0$). The upper bound $g\le1$ is automatic; $g\ge-1$ requires $1-4r\ge-1$, i.e. $r\le\tfrac12$.
+step: With $\alpha=0.5$, $\Delta x=0.1$: $\Delta t\le\Delta x^2/(2\alpha)=0.01/1.0=0.01$.
+step: Halving $\Delta x$ forces $\Delta t$ to drop by a factor of four, so the cost of a 1D explicit run grows like $\Delta x^{-3}$.
+
+@mistakes
+- Equating a stable run with an accurate one: a stable scheme can still have large truncation error.
+- Applying the test-equation limit $h\le2/|\lambda|$ with the wrong $\lambda$; for a system use the eigenvalue of largest magnitude.
+- Checking stability with smooth initial data only, which never excites the worst mode and makes an unstable scheme look fine for a long time.
+- Treating the CFL condition $\nu\le1$ as sufficient, or applying it to a scheme (like central differencing in space with forward Euler) that is unstable for every $\nu$.
+
+@practice num
+prompt: Explicit Euler is applied to $y'=-100y$. What is the largest step size $h$ for which $|y_{n+1}|\le|y_n|$ for all $n$?
+answer: 0.02
+check: root(lambda h: abs(1.0 + h * (-100.0)) - 1.0, 0.001, 0.1)
+hint: One Euler step multiplies $y$ by $1+h\lambda$.
+hint: You need $|1-100h|\le1$.
+solution: $|1-100h|\le1$ means $0\le h\le0.02$. At $h=0.02$ the factor is exactly $-1$: the solution neither decays nor grows, but flips sign.
+
+@practice num
+prompt: Apply one explicit FTCS heat step with $r=0.6$ to the alternating grid function $u_j=(-1)^j$ at an interior point. By what factor in magnitude is the grid function multiplied?
+answer: 1.4
+check: abs((lambda u: (u[1] + 0.6 * (u[2] - 2 * u[1] + u[0])) / u[1])([1.0, -1.0, 1.0]))
+hint: The stencil is $u_j+r(u_{j+1}-2u_j+u_{j-1})$.
+hint: At an odd point, $u_j=-1$ and both neighbors are $+1$.
+solution: The new value is $-1+0.6(1+2+1)=1.4$ while the old value was $-1$, so the factor is $-1.4$ and its magnitude is $1.4>1$. This is $g(\pi)=1-4r$: the alternating mode grows, so $r=0.6$ is unstable.
+
+@practice mc
+prompt: Which statement about the scheme $u_j^{n+1}=u_j^n-\tfrac{\nu}{2}(u_{j+1}^n-u_{j-1}^n)$ for $u_t+cu_x=0$ (forward Euler in time, central difference in space) is correct?
+choice: It is stable if the Courant number satisfies $\nu\le1$.
+choice*: It is unstable for every $\nu>0$, because $|g|^2=1+\nu^2\sin^2\theta>1$.
+choice: It is stable if $\nu\le\tfrac12$, as for the heat equation.
+choice: It is stable but inaccurate for large $\nu$.
+hint: Compute $g(\theta)$ with $u_j^n=g^ne^{ij\theta}$; the centered difference gives an imaginary term.
+solution: $g=1-i\nu\sin\theta$, so $|g|^2=1+\nu^2\sin^2\theta>1$ for any $\nu\ne0$ and $\theta\ne0,\pi$. The CFL condition $\nu\le1$ is only necessary, and here it is not sufficient.
+
+@practice num
+prompt: The explicit heat scheme is used for $u_t=\alpha u_{xx}$ with $\alpha=0.01$ and $\Delta x=0.02$. Find the largest stable $\Delta t$.
+answer: 0.02
+check: root(lambda dt: abs(1.0 - 4.0 * (0.01 * dt / 0.02**2)) - 1.0, 0.001, 0.1)
+hint: Stability requires $r=\alpha\Delta t/\Delta x^2\le\tfrac12$.
+hint: $\Delta x^2=4\times10^{-4}$.
+solution: $\Delta t\le\Delta x^2/(2\alpha)=4\times10^{-4}/0.02=0.02$.
+
+@practice num
+prompt: Block exercise: test a stability limit. Classical RK4 is applied to $y'=-50y$. Find the largest step size $h$ for which $|y_{n+1}|\le|y_n|$, to four decimals. (The RK4 amplification factor is the value of one RK4 step starting from $y=1$.)
+answer: 0.0557
+check: root(lambda h: abs((lambda f: (lambda k1: (lambda k2: (lambda k3: (lambda k4: 1.0 + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4))(f(1.0 + h * k3)))(f(1.0 + h / 2 * k2)))(f(1.0 + h / 2 * k1)))(f(1.0)))(lambda y: -50.0 * y)) - 1.0, 0.04, 0.07)
+tol: 0.0001
+hint: Write $R(z)=1+z+\tfrac{z^2}{2}+\tfrac{z^3}{6}+\tfrac{z^4}{24}$ with $z=-50h$ and solve $R(z)=1$ for negative $z$ (or bracket numerically).
+hint: The real-axis limit of RK4 is $z\approx-2.785$.
+solution: Solving $R(z)=1$ for $z<0$ gives $z^*\approx-2.7853$, so $h^*=2.7853/50=0.0557$. Numerically, run 200 steps at $h=0.05$ (decays) and $h=0.06$ (blows up): $R(-3)=1.375$, so the second run grows by 37.5% per step. Compare with Euler's limit $h=0.04$.
+
+@quiz num
+prompt: The trapezoid rule $y_{n+1}=y_n+\tfrac h2\big(f(y_n)+f(y_{n+1})\big)$ is applied to $y'=-1000y$ with $h=0.1$ and $y_0=1$. What is $y_1$ to four decimals?
+answer: -0.9608
+check: root(lambda y1: y1 - 1.0 - 0.05 * (-1000.0 * 1.0 + -1000.0 * y1), -2.0, 2.0)
+tol: 0.00005
+hint: The step is implicit, but $f$ is linear, so solve a linear equation for $y_1$.
+hint: $y_1=1+0.05(-1000-1000y_1)$.
+solution: $y_1=1-50-50y_1$, so $51y_1=-49$ and $y_1=-49/51\approx-0.9608$. The method is A-stable, so it does not blow up, but it flips the sign instead of decaying like $e^{-100}$: it is not L-stable.
+
+@quiz self
+prompt: Practical. For $u_t+cu_x=0$ with $c>0$ on a periodic grid, derive the stability limit of the first-order upwind scheme $u_j^{n+1}=u_j^n-\nu(u_j^n-u_{j-1}^n)$ by von Neumann analysis. Then design a numerical test that confirms it, naming the initial data, the diagnostic, the parameter values and the outcome you predict for each.
+hint: Substitute $u_j^n=g^ne^{ij\theta}$ and compute $|g|^2$.
+hint: The test should include values of $\nu$ below, at and above the limit, and a broadband initial condition.
+solution: With $u_j^n=g^ne^{ij\theta}$, $g=1-\nu+\nu e^{-i\theta}$ and $|g|^2=(1-\nu+\nu\cos\theta)^2+\nu^2\sin^2\theta=1-2\nu(1-\nu)(1-\cos\theta)$. This is at most $1$ for all $\theta$ iff $\nu(1-\nu)\ge0$, i.e. $0\le\nu\le1$.
+
+Test code:
+
+```python
+import numpy as np
+
+def upwind_growth(nu, n=200, steps=400, seed=0):
+    u = np.random.default_rng(seed).standard_normal(n)
+    for _ in range(steps):
+        u = u - nu * (u - np.roll(u, 1))
+    return np.abs(u).max()
+
+for nu in (0.5, 0.9, 1.0, 1.05, 1.2):
+    print(nu, upwind_growth(nu))
+```
+Predictions: for $\nu\le1$ the max norm does not grow (it decays for $\nu<1$ by smoothing, and equals the initial maximum at $\nu=1$ where the step is an exact shift). For $\nu>1$ the grid-scale mode has $|g(\pi)|=|1-2\nu|>1$: $1.1$ per step at $\nu=1.05$ and $1.4$ at $\nu=1.2$, so after 400 steps the max norm is astronomically large and alternates in sign from point to point.
+rubric: Derives $g(\theta)$ and the expression $|g|^2=1-2\nu(1-\nu)(1-\cos\theta)$ and concludes $0\le\nu\le1$.
+rubric: Uses broadband (random) initial data and a fixed number of steps, sweeping $\nu$ across the predicted limit with a fixed seed.
+rubric: Predicts bounded behavior for $\nu\le1$ and geometric growth, with factor $|1-2\nu|$ per step for the grid-scale mode, for $\nu>1$.
+rubric: Notes that the test supports but does not prove the limit, and separates instability (growth that worsens with more steps) from inaccuracy.

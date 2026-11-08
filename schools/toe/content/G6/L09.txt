@@ -1,0 +1,169 @@
+@lesson
+title: Monte Carlo
+summary: Estimate integrals and expectations by random sampling, report a standard error, and generate samples reproducibly by inverse transform and Metropolis.
+objective: Write the Monte Carlo estimator and its standard error, and plan the sample size needed for a target error.
+objective: Seed generators reproducibly, create independent streams, and avoid the mistake of reusing a seed across replicates.
+objective: Sample by inversion and by the Metropolis rule, and name one variance-reduction technique and its condition.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on random numbers and Monte Carlo methods in scientific computing.
+
+@article
+**Monte Carlo** (MC) methods estimate a quantity by random sampling. They are the method of choice when an integral is high dimensional, when a distribution is known only through a simulator, or when a density is known only up to a constant.
+
+### Monte Carlo integration
+
+For a random variable $X$ with density $p$, the integral $I=\int f(x)p(x)\,dx = \mathbb E[f(X)]$ is estimated from independent draws $X_1,\dots,X_N\sim p$ by the sample mean
+
+$$\hat I_N=\frac1N\sum_{i=1}^{N}f(X_i).$$
+
+The estimator is unbiased, and by the central limit theorem its error is approximately normal with variance $\sigma^2/N$, where $\sigma^2=\operatorname{Var}f(X)$. In practice $\sigma$ is estimated from the same draws, giving the **standard error**
+
+$$\operatorname{SE}=\frac{s}{\sqrt N},\qquad s^2=\frac1{N-1}\sum_{i}(f(X_i)-\hat I_N)^2 .$$
+
+A 95% interval is roughly $\hat I_N\pm1.96\,\mathrm{SE}$ for large $N$. The $N^{-1/2}$ rate does not depend on dimension, which is the strength of MC, but it is slow: one more correct digit costs 100 times as many samples.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(12345)       # reproducible generator object
+N = 100_000
+f = np.exp(-rng.random(N) ** 2)           # integrand e^{-x^2}, x ~ U(0,1)
+print(f.mean(), f.std(ddof=1) / np.sqrt(N))   # about 0.7465 with SE about 6e-4; exact 0.7468...
+```
+
+### Reproducibility and independent streams
+
+Pseudo-random numbers are deterministic: the same seed gives the same stream. Create a generator once with `np.random.default_rng(seed)` and pass it to your functions instead of relying on global state. To run independent replicates or parallel workers, spawn child streams:
+
+```python
+ss = np.random.SeedSequence(2024)
+rngs = [np.random.default_rng(s) for s in ss.spawn(8)]   # 8 independent streams
+```
+
+Creating each replicate with the *same* seed gives identical "independent" runs, a classic and silent bug. Record the seed and library versions with every result.
+
+### Generating samples
+
+**Inverse transform.** If $U\sim U(0,1)$ and $F$ is a CDF with inverse $F^{-1}$, then $F^{-1}(U)$ has distribution $F$. For the exponential distribution, $F(x)=1-e^{-\lambda x}$, so $X=-\ln(1-U)/\lambda$.
+
+**Rejection sampling.** Draw $Y$ from an easy density $q$ with $p(x)\le Mq(x)$; accept with probability $p(Y)/(Mq(Y))$. The acceptance rate is $1/M$, which collapses in high dimension.
+
+### Variance reduction
+
+Cut $\sigma$ rather than raising $N$. **Control variates** subtract a correlated function $g$ with known mean: use $f-\beta\,(g-\mathbb E g)$. **Antithetic variates** pair $U$ with $1-U$. **Importance sampling** draws from $q$ and averages $f\,p/q$; it needs $q$ to have tails at least as heavy as $p$, otherwise the variance can be infinite.
+
+### Markov chain Monte Carlo
+
+When only $\pi(x)$ up to a constant is available, build a Markov chain with $\pi$ as stationary distribution. The **Metropolis** rule proposes $y=x+\epsilon$ from a symmetric distribution and accepts with probability $\min\{1,\pi(y)/\pi(x)\}$, which satisfies detailed balance.
+
+```python
+def metropolis(logp, x0, step, n, rng):
+    x, lp = x0, logp(x0)
+    out = np.empty(n)
+    for i in range(n):
+        y = x + step * rng.standard_normal()
+        lq = logp(y)
+        if np.log(rng.random()) < lq - lp:
+            x, lp = y, lq
+        out[i] = x
+    return out
+```
+
+Tune `step` so that the acceptance rate is neither near 0 (steps so large that almost every proposal is rejected) nor near 1 (steps so small that the chain diffuses slowly), and discard an initial burn-in. The output is **correlated**, so the formula $s/\sqrt N$ does not apply to it; handling that is the topic of the next lesson.
+
+@example
+title: Planning a sample size
+problem: A pilot run with $N=10^4$ draws of $f(X)$ gives $\hat I=0.7471$ and sample standard deviation $s=0.2012$. Report the standard error and a 95% interval, and estimate how many draws give $\mathrm{SE}=10^{-4}$.
+step: $\mathrm{SE}=s/\sqrt N=0.2012/100=2.01\times10^{-3}$.
+step: The 95% interval is $0.7471\pm1.96(2.01\times10^{-3})=0.7471\pm0.0039$, i.e. $[0.7432,\,0.7510]$.
+step: Since $\mathrm{SE}\propto N^{-1/2}$, we need $N=(s/\mathrm{SE}_{\text{target}})^2=(0.2012/10^{-4})^2\approx4.0\times10^{6}$.
+step: That is $400$ times the pilot size for a $20$-fold smaller error. A variance-reduction trick that halves $s$ would cut the required $N$ by four.
+
+@example
+title: Sampling an exponential by inversion
+problem: Generate a sample from $p(x)=\lambda e^{-\lambda x}$ using a uniform $U$, and compute the sample for $\lambda=2$, $U=0.3$.
+step: The CDF is $F(x)=1-e^{-\lambda x}$ for $x\ge0$.
+step: Solve $u=F(x)$ for $x$: $e^{-\lambda x}=1-u$, so $x=-\ln(1-u)/\lambda$.
+step: With $\lambda=2$ and $u=0.3$: $x=-\ln(0.7)/2=0.3567/2=0.1783$.
+step: Check: $F(0.1783)=1-e^{-0.3567}=0.3$. Averaging many such $x$ should approach the mean $1/\lambda=0.5$.
+
+@mistakes
+- Creating every replicate with `default_rng(0)` and being surprised that all the "independent" results are identical.
+- Reporting an estimate without its standard error and sample size, or using `ddof=0` for small samples.
+- Using $s/\sqrt N$ for Markov chain output, which treats correlated samples as independent and understates the error.
+- Importance sampling with a proposal whose tails are lighter than the target's, which makes the variance infinite.
+
+@practice num
+prompt: A Monte Carlo run with $N=10^4$ draws has sample standard deviation $s=0.2012$. Give the standard error of the mean.
+answer: 0.002012
+check: 0.2012 / math.sqrt(1e4)
+hint: The standard error is the sample standard deviation divided by $\sqrt N$.
+hint: $\sqrt{10^4}=100$.
+solution: $\mathrm{SE}=0.2012/100=0.002012$.
+
+@practice num
+prompt: With $N=2500$ draws a Monte Carlo estimate has $\mathrm{SE}=4\times10^{-3}$. How many draws are needed for $\mathrm{SE}=10^{-3}$?
+answer: 40000
+check: 2500 * (4e-3 / 1e-3) ** 2
+hint: The standard error scales as $N^{-1/2}$.
+hint: To divide the error by $4$, multiply $N$ by $4^2$.
+solution: $N=2500\times(4)^2=40\,000$.
+
+@practice mc
+prompt: A student runs 100 replicates of a Monte Carlo estimate, creating each one inside a loop with `rng = np.random.default_rng(0)`. All 100 estimates are identical. What is the correct fix?
+choice: Increase $N$ in each replicate until the estimates differ.
+choice*: Give each replicate its own stream, for example from `np.random.SeedSequence(0).spawn(100)`.
+choice: Call `np.random.seed(0)` before each replicate as well.
+choice: Use `ddof=1` when computing the standard deviation.
+hint: Identical seeds give identical streams.
+solution: A fixed seed makes the generator deterministic, so every replicate repeats the same numbers. Spawn independent child streams from a single `SeedSequence` (or use distinct seeds) so the replicates are independent and still reproducible.
+
+@practice num
+prompt: Sample an exponential distribution with rate $\lambda=2$ by inverting its CDF. What value of $X$ corresponds to the uniform number $U=0.3$? Give four decimals.
+answer: 0.1783
+check: root(lambda x: 1.0 - math.exp(-2.0 * x) - 0.3, 0.0, 5.0)
+tol: 0.00005
+hint: Solve $F(x)=1-e^{-\lambda x}=u$ for $x$.
+hint: $e^{-2x}=0.7$.
+solution: $x=-\ln(0.7)/2=0.35667/2=0.1783$.
+
+@practice num
+prompt: To estimate $\pi$, draw points uniformly in the unit square and let $\hat p$ be the fraction with $x^2+y^2<1$, so $\hat\pi=4\hat p$. For $N=10^{6}$ draws, what is the standard error of $\hat\pi$? Use $p=\pi/4$, and give the answer in units of $10^{-3}$ to two decimals.
+answer: 1.64
+check: 4 * math.sqrt((math.pi / 4) * (1 - math.pi / 4) / 1e6) / 1e-3
+tol: 0.005
+hint: Each point is a Bernoulli trial with success probability $p$, whose variance is $p(1-p)$.
+hint: $\operatorname{SE}(\hat p)=\sqrt{p(1-p)/N}$, and $\hat\pi=4\hat p$ multiplies it by $4$.
+solution: $p(1-p)=0.7854\times0.2146=0.16855$, so $\operatorname{SE}(\hat p)=\sqrt{0.16855/10^{6}}=4.105\times10^{-4}$ and $\operatorname{SE}(\hat\pi)=1.642\times10^{-3}$. Getting $10^{-4}$ would need about $2.7\times10^{8}$ points.
+
+@quiz num
+prompt: A Metropolis sampler targets $\pi(x)\propto e^{-x^2/2}$ with a symmetric proposal. The current state is $x=1$ and the proposal is $y=2$. What is the acceptance probability? Give it to four decimals.
+answer: e^(-3/2)
+check: min(1.0, math.exp(-2.0**2 / 2) / math.exp(-1.0**2 / 2))
+tol: 0.00005
+hint: With a symmetric proposal the acceptance probability is $\min\{1,\pi(y)/\pi(x)\}$.
+hint: The normalizing constant cancels in the ratio.
+solution: $\pi(y)/\pi(x)=e^{-2}/e^{-1/2}=e^{-3/2}\approx0.2231$. Since this is less than $1$, it is the acceptance probability.
+
+@quiz self
+prompt: Write a function `mc_integral(f, a, b, N, rng)` that estimates $\int_a^bf(x)\,dx$ with uniform sampling and returns the estimate and its standard error. Then describe a replicate experiment, using independent streams, that checks the reported standard error is honest.
+hint: The estimator is $(b-a)$ times the sample mean of $f$; the standard error scales by the same factor.
+hint: In the check, compare the standard deviation of many estimates with the average reported standard error.
+solution: Model code:
+
+```python
+import numpy as np
+
+def mc_integral(f, a, b, N, rng):
+    x = rng.uniform(a, b, N)
+    y = f(x)
+    return (b - a) * y.mean(), (b - a) * y.std(ddof=1) / np.sqrt(N)
+
+def check_se(f, a, b, N, reps=200, seed=1):
+    streams = [np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(reps)]
+    res = np.array([mc_integral(f, a, b, N, r) for r in streams])
+    return res[:, 0].std(ddof=1), res[:, 1].mean()
+```
+If the standard errors are honest, the first returned number (the empirical spread of the estimates) is close to the second (the mean reported SE), within about $1/\sqrt{2\,\text{reps}}\approx5\%$. A large mismatch signals correlated samples, a bug, or heavy tails.
+rubric: Scales the sample mean and the standard error by $(b-a)$ and uses `ddof=1`.
+rubric: Uses independent child streams (for example `SeedSequence.spawn`) for the replicates rather than a repeated seed.
+rubric: Compares the empirical standard deviation of the replicate estimates with the average reported standard error.

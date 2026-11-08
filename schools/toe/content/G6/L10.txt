@@ -1,0 +1,173 @@
+@lesson
+title: Uncertainty estimation
+summary: Estimate the sampling error of an average of correlated data using autocorrelation time, effective sample size and blocking, and report it honestly.
+objective: Compute the integrated autocorrelation time $\tau_{\rm int}$ and effective sample size $N_{\rm eff}=N/(2\tau_{\rm int})$, and correct a naive standard error for dependence.
+objective: Carry out and interpret a blocking (batch-means) analysis, and say when an i.i.d. bootstrap is invalid.
+objective: Propagate independent uncertainties through a formula and report statistical and systematic components separately.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on estimating errors and uncertainties in numerical and statistical results.
+
+@article
+The formula $s/\sqrt N$ is valid only for independent samples. Data from Markov chains, time series and molecular simulations are **correlated**, and using the naive formula understates the error, sometimes by a factor of ten or more. This lesson shows how to estimate the error properly.
+
+### Variance of a correlated mean
+
+Let $x_1,\dots,x_N$ be a stationary sequence with variance $\sigma^2$ and autocorrelation $\rho_k=\operatorname{Corr}(x_t,x_{t+k})$. Then
+
+$$\operatorname{Var}(\bar x)=\frac{\sigma^2}{N}\Big[1+2\sum_{k=1}^{N-1}\Big(1-\frac kN\Big)\rho_k\Big]\;\approx\;\frac{\sigma^2}{N}\,2\tau_{\rm int},\qquad \tau_{\rm int}=\tfrac12+\sum_{k\ge1}\rho_k .$$
+
+The **integrated autocorrelation time** $\tau_{\rm int}$ is the number of steps for which the chain "forgets", and
+
+$$N_{\rm eff}=\frac{N}{2\tau_{\rm int}}$$
+
+is the **effective sample size**. For independent data $\tau_{\rm int}=\tfrac12$ and $N_{\rm eff}=N$. The correct standard error is $\mathrm{SE}_{\rm naive}\sqrt{2\tau_{\rm int}}$.
+
+A standard test case is the AR(1) process $x_{t+1}=\phi x_t+\sqrt{1-\phi^2}\,\xi_t$ with unit variance, for which $\rho_k=\phi^{k}$, so
+
+$$\tau_{\rm int}=\frac12\,\frac{1+\phi}{1-\phi},\qquad N_{\rm eff}=N\,\frac{1-\phi}{1+\phi}.$$
+
+For $\phi=0.9$ we get $\tau_{\rm int}=9.5$: the naive error is too small by $\sqrt{19}\approx4.4$.
+
+### Estimating $\tau_{\rm int}$
+
+Estimate the autocorrelation function $\hat\rho_k$ from the data (the FFT does it in $O(N\log N)$) and sum it with an **automatic window**: stop at the first $M$ with $M\ge c\,\hat\tau_{\rm int}(M)$, $c\approx5$. Summing to the end adds only noise, because $\hat\rho_k$ at large lags has error of order $N^{-1/2}$.
+
+```python
+import numpy as np
+
+def tau_int(x, c=5.0):
+    x = np.asarray(x, float) - np.mean(x)
+    n = len(x)
+    f = np.fft.rfft(x, 2 * n)
+    acf = np.fft.irfft(f * np.conj(f))[:n]
+    acf /= acf[0]
+    tau = 0.5
+    for m in range(1, n):
+        tau += acf[m]
+        if m >= c * tau:
+            break
+    return tau
+```
+
+### Blocking (batch means)
+
+Split the series into $n_b$ blocks of length $B$ and compute the standard error of the block means. If $B\gg\tau_{\rm int}$ the block means are nearly independent, so the result is a valid SE. Plot SE against $B$: it **rises from the naive value and reaches a plateau**; the plateau is the answer.
+
+```python
+def blocking_se(x, B):
+    nb = len(x) // B
+    means = np.asarray(x[: nb * B]).reshape(nb, B).mean(axis=1)
+    return means.std(ddof=1) / np.sqrt(nb)
+```
+
+If SE keeps rising as $B$ grows, the run is too short: there are too few independent blocks to say anything. With only a few blocks the plateau itself is noisy (relative error about $1/\sqrt{2(n_b-1)}$).
+
+### Resampling
+
+The ordinary bootstrap resamples points independently, so it **destroys the correlation** and returns the naive error. For dependent data use a **block bootstrap** (resample whole blocks of length $\gtrsim\tau_{\rm int}$) or the blocking analysis above. The **jackknife** (leave out a block at a time) gives errors for nonlinear functions of means.
+
+### Propagation and reporting
+
+For $y=f(x_1,\dots,x_m)$ with independent uncertainties $\sigma_i$,
+
+$$\sigma_y^2\approx\sum_{i}\Big(\frac{\partial f}{\partial x_i}\Big)^2\sigma_i^2 .$$
+
+Report **statistical** error (shrinks with $N_{\rm eff}$) and **systematic** error (finite step size, finite size, model choice) separately, with $N$, $N_{\rm eff}$, the seed and the method used to get the error bar.
+
+@example
+title: Effective sample size for an AR(1) series
+problem: A series of $N=19\,000$ points follows an AR(1) process with $\phi=0.9$ and unit variance. Find $\tau_{\rm int}$, $N_{\rm eff}$, and the true standard error of the mean compared with the naive one.
+step: The autocorrelations are $\rho_k=0.9^{k}$, so $\sum_{k\ge1}\rho_k=0.9/(1-0.9)=9$ and $\tau_{\rm int}=0.5+9=9.5$.
+step: $N_{\rm eff}=N/(2\tau_{\rm int})=19\,000/19=1000$. The series carries the information of only 1000 independent points.
+step: The naive error is $1/\sqrt{19\,000}=7.25\times10^{-3}$.
+step: The correct error is $\sqrt{2\tau_{\rm int}/N}=\sqrt{19/19\,000}=\sqrt{10^{-3}}=0.0316$, larger by $\sqrt{19}\approx4.36$.
+
+@example
+title: Reading a blocking plot
+problem: A blocking analysis of $N=10^5$ correlated samples (unit variance) gave standard errors $0.0032,\ 0.0085,\ 0.0130,\ 0.0137,\ 0.0141$ for block sizes $B=1,10,100,10^3,10^4$. Report the error, $\tau_{\rm int}$ and $N_{\rm eff}$.
+step: $B=1$ is the naive value $1/\sqrt N=0.0032$. The SE rises with $B$ because the blocks become more independent.
+step: It levels off near $0.0137$ for $B=10^{3}$; $B=10^{4}$ has only 10 blocks, so $0.0141$ is within its large noise. Take the plateau $\mathrm{SE}\approx0.0137$.
+step: Then $2\tau_{\rm int}=N\,\mathrm{SE}^2/\sigma^2=10^5\times(0.0137)^2=18.8$, so $\tau_{\rm int}\approx9.4$.
+step: $N_{\rm eff}=N/(2\tau_{\rm int})\approx5300$, and the quoted result is the mean $\pm\,0.014$, with the naive $\pm0.003$ being wrong by a factor of $4.3$.
+
+@mistakes
+- Quoting $s/\sqrt N$ for Markov chain or time-series data and so understating the error.
+- Using an i.i.d. bootstrap on correlated data, which resamples away the very correlation that inflates the error.
+- Choosing a block size smaller than $\tau_{\rm int}$ and reading the still-rising part of the curve as the answer.
+- Summing the autocorrelation estimate to large lags with no window, so the noise in $\hat\rho_k$ dominates $\hat\tau_{\rm int}$.
+
+@practice num
+prompt: A stationary AR(1) series has $\rho_k=0.5^{k}$. Compute the integrated autocorrelation time $\tau_{\rm int}=\tfrac12+\sum_{k\ge1}\rho_k$.
+answer: 1.5
+check: 0.5 + sum(0.5**k for k in range(1, 200))
+hint: The sum $\sum_{k\ge1}r^k$ is a geometric series.
+hint: $\sum_{k\ge1}0.5^k=1$.
+solution: $\tau_{\rm int}=\tfrac12+\frac{0.5}{1-0.5}=1.5$. This equals $\tfrac12\frac{1+\phi}{1-\phi}$ with $\phi=0.5$.
+
+@practice num
+prompt: An AR(1) chain with $\phi=0.8$ has $N=9000$ points. What is the effective sample size $N_{\rm eff}=N/(1+2\sum_{k\ge1}\rho_k)$?
+answer: 1000
+check: 9000 / (1 + 2 * sum(0.8**k for k in range(1, 400)))
+hint: $\sum_{k\ge1}0.8^k=0.8/0.2$.
+hint: The denominator is $2\tau_{\rm int}=1+2\sum_{k\ge1}\rho_k=9$.
+solution: $\sum_{k\ge1}0.8^k=4$, so $2\tau_{\rm int}=1+8=9$ and $N_{\rm eff}=9000/9=1000$.
+
+@practice mc
+prompt: You have a long correlated Markov chain output and want an error bar on its mean. Which procedure is valid?
+choice: Resample the individual points with replacement (ordinary bootstrap) and take the spread of the resampled means.
+choice: Divide the sample standard deviation by $\sqrt N$.
+choice*: Resample whole blocks of length well above $\tau_{\rm int}$ (block bootstrap), or use a blocking analysis and read the plateau.
+choice: Discard every second point and apply $s/\sqrt N$ to the rest, whatever the correlation.
+hint: Which methods keep the correlation structure intact when they resample or average?
+solution: Resampling individual points and $s/\sqrt N$ both treat the data as independent and return the naive error. Thinning by a fixed factor smaller than $\tau_{\rm int}$ leaves correlated data. Block resampling and blocking keep the correlation inside each block.
+
+@practice num
+prompt: A naive standard error of $2.0\times10^{-3}$ was computed for a chain with $\tau_{\rm int}=12.5$. What is the corrected standard error?
+answer: 0.01
+check: 0.002 * math.sqrt(2 * 12.5)
+hint: The correction factor is $\sqrt{2\tau_{\rm int}}$.
+hint: $2\tau_{\rm int}=25$.
+solution: The factor is $\sqrt{25}=5$, so the corrected error is $5\times2.0\times10^{-3}=0.010$.
+
+@practice num
+prompt: Block exercise: sampling error with dependence. An AR(1) chain with $\phi=0.9$ and unit variance has $N=10^5$ points. Compute the exact standard error of its mean from $\operatorname{Var}(\bar x)=\frac{\sigma^2}{N}\big[1+2\sum_{k=1}^{N-1}(1-k/N)\rho_k\big]$ with $\rho_k=0.9^k$. Give it in units of $10^{-3}$ to two decimals. (The naive value is $3.16$.)
+answer: 13.78
+check: math.sqrt((1 + 2 * sum((1 - k / 100000) * 0.9**k for k in range(1, 3000))) / 1e5) / 1e-3
+tol: 0.01
+hint: The sum over $k$ converges quickly, since $0.9^{k}$ is negligible for $k>300$.
+hint: Without the $(1-k/N)$ factor the bracket is $(1+\phi)/(1-\phi)=19$.
+solution: The bracket is $1+2\big(9-\tfrac{1}{N}\tfrac{0.9}{(0.1)^2}\big)=19-0.0018=18.998$, so $\mathrm{SE}=\sqrt{18.998/10^{5}}=0.013783$, i.e. $13.78$ in units of $10^{-3}$. The naive value $3.16$ is too small by $\sqrt{19}\approx4.36$.
+
+@quiz num
+prompt: For an AR(1) process with $\phi=0.7$, by what factor does the true standard error of the mean exceed the naive $\sigma/\sqrt N$ (for large $N$)? Give it to two decimals.
+answer: 2.38
+check: math.sqrt(1 + 2 * sum(0.7**k for k in range(1, 2000)))
+tol: 0.005
+hint: The factor is $\sqrt{2\tau_{\rm int}}=\sqrt{1+2\sum_{k\ge1}\rho_k}$.
+hint: $\sum_{k\ge1}0.7^k=0.7/0.3=7/3$.
+solution: $1+2(7/3)=17/3\approx5.667$ and $\sqrt{17/3}\approx2.38$.
+
+@quiz self
+prompt: Write a function `report_mean(x, blocks)` that takes a correlated series and a list of block sizes, and returns the mean, the blocking standard errors for each block size, and an estimate of $\tau_{\rm int}$ from the largest plateau value. Explain how you decide that the plateau has been reached, and what you report if it has not.
+hint: For each $B$, reshape the series into blocks, average, and compute the standard error of the block means.
+hint: Use $2\tau_{\rm int}\approx N\,\mathrm{SE}^2/s^2$ with $s^2$ the sample variance.
+solution: Model code:
+
+```python
+import numpy as np
+
+def report_mean(x, blocks):
+    x = np.asarray(x, float)
+    n = len(x)
+    ses = {}
+    for B in blocks:
+        nb = n // B
+        m = x[: nb * B].reshape(nb, B).mean(axis=1)
+        ses[B] = m.std(ddof=1) / np.sqrt(nb)
+    se = ses[max(blocks)]
+    tau = 0.5 * n * se**2 / x.var(ddof=1)
+    return x.mean(), ses, tau
+```
+The plateau is reached when the standard error stops increasing within its own noise over a factor of several in block size, with each block much longer than the estimated $\tau_{\rm int}$ and at least about 30 blocks left. If the curve is still rising at the largest usable $B$, the run is too short: report only a lower bound for the error, state that no plateau was seen, and extend the run.
+rubric: Computes block means with a reshape and the standard error of the block means with `ddof=1`.
+rubric: Converts the plateau standard error to $\tau_{\rm int}$ via $N\,\mathrm{SE}^2/(2s^2)$.
+rubric: States a plateau criterion (flat within noise, blocks much longer than $\tau_{\rm int}$, enough blocks) and says what to report if it is not met.

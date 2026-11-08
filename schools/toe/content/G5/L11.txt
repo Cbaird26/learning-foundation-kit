@@ -1,0 +1,175 @@
+@lesson
+title: Monte Carlo methods
+summary: Sample the Boltzmann distribution with a Markov chain, implement the Metropolis algorithm for the Ising model, and estimate averages with honest error bars that account for equilibration and autocorrelation.
+objective: State detailed balance and ergodicity and show that the Metropolis rule satisfies detailed balance for the Boltzmann distribution.
+objective: Implement a single-spin-flip Metropolis sweep for the 2D Ising model, with the correct $\Delta E$ and acceptance probabilities.
+objective: Estimate the integrated autocorrelation time and use it, or blocking, to compute a statistical error bar; explain critical slowing down.
+reading: Perimeter PSI Online course collection, Statistical Physics module: the module notes and exercises on Monte Carlo simulation, the Metropolis algorithm and error analysis (look up "importance sampling", "detailed balance" and "autocorrelation time").
+
+@article
+**Conventions.** We simulate the Ising model $H = -J\sum_{\langle ij\rangle}s_is_j$ ($h=0$) on an $L\times L$ square lattice with periodic boundaries, $N = L^2$. We set $J = k_B = 1$, so temperature is measured in units of $J/k_B$ and $\beta = 1/T$; the exact critical temperature is $T_c = 2/\ln(1+\sqrt2) = 2.269$. One **sweep** is $N$ attempted updates. Per-spin observables are $e = E/N$ and $m = |\sum_is_i|/N$.
+
+### Why sample
+
+The sum over $2^N$ configurations cannot be done for $N\sim10^3$ or more. **Importance sampling** generates configurations $s_1, s_2,\dots$ with probability $\pi(s) = e^{-\beta E(s)}/Z$ and estimates $\langle A\rangle\approx\frac1M\sum_tA(s_t)$. The partition function $Z$ is never needed.
+
+### Markov chains
+
+Choose transition probabilities $W(s\to s')$ with $\sum_{s'}W(s\to s')=1$. Two properties give the right answer:
+
+- **Ergodicity:** every configuration can be reached from every other in finitely many steps.
+- **Stationarity of $\pi$.** A sufficient condition is **detailed balance**,
+$$\pi(s)\,W(s\to s') = \pi(s')\,W(s'\to s) .$$
+
+Summing over $s'$ shows that $\pi$ is then stationary. Detailed balance is sufficient but not necessary.
+
+### Metropolis and heat bath
+
+Propose flipping one randomly chosen spin and accept with probability $\min(1, e^{-\beta\Delta E})$. The proposal is symmetric, so $W(s\to s')/W(s'\to s) = e^{-\beta\Delta E} = \pi(s')/\pi(s)$. For the Ising model flipping spin $i$ changes the energy by
+
+$$\Delta E = 2J\,s_i\sum_{j\in\text{nn}(i)}s_j \in \{-8,-4,0,4,8\}J .$$
+
+Only the acceptance probabilities for $\Delta E = 4J$ and $8J$ are nontrivial, so they can be precomputed. The **heat-bath** rule instead draws $s_i$ from its conditional distribution, $P(s_i=+1) = 1/(1+e^{-2\beta J\sum_j s_j})$.
+
+```python
+import numpy as np
+rng = np.random.default_rng(1)
+
+def sweep(s, beta):
+    L = s.shape[0]
+    for _ in range(L * L):
+        i, j = rng.integers(0, L, 2)
+        nn = s[(i+1) % L, j] + s[(i-1) % L, j] + s[i, (j+1) % L] + s[i, (j-1) % L]
+        dE = 2 * s[i, j] * nn                       # J = 1
+        if dE <= 0 or rng.random() < np.exp(-beta * dE):
+            s[i, j] = -s[i, j]
+
+L, T = 16, 2.0
+s = rng.choice([-1, 1], size=(L, L))                # hot start
+m = []
+for t in range(2000):
+    sweep(s, 1.0 / T)
+    m.append(abs(s.mean()))
+```
+
+### Equilibration
+
+The chain starts from an arbitrary configuration, so the first sweeps are not distributed according to $\pi$. Run from two different starts (all spins up, and random), plot $e(t)$ and $m(t)$, and discard everything before the curves agree and fluctuate stationarily. Running averages that still drift signal that you are not equilibrated.
+
+### Autocorrelation and error bars
+
+Successive configurations are correlated. For an observable $A$ the normalized autocorrelation function is $\rho(t) = [\langle A_0A_t\rangle - \langle A\rangle^2]/[\langle A^2\rangle - \langle A\rangle^2]$ and the **integrated autocorrelation time** is
+
+$$\tau_{\rm int} = \tfrac12 + \sum_{t\ge1}\rho(t),$$
+
+summed up to a window where $\rho$ has decayed into noise. For $M$ measurements with variance $\sigma_A^2$, the error of the mean is
+
+$$\delta\bar A = \sqrt{\frac{2\tau_{\rm int}\,\sigma_A^2}{M}},$$
+
+i.e. only $M/(2\tau_{\rm int})$ samples are effectively independent. **Blocking** achieves the same without computing $\rho$: average over blocks much longer than $\tau_{\rm int}$ and take the standard error of the block means.
+
+### Critical slowing down
+
+Near $T_c$ the correlation length grows and local updates decorrelate slowly: $\tau\sim\xi^{z}\sim L^{z}$ with $z\approx2.2$ for Metropolis in 2D. **Cluster algorithms** (Wolff) grow a cluster of aligned spins, adding each aligned neighbour with probability $p = 1 - e^{-2\beta J}$, and flip it; this satisfies detailed balance and reduces $z$ to about $0.3$ or less in 2D, making simulations near $T_c$ feasible.
+
+@example
+title: Detailed balance for Metropolis
+problem: Show that the Metropolis rule satisfies detailed balance for $\pi(s)\propto e^{-\beta E(s)}$.
+step: Let $s\to s'$ flip one spin, with $\Delta E = E(s') - E(s)$. The proposal probability is the same in both directions (choose that site with probability $1/N$), so only the acceptance probabilities matter.
+step: Case $\Delta E\le0$: the forward move is accepted with probability $1$. The reverse move has energy change $-\Delta E\ge0$ and is accepted with probability $e^{\beta\Delta E}$.
+step: The ratio of transition probabilities is $W(s\to s')/W(s'\to s) = 1/e^{\beta\Delta E} = e^{-\beta\Delta E}$.
+step: The Boltzmann ratio is $\pi(s')/\pi(s) = e^{-\beta\Delta E}$, so $\pi(s)W(s\to s') = \pi(s')W(s'\to s)$. The case $\Delta E>0$ is the same with the roles exchanged.
+
+@example
+title: Acceptance probabilities near $T_c$
+problem: For the 2D Ising model at $T = 2.269$, find the acceptance probabilities for $\Delta E = 4$ and $8$, and for $T=1$.
+step: At $T = 2.269$: $e^{-4/2.269} = e^{-1.763} = 0.171$.
+step: $\Delta E = 8$: $e^{-8/2.269} = e^{-3.526} = 0.0294$.
+step: At $T = 1$: $e^{-4} = 0.0183$ and $e^{-8} = 3.4\times10^{-4}$.
+step: At low $T$ almost all attempted flips of spins with aligned neighbours are rejected, so many sweeps yield little change; at $T_c$ roughly one in six attempts that raise the energy by $4J$ is accepted, but the correlated clusters still make decorrelation slow.
+
+@mistakes
+- Using the new energy $E'$ instead of the difference $\Delta E$ in the acceptance rule.
+- Estimating the error bar as $\sigma/\sqrt M$ with correlated data; it can be too small by a factor $\sqrt{2\tau_{\rm int}}$.
+- Averaging over the initial transient without checking equilibration, which biases the mean.
+- Believing that symmetric transition probabilities $W(s\to s') = W(s'\to s)$ give the Boltzmann distribution; they give the uniform one.
+
+@practice num
+prompt: In a 2D Ising Metropolis simulation at $T = 2.0$ (units $J=k_B=1$), a spin $s=+1$ has three neighbours $+1$ and one neighbour $-1$. Find the probability that the proposed flip is accepted. Round to three decimal places.
+answer: 0.135
+check: exp(-(2*1*(1+1+1-1))/2.0)
+tol: 0.002
+hint: Compute $\Delta E = 2s\sum_j s_j$ with $\sum_js_j = 3 - 1$.
+hint: $\Delta E = 4>0$, so the acceptance probability is $e^{-\Delta E/T}$.
+solution: $\sum_js_j = 2$, so $\Delta E = 2(+1)(2) = 4$ and the acceptance probability is $e^{-4/2} = e^{-2} = 0.135$.
+
+@practice num
+prompt: In a heat-bath update at $T = 2.0$ ($J = k_B = 1$) a spin has neighbour sum $\sum_js_j = +2$. Find the probability that the new spin value is $+1$. Round to three decimal places.
+answer: 0.881
+check: exp(2/2.0)/(exp(2/2.0) + exp(-2/2.0))
+tol: 0.002
+hint: The energies of the two states are $E_\pm = \mp J\sum_js_j$.
+hint: Weight each state by $e^{-E/T}$ and normalize.
+solution: $E_+ = -2$, $E_- = +2$. $P(+1) = e^{1}/(e^{1} + e^{-1}) = 1/(1+e^{-2}) = 0.881$.
+
+@practice mc
+prompt: Which condition guarantees that an ergodic Markov chain has the Boltzmann distribution $\pi(s)\propto e^{-\beta E(s)}$ as its stationary distribution?
+choice*: Detailed balance: $\pi(s)W(s\to s') = \pi(s')W(s'\to s)$ for all pairs of configurations.
+choice: Symmetric transition probabilities: $W(s\to s') = W(s'\to s)$.
+choice: Accepting every proposed move, so that no information about $E$ is lost.
+choice: Accepting a move with probability $e^{-\beta E'}$, where $E'$ is the energy of the proposed configuration.
+hint: Check which condition produces a ratio $W(s\to s')/W(s'\to s) = e^{-\beta\Delta E}$.
+hint: What distribution is stationary for symmetric transition probabilities?
+solution: Detailed balance with the Boltzmann $\pi$ requires $W(s\to s')/W(s'\to s) = e^{-\beta(E'-E)}$. Symmetric $W$ gives the uniform distribution, accepting everything does too, and using $E'$ instead of $\Delta E$ breaks the ratio.
+
+@practice expr
+prompt: A time series follows $x_{t+1} = \phi x_t + \text{noise}$ with $0<\phi<1$, so that its autocorrelation function is $\rho(t) = \phi^{t}$. Find the integrated autocorrelation time $\tau_{\rm int} = \frac12 + \sum_{t\ge1}\rho(t)$ as a function of $\phi$.
+vars: phi
+lead: $\tau_{\rm int} =$
+answer: (1+phi)/(2*(1-phi))
+check: lambda phi: 0.5 + nsum(lambda t: phi**t, 1, 400)
+domain: phi: 0.1..0.9
+hint: The sum is a geometric series: $\sum_{t\ge1}\phi^t = \phi/(1-\phi)$.
+hint: Add $\frac12$ and put everything over a common denominator.
+solution: $\tau_{\rm int} = \frac12 + \frac{\phi}{1-\phi} = \frac{1-\phi+2\phi}{2(1-\phi)} = \frac{1+\phi}{2(1-\phi)}$. For $\phi\to1$ it diverges like $1/(1-\phi)$, the analogue of critical slowing down.
+
+@practice self
+prompt: Write a Python function `sweep(s, beta)` that performs one Metropolis sweep ($N = L^2$ attempted single-spin flips) of a 2D Ising model with $J=1$ and periodic boundary conditions, where `s` is an $L\times L$ array of $\pm1$. Explain how $\Delta E$ and the acceptance step are computed.
+hint: For site $(i,j)$ use the neighbour sum with `% L` for the periodic wrap.
+hint: Flip when $\Delta E\le0$, otherwise draw a uniform random number and compare with $e^{-\beta\Delta E}$.
+solution: ```python
+import numpy as np
+rng = np.random.default_rng()
+
+def sweep(s, beta):
+    L = s.shape[0]
+    for _ in range(L * L):
+        i, j = rng.integers(0, L, 2)
+        nn = s[(i+1) % L, j] + s[(i-1) % L, j] + s[i, (j+1) % L] + s[i, (j-1) % L]
+        dE = 2 * s[i, j] * nn
+        if dE <= 0 or rng.random() < np.exp(-beta * dE):
+            s[i, j] = -s[i, j]
+```
+$\Delta E = 2s_{ij}\sum_{\text{nn}}s$ because flipping $s_{ij}$ changes each of its four bond energies from $-s_{ij}s_j$ to $+s_{ij}s_j$. The rule accepts always when the energy does not rise, and otherwise with probability $e^{-\beta\Delta E}$.
+rubric: Picks sites at random (or sequentially) and does $N = L^2$ attempts per sweep.
+rubric: Uses the four periodic nearest neighbours and $\Delta E = 2s\sum_{\text{nn}}s$.
+rubric: Implements the accept/reject step with $\min(1,e^{-\beta\Delta E})$ and flips in place.
+rubric: Explains why $\Delta E$ (not the new energy) enters.
+
+@quiz num
+prompt: A Metropolis run produces $M = 10^5$ measurements of the energy per spin with standard deviation $\sigma = 0.3$ and integrated autocorrelation time $\tau_{\rm int} = 25$ sweeps. Find the statistical error of the mean energy. Round to three significant figures.
+answer: 0.00671
+check: 0.3/sqrt(100000/(2*25))
+tol: 1%
+hint: The effective number of independent samples is $M/(2\tau_{\rm int})$.
+hint: Divide $\sigma$ by the square root of that number.
+solution: $M_{\rm eff} = 10^5/50 = 2000$, so $\delta\bar e = 0.3/\sqrt{2000} = 0.00671$. Ignoring correlations would have given $0.3/\sqrt{10^5} = 0.00095$, seven times too small.
+
+@quiz num
+prompt: A long run is split into eight blocks, each much longer than $\tau_{\rm int}$. The block averages of the magnetization are $0.51, 0.55, 0.49, 0.53, 0.50, 0.56, 0.52, 0.54$. Find the standard error of the mean (use the sample standard deviation of the blocks). Round to three significant figures.
+answer: 0.00866
+check: np.std([0.51, 0.55, 0.49, 0.53, 0.50, 0.56, 0.52, 0.54], ddof=1)/sqrt(8)
+tol: 1%
+hint: The mean of the block means is $0.525$.
+hint: The sample variance is $\sum(x-\bar x)^2/(n-1)$ with $n=8$, and the standard error is its square root divided by $\sqrt8$.
+solution: The squared deviations sum to $0.0042$, so the sample variance is $0.0042/7 = 6.0\times10^{-4}$ and the standard deviation is $0.0245$. The standard error is $0.0245/\sqrt8 = 0.00866$.

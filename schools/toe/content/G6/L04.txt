@@ -1,0 +1,149 @@
+@lesson
+title: Eigenvalue algorithms
+summary: Compute eigenpairs with power iteration, shifted inverse iteration and library solvers, then check residuals and compare two solvers on the same matrix.
+objective: Run power iteration and predict its convergence rate from the ratio $|\lambda_2/\lambda_1|$.
+objective: Use the Rayleigh quotient, shifted inverse iteration and the QR algorithm idea, and choose between `eigh`, `eig` and `eigsh`.
+objective: Compute eigenpair residuals and interpret them as backward error and as an eigenvalue error bound.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on eigenvalue problems and the use of linear algebra libraries from Python.
+
+@article
+The eigenvalue problem $Av = \lambda v$, $v\neq0$, appears as normal modes, energy levels, stability analysis and principal components. This lesson covers the iterations behind the library routines and, as in the last lesson, how to **check** what comes back.
+
+### Checking an eigenpair
+
+Suppose a solver returns $(\hat\lambda,\hat v)$ with $\|\hat v\|_2=1$. The **residual** is $r = A\hat v - \hat\lambda\hat v$. Define $E=-r\hat v^{T}$; then $(A+E)\hat v = \hat\lambda\hat v$ and $\|E\|_2=\|r\|_2$. So the pair is an exact eigenpair of a matrix within $\|r\|_2$ of $A$: this is **backward error**. For symmetric (or normal) $A$ it follows that some true eigenvalue lies within $\|r\|_2$ of $\hat\lambda$. The eigenvector is a different story: its error is about $\|r\|/\text{gap}$, where the gap is the distance to the nearest other eigenvalue. For nonsymmetric matrices a small residual can still hide large eigenvalue errors, because eigenvalue sensitivity is governed by the conditioning of the eigenvector matrix.
+
+### Power iteration
+
+Repeat $v_{k+1} = Av_k/\|Av_k\|$. If $|\lambda_1| > |\lambda_2|\ge\cdots$ and $v_0$ has a component along $u_1$, the direction converges to $u_1$. For symmetric $A$ with angle $\theta_k$ to $u_1$,
+
+$$\tan\theta_k \le \left|\frac{\lambda_2}{\lambda_1}\right|^{k}\tan\theta_0 .$$
+
+Convergence is linear, and slow when the two largest eigenvalues are close. The **Rayleigh quotient** $\rho(v)=v^{T}Av/v^{T}v$ estimates $\lambda_1$; for symmetric $A$ its error is **quadratic** in the vector error:
+
+$$\lambda_1 - \rho(v) \le (\lambda_1 - \lambda_n)\sin^2\theta .$$
+
+### Shifts and inverse iteration
+
+Solving $(A-\sigma I)w_{k+1} = v_k$ and normalizing converges to the eigenvector whose eigenvalue is **nearest the shift** $\sigma$, with ratio $|\lambda_{\text{near}}-\sigma|/|\lambda_{\text{next}}-\sigma|$. Factor $A-\sigma I$ once and reuse it. Choosing $\sigma$ close to a wanted eigenvalue makes convergence very fast, and updating $\sigma$ with the Rayleigh quotient gives cubic convergence for symmetric matrices.
+
+### The QR algorithm
+
+For a dense matrix, reduce to Hessenberg form (tridiagonal if symmetric), then iterate $A_k = Q_kR_k$, $A_{k+1}=R_kQ_k = Q_k^{T}A_kQ_k$. Every $A_k$ is similar to $A$, so the eigenvalues are unchanged, and with shifts the iterates converge to triangular (quasi-triangular) form with the eigenvalues on the diagonal. The total cost is $O(n^3)$. Library routines use variants of this and of related tridiagonal methods.
+
+### Which call?
+
+| Call | Use |
+|---|---|
+| `np.linalg.eigh(A)` | symmetric or Hermitian: real eigenvalues in ascending order, orthonormal eigenvectors |
+| `np.linalg.eig(A)` | general matrices: eigenvalues and vectors may be complex, vectors not orthogonal |
+| `scipy.sparse.linalg.eigsh(A, k)` | a few eigenpairs of a large sparse symmetric matrix |
+
+Always use `eigh` when you know the matrix is symmetric; it is faster and returns exactly real, orthonormal output.
+
+### Comparing two solvers
+
+The tridiagonal matrix $T=\text{tridiag}(-1,2,-1)$ has known eigenvalues $2-2\cos\frac{j\pi}{n+1}$, so we can compare two solvers against truth **and** against each other through their residuals:
+
+```python
+import numpy as np
+
+n = 50
+T = 2 * np.eye(n) - np.eye(n, k=1) - np.eye(n, k=-1)
+exact = 2 - 2 * np.cos(np.arange(1, n + 1) * np.pi / (n + 1))
+
+w1, V1 = np.linalg.eigh(T)              # symmetric solver
+w2, V2 = np.linalg.eig(T)               # general solver
+order = np.argsort(w2.real)
+w2, V2 = w2.real[order], V2[:, order].real
+
+def worst_residual(w, V):
+    return np.linalg.norm(T @ V - V * w, axis=0).max()
+
+print(abs(w1 - exact).max(), abs(w2 - exact).max())
+print(worst_residual(w1, V1), worst_residual(w2, V2))
+```
+
+Both should agree with the formula to a small multiple of $u\,\|T\|$. Report the residuals, the disagreement between solvers, and the disagreement with the exact values; if two solvers differ by much more than their residuals, suspect conditioning or a bug.
+
+@example
+title: Iterations needed for power iteration
+problem: For $A=\begin{pmatrix}2&1\\1&3\end{pmatrix}$ start power iteration at $v_0=(1,0)^{T}$. How many iterations guarantee $\tan\theta_k\le10^{-6}$?
+step: The eigenvalues solve $\lambda^2-5\lambda+5=0$, so $\lambda_{1,2}=(5\pm\sqrt5)/2\approx3.618,\,1.382$. The ratio is $|\lambda_2/\lambda_1|\approx0.3820$.
+step: The dominant eigenvector satisfies $(2-\lambda_1)v_1+v_2=0$, so $u_1\propto(1,\,1.618)$. The angle from $v_0=(1,0)$ has $\tan\theta_0=1.618$.
+step: For a symmetric $2\times2$ matrix the bound is an equality: $\tan\theta_k = 0.3820^{k}\times1.618$. We need $1.618\times0.3820^{k}\le10^{-6}$.
+step: Taking logarithms, $k \ge \ln(1.618\times10^{6})/\ln(1/0.3820) \approx 14.30/0.962 \approx 14.9$, so $k=15$. Check: $0.3820^{14}\times1.618\approx2.3\times10^{-6}$ is too large and $0.3820^{15}\times1.618\approx8.7\times10^{-7}$ passes.
+
+@example
+title: Reading an eigenpair residual
+problem: A symmetric matrix $A$ has a computed pair with $\|\hat v\|_2=1$ and $\|A\hat v-\hat\lambda\hat v\|_2=4\times10^{-9}$. The next-nearest eigenvalue to $\hat\lambda$ is about $0.1$ away. What can you conclude about the eigenvalue and the eigenvector?
+step: The residual equals the backward error: $\hat v$ and $\hat\lambda$ are an exact eigenpair of $A+E$ with $\|E\|_2=4\times10^{-9}$.
+step: Because $A$ is symmetric, some true eigenvalue is within $4\times10^{-9}$ of $\hat\lambda$.
+step: The eigenvector direction has error roughly $\|r\|/\text{gap} = 4\times10^{-9}/0.1 = 4\times10^{-8}$ radians.
+step: The Rayleigh quotient of $\hat v$ is better still: its error is about $\|r\|^2/\text{gap} = 1.6\times10^{-16}$, near machine precision.
+
+@mistakes
+- Using `np.linalg.eig` on a symmetric matrix and then assuming orthonormal eigenvectors, or ignoring a tiny imaginary part, instead of calling `eigh`.
+- Forgetting that `eig` does not sort the eigenvalues, so pairing them with exact values or another solver's output gives nonsense differences.
+- Expecting power iteration to converge when $|\lambda_1|=|\lambda_2|$ or when the starting vector is orthogonal to $u_1$.
+- Reading a small eigenpair residual as a small eigenvector error without looking at the gap.
+
+@practice num
+prompt: Find the largest eigenvalue of $\begin{pmatrix}2&1\\1&3\end{pmatrix}$. Give a decimal to three places.
+answer: (5+sqrt(5))/2
+check: np.linalg.eigvalsh(np.array([[2.0, 1.0], [1.0, 3.0]]))[-1]
+tol: 0.0005
+hint: Solve the characteristic equation $\det(A-\lambda I)=0$.
+hint: $(2-\lambda)(3-\lambda)-1=\lambda^2-5\lambda+5$.
+solution: $\lambda=(5\pm\sqrt5)/2$, so the larger root is $(5+\sqrt5)/2\approx3.618$.
+
+@practice num
+prompt: For $A=\begin{pmatrix}2&1\\1&3\end{pmatrix}$ start at $v=(1,1)^{T}$ and apply two unnormalized power steps, $v\leftarrow Av$. Then compute the Rayleigh quotient $v^{T}Av/v^{T}v$ of the result. Give the exact value as a fraction.
+answer: 47/13
+check: (lambda A: (lambda v: (v @ A @ v) / (v @ v))(A @ (A @ np.ones(2))))(np.array([[2.0, 1.0], [1.0, 3.0]]))
+hint: Apply $A$ twice; the entries grow, but only the direction matters.
+hint: $v^{(1)}=(3,4)^{T}$, $v^{(2)}=(10,15)^{T}$.
+solution: $Av^{(2)}=(35,55)^{T}$, so $v^{T}Av = 350+825=1175$ and $v^{T}v=100+225=325$. The quotient is $1175/325=47/13\approx3.6154$, already close to $\lambda_1\approx3.6180$.
+
+@practice mc
+prompt: You must find all eigenvalues of a dense real symmetric $2000\times2000$ matrix. Which call is the best choice and why?
+choice*: `np.linalg.eigh`, because it exploits symmetry and returns real, ascending eigenvalues with orthonormal eigenvectors.
+choice: `np.linalg.eig`, because it is more accurate for symmetric matrices than a specialized routine.
+choice: `np.linalg.eigh`, but only because the matrix is positive definite.
+choice: `scipy.sparse.linalg.eigsh`, because it returns all eigenvalues fastest.
+hint: Think about which structure of the matrix a dedicated solver can use.
+solution: `eigh` is built for symmetric or Hermitian matrices (positive definiteness is not required). It is faster, returns real ascending eigenvalues and orthonormal eigenvectors. `eigsh` is for a few eigenpairs of large sparse matrices, not for all of a dense one.
+
+@practice num
+prompt: Let $A=\begin{pmatrix}3.5&0.5\\0.5&3.5\end{pmatrix}$ (eigenvalues $4$ and $3$, with dominant eigenvector $(1,1)/\sqrt2$). Power iteration starts at $(1,0)^{T}$. Let $\theta_k$ be the angle between $v_k$ and $(1,1)$. What is the smallest $k$ with $\tan\theta_k\le10^{-3}$?
+answer: 25
+check: next(k for k in range(1, 200) if abs((lambda v: (v[0] - v[1]) / (v[0] + v[1]))(np.linalg.matrix_power(np.array([[3.5, 0.5], [0.5, 3.5]]), k) @ np.array([1.0, 0.0]))) <= 1e-3)
+hint: Write $(1,0)=\tfrac12(1,1)+\tfrac12(1,-1)$ and apply $A^k$ to each part.
+hint: $\tan\theta_k=(3/4)^k\tan\theta_0$ and $\tan\theta_0=1$.
+solution: $A^k(1,0)^T=\tfrac12 4^k(1,1)+\tfrac12 3^k(1,-1)$, so $\tan\theta_k=(3/4)^k$. We need $(3/4)^k\le10^{-3}$, i.e. $k\ge\ln(1000)/\ln(4/3)\approx24.01$. Thus $k=25$ (at $k=24$ the value is $1.0034\times10^{-3}$, just too large).
+
+@practice num
+prompt: Block exercise: check a residual. For the same $A=\begin{pmatrix}3.5&0.5\\0.5&3.5\end{pmatrix}$, run 10 normalized power iterations from $(1,0)^{T}$, take $\hat v$ and $\hat\lambda=\hat v^{T}A\hat v$, and compute the residual norm $\|A\hat v-\hat\lambda\hat v\|_2$. Give it in units of $10^{-2}$ to two decimals.
+answer: 5.61
+check: (lambda A: (lambda v: norm(A @ v - (v @ A @ v) * v) / 1e-2)((lambda v: [v := A @ v / norm(A @ v) for _ in range(10)][-1])(np.array([1.0, 0.0]))))(np.array([[3.5, 0.5], [0.5, 3.5]]))
+tol: 0.01
+hint: After $k$ steps $\tan\theta=(3/4)^k$; compute $\sin\theta\cos\theta=\tan\theta/(1+\tan^2\theta)$.
+hint: For this matrix the residual norm is $(\lambda_1-\lambda_2)\sin\theta\cos\theta$ with $\lambda_1-\lambda_2=1$.
+solution: With $t=(3/4)^{10}=0.05631$, $\|r\|_2=t/(1+t^2)\approx0.05614=5.61\times10^{-2}$. The second solver `eigvalsh` gives $\lambda_1=4$ exactly, while the power-iteration estimate is off by only $\approx3.16\times10^{-3}$: the Rayleigh quotient is quadratically more accurate than the vector, and the residual (a backward-error measure) is larger than the eigenvalue error but correctly bounds it.
+
+@quiz num
+prompt: A matrix has eigenvalues $1$, $4$ and $10$. Shifted inverse iteration uses the shift $\sigma=3.5$. What is the asymptotic convergence ratio per iteration?
+answer: 1/5
+check: (lambda d: d[0] / d[1])(sorted(abs(np.array([1.0, 4.0, 10.0]) - 3.5)))
+hint: Inverse iteration with shift $\sigma$ amplifies eigenvalue $\lambda$ by $1/|\lambda-\sigma|$.
+hint: Find the nearest and the second-nearest eigenvalue to $3.5$.
+solution: The distances to $3.5$ are $2.5$, $0.5$ and $6.5$. The ratio is nearest over second-nearest: $0.5/2.5=0.2$.
+
+@quiz mc
+prompt: A symmetric matrix $A$ has a computed eigenpair with $\|\hat v\|_2=1$ and residual norm $\|A\hat v-\hat\lambda\hat v\|_2=10^{-6}$. Which statement is guaranteed?
+choice*: Some eigenvalue of $A$ lies within $10^{-6}$ of $\hat\lambda$.
+choice: $\hat v$ differs from a true eigenvector by at most $10^{-6}$ in norm.
+choice: $\hat\lambda$ is the largest eigenvalue of $A$.
+choice: Every eigenvalue of $A$ lies within $10^{-6}$ of $\hat\lambda$.
+hint: Recall the backward-error interpretation of the residual.
+solution: The pair is an exact eigenpair of $A+E$ with $\|E\|_2=10^{-6}$, so for symmetric $A$ an eigenvalue lies within $10^{-6}$ of $\hat\lambda$. The eigenvector error also depends on the gap to the other eigenvalues, so it is not guaranteed to be $10^{-6}$.

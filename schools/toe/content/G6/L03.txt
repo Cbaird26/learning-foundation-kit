@@ -1,0 +1,151 @@
+@lesson
+title: Linear solvers
+summary: Solve linear systems with pivoted LU and simple iterative methods, and judge a computed solution from its residual and the condition number.
+objective: Explain why pivoting is needed and use LU or Cholesky factors to solve $Ax=b$ for several right-hand sides.
+objective: Compute a residual, bound the forward error with $\kappa(A)$, and say what a small residual does and does not prove.
+objective: Write the Jacobi iteration, state when it converges, and estimate conjugate-gradient iteration counts from $\kappa$.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on solving systems of linear equations and matrix factorizations.
+
+@article
+Almost every simulation ends up solving $Ax=b$: implicit time steps, least squares, Newton's method and eigenvalue solvers all reduce to it. Computing a solution is easy. Knowing whether to trust it is the real skill, and it rests on the **residual** and the **condition number**.
+
+### Direct solvers: LU with partial pivoting
+
+Gaussian elimination factors a matrix as $PA = LU$ with $P$ a permutation, $L$ unit lower triangular and $U$ upper triangular. Then $Ax=b$ becomes two cheap triangular solves, $Ly = Pb$ and $Ux = y$. The factorization costs about $\tfrac23 n^3$ flops; each further right-hand side costs only about $2n^2$, so **factor once and reuse** (`scipy.linalg.lu_factor`, `lu_solve`).
+
+**Partial pivoting** swaps rows so that the pivot is the largest entry in its column, keeping every multiplier $|l_{ij}|\le1$. Without it, a tiny pivot produces huge multipliers that swamp the other entries and destroy accuracy. For symmetric positive definite matrices use **Cholesky**, $A = LL^{T}$: half the cost and no pivoting needed.
+
+Do not form $A^{-1}$ to solve a system. `np.linalg.solve(A, b)` is cheaper and more accurate than `np.linalg.inv(A) @ b`.
+
+### Residual versus error
+
+For a computed answer $\hat{x}$, the **residual** $r = b - A\hat{x}$ can be computed. The **error** $e = x - \hat{x}$ cannot, because $x$ is unknown. They are linked by $r = Ae$, which gives
+
+$$\frac{\|e\|}{\|x\|} \;\le\; \kappa(A)\,\frac{\|r\|}{\|b\|}, \qquad \kappa(A) = \|A\|\,\|A^{-1}\| = \frac{\sigma_{\max}}{\sigma_{\min}} \ \ (\text{2-norm}).$$
+
+Pivoted LU is **backward stable** in practice: the relative residual is typically of order $u$ whatever $\kappa$ is. So a tiny residual proves little when $\kappa$ is large:
+
+```python
+import numpy as np
+from scipy.linalg import hilbert
+
+n = 10
+A = hilbert(n)                       # entries 1/(i+j-1), badly conditioned
+x_true = np.ones(n)
+b = A @ x_true
+x = np.linalg.solve(A, b)
+rel_res = np.linalg.norm(b - A @ x) / np.linalg.norm(b)
+rel_err = np.linalg.norm(x - x_true) / np.linalg.norm(x_true)
+print(np.linalg.cond(A))             # about 1.6e13
+print(rel_res)                       # near machine precision
+print(rel_err)                       # many orders of magnitude larger
+```
+
+Rule of thumb: you lose about $\log_{10}\kappa(A)$ of your roughly 16 decimal digits.
+
+### Iterative solvers
+
+For large sparse matrices the triangular factors fill in and become too big, so we iterate. Split $A = D + L + U$ into its diagonal, strictly lower and strictly upper parts. The **Jacobi iteration** is
+
+$$x^{(k+1)} = D^{-1}\big(b - (L+U)\,x^{(k)}\big).$$
+
+It converges for every starting vector if and only if the spectral radius of $M = -D^{-1}(L+U)$ satisfies $\rho(M) < 1$; the error then shrinks like $\rho(M)^k$. Strict diagonal dominance is a sufficient condition. Gauss–Seidel uses the newest components as soon as they are available and usually converges faster.
+
+For symmetric positive definite $A$, the **conjugate gradient** (CG) method satisfies
+
+$$\frac{\|e_k\|_A}{\|e_0\|_A} \le 2\left(\frac{\sqrt{\kappa}-1}{\sqrt{\kappa}+1}\right)^{k},$$
+
+so the iteration count grows like $\sqrt{\kappa}$. That is why **preconditioning**, which lowers $\kappa$, matters. Iterative solvers stop on a residual test such as $\|r_k\| \le \text{tol}\,\|b\|$, and the same caution applies: the error can be larger than the residual by up to $\kappa$.
+
+@example
+title: Why pivoting matters
+problem: Solve $\begin{pmatrix}10^{-20} & 1\\ 1 & 1\end{pmatrix}x = \begin{pmatrix}1\\2\end{pmatrix}$ in double precision by elimination with no row swap. The true solution is $x_1\approx1$, $x_2\approx1$.
+step: The pivot is $10^{-20}$, so the multiplier is $l_{21} = 1/10^{-20} = 10^{20}$.
+step: Eliminate: $u_{22} = 1 - 10^{20}\cdot1$ and $y_2 = 2 - 10^{20}\cdot1$. In double precision both the $1$ and the $2$ are absorbed, so $u_{22} = y_2 = -10^{20}$.
+step: Back substitution gives $x_2 = y_2/u_{22} = 1$, which is fine. But $x_1 = (1 - 1\cdot x_2)/10^{-20} = 0/10^{-20} = 0$, completely wrong.
+step: With partial pivoting, swap the rows first. The pivot is $1$, the multiplier is $10^{-20}$, and elimination gives $u_{22}=1-10^{-20}\to1$ and $y_2 = 1-2\cdot10^{-20}\to1$. Then $x_2=1$ and $x_1 = 2-1 = 1$, correct.
+
+@example
+title: Bounding the error from a residual
+problem: A solver returns $\hat{x}$ with residual norm $\|r\|_2 = 3\times10^{-10}$ for a right-hand side with $\|b\|_2 = 5$, and $\kappa_2(A) = 10^{7}$. Bound the relative forward error.
+step: From $r = Ae$ we get $e = A^{-1}r$, so $\|e\| \le \|A^{-1}\|\,\|r\|$.
+step: From $b = Ax$ we get $\|b\| \le \|A\|\,\|x\|$, so $1/\|x\| \le \|A\|/\|b\|$.
+step: Multiply: $\|e\|/\|x\| \le \|A\|\,\|A^{-1}\|\,\|r\|/\|b\| = \kappa\,\|r\|/\|b\|$.
+step: Numerically the relative residual is $3\times10^{-10}/5 = 6\times10^{-11}$, so the relative error is at most $10^{7}\times6\times10^{-11} = 6\times10^{-4}$. You can trust about three digits, not ten.
+
+@mistakes
+- Treating a small residual as proof of a small error without looking at $\kappa(A)$.
+- Computing `np.linalg.inv(A) @ b` instead of calling `np.linalg.solve(A, b)`.
+- Re-factoring $A$ for every right-hand side instead of reusing the LU factors.
+- Applying Jacobi or Gauss–Seidel to a matrix without checking diagonal dominance or $\rho(M)<1$, then reading a stalled iteration as a coding bug.
+
+@practice num
+prompt: Solve $\begin{pmatrix}2&1&0\\1&3&1\\0&1&4\end{pmatrix}x = \begin{pmatrix}4\\9\\10\end{pmatrix}$ and give $x_3$.
+answer: 2
+check: lin([[2,1,0],[1,3,1],[0,1,4]], [4,9,10])[2]
+hint: Eliminate $x_1$ from the second equation using the first.
+hint: After elimination, the system becomes triangular; back-substitute from the last row.
+solution: Row 2 minus half of row 1 gives $2.5x_2 + x_3 = 7$. Row 3 gives $x_2 + 4x_3 = 10$. Eliminating $x_2$: $(4 - 0.4)x_3 = 10 - 2.8$, so $3.6x_3 = 7.2$ and $x_3 = 2$. Then $x_2 = 2$ and $x_1 = 1$.
+
+@practice num
+prompt: For $A=\begin{pmatrix}4&1\\2&3\end{pmatrix}$, $b=\begin{pmatrix}1\\2\end{pmatrix}$ and the approximate solution $\hat{x}=(0.2,\,0.4)^{T}$, compute the 2-norm of the residual $b-A\hat{x}$. Give it to three decimals.
+answer: 0.447
+check: norm(np.array([1.0, 2.0]) - np.array([[4.0, 1.0], [2.0, 3.0]]) @ np.array([0.2, 0.4]))
+tol: 0.0005
+hint: Compute $A\hat{x}$ first, one row at a time.
+hint: $A\hat{x} = (1.2,\,1.6)^{T}$.
+solution: $r = (1-1.2,\; 2-1.6)^{T} = (-0.2,\,0.4)^{T}$, so $\|r\|_2 = \sqrt{0.04+0.16} = \sqrt{0.2}\approx0.447$.
+
+@practice mc
+prompt: A solver reports a relative residual $\|b-A\hat{x}\|/\|b\|\approx10^{-16}$ for a system with $\kappa(A)\approx10^{12}$. What can you conclude?
+choice*: The relative error could be as large as about $10^{-4}$; the small residual does not certify accuracy.
+choice: The relative error is about $10^{-16}$, because residual and error are always the same size.
+choice: The answer is exact to machine precision because pivoting was used.
+choice: The residual must be miscomputed, because a large $\kappa$ forces a large residual.
+hint: Use $\|e\|/\|x\|\le\kappa\|r\|/\|b\|$.
+solution: The bound gives $10^{12}\times10^{-16}=10^{-4}$. Backward-stable solvers produce residuals near $u$ regardless of $\kappa$, so the residual is small even when the error is not.
+
+@practice num
+prompt: Take $A=\begin{pmatrix}4&1\\2&5\end{pmatrix}$ and $b=(1,\,2)^{T}$. Starting from $x^{(0)}=(0,0)^{T}$, do two Jacobi iterations. Give the first component of $x^{(2)}$.
+answer: 3/20
+check: (lambda x: [x := np.array([(1 - x[1]) / 4, (2 - 2 * x[0]) / 5]) for _ in range(2)][-1][0])(np.zeros(2))
+hint: Jacobi solves row $i$ for $x_i$ using only the old values of the other unknowns.
+hint: $x^{(1)} = (1/4,\; 2/5)^{T}$.
+solution: $x^{(1)} = (1/4,\,2/5)$. Then $x^{(2)}_1 = (1 - 2/5)/4 = 3/20 = 0.15$ and $x^{(2)}_2 = (2 - 2\cdot\tfrac14)/5 = 0.3$.
+
+@practice num
+prompt: Build the $6\times6$ Hilbert matrix $H_{ij} = 1/(i+j-1)$ for $i,j=1,\dots,6$. Compute its 2-norm condition number and give it in units of $10^{7}$, to three decimals.
+answer: 1.495
+check: np.linalg.cond(np.array([[1 / (i + j + 1) for j in range(6)] for i in range(6)])) / 1e7
+tol: 0.0005
+hint: In code with zero-based indices the entry is `1/(i+j+1)`.
+hint: `np.linalg.cond(H)` returns $\sigma_{\max}/\sigma_{\min}$ by default.
+solution: Using the singular values, $\kappa_2(H_6) = \sigma_{\max}/\sigma_{\min} \approx 1.495\times10^{7}$. Already at $n=6$ you lose about seven digits.
+
+@quiz num
+prompt: Use the conjugate-gradient bound $\|e_k\|_A/\|e_0\|_A \le 2\big((\sqrt{\kappa}-1)/(\sqrt{\kappa}+1)\big)^k$ with $\kappa=10^{4}$. What is the smallest integer $k$ that guarantees a reduction of at least $10^{-6}$?
+answer: 726
+check: next(k for k in range(1, 5000) if 2 * ((100 - 1) / (100 + 1)) ** k <= 1e-6)
+hint: Here $\sqrt{\kappa}=100$, so the ratio is $99/101$.
+hint: Solve $2\,(99/101)^k \le 10^{-6}$ by taking logarithms.
+solution: $k \ge \ln(2\times10^{6})/\ln(101/99) \approx 14.509/0.0200 \approx 725.4$, so $k=726$. Without preconditioning, $\kappa=10^4$ already costs hundreds of iterations.
+
+@quiz self
+prompt: Write a function `solve_report(A, b)` that solves $Ax=b$ with `np.linalg.solve` and returns the solution, the relative residual in the 2-norm, the 2-norm condition number, and the resulting bound on the relative forward error. Say in one sentence how to read the output.
+hint: The relative residual is $\|b-A\hat{x}\|_2/\|b\|_2$; `np.linalg.cond` gives $\kappa_2$.
+hint: The forward-error bound is the product $\kappa_2$ times the relative residual.
+solution: Model code:
+
+```python
+import numpy as np
+
+def solve_report(A, b):
+    x = np.linalg.solve(A, b)
+    rel_res = np.linalg.norm(b - A @ x) / np.linalg.norm(b)
+    kappa = np.linalg.cond(A)
+    return x, rel_res, kappa, kappa * rel_res
+```
+Reading: the residual is typically near $10^{-16}$; the last number is a guaranteed upper bound on the relative forward error, and it shows how many digits to trust. If the bound is near or above 1, the solution has no reliable digits.
+rubric: Computes the relative residual from the original $A$ and $b$, not from the factors.
+rubric: Uses the product $\kappa\cdot\|r\|/\|b\|$ as the forward-error bound.
+rubric: Interprets the bound correctly as an upper bound on the error, not an estimate of the residual.

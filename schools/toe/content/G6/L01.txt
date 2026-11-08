@@ -1,0 +1,171 @@
+@lesson
+title: Floating point error
+summary: Predict and measure rounding error in IEEE binary64 arithmetic, and rewrite formulas to avoid cancellation and absorption.
+objective: Use the rounding model $fl(x \circ y) = (x \circ y)(1+\delta)$ with $|\delta| \le u$ to reason about error in a short computation.
+objective: Recognize absorption and catastrophic cancellation, and rewrite an expression to avoid them.
+objective: Measure error in Python by comparing a computed value with a more accurate reference such as `math.fsum`.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the lecture material on number representation and floating-point arithmetic, especially round-off error.
+
+@article
+Computers store real numbers with a finite number of bits, so almost every arithmetic result is rounded. This lesson shows how large the errors are, how to predict them, and which patterns make them dangerous. Everything below assumes IEEE 754 **binary64** ("double precision"), which is Python's `float` and NumPy's `float64`.
+
+### What a double stores
+
+A double has 1 sign bit, 11 exponent bits and 52 stored fraction bits, so a normal number is $\pm(1.f)_2 \times 2^{E}$ with 53 significant bits. Two consequences matter every day:
+
+- Representable numbers are **discrete**. Between $2^E$ and $2^{E+1}$ the spacing is $2^{E-52}$, so the relative spacing lies between $2^{-53}$ and $2^{-52}$.
+- **Machine epsilon** $\varepsilon = 2^{-52} \approx 2.22\times10^{-16}$ is the gap between $1$ and the next double. With round-to-nearest, the **unit roundoff** is $u = \varepsilon/2 = 2^{-53} \approx 1.11\times10^{-16}$.
+
+Most decimal fractions are not binary fractions. `0.1` is stored as the nearest double, which is slightly above $1/10$, so `0.1 + 0.2 == 0.3` is `False`.
+
+### The standard rounding model
+
+For $\circ \in \{+,-,\times,\div\}$, with no overflow or underflow, each basic operation returns the exact result rounded to the nearest double:
+
+$$fl(x \circ y) = (x \circ y)(1+\delta), \qquad |\delta| \le u.$$
+
+A single operation is therefore accurate to relative error $u$. Trouble comes from how errors **accumulate and amplify** over a sequence of operations. Errors are measured as **absolute** ($|\hat{a}-a|$) or **relative** ($|\hat{a}-a|/|a|$); relative error is usually the meaningful one.
+
+### Absorption
+
+Adding a number much smaller than the spacing of the larger one changes nothing:
+
+```python
+>>> 1.0 + 1e-16 == 1.0
+True
+>>> 2.0**53 + 1.0 == 2.0**53
+True
+```
+
+Above $2^{53}$ the doubles are spaced by $2$, so odd integers are not representable. Rounding makes addition **commutative but not associative**: `(0.1 + 0.2) + 0.3` and `0.1 + (0.2 + 0.3)` differ in the last bit. Absorption is the extreme case: `(1e16 + 1.0) - 1e16` gives `0.0`, because the $1$ is lost when it is added to $10^{16}$.
+
+### Catastrophic cancellation
+
+Subtracting two nearly equal numbers $a \approx b$ is itself exact, but the operands already carry rounding errors of size about $u|a|$. After the subtraction those errors are huge compared with the small difference:
+
+$$\frac{\text{error}}{|a-b|} \approx u\,\frac{|a|}{|a-b|}.$$
+
+The cure is **algebra before arithmetic**: rewrite the expression so that no nearly equal quantities are subtracted.
+
+$$\sqrt{x+1}-\sqrt{x} = \frac{1}{\sqrt{x+1}+\sqrt{x}}, \qquad 1-\cos x = 2\sin^2\!\frac{x}{2}, \qquad e^x-1 \to \texttt{expm1(x)}.$$
+
+The functions `math.expm1` and `math.log1p` exist precisely to compute $e^x-1$ and $\ln(1+x)$ accurately for small $x$.
+
+### Summation and a reference value
+
+Naive left-to-right summation of $n$ terms has a worst-case error bound proportional to $n u \sum|x_i|$. `math.fsum` returns the correctly rounded sum of the stored values, so it is a good reference. NumPy's `np.sum` uses pairwise summation, whose error grows only like $u\log_2 n$. Python 3.12 and later also make the built-in `sum` compensated for floats, so show the naive behavior with an explicit loop:
+
+```python
+import math
+
+def naive_sum(xs):
+    s = 0.0
+    for x in xs:
+        s += x
+    return s
+
+xs = [0.1] * 10
+print(naive_sum(xs))   # 0.9999999999999999
+print(math.fsum(xs))   # 1.0
+rel_err = abs(naive_sum(xs) - math.fsum(xs)) / abs(math.fsum(xs))
+```
+
+### Habits that follow
+
+Compare floats with a tolerance (`math.isclose`), never `==`. Measure error against a trusted reference, or against the same computation in higher precision. Treat a result as trustworthy only if you can say how its error scales with the inputs.
+
+@example
+title: Cancellation in (1 - cos x) / x^2
+problem: Evaluate $g(x) = \dfrac{1-\cos x}{x^2}$ at $x = 10^{-8}$ in double precision. The true value is very close to $1/2$. Explain why the direct formula fails and fix it.
+step: Expand $\cos x = 1 - x^2/2 + \cdots$, so $1-\cos x \approx x^2/2 = 5\times10^{-17}$ at $x=10^{-8}$.
+step: The doubles just below $1$ are spaced by $2^{-53}\approx1.11\times10^{-16}$. The number $1-5\times10^{-17}$ is $5\times10^{-17}$ from $1.0$ and $6.1\times10^{-17}$ from the next double below, so `cos(1e-8)` rounds to exactly `1.0`.
+step: The code then computes `1.0 - 1.0 = 0.0` and returns $g = 0$, a relative error of 100%. The subtraction was exact; the information was already lost when the cosine was rounded.
+step: Use $1-\cos x = 2\sin^2(x/2)$, so $g(x) = 2\sin^2(x/2)/x^2$. No subtraction occurs, and $\sin(5\times10^{-9})$ keeps full relative accuracy.
+step: Numerically $2\,(5\times10^{-9})^2/10^{-16} = 0.5$, which agrees with the limit read off the series.
+
+@example
+title: Is 2^53 + 1 a double?
+problem: Decide whether $2^{53}+1$ is representable in binary64, and say what `float(2**53 + 1)` returns.
+step: Doubles in $[2^{52},2^{53})$ are spaced by $1$. In $[2^{53},2^{54})$ they are spaced by $2^{53-52}=2$.
+step: So the doubles near here are $2^{53}$ and $2^{53}+2$. The integer $2^{53}+1$ lies exactly halfway between them and is not representable.
+step: Round-to-nearest breaks ties by choosing the neighbor whose last fraction bit is $0$. That is $2^{53}$ (fraction bits all zero), not $2^{53}+2$ (last bit $1$).
+step: Therefore `float(2**53 + 1)` returns `9007199254740992.0`, and `float(2**53 + 1) == 2.0**53` is `True`.
+
+@mistakes
+- Testing floats with `==` instead of a relative tolerance such as `math.isclose(a, b, rel_tol=1e-9)`.
+- Reading printed digits as accuracy: `print` shows the shortest string that round-trips, not the exact stored value.
+- Assuming each step is accurate to $u$ so the whole computation must be: a subtraction of nearly equal numbers amplifies earlier errors by $|a|/|a-b|$.
+- Timing or demonstrating naive summation with the built-in `sum` on Python 3.12 or later, which is compensated for floats.
+
+@practice num
+prompt: With round-to-nearest in binary64, the unit roundoff is $u = 2^{-53}$. Give $u$ in units of $10^{-16}$, rounded to two decimals.
+answer: 1.11
+check: np.finfo(float).eps / 2 / 1e-16
+tol: 0.005
+hint: Machine epsilon is $2^{-52}\approx2.22\times10^{-16}$.
+hint: The unit roundoff is half of machine epsilon.
+solution: $u = 2^{-53} = \varepsilon/2 \approx 1.11\times10^{-16}$, so the answer is $1.11$.
+
+@practice mc
+prompt: In Python, which statement about `(0.1 + 0.2) + 0.3` and `0.1 + (0.2 + 0.3)` is correct?
+choice: They are equal, because addition is associative and Python follows the real-number rule exactly.
+choice*: They can differ in the last bit, because floating-point addition is commutative but not associative.
+choice: They differ only because Python reads decimal literals incorrectly; with exact binary input they would agree.
+choice: They are equal because each sum is rounded to the same number of digits.
+hint: Round each intermediate sum to the nearest double and compare the two groupings.
+solution: `(0.1 + 0.2) + 0.3` evaluates to `0.6000000000000001`, while `0.1 + (0.2 + 0.3)` evaluates to `0.6`. Rounding after each addition makes the result depend on grouping.
+
+@practice num
+prompt: The nearest single-precision number to $0.1$ is stored as `np.float32(0.1)`. Its relative error is $|fl(0.1)-0.1|/0.1$. Give it in units of $10^{-8}$, rounded to two decimals.
+answer: 1.49
+check: abs(float(np.float32(0.1)) - 0.1) / 0.1 / 1e-8
+tol: 0.01
+hint: Convert the stored float32 value back to a double with `float(np.float32(0.1))`.
+hint: It is about $0.10000000149$.
+solution: The stored value is $0.100000001490116\ldots$, so the relative error is $1.49\times10^{-9}/0.1 = 1.49\times10^{-8}$. This is below the float32 unit roundoff $2^{-24}\approx5.96\times10^{-8}$.
+
+@practice num
+prompt: Add $0.1$ to an accumulator starting at $0.0$ ten times with a plain loop (`s += 0.1`). Compute `s - 1.0` and give it in units of $10^{-16}$, rounded to two decimals, with its sign.
+answer: -1.11
+check: (np.cumsum(np.full(10, 0.1))[-1] - 1.0) / 1e-16
+tol: 0.005
+hint: The loop result is not `1.0`; it is the double just below $1$.
+hint: The double just below $1$ is $1-2^{-53}$.
+solution: The loop gives `0.9999999999999999`, which is $1-2^{-53}$. Subtracting $1$ gives $-2^{-53}\approx-1.11\times10^{-16}$. The stored value of `0.1` is slightly above $1/10$, but the rounding in the running sum pushes the total below $1$.
+
+@practice num
+prompt: The direct code `math.sqrt(x*x + 1) - 1` returns `0.0` at $x = 10^{-8}$. Give the true value of $\sqrt{x^2+1}-1$ at $x=10^{-8}$ in units of $10^{-17}$.
+answer: 5
+check: math.expm1(0.5 * math.log1p((1e-8)**2)) / 1e-17
+tol: 0.005
+hint: Why does `x*x + 1` lose $x^2 = 10^{-16}$? Compare with the spacing of doubles above $1$.
+hint: Multiply by the conjugate: $\sqrt{x^2+1}-1 = x^2/(\sqrt{x^2+1}+1)$.
+solution: $\sqrt{x^2+1}-1 = \dfrac{x^2}{\sqrt{x^2+1}+1} \approx \dfrac{10^{-16}}{2} = 5\times10^{-17}$. The direct formula rounds $1+10^{-16}$ to $1$ and loses everything.
+
+@quiz num
+prompt: What is the gap between $10^{16}$ and the next larger binary64 number?
+answer: 2
+check: np.spacing(1e16)
+hint: Find the power of two just below $10^{16}$. It is $2^{53}\approx9.007\times10^{15}$.
+hint: In $[2^{53},2^{54})$ the spacing is $2^{53-52}$.
+solution: Since $2^{53} < 10^{16} < 2^{54}$ the spacing is $2^{53-52} = 2$.
+
+@quiz self
+prompt: Write a Python function `quad_roots(b, c)` that returns both roots of $x^2 + bx + c = 0$ (assume two distinct real roots and $c \neq 0$) without catastrophic cancellation. Test it on $b = -10^{8}$, $c = 1$ and explain why the naive formula fails there.
+hint: Which of the two terms $-b\pm\sqrt{b^2-4c}$ cancels when $b$ is large and $c$ is small?
+hint: Compute the root that does not cancel, then use that the product of the roots equals $c$.
+solution: The naive formula $(-b \pm \sqrt{b^2-4c})/2$ subtracts two nearly equal numbers for the small root when $b=-10^8$: $\sqrt{b^2-4c}\approx 10^8 - 2\times10^{-8}$, which has absolute error near $10^{-8}$, as large as the root itself. Instead compute the root with no cancellation and get the other from $x_1x_2=c$.
+
+```python
+import math
+
+def quad_roots(b, c):
+    d = math.sqrt(b * b - 4 * c)
+    q = -0.5 * (b + math.copysign(d, b))   # b and d add with the same sign
+    return q, c / q
+
+print(quad_roots(-1e8, 1.0))   # approximately (1e8, 1e-8), both to full precision
+```
+rubric: Chooses the sign of the square root to match the sign of $b$, so the two terms are added rather than subtracted.
+rubric: Obtains the second root from the product of the roots $c/q$ instead of repeating the quadratic formula.
+rubric: Tests on $b=-10^8$, $c=1$ and compares the small root with $10^{-8}$ (or a high-precision reference).

@@ -1,0 +1,169 @@
+@lesson
+title: Parameter inference
+summary: Fit linear and nonlinear models to noisy data, quote parameter uncertainties from the covariance, diagnose the fit, and read a simple Bayesian posterior.
+objective: Show that Gaussian maximum likelihood is weighted least squares, and solve linear least squares by QR or SVD rather than by the normal equations.
+objective: Obtain parameter uncertainties from $\sigma^2(A^TA)^{-1}$ or $\sigma^2(J^TJ)^{-1}$ and check the fit with residuals and reduced $\chi^2$.
+objective: Combine a Gaussian prior with Gaussian data to get a posterior mean and standard deviation, and test an inference pipeline on synthetic data.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on least-squares fitting of models to data and on estimating parameter uncertainties.
+
+@article
+Inference asks the inverse of simulation: given noisy data, which parameter values are plausible, and how well are they determined? The answer always has two parts, a best estimate and an uncertainty, and both rest on stated assumptions about the noise.
+
+### Likelihood and least squares
+
+Suppose $y_i=f(x_i;\theta)+\epsilon_i$ with independent Gaussian noise $\epsilon_i\sim N(0,\sigma_i^2)$. The likelihood of the data is a product of Gaussians, and
+
+$$-2\ln L(\theta)=\chi^2(\theta)+\text{const},\qquad \chi^2(\theta)=\sum_i\frac{\big(y_i-f(x_i;\theta)\big)^2}{\sigma_i^2}.$$
+
+So the **maximum-likelihood estimate** is the **weighted least-squares** fit. With different noise models (outliers, Poisson counts) the likelihood changes and so does the best method.
+
+### Linear models
+
+For $y=A\theta+\epsilon$ the minimizer solves the normal equations $A^TA\,\theta=A^Ty$. Do not solve them numerically: forming $A^TA$ squares the condition number, $\kappa(A^TA)=\kappa(A)^2$. Use `np.linalg.lstsq` (SVD) or a QR factorization instead. For noise of variance $\sigma^2$,
+
+$$\operatorname{Cov}(\hat\theta)=\sigma^2\,(A^TA)^{-1},\qquad \hat\sigma^2=\frac{\|y-A\hat\theta\|^2}{n-p}$$
+
+when $\sigma$ is unknown ($n$ data points, $p$ parameters). The standard errors are the square roots of the diagonal.
+
+### Nonlinear models
+
+Replace $A$ by the Jacobian $J_{ik}=\partial f(x_i;\theta)/\partial\theta_k$ and iterate (Gauss–Newton, Levenberg–Marquardt). At the optimum, $\operatorname{Cov}(\hat\theta)\approx\sigma^2(J^TJ)^{-1}$, valid when $f$ is nearly linear over the uncertainty region. Start from several initial guesses: nonlinear fits can stop in local minima.
+
+```python
+import numpy as np
+from scipy.optimize import curve_fit
+
+rng = np.random.default_rng(4)
+t = np.linspace(0.0, 5.0, 40)
+sigma = 0.05
+model = lambda t, A, tau: A * np.exp(-t / tau)
+y = model(t, 2.0, 1.5) + sigma * rng.standard_normal(t.size)   # known truth: A=2, tau=1.5
+
+popt, pcov = curve_fit(model, t, y, p0=(1.0, 1.0),
+                       sigma=sigma * np.ones_like(t), absolute_sigma=True)
+perr = np.sqrt(np.diag(pcov))
+chi2_red = np.sum(((y - model(t, *popt)) / sigma) ** 2) / (t.size - 2)
+print(popt, perr, chi2_red)
+```
+
+With `absolute_sigma=False` (the default) SciPy rescales `pcov` by the fit's reduced $\chi^2$, so the quoted errors then reflect the scatter in the data rather than the $\sigma$ you supplied.
+
+### Diagnosing a fit
+
+Plot the residuals: they should look like noise with the stated spread and no trend. The **reduced chi-square** $\chi^2_\nu=\chi^2/(n-p)$ should be $1\pm\sqrt{2/(n-p)}$. Values well above $1$ mean the model is wrong or $\sigma$ is underestimated; values well below $1$ mean $\sigma$ is overestimated or the model is overfitting. Inspect the correlation matrix from `pcov`: correlations near $\pm1$ mean two parameters are nearly interchangeable (near-degeneracy), and $J^TJ$ is close to singular.
+
+### The Bayesian view
+
+Bayes' rule gives the **posterior** $p(\theta\mid y)\propto L(\theta)\,p(\theta)$, where $p(\theta)$ is the prior. For a Gaussian mean $\mu$ with prior $N(\mu_0,\tau^2)$ and $n$ data with sample mean $\bar y$ and noise $\sigma$, the posterior is Gaussian with
+
+$$\frac1{s^2}=\frac1{\tau^2}+\frac n{\sigma^2},\qquad m=s^2\Big(\frac{\mu_0}{\tau^2}+\frac{n\bar y}{\sigma^2}\Big).$$
+
+Precisions add, and the mean is a precision-weighted average, pulled from $\bar y$ toward $\mu_0$ (**shrinkage**). As $n$ grows the data dominate. A prior is an assumption, not a lack of one, so report it. For models without closed forms, sample the posterior with MCMC and apply the autocorrelation analysis of the last lesson.
+
+### Test the pipeline on synthetic data
+
+Before touching real data, simulate with known $\theta$, fit, and check that (i) the estimates scatter around the truth, (ii) the scatter matches the quoted standard errors, and (iii) about 68% of repeated datasets give a 1-sigma interval that contains the truth. Failures reveal bugs, bad starts, degeneracy or an inconsistent noise model.
+
+@example
+title: A straight-line fit with uncertainties
+problem: Fit $y=a+bx$ to the points $(0,1.0),(1,3.1),(2,4.9),(3,7.0)$, where the noise level is unknown. Give $b$ and its standard error.
+step: $\bar x=1.5$, $\bar y=4.0$, $S_{xx}=\sum(x-\bar x)^2=5$, and $S_{xy}=\sum(x-\bar x)(y-\bar y)=9.9$.
+step: The slope is $\hat b=S_{xy}/S_{xx}=1.98$ and the intercept is $\hat a=\bar y-\hat b\bar x=1.03$.
+step: Fitted values are $1.03,\,3.01,\,4.99,\,6.97$, so the residuals are $-0.03,\,0.09,\,-0.09,\,0.03$ and the sum of squares is $0.018$.
+step: With $n-p=2$ degrees of freedom, $\hat\sigma^2=0.018/2=0.009$, and $\operatorname{SE}(\hat b)=\hat\sigma/\sqrt{S_{xx}}=0.0949/2.236=0.042$. Result: $b=1.98\pm0.04$.
+
+@example
+title: A Gaussian prior shrinks the estimate
+problem: The prior is $\mu\sim N(0,1)$. Four measurements with $\sigma=1$ have mean $\bar y=2.0$. Find the posterior mean and standard deviation.
+step: The prior precision is $1/\tau^2=1$ and the data precision is $n/\sigma^2=4$, so the posterior precision is $5$ and $s=1/\sqrt5=0.447$.
+step: The mean is $m=s^2\,(0\cdot1+4\cdot2.0)=\tfrac15\cdot8=1.6$.
+step: The data alone would give $2.0\pm0.5$. The posterior $1.6\pm0.45$ is pulled toward the prior mean $0$ and slightly narrower.
+step: With $n=100$ the data precision is $100$, giving $m=200/101=1.98$: the prior's influence has almost disappeared.
+
+@mistakes
+- Solving the normal equations $A^TA\theta=A^Ty$ for an ill-conditioned problem instead of using QR or SVD.
+- Quoting `curve_fit` errors without knowing whether `absolute_sigma` rescaled them by the reduced $\chi^2$.
+- Accepting the first converged nonlinear fit without trying other starting values or checking residuals.
+- Treating a flat or "uninformative" prior as assumption-free: a flat prior on $\tau$ and on $1/\tau$ are different assumptions.
+
+@practice num
+prompt: Fit $y=a+bx$ by least squares to $(0,1.0),(1,3.1),(2,4.9),(3,7.0)$. Give the slope $b$.
+answer: 1.98
+check: (lambda A, y: lin(A.T @ A, A.T @ y)[1])(np.array([[1.0, 0.0], [1.0, 1.0], [1.0, 2.0], [1.0, 3.0]]), np.array([1.0, 3.1, 4.9, 7.0]))
+tol: 0.0005
+hint: Use $b=S_{xy}/S_{xx}$ with sums taken about the means.
+hint: $\bar x=1.5$, $\bar y=4.0$, $S_{xx}=5$.
+solution: $S_{xy}=(-1.5)(-3.0)+(-0.5)(-0.9)+(0.5)(0.9)+(1.5)(3.0)=9.9$, so $b=9.9/5=1.98$.
+
+@practice num
+prompt: A fit with $p=2$ parameters to $5$ points has residuals $0.5,\,-1.2,\,0.8,\,-0.3,\,1.0$ and known noise $\sigma=0.8$. Compute the reduced chi-square, to two decimals.
+answer: 1.78
+check: sum((r / 0.8)**2 for r in (0.5, -1.2, 0.8, -0.3, 1.0)) / (5 - 2)
+tol: 0.005
+hint: $\chi^2=\sum(r_i/\sigma)^2$.
+hint: The number of degrees of freedom is $n-p=3$.
+solution: $\sum r_i^2=0.25+1.44+0.64+0.09+1.00=3.42$, so $\chi^2=3.42/0.64=5.34$ and $\chi^2_\nu=5.34/3=1.78$. With only 3 degrees of freedom this is mildly high but not alarming (the p-value is about 0.15).
+
+@practice mc
+prompt: Data are modeled as $y_i=f(x_i;\theta)+\epsilon_i$ with independent Gaussian noise of known, equal variance. Which statement is correct?
+choice: Maximizing the likelihood is equivalent to minimizing the sum of absolute residuals.
+choice*: Maximizing the likelihood is equivalent to minimizing the sum of squared residuals.
+choice: Maximizing the likelihood requires the prior on $\theta$ to be uniform.
+choice: Maximizing the likelihood gives parameters that always make the reduced $\chi^2$ exactly $1$.
+hint: Write $\ln L$ for a Gaussian and drop the terms that do not depend on $\theta$.
+solution: $-\ln L=\frac1{2\sigma^2}\sum(y_i-f_i)^2+\text{const}$, so maximizing $L$ minimizes the sum of squares. Absolute residuals correspond to Laplace noise. A prior is not involved in maximum likelihood, and $\chi^2_\nu$ is only about $1$ when the model and $\sigma$ are right.
+
+@practice num
+prompt: For the line fit to $(0,1.0),(1,3.1),(2,4.9),(3,7.0)$, estimate $\hat\sigma^2=\text{RSS}/(n-p)$ and the standard error of the slope from $\hat\sigma^2(A^TA)^{-1}$. Give $\operatorname{SE}(b)$ to four decimals.
+answer: 0.0424
+check: (lambda A, y: (lambda th: math.sqrt(sum((y - A @ th)**2) / (len(y) - 2) * inv(A.T @ A)[1][1]))(lin(A.T @ A, A.T @ y)))(np.array([[1.0, 0.0], [1.0, 1.0], [1.0, 2.0], [1.0, 3.0]]), np.array([1.0, 3.1, 4.9, 7.0]))
+tol: 0.0005
+hint: The residual sum of squares is $0.018$ and $n-p=2$.
+hint: $(A^TA)^{-1}_{22}=1/S_{xx}=0.2$.
+solution: $\hat\sigma^2=0.018/2=0.009$ and $\operatorname{SE}(b)=\sqrt{0.009\times0.2}=\sqrt{0.0018}=0.0424$.
+
+@practice num
+prompt: The prior is $\mu\sim N(0,1)$ and four measurements with noise $\sigma=1$ have sample mean $2.0$. Find the posterior mean of $\mu$ by integrating the unnormalized posterior numerically. Give a decimal.
+answer: 1.6
+check: quad(lambda t: t * math.exp(-t * t / 2 - 2 * (t - 2)**2), -10, 10) / quad(lambda t: math.exp(-t * t / 2 - 2 * (t - 2)**2), -10, 10)
+tol: 0.001
+hint: The unnormalized posterior is $e^{-\mu^2/2}\,e^{-4(\mu-2)^2/2}$.
+hint: Combine the exponents: they add to a single Gaussian in $\mu$.
+solution: The exponent is $-\tfrac12[\mu^2+4(\mu-2)^2]=-\tfrac52(\mu-1.6)^2+\text{const}$, so the posterior is $N(1.6,\,1/5)$ and its mean is $1.6$.
+
+@quiz num
+prompt: The prior is $\mu\sim N(0,2^2)$. Nine measurements with $\sigma=3$ have sample mean $1.0$. What is the posterior standard deviation of $\mu$? Give three decimals.
+answer: 0.894
+check: (lambda w: (lambda Z, m1, m2: math.sqrt(m2 / Z - (m1 / Z)**2))(quad(w, -30, 30), quad(lambda t: t * w(t), -30, 30), quad(lambda t: t * t * w(t), -30, 30)))(lambda t: math.exp(-t * t / 8 - 9 * (t - 1.0)**2 / (2 * 9.0)))
+tol: 0.001
+hint: Precisions add: prior $1/\tau^2$, data $n/\sigma^2$.
+hint: $1/4+9/9=1.25$.
+solution: The posterior precision is $1/4+9/9=1.25$, so the variance is $0.8$ and the standard deviation is $\sqrt{0.8}\approx0.894$, smaller than the data-only $3/\sqrt9=1$.
+
+@quiz self
+prompt: Write code that tests a nonlinear fit by repetition. Generate synthetic data $y=A e^{-t/\tau}+\epsilon$ with known $A,\tau,\sigma$, fit with `curve_fit` and `absolute_sigma=True`, repeat for 200 independent datasets (independent random streams), and report the fraction of datasets in which the true $\tau$ lies within one standard error of the estimate. State the value you expect and what a much lower fraction would indicate.
+hint: Spawn one random stream per dataset from a single `SeedSequence`.
+hint: For each dataset, compare `abs(popt[1] - tau_true)` with `perr[1]`.
+solution: Model code:
+
+```python
+import numpy as np
+from scipy.optimize import curve_fit
+
+def coverage(A=2.0, tau=1.5, sigma=0.05, reps=200, seed=11):
+    t = np.linspace(0.0, 5.0, 40)
+    model = lambda t, A, tau: A * np.exp(-t / tau)
+    hits = 0
+    for s in np.random.SeedSequence(seed).spawn(reps):
+        rng = np.random.default_rng(s)
+        y = model(t, A, tau) + sigma * rng.standard_normal(t.size)
+        popt, pcov = curve_fit(model, t, y, p0=(1.0, 1.0),
+                               sigma=sigma * np.ones_like(t), absolute_sigma=True)
+        hits += abs(popt[1] - tau) < np.sqrt(pcov[1, 1])
+    return hits / reps
+```
+For a well-behaved fit, about $68\%$ of datasets (plus or minus about $3\%$ from finite repetitions) should cover the truth. A much lower fraction means the quoted errors are too small: the noise model is wrong, the fit is stuck in local minima, the linearized covariance is inaccurate for this model, or the parameters are nearly degenerate.
+rubric: Uses independent random streams for the 200 datasets and a known truth, so the test is reproducible.
+rubric: Fits with `absolute_sigma=True` and the true $\sigma$, and reads the uncertainty from `pcov`.
+rubric: Computes the covering fraction and expects about 68% for one standard error.
+rubric: Lists plausible causes of a low coverage (wrong noise model, local minima, nonlinearity, degeneracy).

@@ -1,0 +1,148 @@
+@lesson
+title: Uncertainty propagation
+summary: Propagate independent measurement uncertainties through a formula with the derivative rule and its sum, product and power cases, and find which input dominates the result.
+objective: Combine independent uncertainties in quadrature for sums, differences, products, quotients and powers.
+objective: Apply the general first-order formula with partial derivatives, by hand or numerically.
+objective: Build an uncertainty budget that shows which measurement to improve first.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on writing Python functions and using numpy arrays, which you need to code the propagation formula; for the theory, look up "propagation of uncertainty" in an introductory error-analysis text.
+
+@article
+Every number you compute from measurements inherits uncertainty from its inputs. **Propagation** tells you how much. The idea is simple: a small error $\delta x$ in an input changes a result $f$ by about $\frac{\partial f}{\partial x}\,\delta x$. When errors in different inputs are random and independent they sometimes cancel and sometimes add, so they combine like the perpendicular sides of a right triangle: **in quadrature**.
+
+### The general rule
+
+For a result $f(x_1,\dots,x_n)$ with independent standard uncertainties $u_i$ on the inputs,
+
+$$u_f^2 = \sum_{i=1}^{n}\left(\frac{\partial f}{\partial x_i}\right)^2 u_i^2 .$$
+
+The partial derivatives are evaluated at the measured values. This is a first-order (linear) approximation, good when each $u_i$ is small compared with $x_i$.
+
+### Rules you will use constantly
+
+| Result | Uncertainty |
+|---|---|
+| $f = x \pm y$ | $u_f = \sqrt{u_x^2 + u_y^2}$ |
+| $f = xy$ or $f = x/y$ | $\dfrac{u_f}{\lvert f\rvert} = \sqrt{\left(\dfrac{u_x}{x}\right)^2 + \left(\dfrac{u_y}{y}\right)^2}$ |
+| $f = x^n$ | $\dfrac{u_f}{\lvert f\rvert} = \lvert n\rvert\,\dfrac{u_x}{\lvert x\rvert}$ |
+
+Sums and differences combine **absolute** uncertainties; products, quotients and powers combine **relative** ones. A squared input counts twice, a cubed one three times.
+
+### Which input matters?
+
+Because of the squares, the largest term dominates. If one contribution is three times another, the smaller one raises the total by only about 5%. List each term's contribution (an **uncertainty budget**) and improve the largest one first; polishing a small term is wasted effort.
+
+### When the rule fails
+
+Independence is essential. Two readings taken from a ruler with the same unknown zero offset share that error: in a difference the shared part cancels, in a sum it doubles. Add covariance terms in that case, or remeasure so the errors are separate. Adding uncertainties linearly, $u_x + u_y$, gives a cautious upper bound, not the usual answer.
+
+### Doing it in code
+
+For a formula that is awkward to differentiate by hand, estimate each derivative with a central difference:
+
+```python
+import numpy as np
+
+def propagate(f, x, u, h=1e-6):
+    """First-order uncertainty of f(*x) for independent inputs."""
+    x = np.asarray(x, dtype=float)
+    total = 0.0
+    for i in range(len(x)):
+        step = h * (abs(x[i]) if x[i] != 0 else 1.0)
+        hi, lo = x.copy(), x.copy()
+        hi[i] += step
+        lo[i] -= step
+        dfdx = (f(*hi) - f(*lo)) / (2 * step)
+        total += (dfdx * u[i]) ** 2
+    return np.sqrt(total)
+
+g = lambda L, T: 4 * np.pi**2 * L / T**2
+print(propagate(g, [0.500, 1.420], [0.002, 0.006]))   # about 0.092
+```
+
+Always check a code result against the hand rule on one easy case before you trust it.
+
+@example
+title: Uncertainty in g from a pendulum
+problem: A simple pendulum has length $L = 0.500 \pm 0.002$ m and period $T = 1.420 \pm 0.006$ s (supplied, illustrative values). Use $g = 4\pi^2 L/T^2$ to find $g$ and its standard uncertainty.
+step: Compute the value: $g = 4\pi^2(0.500)/(1.420)^2 = 9.789\ \text{m/s}^2$.
+step: The formula is a product and quotient, so work with relative uncertainties: $u_L/L = 0.002/0.500 = 0.40\%$ and $u_T/T = 0.006/1.420 = 0.42\%$.
+step: $T$ appears squared, so its contribution doubles: $2 \times 0.42\% = 0.85\%$. The length contributes $0.40\%$.
+step: Combine in quadrature: $\sqrt{0.40^2 + 0.85^2}\,\% = 0.94\%$.
+step: Convert back to an absolute uncertainty: $u_g = 0.0094 \times 9.789 = 0.092\ \text{m/s}^2$. Report $g = 9.79 \pm 0.09\ \text{m/s}^2$. The period dominates, so timing more swings is the best improvement.
+
+@mistakes
+- Adding absolute uncertainties for a product instead of relative ones, or mixing the two in one sum.
+- Forgetting the exponent: an input that is squared contributes twice its relative uncertainty.
+- Using quadrature when two errors are really the same error, such as a shared zero offset.
+- Spending effort on an input whose contribution is already a few times smaller than the largest term.
+
+@practice num
+prompt: A rod is built from two pieces (supplied, illustrative values): $12.0 \pm 0.3$ cm and $8.0 \pm 0.4$ cm. Assuming independent errors, find the standard uncertainty of the total length.
+answer: 0.5
+check: math.hypot(0.3, 0.4)
+tol: 0.005
+unit: cm
+hint: For a sum the absolute uncertainties combine in quadrature.
+hint: $u = \sqrt{0.3^2 + 0.4^2}$.
+solution: $u = \sqrt{0.09 + 0.16} = \sqrt{0.25} = 0.5$ cm. The total length is $20.0 \pm 0.5$ cm.
+
+@practice num
+prompt: A rectangular sheet measures $4.00 \pm 0.04$ m by $2.00 \pm 0.03$ m (supplied, illustrative values). Find the standard uncertainty of its area. Round to three decimal places.
+answer: 0.144
+check: math.hypot(nderiv(lambda a: a*2.00, 4.00)*0.04, nderiv(lambda b: 4.00*b, 2.00)*0.03)
+tol: 0.002
+unit: m²
+hint: For a product, use relative uncertainties: $1.0\%$ and $1.5\%$.
+hint: Combine them in quadrature to get the relative uncertainty of the area $A = 8.00\ \text{m}^2$, then multiply by $A$.
+solution: $u_A/A = \sqrt{0.010^2 + 0.015^2} = 0.01803$, so $u_A = 8.00 \times 0.01803 = 0.144\ \text{m}^2$. Equivalently, $\sqrt{(2.00\cdot 0.04)^2 + (4.00 \cdot 0.03)^2} = \sqrt{0.08^2 + 0.12^2}$.
+
+@practice num
+prompt: A cube has side $s = 2.00 \pm 0.02$ cm (supplied, illustrative values). Find the standard uncertainty of its volume $V = s^3$.
+answer: 0.24
+check: abs(nderiv(lambda s: s**3, 2.0)) * 0.02
+tol: 0.005
+unit: cm³
+hint: For a power, the relative uncertainty is multiplied by the exponent.
+hint: The side has a relative uncertainty of $1\%$, and $V = 8.00\ \text{cm}^3$.
+solution: $u_V/V = 3 \times 1\% = 3\%$, so $u_V = 0.03 \times 8.00 = 0.24\ \text{cm}^3$. Check with the derivative: $3s^2 u_s = 3(4.00)(0.02) = 0.24$.
+
+@practice mc
+prompt: In the pendulum example, $L$ and $T$ have almost the same relative uncertainty, about $0.4\%$ each. Which statement about their contributions to $u_g$ in $g = 4\pi^2 L/T^2$ is correct?
+choice: They contribute equally, because their relative uncertainties are almost equal.
+choice*: The period contributes about twice as much in relative terms, because it is squared.
+choice: The length contributes more, because it appears in the numerator.
+choice: Neither matters, because quadrature makes small uncertainties vanish.
+hint: Look at the exponent of each input in the formula.
+hint: An input raised to the power $n$ contributes $n$ times its relative uncertainty.
+solution: The period appears as $T^{-2}$, so its contribution is $2 \times 0.42\% = 0.85\%$, against $0.40\%$ for the length. The period dominates.
+
+@practice self
+prompt: A steel rod section was measured (supplied, illustrative values): mass $m = 111.3 \pm 0.5$ g on a kitchen scale, diameter $d = 1.90 \pm 0.01$ cm and length $h = 5.00 \pm 0.05$ cm. Write the notebook plan for this measurement (apparatus with resolutions, conditions, what is recorded), then compute the density $\rho = 4m/(\pi d^2 h)$ with its propagated uncertainty and say which measurement to improve first.
+hint: Plan the page using the six parts from week 1, then set up the uncertainty budget with relative uncertainties.
+hint: The diameter is squared in the formula, so its relative uncertainty counts twice.
+solution: Notebook: date, name and objective "density of a steel rod"; scale (resolution 0.1 g, zeroed), caliper or ruler (resolution 0.1 mm or 1 mm), room temperature, three diameter readings at different positions, raw values with units, file name of the data sheet. Calculation: $V = \pi(1.90)^2(5.00)/4 = 14.18\ \text{cm}^3$ and $\rho = 111.3/14.18 = 7.85\ \text{g/cm}^3$. Relative contributions: mass $0.5/111.3 = 0.45\%$; diameter $2 \times 0.01/1.90 = 1.05\%$; length $0.05/5.00 = 1.0\%$. Total $\sqrt{0.45^2 + 1.05^2 + 1.0^2}\,\% = 1.52\%$, so $u_\rho = 0.12\ \text{g/cm}^3$ and $\rho = 7.85 \pm 0.12\ \text{g/cm}^3$. Improve the diameter first (average several caliper readings), then the length.
+rubric: The notebook plan lists instruments with resolutions, conditions, raw readings with units and a data file name.
+rubric: The formula is differentiated or handled by relative uncertainties, with the factor $2$ on the diameter term.
+rubric: The result is about $7.85 \pm 0.12$ g/cm³ (a relative uncertainty near $1.5\%$), quoted with matching decimal places.
+rubric: The answer names the diameter as the largest contribution and proposes a concrete way to reduce it.
+
+@quiz num
+prompt: A magnifying glass forms a sharp image of a lamp on a sheet of paper (never aim it at the sun). The object distance is $u = 30.0 \pm 0.5$ cm and the image distance is $v = 60.0 \pm 1.0$ cm (supplied, illustrative values). With $1/f = 1/u + 1/v$, find the standard uncertainty of the focal length $f$ using the general derivative rule. Round to three decimal places.
+answer: 0.248
+check: math.hypot(nderiv(lambda u: u*60.0/(u + 60.0), 30.0)*0.5, nderiv(lambda v: 30.0*v/(30.0 + v), 60.0)*1.0)
+tol: 0.002
+unit: cm
+hint: Solve the lens equation for $f$ to get $f = uv/(u+v)$ and differentiate with respect to each variable.
+hint: $\partial f/\partial u = v^2/(u+v)^2$ and $\partial f/\partial v = u^2/(u+v)^2$. Evaluate them at the measured values, multiply by the uncertainties and combine in quadrature.
+solution: $f = 1800/90 = 20.0$ cm. $\partial f/\partial u = 3600/8100 = 4/9$ and $\partial f/\partial v = 900/8100 = 1/9$. Then $u_f = \sqrt{(\tfrac49 \cdot 0.5)^2 + (\tfrac19 \cdot 1.0)^2} = \sqrt{0.0494 + 0.0123} = 0.248$ cm.
+
+@quiz ms
+prompt: Independent errors, first-order propagation. Select all statements that are correct.
+choice*: For $f = x - y$ the uncertainty is $\sqrt{u_x^2 + u_y^2}$, the same as for $f = x + y$.
+choice*: For $f = x y^3$ the relative uncertainty of $y$ enters the quadrature sum three times over, as $(3u_y/y)^2$.
+choice: For a product, the absolute uncertainties of the factors are added in quadrature.
+choice*: If one contribution is three times another, the smaller one raises the total by only about $5\%$.
+choice: Subtracting two nearly equal readings always reduces the relative uncertainty of the result.
+hint: Decide first whether each rule works with absolute or relative uncertainties.
+hint: For the statement about subtracting nearly equal readings, compare $u_f$ with the size of $f = x - y$ when $x \approx y$.
+solution: Differences and sums share the same quadrature rule. A cubed factor contributes three times its relative uncertainty. Products use relative, not absolute, uncertainties. Terms of size $3$ and $1$ give $\sqrt{10} = 3.16$, about $5\%$ above $3$. A difference of nearly equal readings is small while its absolute uncertainty is not, so the relative uncertainty grows.

@@ -1,0 +1,166 @@
+@lesson
+title: Reproducible workflows
+summary: Organize a numerical project so that others can rerun, test and audit it, and validate the whole pipeline by recovering known synthetic parameters with the model assumptions disclosed.
+objective: Distinguish reproducibility, replicability and robustness, and list what must be recorded to rerun a numerical result.
+objective: Compare floating-point results with justified tolerances, and explain why sums depend on evaluation order.
+objective: Structure a project with configuration, tests and a run record, and write an honest statement of assumptions and limitations.
+reading: MIT 12.010 Computational Methods of Scientific Programming: look up the material on good practice in scientific programming, including testing, documentation and version control.
+
+@article
+A number without its provenance is an anecdote. Reproducible workflows make a computation something others, and you six months from now, can rerun, check and extend. The aim is not perfection but traceability: every reported value can be linked to code, data, parameters and assumptions.
+
+### Three different goals
+
+- **Reproducible:** the same code, data and settings give the same result (within a stated tolerance).
+- **Replicable:** an independent implementation or new data gives a consistent result.
+- **Robust:** the conclusion survives reasonable changes in analysis choices such as step size, tolerance, grid and random seed.
+
+Passing the first does not give you the others. A benchmark replication, the project of this course, tests the second.
+
+### What to record
+
+For every result keep: the **code version** (commit hash), the **environment** (Python and package versions, saved with `pip freeze` or an `environment.yml`), the **inputs** (with checksums), all **parameters** (in a config file, not buried in code), the **random seeds** and number of samples, the exact **command**, and relevant hardware settings such as thread count. Write these into a machine-readable run record next to the output.
+
+```python
+import json, platform, subprocess, sys
+import numpy as np
+import scipy
+
+def run_record(params, seed):
+    git = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    return {
+        "params": params,
+        "seed": seed,
+        "python": sys.version.split()[0],
+        "numpy": np.__version__,
+        "scipy": scipy.__version__,
+        "platform": platform.platform(),
+        "git_commit": git.stdout.strip(),
+    }
+
+# json.dump(run_record({"h": 0.01, "N": 10**5}, 12345), open("results/run.json", "w"), indent=2)
+```
+
+### Floating-point reproducibility
+
+Floating-point addition is not associative, so results can change in the last bits with the number of threads, the BLAS/LAPACK library, the CPU's instruction set (for example fused multiply-add), the compiler or the library version. For example, `(1e16 + 1.0) - 1e16` is `0.0`, but `(1e16 - 1e16) + 1.0` is `1.0`. A parallel sum that reorders its additions can therefore differ by up to about $n\,u$ in relative terms (worst case) and typically by about $\sqrt n\,u$.
+
+Consequences:
+
+- Do not test floats with `==`. Use `np.allclose(a, b, rtol=r, atol=s)`, where `isclose` tests $|a-b|\le \text{atol}+\text{rtol}\,|b|$, and justify the tolerance from the problem (an a-priori bound, or the differences you observe between legitimate configurations).
+- For chaotic systems, trajectories diverge exponentially from any perturbation; reproduce **statistics** and invariants, not trajectories.
+- Fix thread counts when you need bitwise equality, but prefer tolerance-based checks that survive moving to another machine.
+
+### Project structure
+
+A minimal layout that scales: `README.md` (purpose, how to run, assumptions, limitations), `environment.yml` or `requirements.txt` (pinned versions), `config.json` (all parameters), `src/` (functions), `tests/`, a single `run_all` script that regenerates every figure and table, and `results/` that no human edits. A notebook is fine for exploration; deliver a script that runs top to bottom in a fresh environment.
+
+### Tests that matter in numerical work
+
+- **Known-answer tests:** the Poisson solver reproduces a quadratic exactly.
+- **Convergence tests:** the observed order lies within a tolerance of the theoretical one.
+- **Invariant tests:** energy error stays bounded, residuals below a threshold.
+- **Regression tests:** a small stored reference output, compared with a tolerance.
+- **Recovery tests:** simulate with known parameters, run the whole pipeline, check that the truth lies within the quoted uncertainty, for many seeds.
+
+```python
+def test_order():
+    errs = [poisson_error(n) for n in (16, 32, 64)]
+    orders = np.log2(np.array(errs[:-1]) / np.array(errs[1:]))
+    assert np.all(np.abs(orders - 2.0) < 0.1)
+```
+
+### Disclose the assumptions
+
+State the equations and the noise model, any priors or regularization, discretization, step sizes and solver tolerances, seeds, sample sizes and $N_{\rm eff}$, how the uncertainty was estimated, the range over which the checks were done, and **what was not tested**. Report failures too: checks that failed, instabilities you met, and parameters that were poorly determined. A recovery of synthetic parameters shows that the pipeline works under the assumptions you wrote down; it does not show the assumptions hold for real data.
+
+@example
+title: Choosing a regression-test tolerance
+problem: A regression test compares the sum of $10^6$ positive numbers computed on 1 and on 8 threads: $123456.78901234$ versus $123456.78901231$. Is this a failure, and what tolerance should the test use?
+step: The relative difference is $|3\times10^{-8}|/123456.789\approx2.4\times10^{-13}$.
+step: Reordering $n=10^6$ additions can change the sum by at most about $n\,u\approx10^6\times1.1\times10^{-16}\approx1.1\times10^{-10}$ in relative terms, and typically by about $\sqrt n\,u\approx10^{-13}$.
+step: The observed $2.4\times10^{-13}$ is typical for a reordering, so this is **not** a failure.
+step: Set `rtol=1e-10` (the a-priori bound) so legitimate reorderings pass, and log the actual difference as a diagnostic. A difference far above $10^{-10}$ would indicate a real change in the computation.
+
+@example
+title: Recovering known synthetic parameters
+problem: Synthetic data were made from $y=2.0+0.5x$ at $x=0,\dots,5$ with added noise, giving $y=(2.04,\,2.45,\,3.02,\,3.53,\,3.96,\,4.51)$. Fit a line, report the recovered parameters with standard errors, and say what is and is not shown.
+step: $\bar x=2.5$, $\bar y=3.2517$, $S_{xx}=17.5$, $S_{xy}=8.695$, so $\hat b=8.695/17.5=0.4969$ and $\hat a=\bar y-\hat b\bar x=2.0095$.
+step: The residual sum of squares is $0.00691$ with $n-p=4$, so $\hat\sigma=0.0416$. Then $\operatorname{SE}(\hat b)=\hat\sigma/\sqrt{S_{xx}}=0.0099$ and $\operatorname{SE}(\hat a)=\hat\sigma\sqrt{1/6+\bar x^2/S_{xx}}=0.030$.
+step: Recovered $b=0.497\pm0.010$ and $a=2.010\pm0.030$; the truth $(0.5,\,2.0)$ lies within $0.4$ standard errors of both.
+step: Disclose: linear model, independent Gaussian noise of constant but unknown variance, 6 points, one seed. One dataset cannot establish calibration, so repeat for many independent seeds and check the 68% coverage.
+
+@mistakes
+- Hard-coding parameters, paths and seeds in the script so a result cannot be tied to the settings that produced it.
+- Testing floats with `==`, or loosening a tolerance until a failing test passes, without a reason based on the problem.
+- Relying on an interactive notebook's cell order, global random state or an unpinned environment ("works on my machine").
+- Declaring a pipeline validated after a single synthetic recovery with one seed.
+
+@practice mc
+prompt: Which set of items, saved with a result, best allows someone else to rerun it and obtain the same number?
+choice: The final figure, the date, and the name of the person who ran it.
+choice*: The code commit, pinned package versions, all parameters and inputs (with checksums), and the random seed.
+choice: The notebook with its cells executed in whatever order produced the answer.
+choice: The printed output rounded to four digits.
+hint: Think about what each of these would let a stranger reconstruct.
+solution: Reproduction needs the exact code, environment, parameters, data and seeds. A figure or rounded output cannot be regenerated, and a notebook run out of order may not even reproduce for its author.
+
+@practice num
+prompt: What does `(1e16 + 1.0) - 1e16` evaluate to in binary64 arithmetic?
+answer: 0
+check: (1e16 + 1.0) - 1e16
+hint: The spacing of doubles near $10^{16}$ is $2$.
+hint: $10^{16}+1$ lies exactly halfway between two doubles; ties go to the neighbor with an even significand.
+solution: Doubles near $10^{16}$ are spaced by $2$, so $10^{16}+1$ is a tie and rounds to $10^{16}$. The result is $0$, whereas `(1e16 - 1e16) + 1.0` gives $1$: addition order matters.
+
+@practice num
+prompt: A test uses `np.isclose(a, b, rtol=r, atol=0)`, which checks $|a-b|\le r\,|b|$. For $a=2.000000001$ and $b=2.0$, what is the smallest $r$ for which the test passes? Give it in units of $10^{-10}$.
+answer: 5
+check: abs(2.000000001 - 2.0) / abs(2.0) / 1e-10
+tol: 1%
+hint: Compute $|a-b|$ first, then divide by $|b|$.
+hint: $|a-b|=10^{-9}$.
+solution: $r\ge10^{-9}/2=5\times10^{-10}$, i.e. $5$ in units of $10^{-10}$. Note that `isclose` is asymmetric: the tolerance is scaled by $|b|$ only.
+
+@practice num
+prompt: A parameter sweep uses 6 step sizes, 4 tolerances and 5 seeds. Each run takes 90 s, and 8 runs execute in parallel with no overhead. How many minutes does the sweep take in total? Give a decimal.
+answer: 22.5
+check: 6 * 4 * 5 * 90 / 8 / 60
+hint: Count the runs first, then the total run time in seconds.
+hint: There are $6\times4\times5=120$ runs.
+solution: $120\times90=10\,800$ s of work, divided over 8 workers is $1350$ s $=22.5$ min. Real sweeps add overhead and load imbalance, so log the actual time.
+
+@practice num
+prompt: Block exercise: recover known parameters. Synthetic data were generated from $y=2.0+0.5x$ at $x=0,1,\dots,5$ with added noise, giving $y=(2.04,\,2.45,\,3.02,\,3.53,\,3.96,\,4.51)$. Fit a straight line by least squares and give the recovered slope to four decimals.
+answer: 0.4969
+check: (lambda A, y: lin(A.T @ A, A.T @ y)[1])(np.array([[1.0, float(k)] for k in range(6)]), np.array([2.04, 2.45, 3.02, 3.53, 3.96, 4.51]))
+tol: 0.0001
+hint: $\bar x=2.5$ and $S_{xx}=17.5$.
+hint: Use $S_{xy}=\sum(x_i-\bar x)\,y_i$.
+solution: $S_{xy}=(-2.5)(2.04)+(-1.5)(2.45)+(-0.5)(3.02)+(0.5)(3.53)+(1.5)(3.96)+(2.5)(4.51)=8.695$, so the slope is $8.695/17.5=0.4969$, close to the true value $0.5$.
+
+@quiz num
+prompt: Synthetic data were generated from $y=2.0+0.5x$ at $x=0,1,\dots,5$ with added noise, giving $y=(2.06,\,2.41,\,3.08,\,3.47,\,4.05,\,4.43)$. Fit a straight line by least squares, estimate $\hat\sigma^2=\text{RSS}/(n-p)$ and give the standard error of the fitted slope, to four decimals.
+answer: 0.0188
+check: (lambda A, y: (lambda th: math.sqrt(sum((y - A @ th)**2) / (len(y) - 2) * inv(A.T @ A)[1][1]))(lin(A.T @ A, A.T @ y)))(np.array([[1.0, float(k)] for k in range(6)]), np.array([2.06, 2.41, 3.08, 3.47, 4.05, 4.43]))
+tol: 0.0001
+hint: The slope's variance is $\hat\sigma^2/S_{xx}$ with $S_{xx}=17.5$.
+hint: The residual sum of squares is about $0.02475$.
+solution: $\hat\sigma^2=0.02475/4=0.006187$, so $\operatorname{SE}(b)=\sqrt{0.006187/17.5}=0.0188$. The fitted slope $0.4903$ is about $0.5$ standard errors from the true $0.5$.
+
+@quiz self
+prompt: Write the "Assumptions and limitations" section of a README for a project that recovers the parameters of a damped oscillator $x(t)=Ae^{-t/\tau}\cos(\omega t)$ from synthetic data by nonlinear least squares. Cover the model, the noise, the fitting and uncertainty method, how reproducibility is ensured, the checks run, and at least two limitations.
+hint: Think about what a reader needs to know to judge whether your recovery result would carry over to real data.
+hint: Include numbers: noise level, sample size, number of seeds, tolerances.
+solution: A model answer:
+
+- **Model:** $x(t)=Ae^{-t/\tau}\cos(\omega t)$ with $A=2.0$, $\tau=1.5$, $\omega=4.0$ (truth); no phase offset and no baseline.
+- **Data and noise:** 200 points on $t\in[0,6]$ with independent Gaussian noise of known $\sigma=0.05$, so $\chi^2$ is the weighted least-squares cost.
+- **Fit and uncertainty:** `curve_fit` with `absolute_sigma=True`, start values perturbed by 20% from truth and 10 random starts; errors from $(J^TJ)^{-1}$, checked against a bootstrap of residuals.
+- **Reproducibility:** seeds from one `SeedSequence`, pinned package versions, config file, commit hash and run record stored with every output.
+- **Checks (illustrative numbers):** 500 datasets; the truth should lie within one standard error in roughly 66-70% of runs for each parameter; reduced $\chi^2$ near 1; residuals with no trend.
+- **Limitations:** noise is white and Gaussian, which real data may violate; the model has no phase or baseline; $\omega$ and $\tau$ are poorly determined when the signal decays within a few periods; recovery on synthetic data does not validate the model for real measurements.
+rubric: States the model, the true parameter values and the noise model with a number for $\sigma$ and the sample size.
+rubric: Describes the fitting and uncertainty method, starting values and the reproducibility measures (seeds, versions, config, commit).
+rubric: Reports a recovery check over many seeds (coverage and reduced $\chi^2$), not a single dataset.
+rubric: Lists at least two genuine limitations, including that synthetic recovery does not validate the model on real data.
