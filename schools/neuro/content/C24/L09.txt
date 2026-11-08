@@ -1,0 +1,237 @@
+@lesson
+title: Encoding models: linear–nonlinear and Poisson regression
+summary: Predict a neuron's spike counts from a stimulus with a linear–nonlinear Poisson model, estimate its filter with the spike-triggered average, and fit its parameters by gradient ascent on the Poisson log-likelihood.
+objective: Compute the spike-triggered average of a stimulus with a stated lag convention.
+objective: Write the linear–nonlinear Poisson (Poisson regression) model with an exponential nonlinearity and compute its rate and log-likelihood.
+objective: Derive and compute the gradient of the log-likelihood and fit the parameters by gradient ascent from a fixed start.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies that fit point process or generalized linear models of spiking; Theoretical Neuroscience (Dayan and Abbott), the chapter on neural encoding, covers the spike-triggered average and linear–nonlinear models.
+
+@article
+Until now we described spikes. An **encoding model** goes further: it predicts the spikes from the stimulus, so that we can ask what a neuron responds to, test the prediction on new data and compare models. The workhorse is the **linear–nonlinear Poisson** (LNP) model, which in statistics is called Poisson regression, a generalized linear model (GLM).
+
+### Setup and the spike-triggered average
+
+Divide time into bins of width $\Delta$ seconds. The stimulus is a list $s_t$ (a contrast or a light intensity, one number per bin) and the data are spike counts $y_t$ per bin. A neuron's response at time $t$ depends on the recent past of the stimulus, so we describe it by a **filter** $w_0, \dots, w_{K-1}$ with $w_k$ multiplying the stimulus $k$ bins ago, $s_{t-k}$.
+
+The **spike-triggered average** (STA) is the average stimulus that preceded a spike. With lags $k = 0, \dots, K - 1$ (lag 0 is the stimulus in the same bin as the spike count, lag 1 the bin before) and using only bins $t \ge K - 1$, so that every lag exists,
+
+$$\mathrm{STA}_k = \frac{\sum_{t \ge K-1} y_t\, s_{t-k}}{\sum_{t \ge K-1} y_t},$$
+
+each spike weighted by its bin's count (and defined as all zeros if there are no spikes). A peak at lag 2 means that, on average, the stimulus two bins before a spike was high. If the stimulus values are independent and Gaussian and the neuron follows an LN model, the STA is proportional to its linear filter; for correlated stimuli it is not, and the STA must be corrected.
+
+### The LNP model
+
+The model has three stages. A **linear** stage forms the **generator** $g_t = b + \sum_{k=0}^{K-1} w_k\, s_{t-k}$. A **nonlinear** stage turns it into a firing rate (Hz), here the exponential $\lambda_t = e^{g_t}$, which is always positive. A **Poisson** stage draws the count in each bin from a Poisson distribution with mean $\lambda_t\Delta$. To keep the rest simple we use one stimulus feature, $K=1$:
+
+$$\lambda_t = \exp(b + w\, s_t), \qquad y_t \sim \mathrm{Poisson}(\lambda_t \Delta).$$
+
+The parameter $w$ is a **gain**: a one-unit increase in the stimulus multiplies the rate by $e^w$.
+
+### The log-likelihood and its gradient
+
+For counts $y_t$ with means $\mu_t = \lambda_t\Delta$, the Poisson log-likelihood is
+
+$$\ell(b, w) = \sum_t \big[\,y_t \ln\mu_t - \mu_t - \ln(y_t!)\,\big].$$
+
+Because $\ln \mu_t = b + w s_t + \ln\Delta$ and $\partial \mu_t/\partial b = \mu_t$, the derivatives are
+
+$$\frac{\partial \ell}{\partial b} = \sum_t (y_t - \mu_t), \qquad \frac{\partial \ell}{\partial w} = \sum_t (y_t - \mu_t)\, s_t,$$
+
+the observed count minus the predicted count, weighted by the feature. For the exponential nonlinearity $\ell$ is a **concave** function of the parameters, so it has a single maximum (no local traps), where both derivatives vanish: the predicted counts match the observed counts, and also their correlation with the stimulus.
+
+```python
+import math
+
+
+def glm_rates(s, b, w):
+    """Firing rates in Hz for rate = exp(b + w * s) on each bin."""
+    return [math.exp(b + w * x) for x in s]
+
+
+def poisson_ll(y, rates, dt):
+    """Poisson log-likelihood of counts y for rates (Hz) in bins of dt s."""
+    total = 0.0
+    for c, r in zip(y, rates):
+        mu = r * dt
+        total += c * math.log(mu) - mu - sum(math.log(i) for i in range(2, c + 1))
+    return total
+```
+
+### Fitting by gradient ascent
+
+**Gradient ascent** starts from fixed parameters (here $b = w = 0$) and repeatedly moves them up the gradient: $b \leftarrow b + \eta\, g_b/N$ and $w \leftarrow w + \eta\, g_w/N$, where $g_b$ and $g_w$ are the two derivatives above, $N$ is the number of bins and $\eta$ the learning rate. For this concave problem, a small enough $\eta$ and enough steps reach the maximum. With a binary stimulus, the maximum has a closed form: the predicted rate at each stimulus value equals the observed mean count there divided by $\Delta$.
+
+### Evaluating and limits
+
+A fit should be judged on held-out data (the log-likelihood of bins not used for fitting), not on the data used to fit it. The LNP model assumes that spikes in different bins are independent given the stimulus; real neurons have refractory periods and bursts, which a **spike-history filter** can add. Poisson regression is also a statistical test: the confidence interval of $w$ tells whether a neuron's rate depends on the stimulus feature at all.
+
+@example
+title: One gradient step
+problem: A model $\lambda_t = \exp(b + w s_t)$ with $\Delta = 0.5$ s is fit to $s = (1, -1, 1, -1)$ and counts $y = (2, 0, 3, 1)$, starting from $b = w = 0$. Compute the two derivatives, then one gradient-ascent step with $\eta = 0.25$ using the mean gradient (divide by $N = 4$).
+step: At $b = w = 0$ the rate is $e^0 = 1$ Hz in every bin, so $\mu_t = 1 \times 0.5 = 0.5$. The residuals $y_t - \mu_t$ are $1.5, -0.5, 2.5, 0.5$.
+step: The derivative for $b$ is the sum of residuals: $1.5 - 0.5 + 2.5 + 0.5 = 4$.
+step: The derivative for $w$ weights each residual by $s_t$: $1.5(1) + (-0.5)(-1) + 2.5(1) + 0.5(-1) = 1.5 + 0.5 + 2.5 - 0.5 = 4$.
+step: Update with the mean gradient: $b = 0 + 0.25 \times 4/4 = 0.25$ and $w = 0.25$. The new rate at $s = +1$ is $e^{0.5} = 1.65$ Hz, and at $s = -1$ it is $e^{0} = 1$ Hz: the model has started to prefer positive stimuli.
+answer: Both derivatives are $4$; after one step $b = w = 0.25$.
+
+@mistakes
+- Using the rate in hertz as the Poisson mean without multiplying by the bin width $\Delta$: the mean count is $\lambda\Delta$.
+- Mixing the lag convention: with $w_k$ on $s_{t-k}$, a filter peak at lag 2 refers to the stimulus two bins in the past, not the future.
+- Reading the STA as the filter when the stimulus values are correlated.
+- Judging the model by the likelihood on the training data alone, which rewards overfitting.
+
+@practice num
+prompt: An LN model has filter $w = (0.5, -0.25)$ with $w_0$ multiplying the current stimulus $s_t$ and $w_1$ multiplying the previous one $s_{t-1}$, bias $b = 1.0$, and exponential nonlinearity (rate in hertz). The stimulus values are $s_t = 2$ and $s_{t-1} = -1$. What is the firing rate in hertz, to two decimal places?
+answer: 9.49
+unit: Hz
+tol: 0.01
+check: exp(1.0 + 0.5 * 2 + (-0.25) * (-1))
+hint: Form the generator $g = b + w_0 s_t + w_1 s_{t-1}$ and exponentiate.
+solution: $g = 1 + 0.5(2) + (-0.25)(-1) = 1 + 1 + 0.25 = 2.25$, so the rate is $e^{2.25} = 9.49$ Hz.
+
+@practice mc
+prompt: The spike-triggered average of a neuron computed with 20 ms bins has its largest positive value at lag 2 (that is, the stimulus two bins before the spike's bin). What does this say?
+choice*: Spikes tend to be preceded, about 40 ms earlier, by a larger-than-average stimulus value.
+choice: Spikes tend to be followed, about 40 ms later, by a larger-than-average stimulus value.
+choice: The neuron fires exactly two spikes per stimulus.
+choice: The stimulus is uncorrelated with the spikes.
+hint: Lag $k$ refers to $s_{t-k}$, a stimulus value in the past.
+solution: With the convention $\mathrm{STA}_k \propto \sum y_t s_{t-k}$, a peak at lag 2 means that the stimulus two bins (40 ms) before the spike bin was on average high. A stimulus after the spike cannot cause it, and a peak means a correlation exists.
+
+@practice code
+prompt: Write `sta(s, y, K)` that returns the spike-triggered average as a list of `K` numbers. Use only bins `t` from `K - 1` to the end, so every lag exists. For lag `k` in `0..K-1`, the entry is the sum over those bins of `y[t] * s[t - k]` divided by the sum of `y[t]` over the same bins. If that total count is 0, return `K` zeros. For example, `sta([0, 1, 0, 0, 2, 0, 3, 0], [0, 0, 1, 0, 0, 1, 0, 2], 3)` returns `[0.0, 2.25, 0.0]`.
+starter:
+```python
+def sta(s, y, K):
+    pass
+```
+tests:
+```python
+got = sta([0, 1, 0, 0, 2, 0, 3, 0], [0, 0, 1, 0, 0, 1, 0, 2], 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 2.25, 0.0])) and len(got) == 3
+got = sta([1, 2, 3, 4, 5], [5, 0, 1, 0, 2], 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [13 / 3, 10 / 3]))
+assert sta([1, 2, 3], [0, 0, 0], 2) == [0.0, 0.0]
+got = sta([4, 4, 4], [9, 0, 1], 1)
+assert abs(got[0] - 4.0) < 1e-9
+got = sta([1, 2, 3], [7, 0, 0], 2)
+assert got == [0.0, 0.0]
+```
+model:
+```python
+def sta(s, y, K):
+    """Spike-triggered average over lags 0..K-1 using bins t >= K - 1."""
+    total = sum(y[K - 1:])
+    if total == 0:
+        return [0.0] * K
+    acc = [0.0] * K
+    for t in range(K - 1, len(s)):
+        for k in range(K):
+            acc[k] += y[t] * s[t - k]
+    return [a / total for a in acc]
+```
+hint: Loop over bins that have a full history, add `y[t] * s[t - k]` into entry `k`, and divide by the total count in those bins.
+solution: The first bins are skipped so that `s[t - k]` never wraps around to the end of the list. In the last test the only spike is in bin 0, which lacks a full history for `K = 2`, so the usable total is 0 and the result is zeros; dividing by the total of all counts would give a wrong, nonzero value.
+
+@practice code
+prompt: Write `glm_gradient(s, y, b, w, dt)` for the model with rate $\lambda_t = \exp(b + w\,s_t)$ Hz and bins of `dt` seconds, returning the pair `(g_b, g_w)` of derivatives of the Poisson log-likelihood: $g_b = \sum_t (y_t - \mu_t)$ and $g_w = \sum_t (y_t - \mu_t)\,s_t$ with $\mu_t = \lambda_t\,dt$. For example, `glm_gradient([1, -1, 1, -1], [2, 0, 3, 1], 0.0, 0.0, 0.5)` returns `(4.0, 4.0)`.
+starter:
+```python
+def glm_gradient(s, y, b, w, dt):
+    pass
+```
+tests:
+```python
+g_b, g_w = glm_gradient([1, -1, 1, -1], [2, 0, 3, 1], 0.0, 0.0, 0.5)
+assert abs(g_b - 4.0) < 1e-9 and abs(g_w - 4.0) < 1e-9
+g_b, g_w = glm_gradient([0, 1, 2], [1, 2, 3], 0.5, 0.2, 0.5)
+assert abs(g_b - 2.9389615) < 1e-6 and abs(g_w - 4.5335205) < 1e-6
+g_b, g_w = glm_gradient([1, -1, 1, 1, -1, -1, 1, -1], [3, 0, 2, 4, 0, 1, 3, 0], 0.0, 0.0, 0.1)
+assert abs(g_b - 12.2) < 1e-9 and abs(g_w - 11.0) < 1e-9
+g_b, g_w = glm_gradient([], [], 0.0, 0.0, 0.1)
+assert g_b == 0.0 and g_w == 0.0
+```
+model:
+```python
+import math
+
+
+def glm_gradient(s, y, b, w, dt):
+    """Gradient of the Poisson log-likelihood for rate exp(b + w * s)."""
+    g_b = g_w = 0.0
+    for x, c in zip(s, y):
+        mu = math.exp(b + w * x) * dt
+        g_b += c - mu
+        g_w += (c - mu) * x
+    return g_b, g_w
+```
+hint: For each bin compute the predicted count $\mu$, form the residual $y - \mu$, and add it (and its product with the stimulus) to the two sums.
+solution: The residual is the observed count minus the predicted count, and the derivative for the slope weights it by the stimulus. At $b = w = 0$ with $\Delta = 0.5$ the predicted count is 0.5 in every bin, giving the worked values; forgetting `dt` would give a predicted count of 1 and wrong gradients.
+
+@practice num
+prompt: A Poisson model predicts mean counts $\mu = (1.5, 0.5)$ in two bins, and the observed counts are $y = (2, 0)$. What is the log-likelihood $\sum_t [y_t\ln\mu_t - \mu_t - \ln(y_t!)]$ (natural logarithm), to three decimal places?
+answer: -1.882
+tol: 0.001
+check: (2 * log(1.5) - 1.5 - log(2)) + (0 * log(0.5) - 0.5 - 0)
+hint: Evaluate the formula bin by bin; $\ln(0!) = 0$ and $\ln(2!) = \ln 2$.
+solution: Bin 1 gives $2\ln 1.5 - 1.5 - \ln 2 = 0.811 - 1.5 - 0.693 = -1.382$ and bin 2 gives $-0.5$, for a total of $-1.882$.
+
+@quiz code
+prompt: Write `fit_glm(s, y, dt, lr, steps)` that fits $\lambda_t = \exp(b + w\,s_t)$ by gradient ascent on the Poisson log-likelihood. Start at `b = w = 0.0`. In each of `steps` iterations, compute the two derivatives $g_b = \sum_t (y_t - \mu_t)$ and $g_w = \sum_t (y_t - \mu_t) s_t$ with $\mu_t = e^{b + w s_t}\,dt$ at the current parameters, then update both parameters at once: `b += lr * g_b / n` and `w += lr * g_w / n`, with `n = len(y)`. Return `(b, w)`. For example, with 0 steps it returns `(0.0, 0.0)`.
+starter:
+```python
+def fit_glm(s, y, dt, lr, steps):
+    pass
+```
+tests:
+```python
+import math
+s = [1, -1, 1, 1, -1, -1, 1, -1, 1, -1]
+y = [4, 1, 3, 5, 0, 2, 4, 1, 3, 1]
+assert fit_glm(s, y, 0.5, 0.5, 0) == (0.0, 0.0)
+b1, w1 = fit_glm(s, y, 0.5, 0.25, 1)
+assert abs(b1 - 0.25 * (sum(y) - 5 * 1.0 * 0.5 * 2) / 10) < 1e-9
+b, w = fit_glm(s, y, 0.5, 0.5, 1000)
+want_b = (math.log(3.8 / 0.5) + math.log(1.0 / 0.5)) / 2
+want_w = (math.log(3.8 / 0.5) - math.log(1.0 / 0.5)) / 2
+assert abs(b - want_b) < 1e-6 and abs(w - want_w) < 1e-6
+assert w > 0
+```
+model:
+```python
+import math
+
+
+def fit_glm(s, y, dt, lr, steps):
+    """Gradient ascent for the Poisson GLM rate = exp(b + w * s)."""
+    b = w = 0.0
+    n = len(y)
+    for _ in range(steps):
+        g_b = g_w = 0.0
+        for x, c in zip(s, y):
+            mu = math.exp(b + w * x) * dt
+            g_b += c - mu
+            g_w += (c - mu) * x
+        b += lr * g_b / n
+        w += lr * g_w / n
+    return b, w
+```
+hint: Compute both derivatives from the current parameters before changing either; the update must use the old $b$ and $w$ for both.
+solution: With a binary stimulus the maximum is where the predicted count in each stimulus condition equals the observed mean: $b + w = \ln(3.8/0.5)$ and $b - w = \ln(1.0/0.5)$. The first step of the second test starts at rate 1 Hz, so each $\mu = 0.5$ and the sum of residuals is $\sum y - 5$. Updating $b$ before computing $g_w$ would use the wrong rates.
+
+@quiz num
+prompt: In a fitted model $\lambda_t = \exp(b + w s_t)$ the slope is $w = 0.4$ per unit of stimulus. By what factor does the firing rate change when the stimulus increases by 2 units? Give the factor to two decimal places.
+answer: 2.23
+tol: 0.01
+check: exp(0.4 * 2)
+hint: The rate is $\exp(b + w s)$, so increasing $s$ by 2 multiplies it by $\exp(2w)$.
+solution: The factor is $e^{0.8} = 2.23$: with an exponential nonlinearity, equal increments of the stimulus multiply the rate by equal factors.
+
+@quiz mc
+prompt: Why can the parameters of the Poisson regression model with an exponential nonlinearity be fit by gradient ascent from any starting point without worrying about local maxima?
+choice*: The log-likelihood is a concave function of the parameters, so any maximum it has is the global maximum.
+choice: The model has no parameters that need fitting.
+choice: The Poisson distribution has equal mean and variance, which guarantees convergence in one step.
+choice: Gradient ascent always finds the global maximum for every model.
+hint: Think about the shape of the log-likelihood, not the data.
+solution: For the exponential rate function the log-likelihood is concave in $(b, w)$, so it has no local maxima other than the global one. Other nonlinearities and other models, such as deep networks, can have local maxima, so the statement does not hold for all models.

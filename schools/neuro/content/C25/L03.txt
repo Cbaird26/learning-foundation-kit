@@ -1,0 +1,336 @@
+@lesson
+title: The Hodgkin–Huxley model revisited
+summary: Write the Hodgkin–Huxley equations in the Dayan–Abbott convention, compute gating variables and ionic currents at rest, and step the model forward in Python.
+objective: State the four Hodgkin–Huxley equations with their gating rates, conductances and reversal potentials in one convention.
+objective: Compute steady-state gating values, time constants and the ionic currents at the resting potential.
+objective: Simulate an action potential with simultaneous Euler updates and find the resting potential by bisection.
+reading: Neuronal Dynamics, the chapter on ion channels and the Hodgkin–Huxley model: the gating variables, the equations and the action potential.
+@article
+The leaky integrate-and-fire neuron fires when you tell it to. A real neuron makes the spike itself, from the voltage dependence of its channels. The **Hodgkin–Huxley model** (1952) explains the squid giant axon's action potential with four coupled equations, and it remains the template for conductance-based models. This lesson uses the convention of Dayan and Abbott (2001), in which the resting potential is near $-65$ mV.
+
+### The equations
+
+Let $V$ be the membrane potential (mV), time $t$ in ms, and let currents per unit area be in nA/mm². The membrane obeys
+
+$$c_m \frac{dV}{dt} = -\bar g_L (V - E_L) - \bar g_K\, n^4 (V - E_K) - \bar g_{Na}\, m^3 h\,(V - E_{Na}) + \frac{I_e}{A},$$
+
+with $c_m = 10$ nF/mm², conductances per area $\bar g_L = 3$, $\bar g_K = 360$ and $\bar g_{Na} = 1200$ µS/mm² (that is 0.003, 0.36 and 1.2 mS/mm²), and reversal potentials $E_L = -54.387$, $E_K = -77$ and $E_{Na} = 50$ mV. Units close: µS times mV is nA, and nA/mm² divided by nF/mm² is mV/ms. Each **gating variable** $x \in \{m, h, n\}$ lies between 0 and 1 and relaxes as
+
+$$\frac{dx}{dt} = \alpha_x(V)(1 - x) - \beta_x(V)\,x, \qquad x_\infty = \frac{\alpha_x}{\alpha_x + \beta_x}, \qquad \tau_x = \frac{1}{\alpha_x + \beta_x}.$$
+
+Here $m$ is the sodium **activation** gate (fast), $h$ the sodium **inactivation** gate (slower) and $n$ the potassium activation gate (slower). The rate functions, with $V$ in mV and rates in 1/ms, are
+
+| gate | $\alpha$ | $\beta$ |
+|---|---|---|
+| $m$ | $0.1(V+40)/[1 - e^{-0.1(V+40)}]$ | $4\,e^{-0.0556(V+65)}$ |
+| $h$ | $0.07\,e^{-0.05(V+65)}$ | $1/[1 + e^{-0.1(V+35)}]$ |
+| $n$ | $0.01(V+55)/[1 - e^{-0.1(V+55)}]$ | $0.125\,e^{-0.0125(V+65)}$ |
+
+The $\alpha_m$ and $\alpha_n$ expressions are $0/0$ at $V = -40$ and $V = -55$ mV; their limits are $1$ and $0.1$ per ms, which code must handle explicitly.
+
+### Values at rest
+
+At $V = -65$ mV the steady states are $m_\infty = 0.0529$, $h_\infty = 0.5961$ and $n_\infty = 0.3177$, with time constants $\tau_m = 0.237$ ms, $\tau_h = 8.52$ ms and $\tau_n = 5.46$ ms. Few sodium channels are open ($m^3 h \approx 9 \times 10^{-5}$) and a few percent of the potassium channels are ($n^4 \approx 0.010$). The resting potential is the voltage at which the net current of the three channel types is zero when the gates are at their steady states; a bisection on $i_m(V)$ finds $V_{\text{rest}} = -64.996$ mV.
+
+### The action potential
+
+A current $I_e/A$ above a threshold depolarizes the cell. Because $\tau_m$ is so short, $m$ follows $V$ almost instantly: sodium channels open, $E_{Na} = 50$ mV pulls $V$ upward, and the upswing feeds itself (positive feedback). Over the next millisecond $h$ falls (inactivation) and $n$ rises, so sodium current shuts down and potassium current repolarizes the membrane, overshooting to an **afterhyperpolarization** below rest. While $h$ is low and $n$ is high the cell is **refractory**, and this explains why the real refractory period is a property of channels rather than an extra rule. With $I_e/A = 100$ nA/mm² switched on at rest, a simulation reaches a peak of about $+40.8$ mV after $2.1$ ms.
+
+### In code
+
+Always update all four variables from the same old values, and use a time step well below $\tau_m = 0.24$ ms at rest (here $\Delta t = 0.02$ ms):
+
+```python
+import math
+
+
+def alpha_m(V):
+    x = V + 40.0
+    return 1.0 if abs(x) < 1e-7 else 0.1 * x / (1.0 - math.exp(-0.1 * x))
+
+
+def beta_m(V):
+    return 4.0 * math.exp(-0.0556 * (V + 65.0))
+
+
+def alpha_h(V):
+    return 0.07 * math.exp(-0.05 * (V + 65.0))
+
+
+def beta_h(V):
+    return 1.0 / (1.0 + math.exp(-0.1 * (V + 35.0)))
+
+
+def m_inf(V):
+    return alpha_m(V) / (alpha_m(V) + beta_m(V))
+```
+
+Researchers use packages that integrate the same equations with adaptive solvers, but this fixed-step version is enough to reproduce the spike.
+
+The model also has well-known limits: it describes one patch of membrane with space-clamped, voltage-independent reversal potentials, and the numerical rates above were fitted to one preparation at one temperature. Rates scale with temperature, and mammalian neurons have many more channel types.
+
+@example
+title: The ionic currents at rest
+problem: Compute the leak, potassium and sodium currents (nA/mm²) at $V = -65$ mV with the gates at their steady states $m = 0.0529$, $h = 0.5961$, $n = 0.3177$, and check that their sum is close to zero.
+step: Leak: $\bar g_L (V - E_L) = 3 \times (-65 + 54.387) = 3 \times (-10.613) = -31.84$ nA/mm², inward.
+step: Potassium: $n^4 = 0.3177^4 = 0.01019$, so $360 \times 0.01019 \times (-65 + 77) = 360 \times 0.01019 \times 12 = 44.0$ nA/mm², outward.
+step: Sodium: $m^3 h = 0.0529^3 \times 0.5961 = 8.82 \times 10^{-5}$, so $1200 \times 8.82 \times 10^{-5} \times (-65 - 50) = -12.2$ nA/mm², inward.
+step: Sum: $-31.84 + 44.00 - 12.20 = -0.04$ nA/mm², nearly zero. The small remainder shows that $-65$ mV is within a few thousandths of a millivolt of the exact rest, $-64.996$ mV.
+answer: Leak $-31.84$, potassium $+44.00$ and sodium $-12.20$ nA/mm², summing to about $-0.04$ nA/mm².
+
+@mistakes
+- Updating $V$ first and then using the new $V$ to update the gates: use the old $V$ for every variable in one step, or the scheme is not a consistent Euler step.
+- Forgetting the removable singularities at $V = -40$ and $V = -55$ mV, where the formulas give $0/0$ and the code raises a division error or returns nan.
+- Mixing conductances in mS/mm² and µS/mm²: the same cell has $\bar g_{Na} = 1.2$ mS/mm² $= 1200$ µS/mm², and the factor 1000 changes the currents completely.
+- Reading $m_\infty$ as the fraction of open channels: it is the steady state of one gate, and the open fraction is $m^3 h$ for sodium and $n^4$ for potassium.
+
+@practice num
+prompt: In the Hodgkin–Huxley model (Dayan–Abbott convention), what is the steady-state value of the potassium activation gate $n_\infty$ at $V = -45$ mV? Use $\alpha_n = 0.01(V+55)/[1 - e^{-0.1(V+55)}]$ and $\beta_n = 0.125\,e^{-0.0125(V+65)}$. Give your answer to three decimal places.
+answer: 0.619
+tol: 0.001
+check: (0.01 * 10 / (1 - exp(-1))) / (0.01 * 10 / (1 - exp(-1)) + 0.125 * exp(-0.0125 * 20))
+hint: Evaluate $V + 55 = 10$ and $V + 65 = 20$, compute $\alpha_n$ and $\beta_n$, then take $\alpha_n/(\alpha_n + \beta_n)$.
+solution: $\alpha_n = 0.1/(1 - e^{-1}) = 0.1582$ per ms and $\beta_n = 0.125\,e^{-0.25} = 0.0974$ per ms, so $n_\infty = 0.1582/0.2556 = 0.619$.
+
+@practice num
+prompt: At $V = -65$ mV the potassium gate is at its steady state $n = 0.3177$. With $\bar g_K = 360$ µS/mm² and $E_K = -77$ mV, what is the potassium current $\bar g_K n^4 (V - E_K)$ in nA/mm²? Give your answer to one decimal place.
+answer: 44.0
+tol: 0.1
+unit: nA/mm²
+check: 360 * 0.3177 ** 4 * (-65 + 77)
+hint: Raise $n$ to the fourth power, multiply by the conductance, and multiply by the driving force $V - E_K = 12$ mV.
+solution: $n^4 = 0.3177^4 = 0.010187$, so $i_K = 360 \times 0.010187 \times 12 = 44.0$ nA/mm², positive (outward) because $V$ is above $E_K$.
+
+@practice mc
+prompt: During the falling phase of an action potential in the Hodgkin–Huxley model, which changes bring the membrane back toward rest?
+choice*: The sodium inactivation gate $h$ falls and the potassium gate $n$ rises, so the inward sodium current shrinks while the outward potassium current grows.
+choice: The sodium activation gate $m$ closes completely while $h$ stays near 1, which leaves the potassium current unchanged.
+choice: The reversal potential $E_{Na}$ falls below rest, which reverses the sodium current.
+choice: The leak conductance rises sharply, which clamps the voltage to $E_L = -54.387$ mV.
+hint: Think about which gate is slow and what it does to the sodium channels that were opened by $m$.
+solution: Reversal potentials are set by ion concentrations and do not change during one spike, and the leak conductance is constant. Repolarization comes from $h$ decreasing (sodium inactivation) and $n$ increasing (potassium activation), which together make the net current outward; $m$ is fast and follows $V$.
+
+@practice code
+prompt: Write `hh_step(V, m, h, n, I_e, dt)` that takes one Euler step of the Hodgkin–Huxley model in the Dayan–Abbott convention ($c_m = 10$ nF/mm², $\bar g_L = 3$, $\bar g_K = 360$, $\bar g_{Na} = 1200$ µS/mm², $E_L = -54.387$, $E_K = -77$, $E_{Na} = 50$ mV; `I_e` in nA/mm², `dt` in ms) and returns the tuple `(V, m, h, n)` after the step. Use the old `V` and the old gating values for every variable. The rate functions `alpha_m`, `beta_m`, `alpha_h`, `beta_h`, `alpha_n` and `beta_n` are already in the starter code.
+starter:
+```python
+import math
+
+
+def alpha_m(V):
+    x = V + 40.0
+    return 1.0 if abs(x) < 1e-7 else 0.1 * x / (1.0 - math.exp(-0.1 * x))
+
+
+def beta_m(V):
+    return 4.0 * math.exp(-0.0556 * (V + 65.0))
+
+
+def alpha_h(V):
+    return 0.07 * math.exp(-0.05 * (V + 65.0))
+
+
+def beta_h(V):
+    return 1.0 / (1.0 + math.exp(-0.1 * (V + 35.0)))
+
+
+def alpha_n(V):
+    x = V + 55.0
+    return 0.1 if abs(x) < 1e-7 else 0.01 * x / (1.0 - math.exp(-0.1 * x))
+
+
+def beta_n(V):
+    return 0.125 * math.exp(-0.0125 * (V + 65.0))
+
+
+def hh_step(V, m, h, n, I_e, dt):
+    return (V, m, h, n)
+```
+tests:
+```python
+v, m, h, n = hh_step(-65.0, 0.0529324852572, 0.59612075350846,
+                     0.31767691409740, 100.0, 0.02)
+assert abs(v - (-64.7999155258)) < 1e-6
+assert abs(m - 0.0529324852572) < 1e-6 and abs(h - 0.596120753508) < 1e-6
+v, m, h, n = hh_step(-50.0, 0.2, 0.4, 0.5, 0.0, 0.05)
+assert abs(v - (-51.183305)) < 1e-5
+assert abs(m - 0.2059067254) < 1e-6 and abs(h - 0.3973434593) < 1e-6
+assert abs(n - 0.5005861516) < 1e-6
+v, m, h, n = hh_step(-30.0, 0.8, 0.1, 0.6, 200.0, 0.01)
+assert abs(v - (-27.150793)) < 1e-5 and abs(n - 0.6006051890) < 1e-6
+state = (-65.0, 0.0529324852572, 0.59612075350846, 0.31767691409740)
+peak = state[0]
+for _ in range(1000):
+    state = hh_step(*state, 100.0, 0.02)
+    peak = max(peak, state[0])
+assert abs(peak - 40.827135) < 1e-3
+```
+model:
+```python
+import math
+
+
+def alpha_m(V):
+    x = V + 40.0
+    return 1.0 if abs(x) < 1e-7 else 0.1 * x / (1.0 - math.exp(-0.1 * x))
+
+
+def beta_m(V):
+    return 4.0 * math.exp(-0.0556 * (V + 65.0))
+
+
+def alpha_h(V):
+    return 0.07 * math.exp(-0.05 * (V + 65.0))
+
+
+def beta_h(V):
+    return 1.0 / (1.0 + math.exp(-0.1 * (V + 35.0)))
+
+
+def alpha_n(V):
+    x = V + 55.0
+    return 0.1 if abs(x) < 1e-7 else 0.01 * x / (1.0 - math.exp(-0.1 * x))
+
+
+def beta_n(V):
+    return 0.125 * math.exp(-0.0125 * (V + 65.0))
+
+
+def hh_step(V, m, h, n, I_e, dt):
+    """One Euler step of the Hodgkin-Huxley equations (all from old values)."""
+    i_m = (3.0 * (V + 54.387) + 360.0 * n ** 4 * (V + 77.0)
+           + 1200.0 * m ** 3 * h * (V - 50.0))
+    dV = (-i_m + I_e) / 10.0
+    dm = alpha_m(V) * (1.0 - m) - beta_m(V) * m
+    dh = alpha_h(V) * (1.0 - h) - beta_h(V) * h
+    dn = alpha_n(V) * (1.0 - n) - beta_n(V) * n
+    return V + dt * dV, m + dt * dm, h + dt * dh, n + dt * dn
+```
+hint: Compute the membrane current and the four derivatives first, all from the old state, and only then add `dt` times each derivative.
+solution: Computing every derivative before changing anything makes the update consistent. The first test shows that after 0.02 ms the voltage has moved $0.2$ mV while the gates barely change, because they are already at rest; the final test runs 20 ms and recovers the spike peak near $+40.8$ mV.
+
+@practice code
+prompt: Write `n_inf_tau(V)` that returns the tuple `(n_inf, tau_n)` for the potassium gate at voltage `V` (mV): $n_\infty = \alpha_n/(\alpha_n + \beta_n)$ and $\tau_n = 1/(\alpha_n + \beta_n)$ in ms, with $\alpha_n = 0.01(V+55)/[1 - e^{-0.1(V+55)}]$ per ms, $\beta_n = 0.125\,e^{-0.0125(V+65)}$ per ms. At $V = -55$ mV the formula for $\alpha_n$ is $0/0$ and its limit is $0.1$ per ms. For example, `n_inf_tau(-65.0)` returns about `(0.3177, 5.4586)`.
+starter:
+```python
+def n_inf_tau(V):
+    return (0.0, 0.0)
+```
+tests:
+```python
+a, b = n_inf_tau(-65.0)
+assert abs(a - 0.3176769) < 1e-6 and abs(b - 5.4585847) < 1e-5
+a, b = n_inf_tau(-45.0)
+assert abs(a - 0.6190532) < 1e-6 and abs(b - 3.9131627) < 1e-5
+a, b = n_inf_tau(-55.0)
+assert abs(a - 0.4754838) < 1e-6 and abs(b - 4.7547) < 1e-3
+a1, b1 = n_inf_tau(-55.0 + 1e-6)
+assert abs(a1 - a) < 1e-4 and abs(b1 - b) < 1e-3
+```
+model:
+```python
+import math
+
+
+def n_inf_tau(V):
+    """Steady state and time constant (ms) of the potassium gate n."""
+    x = V + 55.0
+    alpha = 0.1 if abs(x) < 1e-7 else 0.01 * x / (1.0 - math.exp(-0.1 * x))
+    beta = 0.125 * math.exp(-0.0125 * (V + 65.0))
+    return alpha / (alpha + beta), 1.0 / (alpha + beta)
+```
+hint: Compute $\alpha_n$ with a special case for $|V + 55|$ very small, then $\beta_n$, then both outputs from their sum.
+solution: The special case replaces $0/0$ by the limit $0.1$, which the third test needs. The last test checks that the function is continuous across the singular point: a value slightly off $-55$ mV gives nearly the same result. The time constant is the reciprocal of $\alpha_n + \beta_n$, so it is largest where both rates are small.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+
+a = 0.1 * (-30 + 40) / (1 - math.exp(-0.1 * (-30 + 40)))
+b = 4 * math.exp(-0.0556 * (-30 + 65))
+print(round(a / (a + b), 3))
+```
+answer: 0.735
+check: run("import math\n\na = 0.1 * (-30 + 40) / (1 - math.exp(-0.1 * (-30 + 40)))\nb = 4 * math.exp(-0.0556 * (-30 + 65))\nprint(round(a / (a + b), 3))")
+hint: The program computes $m_\infty$ at $V = -30$ mV from $\alpha_m$ and $\beta_m$.
+solution: $\alpha_m = 1/(1 - e^{-1}) = 1.582$ and $\beta_m = 4 e^{-1.946} = 0.571$ per ms, so $m_\infty = 1.582/2.153 = 0.735$.
+
+@quiz code
+prompt: Write `rest_potential(lo, hi, iters)` that finds the resting potential of the Hodgkin–Huxley model by bisection. Define $i_m(V)$ as the total membrane current with the gates at their steady states, $\bar g_L (V - E_L) + \bar g_K n_\infty^4 (V - E_K) + \bar g_{Na} m_\infty^3 h_\infty (V - E_{Na})$ in nA/mm² (Dayan–Abbott constants). Start with the bracket `[lo, hi]`; `iters` times, set `mid = (lo + hi) / 2`, and if `i_m(lo)` and `i_m(mid)` have opposite signs (or the product is zero), set `hi = mid`, otherwise `lo = mid`. Return `(lo + hi) / 2`. The rate functions and `i_m` are in the starter code.
+starter:
+```python
+import math
+
+
+def rates(V):
+    x, y = V + 40.0, V + 55.0
+    am = 1.0 if abs(x) < 1e-7 else 0.1 * x / (1.0 - math.exp(-0.1 * x))
+    bm = 4.0 * math.exp(-0.0556 * (V + 65.0))
+    ah = 0.07 * math.exp(-0.05 * (V + 65.0))
+    bh = 1.0 / (1.0 + math.exp(-0.1 * (V + 35.0)))
+    an = 0.1 if abs(y) < 1e-7 else 0.01 * y / (1.0 - math.exp(-0.1 * y))
+    bn = 0.125 * math.exp(-0.0125 * (V + 65.0))
+    return am, bm, ah, bh, an, bn
+
+
+def i_m(V):
+    am, bm, ah, bh, an, bn = rates(V)
+    m, h, n = am / (am + bm), ah / (ah + bh), an / (an + bn)
+    return (3.0 * (V + 54.387) + 360.0 * n ** 4 * (V + 77.0)
+            + 1200.0 * m ** 3 * h * (V - 50.0))
+
+
+def rest_potential(lo, hi, iters):
+    return 0.0
+```
+tests:
+```python
+assert abs(rest_potential(-80.0, -50.0, 40) - (-64.99638)) < 1e-4
+assert abs(rest_potential(-70.0, -60.0, 30) - (-64.99638)) < 1e-4
+assert rest_potential(-70.0, -60.0, 0) == -65.0
+assert abs(i_m(rest_potential(-80.0, -50.0, 40))) < 1e-6
+```
+model:
+```python
+import math
+
+
+def rates(V):
+    x, y = V + 40.0, V + 55.0
+    am = 1.0 if abs(x) < 1e-7 else 0.1 * x / (1.0 - math.exp(-0.1 * x))
+    bm = 4.0 * math.exp(-0.0556 * (V + 65.0))
+    ah = 0.07 * math.exp(-0.05 * (V + 65.0))
+    bh = 1.0 / (1.0 + math.exp(-0.1 * (V + 35.0)))
+    an = 0.1 if abs(y) < 1e-7 else 0.01 * y / (1.0 - math.exp(-0.1 * y))
+    bn = 0.125 * math.exp(-0.0125 * (V + 65.0))
+    return am, bm, ah, bh, an, bn
+
+
+def i_m(V):
+    am, bm, ah, bh, an, bn = rates(V)
+    m, h, n = am / (am + bm), ah / (ah + bh), an / (an + bn)
+    return (3.0 * (V + 54.387) + 360.0 * n ** 4 * (V + 77.0)
+            + 1200.0 * m ** 3 * h * (V - 50.0))
+
+
+def rest_potential(lo, hi, iters):
+    """Zero of the steady-state membrane current, by bisection."""
+    for _ in range(iters):
+        mid = (lo + hi) / 2.0
+        if i_m(lo) * i_m(mid) <= 0:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2.0
+```
+hint: Keep the half of the bracket where the current changes sign. With no iterations the answer is simply the middle of the bracket.
+solution: The steady-state current is negative just below rest (net inward) and positive above, so the zero lies where the sign changes. Each iteration halves the bracket, so forty iterations of a 30 mV bracket give a precision of about $3 \times 10^{-11}$ mV; the answer is near $-65$ mV as the convention intends.
+
+@quiz self
+prompt: In the Hodgkin–Huxley model a brief depolarization to $-50$ mV produces no spike while one to $-40$ mV does. Explain in terms of the gating variables and currents why the response is all-or-none, and why a second stimulus delivered 1 ms after a spike fails to produce a second spike of full size.
+hint: Compare the inward sodium current with the outward potassium and leak currents just after the stimulus, and recall what $h$ and $n$ are doing after a spike.
+solution: Just above rest, depolarization raises $m$ quickly, so the inward sodium current grows, but it also raises the outward potassium and leak currents. If the net current stays outward, $V$ returns to rest. Above a threshold the sodium current wins, the net current becomes inward, and the further depolarization opens more sodium channels, a regenerative loop, so the spike amplitude is set by the channels and $E_{Na}$ and not by the stimulus. One millisecond after a spike $h$ is still low (it recovers with $\tau_h$ of several milliseconds) and $n$ is still high, so fewer sodium channels are available and the potassium current is larger. Then the same stimulus no longer makes the net current inward, or produces only a smaller response; this is the refractory period of the neuron arising from the channel dynamics.
+rubric: Explains the regenerative sodium loop and the threshold as the balance of inward and outward currents.
+rubric: Attributes the refractory period to low $h$ (sodium inactivation) and high $n$ after a spike.
+rubric: Notes that spike size is set by the channels, not the stimulus.

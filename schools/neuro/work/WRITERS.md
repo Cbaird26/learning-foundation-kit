@@ -19,6 +19,9 @@ Course notes:
 - C20, C30, P3: No code items. Present nature–nurture (C20), neuroethics (C30) and consciousness (P3) debates even-handedly; C30 follows the brief's current facts on neural data laws and research ethics exactly.
 - C18: Hormones, drugs and sleep at the textbook level; no doses or treatment advice.
 - P2, P4: Fast-moving areas: concepts, methods and established results with their papers and years from the brief's list; never the current state of the art as fact; say which questions are open.
+- C27: state the hemodynamic response function with its formula and parameters; MRI physics in outline; scanners and recording systems generic; the general linear model small enough for the normal equations in plain Python; the project uses simulated, typed-out or open data, never new imaging of people.
+- C30: also: brain–computer interfaces, implants and stimulators generic or historical with their papers; name other laws, cases or guidelines only when sure of name, year and holding.
+- P1: rigorous theory with complete derivations; code in about half the lessons; refer to (do not re-teach) the integrate-and-fire and Hodgkin–Huxley models; week 12 presents open problems as open.
 - P5, P6: Research practice; describe common practice and say that programs, journals and institutions differ. Projects use open data sets described generally, never animals or new data from people beyond low-risk tasks with volunteers.
 
 Reused, not rewritten: K1–K11, J1–J9 and H1–H14 from the AI Learning Foundation (its K–12 with the programming track); C1–C4 and C5–C7 from the Med School Learning Foundation (Med C1–C4, C7, C8, C10); C8–C10, C22 and C23 from the AI school (AI C6–C8, C10, C17); C21 from the Metaphysics school (C9, Philosophy of mind); the clinical electives C28 and C29 from the Med school (S9, S10). 49 courses; all validate with 0 errors here after two percent-unit fixes in C7 and two cross-course references fixed in C23.
@@ -41,3 +44,11 @@ Log:
 - started C25
 - C18 done (0 errors, 97 + 3 exam, 6 code items; sleep constants, de Vivo 2017, glymphatic caveat, Berendzen 2023, Wu 2014, Marlin 2015, Joel 2015 and the mental-rotation range passed to the reviewer); review started C18
 - C20 done (0 errors, 96 + 3 exam, no code items; classic study figures described qualitatively; invented data labeled); review started C20; started C26
+- C19 done (0 errors, 98 + 3 exam, 7 code items; Arcaro 2017, Parvizi 2012, Vargha-Khadem 1997, lateralization conventions, the crossed–uncrossed difference and the TMS motor threshold passed to the reviewer as verified); review started C19
+- C20 reviewed (4 fixes: "peanuts" morphemes, two position references, visual word form area attribution); follow-up by me: MLU 2.6 interpreted as about two and a half years
+- C18 reviewed (7 fixes: weight-recovery figure, two boundary asserts, items off article and example data, sex-differences passage balanced (size, Joel 2015 and its critics), mental-rotation range, an onset condition stated, mammal species count); follow-ups by me: slow-wave activity defined over non-REM sleep (0.5–4.5 Hz), ob/ob weight as up to about three times normal
+- C16 done (0 errors, 96 + 3 exam, at least 2 code items per lesson; Stevens exponents, receptor counts, conduction velocities, cortical magnification and five attributions passed to the reviewer); review started C16
+- C17 done (0 errors, 96 + 3 exam, 2–3 code items per lesson; four retype flags turned into variants by the writer; invented toy models labeled); review started C17
+- C19 reviewed (13 fixes: items off article and example data, a TMS-control distractor that was also correct, alpha lateralization sign, Gauthier 1999 and 2000, PSTH definition, an exam choice that treated selectivity as necessity); no follow-ups needed (the double-dissociation caveats are in the text)
+- BRIEF: OECD Recommendation on Responsible Innovation in Neurotechnology (11 December 2019, nine principles) added to the current facts, checked on the OECD site
+- started C27, C30, P1

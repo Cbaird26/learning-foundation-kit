@@ -1,0 +1,202 @@
+@lesson
+title: Calcium imaging traces and spike inference
+summary: Convert fluorescence traces to relative change, model calcium decay after spikes with a first-order autoregressive model, and infer spike events by inverting it.
+objective: Compute $\Delta F/F_0$ from a fluorescence trace with a stated baseline.
+objective: Simulate a calcium trace from spike counts per frame with exponential decay, and invert the model to estimate events.
+objective: State what calcium imaging cannot tell you about spikes, and compute the power at a frequency in a calcium trace.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies that analyze imaging or continuous signals alongside spikes; for calcium indicators and spike inference, look up "calcium imaging deconvolution" in the review literature.
+
+@article
+Electrodes record a handful of neurons. **Two-photon calcium imaging** lets a microscope watch hundreds of neurons at once: a fluorescent indicator brightens when calcium enters a cell, and each action potential lets in a puff of calcium. But what the microscope records is a brightness, not a spike. The indicator binds and releases calcium slowly compared with a spike's 1 ms, so the trace shows a sharp rise at each spike followed by a decay lasting hundreds of milliseconds to seconds. Turning brightness back into spikes is an inverse problem.
+
+### Fluorescence to $\Delta F/F_0$
+
+For each cell the **region of interest** (ROI) gives a fluorescence value $F_t$ per frame, sampled every $\Delta t$ seconds (for example $\Delta t = 0.1$ s, a frame rate of 10 Hz). Because cells differ in indicator expression and optics, we normalize to the relative change from a baseline $F_0$:
+
+$$\frac{\Delta F}{F_0}(t) = \frac{F_t - F_0}{F_0}.$$
+
+In this lesson $F_0$ is the mean of the first $n_b$ frames, chosen to be before any stimulus. (Other analyses use a low percentile of a sliding window, which tracks slow drift.) Neuropil, the glow of out-of-focus processes, adds a contaminating signal that is usually subtracted before this step.
+
+### A model of calcium dynamics
+
+A common simple model treats the calcium-dependent signal $c_t$ (in units of $\Delta F/F_0$) as an **autoregressive process of order 1**, AR(1):
+
+$$c_t = \gamma\, c_{t-1} + a\, s_t, \qquad \gamma = e^{-\Delta t/\tau},$$
+
+where $s_t \ge 0$ is the number of spikes in frame $t$, $a$ is the signal gained per spike, and $\tau$ is the decay time constant of the indicator (from a few hundred milliseconds to more than a second, depending on the indicator). Each frame, the signal decays by the factor $\gamma$ and jumps by $a$ for each spike. For $\Delta t = 0.1$ s and $\tau = 0.5$ s, $\gamma = e^{-0.2} = 0.8187$; one spike in frame 2 and two in frame 6 give, with $a = 1$,
+$$c = (0,\ 0,\ 1,\ 0.819,\ 0.670,\ 0.549,\ 2.449,\ 2.005,\ 1.642,\ 1.344).$$
+The observed trace adds measurement noise, $y_t = c_t + \epsilon_t$.
+
+### Inverting the model
+
+If $c$ were noiseless we could solve for the spikes: $a\,s_t = c_t - \gamma\, c_{t-1}$, taking $c_{-1} = 0$. This **deconvolution** step undoes the decay. With noise, applying the same formula to $y_t$ amplifies the noise: if each $\epsilon_t$ has standard deviation $\sigma$, then $y_t - \gamma y_{t-1}$ has standard deviation $\sigma\sqrt{1 + \gamma^2}$. We then clip negative values to 0, since spike counts cannot be negative, and either keep the amplitude as a measure of activity or **threshold**: declare an event in frame $t$ when the estimate reaches a criterion; a count estimate is the estimate divided by $a$ and rounded.
+
+```python
+def deconvolve_ar1(y, gamma):
+    """Estimate a * s_t = y_t - gamma * y_{t-1}, clipped at 0, with y_{-1} = 0."""
+    out, prev = [], 0.0
+    for v in y:
+        out.append(max(0.0, v - gamma * prev))
+        prev = v
+    return out
+```
+
+Real methods (nonnegative deconvolution with a sparsity penalty, or trained neural networks) do better than this subtraction, but they answer the same question.
+
+### What the trace cannot tell you
+
+- **Timing** is limited by the frame interval: the estimate says a spike occurred in a frame, not when within it.
+- **Counts** are ambiguous: one large event could be several spikes in one frame, and an indicator's response is not strictly proportional to the number of spikes (it saturates and has a nonlinear dependence on calcium).
+- **Rates**: $\Delta F/F_0$ is not a firing rate, and neurons with different indicator levels or decay times cannot be compared by amplitude alone.
+- Validation comes from **ground truth**: recording the same neuron with an electrode while imaging it and checking how well the inferred events match the real spikes.
+
+### Spectra of calcium traces
+
+Slow fluctuations in a calcium trace can be analyzed like an LFP. With frames every $\Delta t$ the Nyquist frequency is $1/(2\Delta t)$, only 5 Hz at 10 Hz imaging, so fast neural rhythms cannot be resolved by calcium imaging at all.
+
+@example
+title: Deconvolving a short trace
+problem: A noiseless calcium trace with $\gamma = 0.8$ is $c = (0, 2, 1.6, 1.28, 3.024, 2.4192)$ in units of $\Delta F/F_0$, and each spike adds $a = 1$. Find the spike count in each frame.
+step: Apply $a s_t = c_t - \gamma c_{t-1}$ with $c_{-1} = 0$. Frame 0 gives $0 - 0 = 0$.
+step: Frame 1: $2 - 0.8 \times 0 = 2$. Frame 2: $1.6 - 0.8 \times 2 = 0$. Frame 3: $1.28 - 0.8 \times 1.6 = 0$.
+step: Frame 4: $3.024 - 0.8 \times 1.28 = 3.024 - 1.024 = 2$. Frame 5: $2.4192 - 0.8 \times 3.024 = 0$.
+step: With $a = 1$ the counts are $(0, 2, 0, 0, 2, 0)$: two spikes in each of frames 1 and 4. With real noise the zeros would be small non-zero numbers, and a threshold such as $0.5$ would separate events from noise.
+answer: $(0, 2, 0, 0, 2, 0)$ spikes per frame.
+
+@mistakes
+- Using a baseline that contains activity: if the first frames include responses, $F_0$ is too high and $\Delta F/F_0$ is underestimated.
+- Applying the deconvolution formula to noisy data without clipping or thresholding: the output is dominated by noise of size about $\sigma\sqrt{1 + \gamma^2}$.
+- Using the decay time constant in frames or seconds inconsistently: $\gamma = e^{-\Delta t/\tau}$ needs both in the same unit.
+- Reporting a $\Delta F/F_0$ amplitude as a firing rate in hertz.
+
+@practice num
+prompt: Imaging is done at a frame interval $\Delta t = 0.05$ s with an indicator whose decay time constant is $\tau = 1.0$ s. What is the per-frame decay factor $\gamma = e^{-\Delta t/\tau}$, to three decimal places?
+answer: 0.951
+tol: 0.001
+check: exp(-0.05 / 1.0)
+hint: Both times are in seconds, so the exponent is $-0.05$.
+solution: $\gamma = e^{-0.05} = 0.9512$, so the signal decays by about 5% per frame.
+
+@practice mc
+prompt: A cell is imaged at 10 frames per second. The inferred event train shows an event in frame 12. Which statement is justified?
+choice*: At least one spike occurred during the 100 ms of frame 12 (or just before it), but the timing within the frame and the exact count are not determined.
+choice: Exactly one spike occurred at the start of frame 12.
+choice: The neuron's firing rate during frame 12 was exactly the event amplitude in hertz.
+choice: No spike occurred in frames 11 or 13, because events are never adjacent.
+hint: Think about what a 100 ms frame and a slow indicator can resolve.
+solution: Imaging samples the fluorescence once per frame and the indicator is slow, so the data constrain the number of spikes only up to ambiguity in amplitude, and timing only to about one frame. Adjacent events are possible, and an amplitude in $\Delta F/F_0$ is not a rate in hertz.
+
+@practice code
+prompt: Write `dff(F, n_base)` that returns $\Delta F/F_0$ for a fluorescence trace `F` (a list of positive floats, one per frame), where $F_0$ is the mean of the first `n_base` values. Return a list of `(f - F0) / F0` for every frame. For example, `dff([100, 100, 120, 150, 110], 2)` returns about `[0.0, 0.0, 0.2, 0.5, 0.1]`.
+starter:
+```python
+def dff(F, n_base):
+    pass
+```
+tests:
+```python
+got = dff([100, 100, 120, 150, 110], 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.0, 0.2, 0.5, 0.1]))
+got = dff([50, 60, 40, 50], 4)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.2, -0.2, 0.0]))
+got = dff([80.0, 100.0, 120.0], 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.25, 0.5]))
+assert dff([], 1) == []
+```
+model:
+```python
+def dff(F, n_base):
+    """Relative fluorescence change with F0 = mean of the first n_base frames."""
+    if not F:
+        return []
+    f0 = sum(F[:n_base]) / n_base
+    return [(f - f0) / f0 for f in F]
+```
+hint: Compute $F_0$ once from the first `n_base` values, then apply the formula to each frame.
+solution: The baseline uses only the first `n_base` frames, so activity later in the trace does not change it. In the third test $F_0 = 80$, giving $(100 - 80)/80 = 0.25$; computing the baseline from all frames instead would give wrong values throughout.
+
+@practice code
+prompt: Write `simulate_calcium(s, gamma, amp, noise)` that returns a noisy calcium trace. For each frame $t$, update $c_t = \gamma c_{t-1} + \text{amp}\cdot s_t$ with $c_{-1} = 0$, and output $c_t$ plus `noise[t]`. The lists `s` (spikes per frame) and `noise` have equal length; the noise is supplied, not drawn. For example, `simulate_calcium([0, 2, 0, 1], 0.5, 0.5, [0, 0, 0, 0])` returns `[0.0, 1.0, 0.5, 0.75]`.
+starter:
+```python
+def simulate_calcium(s, gamma, amp, noise):
+    pass
+```
+tests:
+```python
+got = simulate_calcium([0, 2, 0, 1], 0.5, 0.5, [0, 0, 0, 0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 1.0, 0.5, 0.75]))
+got = simulate_calcium([1, 0, 0], 0.9, 2.0, [0.1, -0.2, 0.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [2.1, 1.6, 1.62]))
+assert simulate_calcium([], 0.9, 1.0, []) == []
+got = simulate_calcium([0, 0, 0], 0.8, 1.0, [0.3, -0.1, 0.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.3, -0.1, 0.0]))
+```
+model:
+```python
+def simulate_calcium(s, gamma, amp, noise):
+    """AR(1) calcium signal from spike counts, plus supplied noise."""
+    c, out = 0.0, []
+    for count, eps in zip(s, noise):
+        c = gamma * c + amp * count
+        out.append(c + eps)
+    return out
+```
+hint: Keep the noiseless signal $c$ separate from the noisy output; the noise is added to the output but must not feed back into the next update.
+solution: In the second test the noiseless signal is $2, 1.8, 1.62$ and the noise is added afterward, giving $2.1, 1.6, 1.62$. Feeding the noisy value back into the update would change later frames, which is the usual mistake.
+
+@practice num
+prompt: A calcium trace in units of $\Delta F/F_0$ has $N = 8$ frames, $x = (1, 0, -1, 0, 1, 0, -1, 0)$, imaged at $\Delta t = 0.1$ s. Using the one-sided periodogram $S_k = (2\Delta t/N)|X_k|^2$ for $0 < k < N/2$, what is $S_2$, in $(\Delta F/F_0)^2$ per hertz?
+answer: 0.4
+tol: 0.001
+check: 2 * 0.1 / 8 * (sum(v * math.cos(2 * math.pi * 2 * n / 8) for n, v in enumerate([1, 0, -1, 0, 1, 0, -1, 0])) ** 2 + sum(v * math.sin(2 * math.pi * 2 * n / 8) for n, v in enumerate([1, 0, -1, 0, 1, 0, -1, 0])) ** 2)
+hint: The signal is $\cos(2\pi \cdot 2n/8)$ sampled exactly on bin $k=2$, so $|X_2| = N/2$; the frequency is $2/(8 \times 0.1) = 2.5$ Hz.
+solution: With $|X_2| = 8/2 = 4$, $S_2 = 2(0.1)(16)/8 = 0.4$ per hertz at $f_2 = 2.5$ Hz. Parseval check: the area $0.4 \times 1.25 = 0.5$ is the mean square of $x$.
+
+@quiz code
+prompt: Write `infer_counts(y, gamma, amp)` that estimates spike counts per frame from a calcium trace `y` (units of $\Delta F/F_0$). For each frame, compute $d_t = y_t - \gamma\, y_{t-1}$ with $y_{-1} = 0$, clip negative values to 0, divide by `amp`, and round to the nearest integer as `int(d / amp + 0.5)`. Return the list of integers. For example, with `gamma = 0.8` and `amp = 0.5`, a noiseless trace made from the counts `[0, 2, 0, 1, 0, 0, 3]` returns those counts.
+starter:
+```python
+def infer_counts(y, gamma, amp):
+    pass
+```
+tests:
+```python
+y = [0.0, 1.0, 0.8, 1.14, 0.912, 0.7296, 2.08368]
+assert infer_counts(y, 0.8, 0.5) == [0, 2, 0, 1, 0, 0, 3]
+y = [0.02, 0.97, 0.84, 1.12, 0.922, 0.76, 2.064]
+assert infer_counts(y, 0.8, 0.5) == [0, 2, 0, 1, 0, 0, 3]
+assert infer_counts([], 0.8, 0.5) == []
+assert infer_counts([-0.3, -0.1, 0.0], 0.9, 1.0) == [0, 0, 0]
+assert infer_counts([1.0, 0.9, 0.81], 0.9, 1.0) == [1, 0, 0]
+```
+model:
+```python
+def infer_counts(y, gamma, amp):
+    """Spike counts from a calcium trace by inverting the AR(1) model."""
+    out, prev = [], 0.0
+    for v in y:
+        d = max(0.0, v - gamma * prev)
+        out.append(int(d / amp + 0.5))
+        prev = v
+    return out
+```
+hint: Subtract the decayed previous sample from each sample, clip at 0, then divide by the amplitude per spike and round.
+solution: The first test is noiseless, so the differences are exactly $0, 1, 0, 0.5, 0, 0, 1.5$ times the amplitude and the rounding recovers the counts. The second adds noise of a few hundredths, which rounding removes. The third and fourth tests show that clipping stops negative noise from producing negative counts.
+
+@quiz num
+prompt: Each frame of a calcium trace has independent noise with standard deviation $\sigma = 0.1$ ($\Delta F/F_0$). With $\gamma = 0.8$, what is the standard deviation of the deconvolved quantity $y_t - \gamma y_{t-1}$ before clipping, to three decimal places?
+answer: 0.128
+tol: 0.001
+check: 0.1 * sqrt(1 + 0.8 ** 2)
+hint: The variance of a difference of independent terms is the sum of the variances, with the second term scaled by $\gamma^2$.
+solution: $\operatorname{Var}(\epsilon_t - \gamma\epsilon_{t-1}) = \sigma^2(1 + \gamma^2) = 0.01 \times 1.64$, so the standard deviation is $0.1 \times 1.281 = 0.128$, larger than the per-frame noise.
+
+@quiz mc
+prompt: Two cells show the same peak $\Delta F/F_0$ of 0.5 after a stimulus. Cell 1 expresses a high level of indicator and cell 2 a low level. Which conclusion is justified?
+choice*: You cannot conclude that the cells fired the same number of spikes, because the signal per spike depends on indicator level, kinetics and optics.
+choice: The cells fired the same number of spikes, because $\Delta F/F_0$ is normalized.
+choice: Cell 1 fired more spikes, because it has more indicator.
+choice: Neither cell fired, because $\Delta F/F_0$ below 1 is noise.
+hint: The amplitude per spike $a$ in the model can differ between cells.
+solution: $\Delta F/F_0$ removes the cell's baseline brightness but not the cell-to-cell differences in how much the signal changes per spike or how the indicator saturates, so amplitudes of different cells are not directly comparable counts or rates.

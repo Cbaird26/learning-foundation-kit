@@ -110,38 +110,43 @@ hint: Follow the loop: larger weights give a larger $y$, and $y$ appears in the 
 solution: With $y = \mathbf{w}^\top\mathbf{x}$ the update is proportional to the current weights, so the weight length grows exponentially. The rule does increase weights, works with graded rates and finds the direction of the largest, not smallest, eigenvalue. Oja's term $-\eta y^2 \mathbf{w}$ limits the growth.
 
 @practice code
-prompt: Write `oja_epochs(data, etas, w0)` for Oja's rule with a learning-rate schedule. `data` is a list of input vectors (tuples of two numbers), `etas` is a list with one learning rate per epoch, and `w0` is the starting weight vector. In each epoch, visit the inputs in order, updating the weights after every input with $y = \mathbf{w}^\top \mathbf{x}$ and $\mathbf{w} \leftarrow \mathbf{w} + \eta y(\mathbf{x} - y\mathbf{w})$. Return the final weights as a list. For example, with `data = [(1.0, 1.0), (-1.0, -1.0), (1.0, 0.5), (-1.0, -0.5)]`, `etas = [0.1, 0.1, 0.1]` and `w0 = (0.3, 0.2)` the result is about `[0.7619, 0.5544]`.
+prompt: Write `epochs_to_unit_norm(data, eta, w0, tol, max_epochs)` for Oja's rule. `data` is a list of two-dimensional input vectors and `w0` the starting weights. Before training and after each epoch (a pass through the inputs in order, updating the weights after every input with $y = \mathbf{w}^\top\mathbf{x}$ and $\mathbf{w} \leftarrow \mathbf{w} + \eta y(\mathbf{x} - y\mathbf{w})$), check whether $\lvert\,\lVert\mathbf{w}\rVert - 1\rvert < $ `tol`. Return the number of epochs completed when this first holds (0 if it holds before training), or `None` if it does not hold within `max_epochs` epochs. For example, with `data = [(1.0, 1.0), (-1.0, -1.0), (1.0, 0.5), (-1.0, -0.5)]`, `eta = 0.1`, `w0 = (0.3, 0.2)` and `tol = 0.01`, the answer is `5`.
 starter:
 ```python
-def oja_epochs(data, etas, w0):
-    return list(w0)
+def epochs_to_unit_norm(data, eta, w0, tol, max_epochs):
+    pass
 ```
 tests:
 ```python
-import math
 d = [(1.0, 1.0), (-1.0, -1.0), (1.0, 0.5), (-1.0, -0.5)]
-w = oja_epochs(d, [0.1] * 3, (0.3, 0.2))
-assert abs(w[0] - 0.7619083) < 1e-6 and abs(w[1] - 0.5544228) < 1e-6
-assert oja_epochs(d, [], (0.3, 0.2)) == [0.3, 0.2]
-w = oja_epochs(d, [0.2, 0.05], (1.0, 0.0))
-assert abs(w[0] - 0.8904970) < 1e-6 and abs(w[1] - 0.4637782) < 1e-6
-w = oja_epochs(d, [0.05] * 300, (0.3, 0.2))
-assert abs(math.hypot(w[0], w[1]) - 1.0) < 0.01
-assert abs(math.degrees(math.atan2(w[1], w[0])) - 37.98) < 1.0
+assert epochs_to_unit_norm(d, 0.1, (0.3, 0.2), 0.01, 500) == 5
+assert epochs_to_unit_norm(d, 0.1, (0.3, 0.2), 0.1, 500) == 3
+assert epochs_to_unit_norm(d, 0.1, (2.0, 0.0), 0.01, 500) == 3
+assert epochs_to_unit_norm(d, 0.1, (0.6, 0.8), 0.01, 500) == 0
+assert epochs_to_unit_norm(d, 0.1, (0.3, 0.2), 1e-9, 3) is None
+assert epochs_to_unit_norm(d, 0.1, (0.0, 0.0), 0.01, 50) is None
 ```
 model:
 ```python
-def oja_epochs(data, etas, w0):
-    """Oja's rule with one learning rate per epoch; returns the weights."""
+import math
+
+
+def epochs_to_unit_norm(data, eta, w0, tol, max_epochs):
+    """Epochs of Oja's rule until the weight vector has length 1 within tol."""
     w = list(w0)
-    for eta in etas:
+    if abs(math.hypot(w[0], w[1]) - 1.0) < tol:
+        return 0
+    for epoch in range(1, max_epochs + 1):
         for x in data:
-            y = sum(wi * xi for wi, xi in zip(w, x))
-            w = [wi + eta * y * (xi - y * wi) for wi, xi in zip(w, x)]
-    return w
+            y = w[0] * x[0] + w[1] * x[1]
+            w = [w[0] + eta * y * (x[0] - y * w[0]),
+                 w[1] + eta * y * (x[1] - y * w[1])]
+        if abs(math.hypot(w[0], w[1]) - 1.0) < tol:
+            return epoch
+    return None
 ```
-hint: Loop over the learning rates (one per epoch), then over the inputs; compute $y$ from the current weights and build the new weight list from the old one.
-solution: The update must use the old weights in every component (a list comprehension builds the new list from the old one). After many epochs the length is close to 1 and the direction approaches the principal axis of the data, about 38 degrees for these inputs, which is the covariance eigenvector direction $0.5\,\text{atan2}(1.5, 0.375)$.
+hint: Check the norm before the loop, then after every epoch; compute both new components from the old weights.
+solution: Oja's rule drives the length of the weight vector to 1, which is the normalization that plain Hebbian learning lacks. A start that is already of unit length returns 0 epochs; a start of zero weights never moves (every update is zero) and returns `None`; a very strict tolerance cannot be met in 3 epochs.
 
 @practice code
 prompt: Write `stdp_total(pre, post, a_plus, a_minus, tau_plus, tau_minus)` that returns the total weight change under the all-to-all STDP rule. `pre` and `post` are lists of spike times in ms. For every (pre, post) pair, with $\Delta t = t_{\text{post}} - t_{\text{pre}}$, add $A_+ e^{-\Delta t/\tau_+}$ if $\Delta t > 0$ and subtract $A_- e^{\Delta t/\tau_-}$ if $\Delta t < 0$; pairs with $\Delta t = 0$ contribute nothing. For example, `stdp_total([100], [90], 0.01, 0.012, 20, 20)` returns about `-0.00728`.
@@ -227,7 +232,9 @@ assert abs(principal_axis_angle([(3, 1), (-3, -1), (1, 2), (-1, -2)]) - 31.7175)
 assert abs(principal_axis_angle([(1, 1), (-1, -1), (2, 2), (-2, -2)]) - 45.0) < 1e-6
 assert abs(principal_axis_angle([(2, 0), (-2, 0), (0, 1), (0, -1)])) < 1e-6
 assert abs(principal_axis_angle([(1, -1), (-1, 1), (2, -2), (-2, 2)]) + 45.0) < 1e-6
-assert abs(principal_axis_angle([(11, 13), (9, 7), (12, 12), (8, 8)]) - principal_axis_angle([(1, 3), (-1, -3), (2, 2), (-2, -2)])) < 1e-6
+shifted = [(11, 13), (9, 7), (12, 12), (8, 8)]
+base = [(1, 3), (-1, -3), (2, 2), (-2, -2)]
+assert abs(principal_axis_angle(shifted) - principal_axis_angle(base)) < 1e-6
 ```
 model:
 ```python

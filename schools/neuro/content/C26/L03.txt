@@ -1,0 +1,266 @@
+@lesson
+title: Maximum likelihood fitting
+summary: Estimate a model's parameters from choices by maximizing the log-likelihood over a grid of stated values, and judge how well the data pin the parameters down.
+objective: Define the maximum-likelihood estimate and derive it in closed form for a proportion.
+objective: Fit the softmax inverse temperature, and then two parameters at once, by a grid search over stated values.
+objective: Read a log-likelihood curve to judge how precisely the data constrain a parameter, including the approximate likelihood-ratio interval.
+objective: Recognize when the best grid value sits at the edge of the grid.
+reading: Probabilistic Models of Cognition: the material on inference by conditioning (look up how data constrain the parameters of a generative model).
+
+@article
+Last week we could score any parameter value by the log-likelihood of the choices. Which value is best? The one under which the data were most probable. That is the **maximum-likelihood estimate** (MLE):
+
+$$\hat\theta = \arg\max_\theta \; \log L(\theta).$$
+
+Maximizing $\log L$ and maximizing $L$ give the same answer because the logarithm increases with its argument.
+
+### One case with a closed form
+
+If a person responds "yes" on $k$ of $n$ independent trials with a constant probability $p$, then $\log L(p) = k\log p + (n-k)\log(1-p)$. Setting the derivative to zero, $k/p - (n-k)/(1-p) = 0$, gives $\hat p = k/n$: the sample proportion is the MLE. Most cognitive models, such as the softmax with value differences, have no closed form, so we search numerically.
+
+### Grid search
+
+A **grid search** computes $\log L$ at every value in a stated list and keeps the best. It uses no optimization library, never gets stuck on a local peak within the grid, and is exactly as precise as the grid is fine. Take twelve trials with value differences $\Delta_t = Q_1 - Q_0$ and choices $c_t$ (invented):
+
+| $\Delta$ | 0.8 | −0.6 | 0.2 | −0.4 | 0.5 | −0.9 | 0.3 | 0.1 | −0.2 | 0.7 | −0.5 | 0.4 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| choice | 1 | 0 | 1 | 0 | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 1 |
+
+with $p_t(1) = 1/(1+e^{-\beta\Delta_t})$.
+
+```python
+import math
+
+def log_lik(choices, deltas, beta):
+    total = 0.0
+    for c, d in zip(choices, deltas):
+        p1 = 1.0 / (1.0 + math.exp(-beta * d))
+        total += math.log(p1 if c == 1 else 1.0 - p1)
+    return total
+
+def fit_beta(choices, deltas, grid):
+    best = max(grid, key=lambda b: log_lik(choices, deltas, b))
+    return best, log_lik(choices, deltas, best)
+
+deltas = [0.8, -0.6, 0.2, -0.4, 0.5, -0.9, 0.3, 0.1, -0.2, 0.7, -0.5, 0.4]
+choices = [1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1]
+grid = [0.5 * i for i in range(1, 21)]
+best, ll = fit_beta(choices, deltas, grid)
+print(best, round(ll, 4))
+```
+
+This prints `3.5 -5.5004`: on the grid $0.5, 1.0, \dots, 10.0$ the best value is $\hat\beta = 3.5$. A finer grid (steps of $0.001$) puts the peak near $3.37$, so the coarse grid has an error of about $0.13$. The curve is shallow: the log-likelihood is $-6.2066$ at $\beta = 1.5$, $-5.5004$ at $3.5$ and $-6.2424$ at $6.0$.
+
+### How precisely are the data constraining the parameter?
+
+A flat curve means many values explain the data nearly as well. For large samples under standard regularity conditions, the values of $\theta$ whose log-likelihood lies within $1.92$ of the maximum form an approximate 95% confidence interval ($1.92 = \chi^2_{1,\,0.95}/2 = 3.84/2$), the **likelihood-ratio interval**. Here that interval covers the whole range $0.5$ to $8.0$ on the grid: twelve trials say little about $\beta$. The approximation is rough with so few trials, but the lesson stands: report how sharply the data constrain the parameter, not only the best value.
+
+### Two parameters, and the edge of the grid
+
+With two parameters, such as the inverse temperature $\beta$ and a bias $b$ added to the logit ($z = \beta\Delta + b$), the grid has a cell for every pair, and cost grows as the product of the grid sizes. Always check where the best value lies. If it sits at the edge of the grid, the true peak may lie outside it: extend the grid. If the log-likelihood keeps rising out to infinity (choices perfectly consistent with value), the MLE does not exist and no grid can find it.
+
+In practice researchers use gradient-based optimizers and often start them from many initial values:
+
+```text
+from scipy.optimize import minimize
+result = minimize(neg_log_lik, x0=[1.0], args=(choices, deltas), bounds=[(0, 20)])
+```
+
+The grid search shows what such an optimizer is doing and is the reliable check on it.
+
+@example
+title: A closed-form proportion and a log-likelihood
+problem: A participant says "yes" on 7 of 10 trials of a task where the stimulus strength never changes. What is the maximum-likelihood estimate of her probability of "yes", and what log-likelihood does it give?
+step: The log-likelihood is $7\log p + 3\log(1-p)$.
+step: The derivative $7/p - 3/(1-p)$ is zero at $p = 7/10$, so $\hat p = 0.7$.
+step: At the MLE the log-likelihood is $7\log 0.7 + 3\log 0.3 = 7(-0.3567) + 3(-1.2040) = -2.4967 - 3.6119 = -6.1086$.
+step: Check another value: $p = 0.5$ gives $10 \log 0.5 = -6.931$, lower, as it should be.
+answer: $\hat p = 0.7$, with log-likelihood $-6.109$.
+
+@mistakes
+- Reporting the best grid value as if it were exact: it is only as accurate as the grid, and the likelihood is often flat around it.
+- Not checking whether the best value is at the edge of the grid.
+- Maximizing the likelihood when the code computes a negative log-likelihood, or minimizing the log-likelihood: pick one sign and stay with it.
+- Fitting many parameters to a few trials: the estimates become unstable and the likelihood surface has long ridges.
+
+@practice num
+prompt: A participant responds "yes" on 14 of 20 trials of a task with constant stimulus strength. What is the log-likelihood of the data at the maximum-likelihood estimate of her probability of "yes" (natural log), to two decimal places?
+answer: -12.22
+tol: 0.01
+check: 14 * log(14 / 20) + 6 * log(6 / 20)
+hint: The MLE is the proportion $14/20$; plug it into $k\log p + (n-k)\log(1-p)$.
+solution: $\hat p = 0.7$, so $\log L = 14\log 0.7 + 6\log 0.3 = -4.9935 - 7.2238 = -12.2173 \approx -12.22$.
+
+@practice mc
+prompt: A grid search over $\beta = 0.5, 1.0, \dots, 10.0$ gives its highest log-likelihood at $\beta = 10.0$, and the curve is still rising at that value. What is the best conclusion?
+choice*: The maximum may lie beyond the grid, so the grid should be extended before reporting an estimate.
+choice: $\hat\beta = 10.0$ is the maximum-likelihood estimate and can be reported.
+choice: The model is wrong, because a valid model has its peak inside any grid.
+choice: The log-likelihood must be flat, so all values of $\beta$ are equally good.
+hint: A grid can only find a maximum that it contains.
+solution: A peak at the edge of a rising curve means the grid has not bracketed the maximum. Extend the grid; if the log-likelihood never turns down, the MLE does not exist, which happens when choices are perfectly predicted by value.
+
+@practice code
+prompt: Write `fit_beta_bias(choices, deltas, beta_grid, bias_grid)` for the model $p(1) = 1/(1 + e^{-z})$ with $z = \beta\Delta_t + b$. Compute the log-likelihood of `choices` (0s and 1s) for every pair `(beta, b)` (loop over `beta_grid` outside, `bias_grid` inside) and return the tuple `(beta, b, log_lik)` with the largest log-likelihood; on ties keep the first found. For example, with `deltas = [0.5, -0.5, 0.25, -0.25, 0.75, -0.75, 0.0, 0.0]` and `choices = [1, 0, 1, 1, 1, 0, 1, 1]`, a `beta_grid` of `0.5, 1.0, ..., 5.0` and a `bias_grid` of `[-1, -0.5, 0, 0.5, 1]`, the answer is `(5.0, 1, -1.8544)`.
+starter:
+```python
+import math
+
+
+def fit_beta_bias(choices, deltas, beta_grid, bias_grid):
+    pass
+```
+tests:
+```python
+import math
+_d = [0.5, -0.5, 0.25, -0.25, 0.75, -0.75, 0.0, 0.0]
+_c = [1, 0, 1, 1, 1, 0, 1, 1]
+_bg = [0.5 * i for i in range(1, 11)]
+_b, _k, _ll = fit_beta_bias(_c, _d, _bg, [-1, -0.5, 0, 0.5, 1])
+assert _b == 5.0 and _k == 1 and abs(_ll - (-1.854415)) < 1e-5
+_d2 = [0.8, -0.6, 0.2, -0.4, 0.5, -0.9, 0.3, 0.1, -0.2, 0.7, -0.5, 0.4]
+_c2 = [1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1]
+_r = fit_beta_bias(_c2, _d2, [3.5], [0.0])
+assert _r[0] == 3.5 and _r[1] == 0.0 and abs(_r[2] - (-5.500379)) < 1e-5
+_r2 = fit_beta_bias([1, 1, 1], [0.0, 0.0, 0.0], [1.0], [-1.0, 0.0, 1.0])
+assert _r2[1] == 1.0
+assert fit_beta_bias([1], [0.0], [2.0, 3.0], [0.0])[0] == 2.0
+```
+model:
+```python
+import math
+
+
+def fit_beta_bias(choices, deltas, beta_grid, bias_grid):
+    """Grid-search maximum likelihood for the softmax with a bias term."""
+    best = None
+    for beta in beta_grid:
+        for b in bias_grid:
+            total = 0.0
+            for c, d in zip(choices, deltas):
+                p1 = 1.0 / (1.0 + math.exp(-(beta * d + b)))
+                total += math.log(p1 if c == 1 else 1.0 - p1)
+            if best is None or total > best[2]:
+                best = (beta, b, total)
+    return best
+```
+hint: Use two nested loops, accumulate the log-likelihood for each pair, and replace the best triple only when the new value is strictly larger.
+solution: The bias shifts the logit by a constant, so it can capture a preference for option 1 that does not depend on value. The strict comparison keeps the first of tied pairs, and the all-ones test shows that a positive bias is the best way to explain a perfect run of choices of option 1 at equal values.
+
+@practice text
+prompt: What does this program print?
+```python
+lls = {1: -5.2, 2: -4.1, 3: -4.6}
+print(max(lls, key=lls.get), round(max(lls.values()) - min(lls.values()), 1))
+```
+answer: 2 1.1
+check: run("lls = {1: -5.2, 2: -4.1, 3: -4.6}\nprint(max(lls, key=lls.get), round(max(lls.values()) - min(lls.values()), 1))")
+hint: `max(lls, key=lls.get)` returns the key whose value is largest; the second number is the spread between best and worst.
+solution: The largest log-likelihood is $-4.1$, at key 2. The spread is $-4.1 - (-5.2) = 1.1$.
+
+@practice code
+prompt: Write `ll_interval(choices, deltas, grid, drop=1.92)` that returns a tuple `(lo, hi)`: the smallest and largest values in `grid` whose softmax log-likelihood ($p(1) = 1/(1 + e^{-\beta\Delta_t})$) is within `drop` of the maximum over the grid, that is, at least `max_ll - drop`. For example, with `deltas = [1, -1] * 10`, `choices = [1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1,0,1,1,0]` and the grid `0.1, 0.2, ..., 3.0`, the answer is `(0.4, 2.6)`.
+starter:
+```python
+import math
+
+
+def ll_interval(choices, deltas, grid, drop=1.92):
+    pass
+```
+tests:
+```python
+import math
+_d = [1, -1] * 10
+_c = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0]
+_g = [round(0.1 * i, 1) for i in range(1, 31)]
+assert ll_interval(_c, _d, _g) == (0.4, 2.6)
+assert ll_interval(_c, _d, _g, drop=0.0) == (1.4, 1.4)
+assert ll_interval(_c, _d, [1.4], 1.92) == (1.4, 1.4)
+_lo, _hi = ll_interval(_c, _d, _g, drop=0.5)
+assert _lo < 1.4 < _hi and _hi - _lo < 2.2
+```
+model:
+```python
+import math
+
+
+def ll_interval(choices, deltas, grid, drop=1.92):
+    """Smallest and largest grid values within `drop` of the best log-lik."""
+    def ll(beta):
+        total = 0.0
+        for c, d in zip(choices, deltas):
+            p1 = 1.0 / (1.0 + math.exp(-beta * d))
+            total += math.log(p1 if c == 1 else 1.0 - p1)
+        return total
+
+    scores = [(ll(b), b) for b in grid]
+    top = max(s for s, _ in scores)
+    kept = [b for s, b in scores if s >= top - drop]
+    return min(kept), max(kept)
+```
+hint: Compute the log-likelihood of every grid value, find the maximum, keep the values at least `max - drop`, and return the smallest and largest.
+solution: The kept values are those the data cannot distinguish from the best at the chosen tolerance. With `drop = 0` only the best grid value survives, and widening the tolerance widens the interval, so the interval measures how flat the likelihood is.
+
+@quiz code
+prompt: A coarse grid is refined in rounds. Write `refine_beta(choices, deltas, lo, hi, steps, rounds)`. In each round, build `steps` equally spaced values from `lo` to `hi` inclusive (spacing `h = (hi - lo) / (steps - 1)`), pick the one with the largest softmax log-likelihood ($p(1) = 1/(1+e^{-\beta\Delta_t})$; first on ties), then set the next interval to `[best - h, best + h]`, clipped to stay within the original `[lo, hi]`. After `rounds` rounds return the last round's best value. For example, on `deltas = [0.8, -0.6, 0.2, -0.4, 0.5, -0.9, 0.3, 0.1, -0.2, 0.7, -0.5, 0.4]` and `choices = [1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1]`, `refine_beta(choices, deltas, 0.5, 10, 5, 1)` returns `2.875`.
+starter:
+```python
+import math
+
+
+def refine_beta(choices, deltas, lo, hi, steps, rounds):
+    pass
+```
+tests:
+```python
+import math
+_d = [0.8, -0.6, 0.2, -0.4, 0.5, -0.9, 0.3, 0.1, -0.2, 0.7, -0.5, 0.4]
+_c = [1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1]
+assert abs(refine_beta(_c, _d, 0.5, 10, 5, 1) - 2.875) < 1e-9
+assert abs(refine_beta(_c, _d, 0.5, 10, 5, 3) - 3.46875) < 1e-9
+assert abs(refine_beta(_c, _d, 0.5, 10, 5, 6) - 3.39453125) < 1e-9
+assert abs(refine_beta(_c, _d, 0.5, 10, 5, 6) - 3.372) < 0.05
+assert abs(refine_beta(_c, _d, 0.0, 10, 11, 4) - 3.3760000) < 0.05
+```
+model:
+```python
+import math
+
+
+def refine_beta(choices, deltas, lo, hi, steps, rounds):
+    """Coarse-to-fine grid search for the softmax inverse temperature."""
+    def ll(beta):
+        total = 0.0
+        for c, d in zip(choices, deltas):
+            p1 = 1.0 / (1.0 + math.exp(-beta * d))
+            total += math.log(p1 if c == 1 else 1.0 - p1)
+        return total
+
+    lo0, hi0 = lo, hi
+    best = lo
+    for _ in range(rounds):
+        h = (hi - lo) / (steps - 1)
+        grid = [lo + i * h for i in range(steps)]
+        best = max(grid, key=ll)
+        lo, hi = max(lo0, best - h), min(hi0, best + h)
+    return best
+```
+hint: Inside a loop over rounds, build the grid, take the best value, and then shrink `lo` and `hi` around it with `max` and `min` against the original limits.
+solution: Each round reduces the interval to two old grid steps, so the search becomes finer without evaluating a huge grid. A zoomed grid can miss a peak if the first round is too coarse, which is why the first-round result of 2.875 differs from the later results and why the coarse grid should bracket the peak.
+
+@quiz num
+prompt: A softmax chooser with $\beta = 2$ faces three trials with value differences $\Delta = 1, -1, 0.5$ and chooses options $1, 0, 0$. What is the log-likelihood of the three choices (natural log), to three decimal places?
+answer: -1.567
+tol: 0.001
+check: log(1 / (1 + exp(-2))) + log(1 - 1 / (1 + exp(2))) + log(1 - 1 / (1 + exp(-1)))
+hint: Trial 2 has $\Delta = -1$, so $p(1) = 1/(1+e^{2})$ and the choice of 0 has probability $1 - p(1)$.
+solution: Trial 1: $p(1) = 0.8808$, $\log = -0.1269$. Trial 2: $p(1) = 0.1192$, so $p(0) = 0.8808$, $\log = -0.1269$. Trial 3: $p(1) = 1/(1+e^{-1}) = 0.7311$, so $p(0) = 0.2689$, $\log = -1.3133$. The sum is $-1.5671$.
+
+@quiz self
+prompt: A student fits the softmax inverse temperature to 40 trials and reports only "best $\beta = 4.5$". Describe three additional things she should report or check so that a reader can judge the estimate, and explain why each matters.
+hint: Think about the grid, the shape of the log-likelihood, and whether the model fits at all.
+solution: First, the grid: its range and spacing, and whether the best value is at the edge, because a grid can only find a peak it contains and a coarse grid can be off by half a step. Second, the shape of the log-likelihood around the best value, for example a likelihood-ratio interval (values within about 1.92 of the maximum), because a flat curve means the data barely constrain $\beta$ and a point estimate overstates what is known. Third, an absolute check of fit, such as the log-likelihood compared with the chance value $40\log 0.5 = -27.7$, or a comparison with simpler and richer models, because the best parameter of a poor model is still the best of a poor model. Reporting the number of trials and checking that estimates are stable across subsets of trials would also help.
+rubric: Mentions the grid range and spacing, or the edge-of-grid check.
+rubric: Mentions precision of the estimate, such as a likelihood-ratio interval or a flat likelihood.
+rubric: Mentions an absolute or comparative check of how well the fitted model describes the data.

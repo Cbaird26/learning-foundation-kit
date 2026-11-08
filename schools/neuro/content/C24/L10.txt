@@ -1,0 +1,229 @@
+@lesson
+title: Population decoding
+summary: Estimate a stimulus from the spike counts of a population of tuned neurons with a population-vector decoder and a maximum-likelihood decoder, and bound the accuracy with Fisher information.
+objective: Compute a population-vector estimate and a maximum-likelihood estimate from counts and stated tuning curves.
+objective: Write the Poisson log-likelihood of a stimulus given a population response and decode by searching a grid of candidate stimuli.
+objective: Compute Fisher information for independent Poisson neurons with Gaussian tuning and the resulting Cramér–Rao bound.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies on decoding a behavioral variable from spikes; Theoretical Neuroscience (Dayan and Abbott), the chapter on neural decoding, covers population vectors, maximum-likelihood decoding and Fisher information.
+
+@article
+A single neuron with a bell-shaped tuning curve is a poor measuring instrument: it fires at the same rate for two stimuli on either side of its peak, and its count varies from trial to trial. Yet animals judge stimuli precisely. The idea behind **population decoding** is that many broadly tuned neurons together pin the stimulus down. Decoding asks the inverse of the encoding question: given the counts $n_1, \dots, n_M$ of $M$ neurons on one trial, what was the stimulus?
+
+### The tuning model
+
+Take a stimulus $s$ on a line, in degrees, and neuron $i$ with preferred value $c_i$ and **Gaussian tuning curve**
+
+$$f_i(s) = r_{\max}\, e^{-(s - c_i)^2/(2\sigma^2)} \quad \text{(Hz)},$$
+
+with the same peak rate $r_{\max}$ and width $\sigma$ for all neurons. Counts are measured in a window of $T$ seconds, and given $s$ the counts of different neurons are independent Poisson variables with means $f_i(s)\,T$.
+
+### Population vector
+
+The **population vector** decoder takes the average preferred value of the neurons, weighted by their counts:
+
+$$\hat s_{\mathrm{PV}} = \frac{\sum_i n_i\, c_i}{\sum_i n_i}.$$
+
+It needs no knowledge of $r_{\max}$ and $\sigma$ and is simple, but it is biased near the edges of the covered range, where neurons on only one side contribute. For a stimulus on a circle, such as direction, the preferred values are angles and the estimate is the angle of the vector sum, $\operatorname{atan2}\!\big(\sum_i n_i\sin c_i,\ \sum_i n_i\cos c_i\big)$.
+
+### Maximum likelihood
+
+The **maximum-likelihood** (ML) decoder picks the stimulus under which the observed counts are most probable. For independent Poisson neurons the log-likelihood of a candidate $s$ is
+
+$$\ell(s) = \sum_i \big[\,n_i \ln\big(f_i(s)\,T\big) - f_i(s)\,T - \ln n_i!\,\big].$$
+
+The last term does not depend on $s$ and is dropped. The estimate $\hat s_{\mathrm{ML}}$ is the candidate with the largest $\ell(s)$, found here by evaluating $\ell$ on a fixed grid and taking the first best value in the case of ties. ML needs the tuning curves, which are estimated beforehand from training trials (the previous lessons), and uses the full Poisson variability. For Gaussian tuning with evenly spaced preferred values densely covering the range, $\sum_i f_i(s)$ is nearly constant and the ML estimate is close to the population vector away from the edges.
+
+```python
+import math
+
+
+def population_vector(counts, centers):
+    """Count-weighted mean of preferred values; None if there are no spikes."""
+    total = sum(counts)
+    if total == 0:
+        return None
+    return sum(n * c for n, c in zip(counts, centers)) / total
+
+
+def ml_decode(counts, centers, sigma, rmax, T, grid):
+    """Grid stimulus with the largest Poisson log-likelihood (first on ties)."""
+    best, best_ll = None, None
+    for s in grid:
+        ll = 0.0
+        for n, c in zip(counts, centers):
+            mu = rmax * math.exp(-(s - c) ** 2 / (2 * sigma ** 2)) * T
+            ll += n * math.log(mu) - mu
+        if best_ll is None or ll > best_ll:
+            best, best_ll = s, ll
+    return best
+```
+
+With centers $-60, -30, 0, 30, 60$ degrees, $\sigma = 30$, $r_{\max} = 20$ Hz, $T = 0.5$ s and counts $(1, 4, 8, 5, 1)$, the ML estimate on a grid of 5-degree steps is $0^\circ$, while the population vector is $30/19 = 1.58^\circ$.
+
+### How accurate can a decoder be?
+
+The **Fisher information** measures how much a response tells about the stimulus. For independent Poisson neurons,
+
+$$J(s) = T\sum_i \frac{f_i'(s)^2}{f_i(s)}, \qquad f_i'(s) = -\frac{s - c_i}{\sigma^2}\, f_i(s),$$
+
+so for Gaussian tuning $J(s) = T\sum_i \frac{(s - c_i)^2}{\sigma^4}\, f_i(s)$. The **Cramér–Rao bound** says that any unbiased estimator has variance at least $1/J(s)$. Information adds across independent neurons and grows in proportion to $T$, so doubling the window lowers the smallest possible standard deviation by $\sqrt 2$. Notice that a neuron carries the most information about stimuli on the flanks of its tuning curve, where the slope is steepest, and none at its peak, where $f' = 0$. Real neurons have correlated noise, which can change this scaling; the independent Poisson formula is a baseline.
+
+### Cross-validation and limits
+
+Estimate tuning curves from some trials and decode others; decoding the same trials used to fit the curves overstates the accuracy. A decoder's success shows that the information is present in the recorded neurons, not that the brain reads it out that way.
+
+@example
+title: A population vector and its bound
+problem: Neurons with preferred values $c = (0, 20, 40)$ degrees respond with counts $(1, 5, 4)$. Find the population-vector estimate. Then, for two independent Poisson neurons with Gaussian tuning ($c = 0$ and $c = 20$, $\sigma = 10$, $r_{\max} = 30$ Hz) and window $T = 0.5$ s, compute $J(10)$ and the Cramér–Rao bound on the standard deviation of an unbiased estimate at $s = 10$.
+step: The population vector is $\sum n_i c_i / \sum n_i = (1\cdot 0 + 5\cdot 20 + 4\cdot 40)/10 = 260/10 = 26^\circ$.
+step: At $s = 10$ both neurons are 10 degrees from their centers, so each has $f = 30e^{-0.5} = 18.196$ Hz.
+step: Each neuron's term is $T (s - c)^2 f/\sigma^4 = 0.5 \times 100 \times 18.196/10^4 = 0.0910$, so $J(10) = 2 \times 0.0910 = 0.182$ per square degree.
+step: The bound is $1/\sqrt{J} = 1/\sqrt{0.182} = 2.34^\circ$: no unbiased decoder can do better than a standard deviation of about 2.3 degrees from these two neurons in this window.
+answer: $\hat s_{PV} = 26^\circ$; $J(10) = 0.182$ deg$^{-2}$ and a bound of $2.34^\circ$.
+
+@mistakes
+- Using the population vector for a circular variable by averaging angles directly: $350^\circ$ and $10^\circ$ average to $180^\circ$ instead of $0^\circ$; use the vector sum.
+- Forgetting the $-\mu$ term in the Poisson log-likelihood when neurons have different rates at different stimuli: the term depends on $s$ and cannot be dropped.
+- Decoding on the same trials used to estimate the tuning curves, which makes the decoder look better than it is.
+- Treating a successful decoder as proof that the brain uses that code.
+
+@practice num
+prompt: Three neurons with preferred stimuli $0^\circ, 30^\circ, 60^\circ$ fire $1, 3, 6$ spikes on a trial. What is the population-vector estimate, in degrees?
+answer: 45
+unit: degrees
+check: (1 * 0 + 3 * 30 + 6 * 60) / (1 + 3 + 6)
+hint: Weight each preferred stimulus by its count and divide by the total count.
+solution: The weighted sum is $0 + 90 + 360 = 450$ and the total count is 10, so the estimate is $45^\circ$.
+
+@practice mc
+prompt: Why can a single neuron with a bell-shaped tuning curve not decode a stimulus unambiguously, while a population can?
+choice*: The same rate occurs for two stimuli on either side of the peak, and noise blurs the rate; neurons with different preferred values break the ambiguity.
+choice: A single neuron cannot fire spikes in response to a stimulus.
+choice: A population always has a lower variability than any single neuron.
+choice: Tuning curves are flat, so only the population mean matters.
+hint: Draw a bell curve and a horizontal line at some rate; how many stimuli give that rate?
+solution: A rate below the peak is produced by one stimulus on each side of the peak, and Poisson variability adds uncertainty. Other neurons with different preferred values respond differently at those two stimuli, so their combined pattern distinguishes them. Population variability is not automatically lower, since neuron noise can be correlated.
+
+@practice code
+prompt: Write `ml_decode_table(counts, table, T)` for a population of independent Poisson neurons. `table[j][i]` is the firing rate in Hz of neuron `i` for candidate stimulus number `j` (all rates positive), `counts[i]` is the spike count of neuron `i` in a window of `T` seconds. For each candidate `j` compute $\ell_j = \sum_i [n_i\ln(r_{ji}T) - r_{ji}T]$ and return the index `j` with the largest value (the smallest index if there is a tie). For example, with `table = [[2, 10, 3], [5, 5, 5], [12, 4, 1]]`, `counts = [3, 4, 1]` and `T = 0.5` the result is `1`.
+starter:
+```python
+def ml_decode_table(counts, table, T):
+    pass
+```
+tests:
+```python
+table = [[2, 10, 3], [5, 5, 5], [12, 4, 1]]
+assert ml_decode_table([3, 4, 1], table, 0.5) == 1
+assert ml_decode_table([0, 5, 0], table, 0.5) == 0
+assert ml_decode_table([6, 1, 0], table, 0.5) == 2
+assert ml_decode_table([2, 2, 2], [[4, 4], [4, 4]], 1.0) == 0
+assert ml_decode_table([5, 0], [[10, 1]], 1.0) == 0
+```
+model:
+```python
+import math
+
+
+def ml_decode_table(counts, table, T):
+    """Index of the candidate stimulus with the largest Poisson log-likelihood."""
+    best, best_ll = 0, None
+    for j, row in enumerate(table):
+        ll = sum(n * math.log(r * T) - r * T for n, r in zip(counts, row))
+        if best_ll is None or ll > best_ll:
+            best, best_ll = j, ll
+    return best
+```
+hint: Compute the log-likelihood for each row of the table and keep the index of the best; replace the best only when a candidate is strictly better.
+solution: Drop the $\ln n!$ term, which is the same for every candidate, but keep $-r T$, which differs between candidates. For the counts $(0, 5, 0)$ the second neuron's high rate in the first candidate (10 Hz against 5 and 4) outweighs the cost of the other neurons' predicted spikes, so candidate 0 wins. The fourth test has identical rows, which tie.
+
+@practice code
+prompt: Write `fisher_information(s, centers, sigma, rmax, T)` returning the Fisher information about the stimulus `s` (degrees) carried by independent Poisson neurons with Gaussian tuning $f_i(s) = r_{\max}e^{-(s-c_i)^2/(2\sigma^2)}$ Hz and window `T` seconds: $J = T\sum_i f_i'(s)^2/f_i(s)$ with $f_i'(s) = -\frac{s - c_i}{\sigma^2}f_i(s)$. The units are per square degree. For example, one neuron with `centers = [0]`, `sigma = 10`, `rmax = 20`, `T = 1` at `s = 10` gives about `0.1213`.
+starter:
+```python
+def fisher_information(s, centers, sigma, rmax, T):
+    pass
+```
+tests:
+```python
+assert abs(fisher_information(10, [0], 10, 20, 1) - 0.1213061) < 1e-6
+assert abs(fisher_information(10, [0, 20], 10, 30, 0.5) - 0.1819592) < 1e-6
+assert abs(fisher_information(0, [0], 10, 20, 1)) < 1e-12
+assert abs(fisher_information(0, [-10, 0, 10], 10, 20, 1) - 0.2426123) < 1e-6
+assert fisher_information(5, [], 10, 20, 1) == 0.0
+```
+model:
+```python
+import math
+
+
+def fisher_information(s, centers, sigma, rmax, T):
+    """Fisher information of independent Poisson neurons, Gaussian tuning."""
+    total = 0.0
+    for c in centers:
+        f = rmax * math.exp(-(s - c) ** 2 / (2 * sigma ** 2))
+        fp = -(s - c) / sigma ** 2 * f
+        total += fp * fp / f
+    return T * total
+```
+hint: For each neuron compute its rate and its slope at `s`, add slope squared over rate, and multiply by the window at the end.
+solution: A neuron whose peak is exactly at `s` has zero slope and contributes nothing (third test): information comes from the flanks of the tuning curves. Information adds across independent neurons, so the three-neuron test is the sum of the contributions of the neurons at $-10$ and $10$ degrees, each $0.1213$, and the one at 0, which is zero.
+
+@practice num
+prompt: Independent Poisson neurons give a Fisher information of $J = 0.182$ per square degree at some stimulus. What is the smallest standard deviation, in degrees, that an unbiased estimator can have according to the Cramér–Rao bound? Give the answer to two decimal places.
+answer: 2.34
+unit: degrees
+tol: 0.01
+check: 1 / sqrt(0.182)
+hint: The bound on the variance is $1/J$; take the square root for the standard deviation.
+solution: The smallest variance is $1/0.182 = 5.49$ square degrees, so the standard deviation is at least $\sqrt{5.49} = 2.34^\circ$.
+
+@quiz code
+prompt: Write `circular_population_vector(counts, centers_deg)` for a stimulus on a circle. Return the angle in degrees in $[0, 360)$ of the vector sum $\left(\sum_i n_i\cos c_i,\ \sum_i n_i\sin c_i\right)$, computed with `math.atan2` and converted with `math.degrees`, reduced with `% 360`. Return `None` if the total count is 0. For example, `circular_population_vector([3, 0, 0, 0, 0, 0, 0, 3], [0, 45, 90, 135, 180, 225, 270, 315])` returns `337.5`.
+starter:
+```python
+def circular_population_vector(counts, centers_deg):
+    pass
+```
+tests:
+```python
+c8 = [0, 45, 90, 135, 180, 225, 270, 315]
+assert abs(circular_population_vector([3, 0, 0, 0, 0, 0, 0, 3], c8) - 337.5) < 1e-6
+assert abs(circular_population_vector([0, 0, 4, 0, 0, 0, 0, 0], c8) - 90) < 1e-6
+assert abs(circular_population_vector([0, 2, 5, 2, 0, 0, 0, 0], c8) - 90) < 1e-6
+got = circular_population_vector([5, 0, 0, 0, 0, 0, 0, 1], c8)
+assert abs(got - 352.937085) < 1e-4
+assert circular_population_vector([0] * 8, c8) is None
+```
+model:
+```python
+import math
+
+
+def circular_population_vector(counts, centers_deg):
+    """Angle (deg, 0-360) of the count-weighted vector sum of preferred angles."""
+    if sum(counts) == 0:
+        return None
+    x = sum(n * math.cos(math.radians(c)) for n, c in zip(counts, centers_deg))
+    y = sum(n * math.sin(math.radians(c)) for n, c in zip(counts, centers_deg))
+    return math.degrees(math.atan2(y, x)) % 360
+```
+hint: Add the cosine and sine components separately, weighted by the counts; convert the angle back with `atan2`, and bring negative angles into range with the modulo operator.
+solution: Averaging angles directly would put the estimate for counts at 0 and 315 degrees near 157.5 degrees; the vector sum correctly gives 337.5 degrees. The negative angle returned by `atan2` for a point below the horizontal axis is shifted into $[0, 360)$ by the modulo.
+
+@quiz num
+prompt: For a candidate stimulus, two neurons are predicted to fire at $8$ Hz and $4$ Hz, and in a window of $T = 0.5$ s they fire $3$ and $1$ spikes. What is the Poisson log-likelihood $\sum_i[n_i\ln(r_iT) - r_iT]$ (natural logarithm, dropping $\ln n_i!$), to two decimal places?
+answer: -1.15
+tol: 0.01
+check: (3 * log(8 * 0.5) - 8 * 0.5) + (1 * log(4 * 0.5) - 4 * 0.5)
+hint: The predicted counts are $\mu = rT = 4$ and $2$; evaluate $n\ln\mu - \mu$ for each neuron and add.
+solution: Neuron 1 gives $3\ln 4 - 4 = 4.159 - 4 = 0.159$, neuron 2 gives $\ln 2 - 2 = -1.307$, and the sum is $-1.148$, or $-1.15$.
+
+@quiz mc
+prompt: A decoder trained on recordings from 50 neurons predicts the stimulus on held-out trials with small error. What can you conclude?
+choice*: The recorded population contains information about the stimulus that a decoder of this type can extract; it does not show that the brain uses this decoder.
+choice: The brain must read out the stimulus with exactly this decoder.
+choice: Each of the 50 neurons must be individually as accurate as the decoder.
+choice: The neurons are independent Poisson neurons.
+hint: A decoder demonstrates what could be read out, not what is read out.
+solution: Held-out decoding accuracy is a lower bound on the information in the recorded neurons for that decoder family. It shows nothing about downstream circuits, and a population is often much more informative than any single neuron.

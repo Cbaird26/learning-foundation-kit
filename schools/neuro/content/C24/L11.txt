@@ -1,0 +1,234 @@
+@lesson
+title: Dimensionality reduction of neural populations
+summary: Find the main dimensions of a population recording with principal component analysis, computed for small matrices by power iteration, and measure how many dimensions the activity uses.
+objective: Center a population recording and compute its covariance matrix with a stated divisor.
+objective: Compute principal components with power iteration from a fixed start, and the variance each explains.
+objective: Project population activity onto components and compute the participation ratio as a measure of dimensionality, stating what PCA does and does not show.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies on multichannel recordings; for principal component analysis of neural populations, look up "dimensionality reduction of neural population activity" in the review literature.
+
+@article
+Record 100 neurons at once and each time bin gives a point in a 100-dimensional space, one axis per neuron. You cannot look at that cloud. But neurons are not independent: they share inputs, tuning and fluctuations, so the cloud is often elongated along a few directions. **Principal component analysis** (PCA) finds those directions. It is the standard first look at a population recording.
+
+### The data matrix and its covariance
+
+Arrange the recording as a list of rows: each row is one time bin or trial (a **sample**), each column one neuron, and the entry is a spike count or a rate. Say there are $n$ rows and $d$ neurons. First **center** each column by subtracting its mean over the rows, giving $\mathbf{X}_c$. The $d \times d$ **covariance matrix** is
+
+$$\mathbf{C} = \frac{1}{n - 1}\,\mathbf{X}_c^\top \mathbf{X}_c, \qquad C_{ij} = \frac{1}{n-1}\sum_{t=1}^{n} (x_{ti} - \bar x_i)(x_{tj} - \bar x_j),$$
+
+with the sample divisor $n - 1$. The diagonal holds each neuron's variance and the off-diagonal entries the covariances between neurons.
+
+### Principal components
+
+A direction in neuron space is a unit vector $\mathbf{v}$. The variance of the activity projected on it (the scores $\mathbf{X}_c\mathbf{v}$) is $\mathbf{v}^\top \mathbf{C}\,\mathbf{v}$. The **first principal component** (PC1) is the unit vector $\mathbf{v}_1$ that maximizes this variance; it is the eigenvector of $\mathbf{C}$ with the largest eigenvalue $\lambda_1$, and $\lambda_1$ is the variance it captures. The second component $\mathbf{v}_2$ maximizes the variance among directions perpendicular to $\mathbf{v}_1$, and so on. The eigenvalues sum to the total variance, $\sum_k \lambda_k = \operatorname{trace}(\mathbf{C})$, so the **fraction of variance explained** by component $k$ is $\lambda_k/\operatorname{trace}(\mathbf{C})$.
+
+### Power iteration
+
+For tiny matrices we find $\mathbf{v}_1$ by **power iteration**. Start from the fixed vector $\mathbf{v} = (1, 2, \dots, d)$. Repeat a fixed number of times: replace $\mathbf{v}$ by $\mathbf{C}\mathbf{v}$ and rescale it to length 1. Each multiplication stretches the component along $\mathbf{v}_1$ by $\lambda_1$ and the component along $\mathbf{v}_2$ by $\lambda_2 < \lambda_1$, so after $m$ steps the ratio of the second to the first is multiplied by $(\lambda_2/\lambda_1)^m$ and the vector converges to $\mathbf{v}_1$, provided the start has some component along it. The eigenvalue is the **Rayleigh quotient** $\lambda = \mathbf{v}^\top\mathbf{C}\mathbf{v}$. An eigenvector is defined only up to sign, so we fix the sign by making the entry of largest absolute value (the first, in a tie) positive. **Deflation** finds the next component: subtract the found component, $\mathbf{C} \leftarrow \mathbf{C} - \lambda_1 \mathbf{v}_1\mathbf{v}_1^\top$, and run power iteration again.
+
+```python
+import math
+
+
+def covariance(X):
+    """Sample covariance (divisor n - 1) of the columns of a list of rows."""
+    n, d = len(X), len(X[0])
+    mean = [sum(row[j] for row in X) / n for j in range(d)]
+    return [[sum((row[i] - mean[i]) * (row[j] - mean[j]) for row in X) / (n - 1)
+             for j in range(d)] for i in range(d)]
+
+
+def top_pc(C, iters):
+    """Eigenvalue and unit eigenvector for the largest eigenvalue of C."""
+    d = len(C)
+    v = [float(j + 1) for j in range(d)]
+    for _ in range(iters):
+        w = [sum(C[i][j] * v[j] for j in range(d)) for i in range(d)]
+        norm = math.sqrt(sum(x * x for x in w))
+        if norm == 0:
+            return 0.0, [0.0] * d
+        v = [x / norm for x in w]
+    lam = sum(v[i] * C[i][j] * v[j] for i in range(d) for j in range(d))
+    k = max(range(d), key=lambda i: abs(v[i]))
+    if v[k] < 0:
+        v = [-x for x in v]
+    return lam, v
+```
+
+For the six-bin, three-neuron recording with rows $(2,4,3), (3,6,1), (6,12,2), (1,2,3), (5,10,1), (3,6,2)$ the covariance has diagonal $3.47, 13.87, 0.80$, and PC1 is $(0.443, 0.887, -0.132)$ with $\lambda_1 = 17.63$, which explains $17.63/18.13 = 97\%$ of the variance: the first two neurons rise and fall together (the second fires about twice as much as the first), and the activity is nearly one-dimensional.
+
+### How many dimensions?
+
+The number of components needed to reach, say, 90% of the variance is a common but arbitrary measure. A smoother one is the **participation ratio**,
+
+$$\mathrm{PR} = \frac{\big(\sum_k \lambda_k\big)^2}{\sum_k \lambda_k^2} = \frac{\operatorname{trace}(\mathbf{C})^2}{\sum_{ij} C_{ij}^2},$$
+
+which equals 1 when all the variance is on one component and $d$ when it is spread equally. Dimensionality estimates depend on the number of samples and on noise: independent noise in each neuron adds a flat floor to the eigenvalues, and with few samples the eigenvalues are inflated. PCA is **linear** and **unsupervised**: it finds directions of large variance, not directions that are important for behavior, and its components need not be interpretable. It also depends on scale: neurons with large counts have large variances and dominate unless you rescale each column (for example to unit variance) first.
+
+@example
+title: PCA of two neurons by hand and by one power-iteration step
+problem: Two neurons have counts $(3, 1), (1, 3), (5, 5), (3, 3)$ in four bins. Find the covariance matrix, its eigenvalues, the fraction of variance in PC1, and the first power-iteration step from $\mathbf{v} = (1, 2)$.
+step: The means are $3$ and $3$. The centered rows are $(0, -2), (-2, 0), (2, 2), (0, 0)$. Variances: $(0 + 4 + 4 + 0)/3 = 8/3$ for each neuron. Covariance: $(0 + 0 + 4 + 0)/3 = 4/3$.
+step: So $\mathbf{C} = \begin{pmatrix} 8/3 & 4/3 \\ 4/3 & 8/3 \end{pmatrix}$. A matrix $\begin{pmatrix} a & b \\ b & a\end{pmatrix}$ has eigenvalues $a + b = 4$ (eigenvector $(1, 1)/\sqrt2$) and $a - b = 4/3$ (eigenvector $(1, -1)/\sqrt2$).
+step: The fraction in PC1 is $4/(4 + 4/3) = 4/(16/3) = 0.75$.
+step: One power-iteration step from $\mathbf{v} = (1, 2)$: $\mathbf{C}\mathbf{v} = (8/3 + 8/3,\ 4/3 + 16/3) = (16/3, 20/3)$, of length $\sqrt{256 + 400}/3 = 8.54$, so the new $\mathbf{v} = (0.625, 0.781)$, already closer to $(0.707, 0.707)$ than the start $(0.447, 0.894)$.
+answer: $\lambda = 4$ and $4/3$; PC1 explains $75\%$; after one step $\mathbf{v} = (0.625, 0.781)$.
+
+@mistakes
+- Forgetting to center the columns: the first "component" then mostly points toward the mean activity, not the direction of variation.
+- Mixing divisors ($n$ in one place and $n - 1$ in another); the explained-variance fractions do not change, but the eigenvalues do.
+- Starting power iteration from a vector perpendicular to the top component, or running too few iterations when $\lambda_2$ is close to $\lambda_1$.
+- Reading the sign or the order of the neurons in a component as meaningful by itself: the sign of an eigenvector is arbitrary.
+
+@practice num
+prompt: Two neurons have counts $x = (1, 3, 5, 7)$ and $y = (2, 2, 6, 6)$ in four bins. What is their sample covariance (divisor $n - 1$), to two decimal places?
+answer: 5.33
+tol: 0.01
+check: sum((a - 4) * (b - 4) for a, b in zip([1, 3, 5, 7], [2, 2, 6, 6])) / 3
+hint: Both means are 4; multiply the centered values bin by bin, add them, and divide by $n - 1 = 3$.
+solution: The centered values are $(-3, -1, 1, 3)$ and $(-2, -2, 2, 2)$ with products $6, 2, 2, 6$, which sum to 16. The covariance is $16/3 = 5.33$.
+
+@practice mc
+prompt: In a recording from 60 neurons, PC1 explains 45% of the variance. Which statement is correct?
+choice*: The direction in neuron space along which the population activity varies most captures 45% of the total variance; whether that direction matters for behavior is a separate question.
+choice: 45% of the neurons carry all of the information about the stimulus.
+choice: PC1 must be the neuron with the largest firing rate.
+choice: PC1 is the signal and the remaining 55% of the variance is noise.
+hint: A principal component is a direction (a weighted combination of all neurons), chosen only for its variance.
+solution: PC1 is the unit vector in the 60-dimensional space maximizing the variance of the projection. It is a combination of all neurons, not one neuron, and it is chosen without reference to the stimulus or behavior, so it may or may not be behaviorally relevant, and later components may contain signal.
+
+@practice code
+prompt: Write `project_scores(X, v)` that returns the PC scores: center each column of `X` (a list of rows, one per time bin, one column per neuron) by subtracting its column mean, then return, for each row, the dot product of the centered row with the vector `v`. For example, `project_scores([[1, 2], [3, 2], [5, 6], [7, 6]], [0.6, 0.8])` returns about `[-3.4, -2.2, 2.2, 3.4]`.
+starter:
+```python
+def project_scores(X, v):
+    pass
+```
+tests:
+```python
+got = project_scores([[1, 2], [3, 2], [5, 6], [7, 6]], [0.6, 0.8])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-3.4, -2.2, 2.2, 3.4]))
+got = project_scores([[1, 2], [3, 2], [5, 6], [7, 6]], [1.0, 0.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-3.0, -1.0, 1.0, 3.0]))
+got = project_scores([[4, 10], [4, 20]], [0.0, 1.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-5.0, 5.0]))
+got = project_scores([[2, 3, 5], [4, 3, 1]], [1.0, 1.0, 1.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.0, -1.0]))
+assert abs(sum(project_scores([[1, 5], [2, 9], [6, 1]], [0.3, -0.7]))) < 1e-9
+```
+model:
+```python
+def project_scores(X, v):
+    """Project column-centered rows of X onto the vector v."""
+    n, d = len(X), len(X[0])
+    mean = [sum(row[j] for row in X) / n for j in range(d)]
+    return [sum((row[j] - mean[j]) * v[j] for j in range(d)) for row in X]
+```
+hint: Compute the column means first, subtract them from each row, then take the dot product of each centered row with `v`.
+solution: Centering ensures the scores have mean zero (the last test), whatever the direction. The centering uses column means over time bins, not row means over neurons: the mean activity of each neuron is removed, not the average over neurons within a bin.
+
+@practice code
+prompt: Write `second_pc(C, iters)` for a symmetric covariance matrix `C` (list of rows). Find the top eigenvalue and unit eigenvector by power iteration from the start vector $(1, 2, \dots, d)$ with `iters` normalizations (each step: multiply by `C`, divide by the length). Take the eigenvalue as $\mathbf{v}^\top\mathbf{C}\mathbf{v}$. Deflate: $\mathbf{D} = \mathbf{C} - \lambda_1\mathbf{v}_1\mathbf{v}_1^\top$. Run the same power iteration on $\mathbf{D}$ and return `(lam2, v2)` with $\lambda_2 = \mathbf{v}_2^\top \mathbf{D}\,\mathbf{v}_2$ and the sign of `v2` chosen so that its entry of largest absolute value (the first, in a tie) is positive. If a multiplication gives the zero vector, use eigenvalue `0.0` and the zero vector. For example, `second_pc([[5, 0], [0, 2]], 100)` returns about `(2.0, [0.0, 1.0])`.
+starter:
+```python
+def second_pc(C, iters):
+    pass
+```
+tests:
+```python
+lam, v = second_pc([[5, 0], [0, 2]], 100)
+assert abs(lam - 2.0) < 1e-6 and abs(v[0]) < 1e-6 and abs(v[1] - 1.0) < 1e-6
+C = [[3.4666666666667, 6.9333333333333, -1.0],
+     [6.9333333333333, 13.866666666667, -2.0],
+     [-1.0, -2.0, 0.8]]
+lam, v = second_pc(C, 300)
+assert abs(lam - 0.5029188) < 1e-5
+assert all(abs(a - b) < 1e-4 for a, b in zip(v, [0.0588987, 0.1177974, 0.9912894]))
+C = [[6.6666667, 6.6666667, 0.6666667], [6.6666667, 6.6666667, 0.6666667],
+     [0.6666667, 0.6666667, 0.3333333]]
+lam, v = second_pc(C, 300)
+assert abs(lam - 0.2653132) < 1e-5
+assert all(abs(a - b) < 1e-4 for a, b in zip(v, [-0.0508829, -0.0508829, 0.9974076]))
+```
+model:
+```python
+import math
+
+
+def _top(C, iters):
+    d = len(C)
+    v = [float(j + 1) for j in range(d)]
+    for _ in range(iters):
+        w = [sum(C[i][j] * v[j] for j in range(d)) for i in range(d)]
+        norm = math.sqrt(sum(x * x for x in w))
+        if norm == 0:
+            return 0.0, [0.0] * d
+        v = [x / norm for x in w]
+    lam = sum(v[i] * C[i][j] * v[j] for i in range(d) for j in range(d))
+    k = max(range(d), key=lambda i: abs(v[i]))
+    if v[k] < 0:
+        v = [-x for x in v]
+    return lam, v
+
+
+def second_pc(C, iters):
+    """Second eigenpair of a symmetric matrix by power iteration and deflation."""
+    d = len(C)
+    lam1, v1 = _top(C, iters)
+    D = [[C[i][j] - lam1 * v1[i] * v1[j] for j in range(d)] for i in range(d)]
+    return _top(D, iters)
+```
+hint: Run power iteration once to get the top pair, build the deflated matrix by subtracting $\lambda_1\mathbf{v}_1\mathbf{v}_1^\top$ entry by entry, and run the same routine again on it.
+solution: Deflation removes the variance along $\mathbf{v}_1$, so the largest eigenvalue of the deflated matrix is $\lambda_2$ and its eigenvector is $\mathbf{v}_2$. The second test's recording has a third eigenvalue near 0 because the second neuron is twice the first, so the second component captures the remaining 0.50 of variance, mostly along the third neuron.
+
+@practice num
+prompt: The eigenvalues of a population covariance matrix are $9, 4, 2, 1$. What fraction of the total variance do the first two principal components explain together, to three decimal places?
+answer: 0.812
+tol: 0.001
+check: (9 + 4) / (9 + 4 + 2 + 1)
+hint: The total variance is the sum of the eigenvalues; add the first two and divide.
+solution: The first two eigenvalues sum to 13 and the total is 16, so the fraction is $13/16 = 0.8125$, or about $0.812$.
+
+@quiz code
+prompt: Write `participation_ratio(C)` for a symmetric covariance matrix `C` (list of rows) returning $\operatorname{trace}(\mathbf{C})^2 / \sum_{i,j} C_{ij}^2$, the participation ratio, without computing eigenvalues. If every entry of `C` is 0, return `0.0`. For example, `participation_ratio([[4, 0], [0, 1]])` returns about `1.4706`.
+starter:
+```python
+def participation_ratio(C):
+    pass
+```
+tests:
+```python
+assert abs(participation_ratio([[4, 0], [0, 1]]) - 25 / 17) < 1e-9
+assert abs(participation_ratio([[1, 0, 0], [0, 1, 0], [0, 0, 1]]) - 3.0) < 1e-9
+assert abs(participation_ratio([[2, 2], [2, 2]]) - 1.0) < 1e-9
+assert participation_ratio([[0, 0], [0, 0]]) == 0.0
+assert abs(participation_ratio([[2.0, 1.0], [1.0, 2.0]]) - 16 / 10) < 1e-9
+```
+model:
+```python
+def participation_ratio(C):
+    """(sum of eigenvalues)^2 / (sum of squared eigenvalues), from C directly."""
+    trace = sum(C[i][i] for i in range(len(C)))
+    frob = sum(x * x for row in C for x in row)
+    if frob == 0:
+        return 0.0
+    return trace * trace / frob
+```
+hint: The sum of squared eigenvalues equals the sum of all squared entries of a symmetric matrix, so no eigenvalues are needed.
+solution: For a symmetric matrix, $\sum_k\lambda_k^2 = \operatorname{trace}(\mathbf{C}^2) = \sum_{ij}C_{ij}^2$. The identity matrix has equal eigenvalues and gives the full dimension 3, and the rank-one matrix with all entries 2 gives 1. The last test has eigenvalues 3 and 1, so $16/10$.
+
+@quiz num
+prompt: For the covariance matrix $\mathbf{C} = \begin{pmatrix} 2 & 1 \\ 1 & 2\end{pmatrix}$, apply one power-iteration step to $\mathbf{v} = (1, 0)$: multiply by $\mathbf{C}$ and rescale to length 1. What is the first entry of the new vector, to three decimal places?
+answer: 0.894
+tol: 0.001
+check: 2 / sqrt(2 ** 2 + 1 ** 2)
+hint: $\mathbf{C}\mathbf{v}$ is the first column of $\mathbf{C}$; divide it by its length.
+solution: $\mathbf{C}\mathbf{v} = (2, 1)$ has length $\sqrt 5 = 2.236$, so the new vector is $(0.894, 0.447)$, moving toward the top eigenvector $(0.707, 0.707)$ from $(1, 0)$.
+
+@quiz mc
+prompt: A recording has one neuron with a mean count of about 50 per bin and 20 neurons with mean counts of about 2. You run PCA on the covariance matrix of the raw counts. What is the likely problem?
+choice*: The high-count neuron has a much larger variance and can dominate the first components; rescaling each neuron (for example to unit variance) addresses this if the goal is population structure.
+choice: PCA cannot be applied to counts.
+choice: The covariance matrix will have negative eigenvalues because counts are positive.
+choice: The components will all be identical.
+hint: Variance depends on the scale of each neuron's counts, and PCA ranks directions by variance.
+solution: Poisson-like counts have variance that grows with the mean, so the high-count neuron contributes most of the total variance and PC1 tends to point along it. Whether to rescale depends on the question: raw covariance weights neurons by how much spike variance they contribute, while unit-variance scaling weights them equally. A covariance matrix is positive semidefinite, so its eigenvalues are not negative.

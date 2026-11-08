@@ -1,0 +1,224 @@
+@lesson
+title: Power spectra, filtering and oscillations
+summary: Estimate a signal's power spectrum with a periodogram, reduce leakage with a Hann window, measure the power in a frequency band, and predict how a moving-average filter changes each frequency.
+objective: Compute a one-sided periodogram in units of power per hertz and check it against the signal's mean square (Parseval's relation).
+objective: Apply a Hann window and detrending, and compute the power in a frequency band.
+objective: Compute the frequency response of a moving-average filter and explain what low-pass filtering does to an oscillation.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies on spectral analysis of the local field potential or EEG, including the periodogram and tapering.
+
+@article
+An electrode in visual cortex records a voltage trace that looks like noise, yet an experimenter says it "has a strong gamma rhythm". How much of the signal's variance lives at each frequency? The answer is the **power spectrum**, the most-used summary of an LFP or EEG recording.
+
+### The periodogram
+
+Take $N$ samples (even $N$) at sampling interval $\Delta t$ (s), with DFT $X_k = \sum_n x_n e^{-2\pi i kn/N}$ as in the last lesson (no $1/N$), frequency resolution $\Delta f = 1/(N\Delta t)$ and frequencies $f_k = k\Delta f$. The **one-sided periodogram** is the power spectral density estimate
+
+$$S_k = \frac{2\Delta t}{N}\,|X_k|^2 \quad (0 < k < N/2), \qquad S_0 = \frac{\Delta t}{N}|X_0|^2,\quad S_{N/2} = \frac{\Delta t}{N}|X_{N/2}|^2,$$
+
+in units of signal$^2$ per hertz (µV$^2$/Hz for a voltage in µV). Its defining property is **Parseval's relation**: the area under the spectrum is the mean square of the signal,
+
+$$\sum_{k=0}^{N/2} S_k\,\Delta f = \frac{1}{N}\sum_{n=0}^{N-1} x_n^2 .$$
+
+You can check the normalization on any signal. For $x = (0,1,0,-1,0,1,0,-1)$ and $\Delta t = 0.004$ s, only $k = 2$ has power: $|X_2|^2 = 16$, so $S_2 = 2(0.004)(16)/8 = 0.016$, and with $\Delta f = 31.25$ Hz the area is $0.016 \times 31.25 = 0.5$, the mean square of the signal.
+
+```python
+import math
+
+
+def periodogram(x, dt):
+    """One-sided periodogram of an even-length real list; units: x^2 per Hz."""
+    n = len(x)
+    out = []
+    for k in range(n // 2 + 1):
+        re = sum(x[j] * math.cos(2 * math.pi * k * j / n) for j in range(n))
+        im = -sum(x[j] * math.sin(2 * math.pi * k * j / n) for j in range(n))
+        p = (re * re + im * im) * dt / n
+        out.append(p if k in (0, n // 2) else 2 * p)
+    return out
+```
+
+### Windowing and detrending
+
+A raw periodogram suffers from leakage and is **noisy**: its variance does not shrink as the recording gets longer, since each $S_k$ is roughly an exponential random variable with mean equal to the true spectrum. Two standard remedies: average the periodograms of several segments (Welch's method), and **taper** each segment. First **detrend** by subtracting the mean (otherwise the large $k=0$ term leaks into low frequencies). Then multiply by a **Hann window**,
+
+$$w_n = \tfrac12\Big(1 - \cos\frac{2\pi n}{N}\Big), \qquad n = 0, \dots, N-1,$$
+
+which falls smoothly to 0 at the ends, so there is no jump at the join. The window removes power, so normalize by $U = \sum_n w_n^2$ (equal to $3N/8$ for the Hann window, $N$ for no window):
+
+$$S_k = \frac{2\Delta t}{U}\,\big|X^{w}_k\big|^2, \qquad X^w = \text{DFT of } (x_n - \bar x)\,w_n,$$
+
+with the end bins $k = 0, N/2$ not doubled. Tapering trades a wider main lobe (poorer resolution) for far lower leakage.
+
+### Band power and oscillations
+
+The **band power** between $f_{lo}$ and $f_{hi}$ is $\sum S_k \Delta f$ over $k$ with $f_{lo} \le f_k < f_{hi}$. Neuroscientists name bands (delta, theta, alpha, beta, gamma) by conventional ranges that vary between labs, so always state the range. LFP spectra typically fall steeply with frequency, roughly like $1/f^{\alpha}$, plus peaks where a rhythm sticks out; the peak, not the total power in a band, is the evidence for an oscillation, because the broadband background also changes with state.
+
+### Filtering
+
+A **moving-average filter** of $m$ samples replaces each sample by the mean of $m$ consecutive samples, which suppresses fast fluctuations: a **low-pass filter**. A sinusoid of frequency $f$ passes with the gain
+
+$$|H(f)| = \left|\frac{\sin(\pi f m\,\Delta t)}{m\,\sin(\pi f\,\Delta t)}\right|, \qquad |H(0)| = 1,$$
+
+away from the ends of the recording. The gain is exactly 0 at $f = 1/(m\Delta t)$ and its multiples. With $m = 4$ and $\Delta t = 0.005$ s, 25 Hz passes with gain 0.653 and 50 Hz is removed. Filtering changes the spectrum by $|H(f)|^2$, so one can predict it. Real LFP analyses use better filters (such as Butterworth), but the logic is the same.
+
+@example
+title: Parseval check and the power in one band
+problem: A signal $x = (1, 1, -1, -1)$ is sampled at $\Delta t = 0.01$ s. Compute its one-sided periodogram and verify Parseval's relation.
+step: The frequency resolution is $\Delta f = 1/(4 \times 0.01) = 25$ Hz, so the bins are $0, 25, 50$ Hz. The mean is 0, so $X_0 = 0$.
+step: For $k = 1$: $X_1 = 1 + (-i) + (+1) + (-i) = 2 - 2i$ using the factors $1, -i, -1, i$ for $n = 0, \dots, 3$. So $|X_1|^2 = 8$ and $S_1 = 2(0.01)(8)/4 = 0.04$ per hertz.
+step: For $k = 2$ the factors are $1, -1, 1, -1$, so $X_2 = 1 - 1 - 1 + 1 = 0$ and $S_2 = 0$.
+step: Parseval: the area is $S_1 \Delta f = 0.04 \times 25 = 1$, and the mean square of $x$ is $(1 + 1 + 1 + 1)/4 = 1$. They agree.
+answer: $S = (0,\ 0.04,\ 0)$ per hertz at $0, 25, 50$ Hz; the area under it, $1$, equals the mean square of the signal.
+
+@mistakes
+- Forgetting the factor 2 for the one-sided spectrum (or doubling the DC and Nyquist bins, which have no mirror image).
+- Using a window without correcting for the power it removes, so absolute power is underestimated.
+- Treating a single periodogram as a reliable estimate: its scatter does not shrink with recording length, so average segments or smooth.
+- Calling a band-power increase an oscillation without checking for a peak above the broadband background.
+
+@practice num
+prompt: The signal $x = (2, -2, 2, -2)$ is sampled with $\Delta t = 0.01$ s. What is the one-sided periodogram value at the Nyquist frequency ($k = 2$), in signal units squared per hertz?
+answer: 0.16
+tol: 0.001
+check: 0.01 / 4 * (2 - (-2) + 2 - (-2)) ** 2
+hint: At $k = N/2$ the DFT is $\sum_n x_n(-1)^n$; the Nyquist bin is not doubled, so $S = (\Delta t/N)|X|^2$.
+solution: $X_2 = 2 + 2 + 2 + 2 = 8$, so $S_2 = (0.01/4)(64) = 0.16$ per hertz. Check with Parseval: the area is $0.16 \times 25 = 4$, the mean square of the signal.
+
+@practice mc
+prompt: Before computing the periodogram of an LFP segment, you subtract the segment's mean. Why?
+choice*: The large zero-frequency component would otherwise leak into the lowest frequency bins, especially with a window.
+choice: Subtracting the mean makes the signal periodic.
+choice: The mean has no power, so the periodogram is unaffected.
+choice: Subtracting the mean doubles the frequency resolution.
+hint: The $k=0$ bin of an undetrended signal can be much larger than everything else.
+solution: A constant offset all in $X_0$ is spread by windowing and finite length into neighboring bins, swamping real low-frequency power. The offset has power (it adds to the mean square), so the periodogram is affected, and the mean's removal does not change the resolution, which depends on the recording length.
+
+@practice code
+prompt: Write `band_power(psd, n, dt, f_lo, f_hi)` for a one-sided power spectral density `psd` (a list of `n // 2 + 1` values for an original recording of `n` samples at sampling interval `dt` seconds). With $\Delta f = 1/(n\,dt)$, return the sum of `psd[k] * delta_f` over the bins $k$ whose frequency $k\,\Delta f$ satisfies `f_lo <= k * delta_f < f_hi`. For example, `band_power([1, 2, 3, 4, 5], 8, 0.004, 30, 100)` returns `281.25`.
+starter:
+```python
+def band_power(psd, n, dt, f_lo, f_hi):
+    pass
+```
+tests:
+```python
+assert abs(band_power([1, 2, 3, 4, 5], 8, 0.004, 30, 100) - 281.25) < 1e-9
+assert abs(band_power([1, 2, 3, 4, 5], 8, 0.004, 0, 62.5) - 93.75) < 1e-9
+assert abs(band_power([1, 2, 3, 4, 5], 8, 0.004, 62.5, 126) - 375.0) < 1e-9
+assert abs(band_power([1, 2, 3, 4, 5], 8, 0.004, 200, 300)) < 1e-12
+assert abs(band_power([0.5, 0.0, 0.2], 4, 0.01, 25, 50) - 0.0) < 1e-12
+```
+model:
+```python
+def band_power(psd, n, dt, f_lo, f_hi):
+    """Power in [f_lo, f_hi): sum of psd[k] * delta_f over those bins."""
+    df = 1 / (n * dt)
+    total = 0.0
+    for k, s in enumerate(psd):
+        if f_lo <= k * df < f_hi:
+            total += s * df
+    return total
+```
+hint: Compute the resolution $\Delta f$, then add `psd[k] * df` for each bin whose frequency is in the half-open band.
+solution: The first bin sits at 0 Hz, so a band starting at 0 includes the DC term and one ending at 62.5 excludes the bin at exactly 62.5 Hz. In the second test only bins 0 and 1 count, giving $(1 + 2) \times 31.25 = 93.75$.
+
+@practice code
+prompt: Write `boxcar_gain(f, m, dt)` returning the gain $|H(f)| = \left|\dfrac{\sin(\pi f m\,dt)}{m\,\sin(\pi f\,dt)}\right|$ of an $m$-sample moving average at frequency `f` (Hz) with sampling interval `dt` (s). If $\sin(\pi f\,dt)$ is exactly 0 (for example at `f = 0`), return `1.0`. For example, `boxcar_gain(25, 4, 0.005)` returns about `0.6533`.
+starter:
+```python
+def boxcar_gain(f, m, dt):
+    pass
+```
+tests:
+```python
+assert abs(boxcar_gain(25, 4, 0.005) - 0.6532815) < 1e-6
+assert abs(boxcar_gain(50, 4, 0.005)) < 1e-9
+assert boxcar_gain(0, 4, 0.005) == 1.0
+assert abs(boxcar_gain(10, 5, 0.01) - 0.6472136) < 1e-6
+assert abs(boxcar_gain(7, 1, 0.01) - 1.0) < 1e-9
+```
+model:
+```python
+import math
+
+
+def boxcar_gain(f, m, dt):
+    """Gain of an m-point moving average at f Hz, sampling interval dt s."""
+    den = math.sin(math.pi * f * dt)
+    if den == 0:
+        return 1.0
+    return abs(math.sin(math.pi * f * m * dt) / (m * den))
+```
+hint: Evaluate the formula, but avoid dividing by zero when the denominator sine is exactly 0.
+solution: At zero frequency the average passes a constant unchanged, so the gain is 1. At $f = 1/(m\,dt) = 50$ Hz the numerator sine is $\sin(\pi) \approx 0$, so a 50 Hz wave is removed. With $m = 1$ the filter does nothing, so the gain is 1 at any frequency.
+
+@practice num
+prompt: A moving average of $m = 5$ samples is applied to an LFP sampled at $\Delta t = 0.01$ s. At what frequency, in hertz, is the first exact zero of its gain?
+answer: 20
+unit: Hz
+check: 1 / (5 * 0.01)
+hint: The gain is zero when $\sin(\pi f m\,\Delta t) = 0$ for the first time, that is when $f m \Delta t = 1$.
+solution: The first zero is at $f = 1/(m\Delta t) = 1/0.05 = 20$ Hz, so a 20 Hz oscillation (a whole number of cycles in every 5-sample window) is averaged away completely.
+
+@quiz code
+prompt: Write `windowed_periodogram(x, dt)` for an even-length real list `x` sampled at `dt` seconds. Subtract the mean of `x`; multiply by the periodic Hann window $w_n = \tfrac12\bigl(1 - \cos(2\pi n/N)\bigr)$; take the DFT $X^w_k$ (computed directly); and return the one-sided list for $k = 0, \dots, N/2$ of $S_k = (2\,dt/U)\,|X^w_k|^2$ with $U = \sum_n w_n^2$, except that bins $k = 0$ and $k = N/2$ use $dt/U$ in place of $2\,dt/U$. For example, `x = [5 + 2 * cos(2 * pi * 2 * n / 16) for n in range(16)]` with `dt = 0.01` gives a peak of about `0.2133` at $k = 2$.
+starter:
+```python
+def windowed_periodogram(x, dt):
+    pass
+```
+tests:
+```python
+import math
+x = [5 + 2 * math.cos(2 * math.pi * 2 * n / 16) for n in range(16)]
+got = windowed_periodogram(x, 0.01)
+want = [0.0, 0.0533333, 0.2133333, 0.0533333, 0.0, 0.0, 0.0, 0.0, 0.0]
+assert len(got) == 9 and all(abs(a - b) < 1e-6 for a, b in zip(got, want))
+shifted = windowed_periodogram([v + 100 for v in x], 0.01)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, shifted))
+got = windowed_periodogram([1, 2, 3, 4, 5, 6, 7, 8], 0.01)
+want = [0.0133333, 0.1043787, 0.0045751, 0.0001960, 0.0]
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, want))
+```
+model:
+```python
+import math
+
+
+def windowed_periodogram(x, dt):
+    """Hann-windowed, mean-subtracted one-sided periodogram."""
+    n = len(x)
+    mean = sum(x) / n
+    w = [0.5 * (1 - math.cos(2 * math.pi * j / n)) for j in range(n)]
+    y = [(v - mean) * wj for v, wj in zip(x, w)]
+    u = sum(wj * wj for wj in w)
+    out = []
+    for k in range(n // 2 + 1):
+        re = sum(y[j] * math.cos(2 * math.pi * k * j / n) for j in range(n))
+        im = -sum(y[j] * math.sin(2 * math.pi * k * j / n) for j in range(n))
+        p = (re * re + im * im) * dt / u
+        out.append(p if k in (0, n // 2) else 2 * p)
+    return out
+```
+hint: Remove the mean first, then multiply by the window, then take the DFT; the normalizing constant $U$ is the sum of the squared window values, not $N$.
+solution: Detrending makes the result unchanged by a constant offset (second test). The Hann window spreads the on-bin sine into its two neighboring bins at one quarter of the center power ($0.0533$ against $0.2133$), and the normalization by $U = 3N/8 = 6$ keeps the absolute power comparable with an unwindowed periodogram.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+print([round(0.5 * (1 - math.cos(2 * math.pi * n / 6)), 3) for n in range(6)])
+```
+answer: [0.0, 0.25, 0.75, 1.0, 0.75, 0.25]
+check: run("import math\nprint([round(0.5 * (1 - math.cos(2 * math.pi * n / 6)), 3) for n in range(6)])")
+hint: The cosine takes the values $1, 0.5, -0.5, -1, -0.5, 0.5$ for $n = 0, \dots, 5$.
+solution: The Hann window rises from 0 to 1 at $n = N/2 = 3$ and falls symmetrically; the periodic version stops before returning to 0, so the last value is 0.25.
+
+@quiz mc
+prompt: The power spectrum of an LFP shows a steady decline with frequency and, after the animal is given a task, more power between 30 and 80 Hz at every frequency in that range with no distinct peak. Which conclusion is best supported?
+choice*: Broadband power has increased; to claim a gamma oscillation you would also need a peak above the broadband background.
+choice: A gamma oscillation has been proven, because power in the gamma band rose.
+choice: The firing rate has necessarily doubled.
+choice: The sampling frequency must be below 80 Hz.
+hint: An oscillation is a peak at a particular frequency, not simply more power across a wide range.
+solution: A band-power increase with no peak is consistent with a broadband shift (such as a change in the aperiodic background, which is often associated with changes in population activity), not specifically with an oscillation. Neither the exact firing rate nor the sampling frequency can be inferred from this description.
