@@ -27,6 +27,7 @@ If the lead runs out of budget, the owner names a new lead in TEAM.md.
 3. A writing or review branch changes only `schools/<school>/content/<COURSE>/`.
 4. Only the lead edits shared files: `AGENTS.md`, `TEAM.md`, `STATUS.md`, `HANDOFF.md`, `README.md`, `package.json`, `hub/`, `tools/`, and each school's `work/`, `toolkit/`, `src/`, `scripts/`, `vendor/` and `publish/`. If a shared file needs a change, such as an out-of-date fact in a BRIEF, say so in your pull request.
 5. Never push to `main`, never merge, and never rewrite another agent's branch.
+6. Run one session per agent at a time, so two copies of the same agent never work on the same files.
 
 ## Definition of done
 

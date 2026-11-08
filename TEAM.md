@@ -10,7 +10,7 @@ Who is doing what right now. Only the lead edits this file; the rules are in AGE
 |-------|------|----------|-------|
 | Grok | Second-opinion review of two Neuroscience courses full of dated facts: **C30** (Neuroethics and neurotechnology) and **P3** (Consciousness and the science of the mind). Check every law, date, figure and attribution against current sources, following `schools/neuro/toolkit/REVIEW.md`. | `grok/neuro-C30-review`, `grok/neuro-P3-review` | assigned |
 | Codex | Second-opinion review of two code-heavy Neuroscience courses: **C24** (Neural data analysis) and **C25** (Computational neuroscience). Run every code item and worked example, and check every answer key and solution, following `schools/neuro/toolkit/REVIEW.md`. | `codex/neuro-C24-review`, `codex/neuro-C25-review` | assigned |
-| Claude | Neuroscience school: publish and add to the hub (the owner said yes). Then design the Mathematics school, next in the queue (steps 1–2), and split its new courses below. | — | in progress |
+| Claude | Design the Mathematics school, next in the queue (steps 1–2), then split its new courses below. (The Neuroscience school is live and on the hub as of Nov 8, so Grok's and Codex's fixes go out as an update.) | — | next |
 
 ## Mathematics school: course assignments
 

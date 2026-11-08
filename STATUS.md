@@ -187,3 +187,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: all 70 courses validate; page built (16.7 MB) and tested (292 routes, no math or page errors); publish/index.html ready; waiting for the owner's yes
 - 2026-11-08: Neuro: published (owner's yes, Nov 8) at https://cbaird26.github.io/neuroscience-learning-foundation/ (70 courses; checked live: title, 70 courses, Python runs); added to the hub; next school in the queue: Mathematics
 - 2026-11-08: Neuro: hub checked live (8 schools, neuro card links to the live school)
+- 2026-11-08: Team mode: AGENTS.md (rules) and TEAM.md (assignments) added so Claude, Codex and Grok can work in parallel; Claude leads; second-opinion reviews of the live Neuroscience school assigned (Grok: C30, P3; Codex: C24, C25); next: design the Mathematics school
