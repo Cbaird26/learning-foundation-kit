@@ -73,3 +73,4 @@ Log:
 - P5 reviewed (7 fixes: falsifying threshold matches the hypothesis, reading line no longer ties compute to the optimization chapter, unsupported phrases removed, items off article and example data); follow-up by me: project exam model answer counts 4 conditions (80 final runs) plus 90 tuning runs
 - P4 done (0 errors, 96 + 3 exam, code in 7 lessons; project options run by the writer: circuit network, sparse autoencoder rows, reward-hacking environment); review started P4
 - P6 done (0 errors, 96 + 3 exam, no code items); review started P6. All 66 courses written.
+- P6 reviewed (10 fixes: Raff 2019 figures, word counts and device-hour budgets in model answers made consistent, items off example data, Watkins-Dayan 1992 attribution, finite-class bound conditions in the review guide); owner approved publishing the AI school when the final build and tests pass

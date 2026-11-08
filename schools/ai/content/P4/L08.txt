@@ -96,10 +96,10 @@ hint: In goal misgeneralization the reward specification is adequate on the trai
 solution: In the first scenario the specification is correct in training and two goals ("go to the end" and "get the object") fit the training data equally; the learned one fails under shift. The others exploit a flawed specification or proxy in training itself, which is specification gaming or reward hacking.
 
 @practice code
-prompt: Write `evaluate(actions, size, bonus_cell, bonus, goal_reward, horizon, step_cost)` for a track with cells `0` to `size - 1`. The agent starts at cell 0. Only the first `horizon` actions are used; each action `'L'` or `'R'` moves one cell left or right, staying put at the walls. Every action used costs `step_cost` from the true return. The proxy return gains `bonus` each time an action moves the agent into `bonus_cell` (the position after the move equals `bonus_cell` and differs from before). Entering the last cell ends the episode and adds `goal_reward` to the true return. Return the pair `(proxy, true)`. For example, `evaluate('RR', 4, 1, 0.5, 6, 6, 0.1)` returns `(0.5, -0.2)`.
+prompt: An agent that maximizes the proxy return picks the best of all action strings of length `horizon`. Write `proxy_maximizer(size, bonus_cell, bonus, goal_reward, horizon, step_cost)` for a track with cells `0` to `size - 1` (`size` is at least 2). The agent starts at cell 0 and takes exactly `horizon` actions, each `'L'` or `'R'`, moving one cell left or right and staying put at a wall. Every action actually taken costs `step_cost` from the true return. The proxy return gains `bonus` each time an action moves the agent into `bonus_cell` (the position after the move equals `bonus_cell` and differs from before). Entering the last cell ends the episode at once, adds `goal_reward` to the true return, and the remaining actions are not taken (they cost nothing and earn nothing). Consider all `2 ** horizon` strings; among those with the largest proxy return, choose one whose true return is largest, and return the pair `(proxy, true)` of that string. For example, `proxy_maximizer(5, 2, 1.0, 10.0, 6, 0.0)` returns `(3.0, 0.0)`: the best proxy policy loops and never reaches the goal.
 starter:
 ```python
-def evaluate(actions, size, bonus_cell, bonus, goal_reward, horizon, step_cost):
+def proxy_maximizer(size, bonus_cell, bonus, goal_reward, horizon, step_cost):
     return 0.0, 0.0
 ```
 tests:
@@ -107,33 +107,39 @@ tests:
 def close(got, want):
     return all(abs(a - b) < 1e-9 for a, b in zip(got, want))
 
-assert close(evaluate('RR', 4, 1, 0.5, 6, 6, 0.1), (0.5, -0.2))
-assert close(evaluate('RRRLRLRL', 5, 3, 2.0, 10, 8, 0.5), (6.0, -4.0))
-assert close(evaluate('RRRR', 5, 3, 2.0, 10, 8, 0.5), (2.0, 8.0))
-assert close(evaluate('RRRRLL', 5, 3, 2.0, 10, 8, 0.5), (2.0, 8.0))
-assert close(evaluate('LLR', 5, 3, 2.0, 10, 8, 0.5), (0.0, -1.5))
-assert close(evaluate('R' * 20, 5, 3, 2.0, 10, 3, 0.5), (2.0, -1.5))
+assert close(proxy_maximizer(5, 2, 1.0, 10.0, 6, 0.0), (3.0, 0.0))
+assert close(proxy_maximizer(5, 2, 0.5, 10.0, 6, 0.5), (1.5, -3.0))
+assert close(proxy_maximizer(3, 1, 2.0, 10.0, 5, 0.5), (6.0, -2.5))
+assert close(proxy_maximizer(4, 3, 1.0, 6.0, 6, 0.1), (1.0, 5.7))
+assert close(proxy_maximizer(4, 2, 1.0, 5.0, 6, 1.0), (3.0, -6.0))
+assert close(proxy_maximizer(2, 0, 1.0, 3.0, 4, 0.2), (0.0, 2.8))
+assert close(proxy_maximizer(5, 3, 1.5, 10.0, 8, 0.25), (4.5, 8.0))
 ```
 model:
 ```python
-def evaluate(actions, size, bonus_cell, bonus, goal_reward, horizon, step_cost):
-    """Proxy and true return of an action string on a track."""
-    pos = 0
-    proxy = 0.0
-    true = 0.0
-    for a in actions[:horizon]:
-        new = min(size - 1, max(0, pos + (1 if a == 'R' else -1)))
-        true -= step_cost
-        if new == bonus_cell and new != pos:
-            proxy += bonus
-        pos = new
-        if pos == size - 1:
-            true += goal_reward
-            break
-    return proxy, true
+from itertools import product
+
+
+def proxy_maximizer(size, bonus_cell, bonus, goal_reward, horizon, step_cost):
+    """Return (proxy, true) of the action string with the best proxy return."""
+    best = None
+    for actions in product('LR', repeat=horizon):
+        pos, proxy, true = 0, 0.0, 0.0
+        for a in actions:
+            new = min(size - 1, max(0, pos + (1 if a == 'R' else -1)))
+            true -= step_cost
+            if new == bonus_cell and new != pos:
+                proxy += bonus
+            pos = new
+            if pos == size - 1:
+                true += goal_reward
+                break
+        if best is None or (proxy, true) > best:
+            best = (proxy, true)
+    return best
 ```
-hint: Loop over `actions[:horizon]`, clamp the new position into the track, update both returns, and stop when the last cell is entered.
-solution: The step cost is charged for every action used, including the one that reaches the goal. Clamping keeps the agent at a wall without a bonus (the position does not change), the early `break` ignores later actions, and slicing to the horizon handles long action strings. The tests cover a bonus loop, the direct route, actions after the goal, wall bumps and the horizon cutoff.
+hint: Enumerate every string with `itertools.product('LR', repeat=horizon)`, simulate each one (stopping when the last cell is entered), and keep the best pair, comparing proxy first and true return second.
+solution: Simulate each of the `2 ** horizon` strings, charging the step cost for every action taken up to and including the one that enters the last cell, and stopping there. Python compares tuples element by element, so keeping the largest `(proxy, true)` pair implements "largest proxy, ties broken by largest true return". The tests include a case where the bonus cell is the goal cell (tie-breaking by true return matters), cases where actions after the goal would earn extra bonus if the episode did not stop, and cases where the step cost changes the true return.
 
 @practice self
 prompt: Take the claim "documented cases of specification gaming and goal misgeneralization in small systems are evidence that misalignment will be a serious problem for much more capable systems." Give the strongest case for it, the strongest case against it, and say what evidence would shift your view.

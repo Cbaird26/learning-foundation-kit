@@ -57,7 +57,7 @@ Decisions so far:
 | P3 | Large language models | 13/13 | yes | yes |
 | P4 | Interpretability and AI alignment | 13/13 | yes |  |
 | P5 | Research methods in machine learning | 13/13 | yes | yes |
-| P6 | Research apprenticeship and qualifying exams | 13/13 | yes |  |
+| P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 <!-- /ai-table -->
 
 ## Queue of future schools (one at a time, in this order)
@@ -104,3 +104,4 @@ Decisions so far:
 - 2026-11-07: P5 written and in review; P4 and P6 being written
 - 2026-11-07: P5 reviewed with follow-up; 64 of 66 courses written and reviewed; P4 and P6 being written
 - 2026-11-07: All 66 courses written; P4 and P6 in review (the last two); then final build, browser tests and the publish question
+- 2026-11-07: P6 reviewed; 65 of 66 courses reviewed, P4 in review; owner approved publishing when the final build and tests pass
