@@ -1,0 +1,299 @@
+@lesson
+title: Dynamic programming: policy evaluation and policy iteration
+summary: Evaluate a policy by repeated Bellman backups on a gridworld, improve it greedily, and alternate the two until the policy is optimal.
+objective: Run iterative policy evaluation with synchronous and in-place sweeps and explain why it converges.
+objective: State the policy improvement theorem and apply a greedy improvement step with stable tie-breaking.
+objective: Implement policy iteration from scratch for a small deterministic gridworld.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the chapter on dynamic programming: policy evaluation, policy improvement and policy iteration.
+@article
+Last lesson we solved $(\mathbf{I} - \gamma\mathbf{P}_\pi)\mathbf{v} = \mathbf{r}_\pi$ exactly. That costs time cubic in the number of states, and it stops being practical for large state spaces. **Dynamic programming** (DP) takes a different route: treat the Bellman equation as an update rule and apply it over and over. DP needs a complete model of the MDP (the dynamics $p$), so it is *planning*, not yet learning from experience, but every later method imitates it.
+
+### The gridworld used in this lesson
+
+A gridworld has states $(r, c)$, the actions `U`, `D`, `L`, `R` (always listed in this order), and deterministic moves: a move off the grid leaves the agent where it is. Every move gives reward $-1$, and the terminal cells have no actions, so the agent wants to reach a terminal cell quickly.
+
+### Iterative policy evaluation
+
+Start with any $v_0$ (usually all zeros) and replace the equation by an update:
+
+$$v_{k+1}(s) = \sum_a \pi(a \mid s) \sum_{s', r} p(s', r \mid s, a)\,\big[\, r + \gamma\, v_k(s') \,\big] \quad\text{for every state } s.$$
+
+This is a **synchronous** sweep: every new value is computed from the old array $v_k$. The true $v_\pi$ is a fixed point of the update. When $\gamma < 1$ the update is a **contraction** in the max norm: $\lVert v_{k+1} - v_\pi \rVert_\infty \le \gamma\, \lVert v_k - v_\pi \rVert_\infty$, so the error shrinks at least geometrically, and the Banach fixed-point theorem guarantees convergence to $v_\pi$ from any start. (For an episodic task with $\gamma = 1$ it converges when the policy reaches a terminal state with probability 1.) We stop when the largest change in a sweep is below a threshold $\theta$.
+
+An **in-place** sweep uses one array and overwrites $v(s)$ as soon as it is computed, so later states in the sweep already see updated values. It also converges, often faster, but the intermediate values depend on the order in which states are visited.
+
+For the $2 \times 2$ grid with terminal cell $(0, 0)$, $\gamma = 1$ and the uniform random policy, synchronous sweeps from zero give
+
+| sweep $k$ | $v_k(0,1)$ | $v_k(1,0)$ | $v_k(1,1)$ |
+|---|---|---|---|
+| 1 | −1 | −1 | −1 |
+| 2 | −1.75 | −1.75 | −2 |
+| 3 | −2.375 | −2.375 | −2.875 |
+| 4 | −2.906 | −2.906 | −3.625 |
+| $\infty$ | −6 | −6 | −8 |
+
+The limit solves $a = -1 + \tfrac{1}{4}(2a + b)$ and $b = -1 + \tfrac14(2a + 2b)$, so $a = -6$ and $b = -8$.
+
+### Policy improvement
+
+Given $v_\pi$, can we find a better policy? Compare the value of following $\pi$ with the value of choosing a different action once and then following $\pi$. The **policy improvement theorem** says: if $\pi'$ is a policy with $q_\pi(s, \pi'(s)) \ge v_\pi(s)$ for every state $s$, then $v_{\pi'}(s) \ge v_\pi(s)$ for every state, with strict inequality somewhere if the inequality is strict somewhere. The **greedy** policy $\pi'(s) = \arg\max_a q_\pi(s, a)$ satisfies the condition, so it is never worse than $\pi$. If the greedy policy ties with $\pi$ everywhere, then $v_\pi$ satisfies the Bellman optimality equation and $\pi$ is optimal.
+
+Floating-point values can tie only approximately, so when we implement improvement we **keep the current action if its value is within $10^{-9}$ of the best**; otherwise we switch to the first action (in the listed order) that attains the best value. This stable rule prevents a policy from flipping between equal actions forever.
+
+### Policy iteration
+
+**Policy iteration** alternates: evaluate the current policy until the change falls below $\theta$, then improve it greedily, and stop when the policy no longer changes. A finite MDP has finitely many deterministic policies, and each improvement strictly improves the value until the policy is optimal, so the loop ends after finitely many iterations, usually very few.
+
+### In code
+
+```python
+ACTIONS = [('U', (-1, 0)), ('D', (1, 0)), ('L', (0, -1)), ('R', (0, 1))]
+
+def make_grid(rows, cols, terminals, step=-1.0):
+    """P[s][a] = [(1.0, next_state, step)] for every non-terminal cell."""
+    P = {}
+    for r in range(rows):
+        for c in range(cols):
+            if (r, c) in terminals:
+                continue
+            P[(r, c)] = {}
+            for a, (dr, dc) in ACTIONS:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < rows and 0 <= nc < cols):
+                    nr, nc = r, c
+                P[(r, c)][a] = [(1.0, (nr, nc), step)]
+    return P
+
+def sweep(P, pi, v, gamma):
+    """One synchronous Bellman expectation sweep."""
+    return {s: sum(pi[s].get(a, 0.0) *
+                   sum(p * (r + gamma * v.get(s2, 0.0)) for p, s2, r in outs)
+                   for a, outs in P[s].items()) for s in P}
+
+P = make_grid(2, 2, {(0, 0)})
+pi = {s: {a: 0.25 for a in 'UDLR'} for s in P}
+v = {s: 0.0 for s in P}
+for k in range(2):
+    v = sweep(P, pi, v, 1.0)
+print([v[s] for s in sorted(v)])
+```
+
+This prints `[-1.75, -1.75, -2.0]`, the second row of the table. Practitioners vectorize the sweep with NumPy, but the idea is the same.
+
+@example
+title: One sweep and one improvement step by hand
+problem: In state $s$, action $a_1$ moves to a state $x$ with reward 1, and action $a_2$ ends the episode with reward 5. Take $\gamma = 0.9$ and $v_k(x) = 2$. (a) With the policy that picks each action with probability 0.5, compute $v_{k+1}(s)$ from one synchronous sweep. (b) Which action does the greedy improvement step choose, and what does it change?
+step: The two actions have one-step values $q(s, a_1) = 1 + 0.9 \times 2 = 2.8$ and $q(s, a_2) = 5 + 0 = 5$ (a terminal state has value 0).
+step: Part (a): $v_{k+1}(s) = 0.5 \times 2.8 + 0.5 \times 5 = 3.9$.
+step: Part (b): greedy picks the larger $q$, which is $a_2$, because $5 > 2.8$. The improved policy ends the episode at once instead of mixing the two actions.
+step: Check against the policy improvement theorem: $q(s, a_2) = 5 \ge 3.9 = v_{k+1}(s)$, so the new policy is at least as good in this state.
+answer: $v_{k+1}(s) = 3.9$, and the greedy step switches to $a_2$.
+
+@mistakes
+- Updating in place but analyzing the result as if it were synchronous: after one in-place sweep, the numbers depend on the order of the states.
+- Forgetting that terminal states have value 0, so their neighbors' updates use $v(s') = 0$ and not a stored estimate.
+- Breaking ties by always taking the last or a random best action, which can make policy iteration cycle between equal actions; use a stable rule.
+- Stopping policy evaluation after one sweep and calling it exact: the threshold $\theta$ controls the error, and a loose $\theta$ can give a wrong improvement.
+
+@practice num
+prompt: In state $s$, a policy picks action $a_1$ with probability 0.5 and $a_2$ with probability 0.5. Action $a_1$ gives reward $-1$ and moves to state $x$; action $a_2$ gives reward $-1$ and moves to state $y$. With $\gamma = 0.9$, $v_k(x) = -4$ and $v_k(y) = -2$, what is $v_{k+1}(s)$ after one sweep?
+answer: -3.7
+tol: 0.001
+check: 0.5 * (-1 + 0.9 * -4) + 0.5 * (-1 + 0.9 * -2)
+hint: Each action's one-step value is the reward plus $\gamma$ times the next state's current value.
+solution: $q(s, a_1) = -1 + 0.9(-4) = -4.6$ and $q(s, a_2) = -1 + 0.9(-2) = -2.8$. Averaging, $v_{k+1}(s) = 0.5(-4.6) + 0.5(-2.8) = -3.7$.
+
+@practice num
+prompt: Iterative policy evaluation with $\gamma = 0.8$ starts from $v_0 = 0$, and the true value is $v_\pi(s) = 10$ in every state. The contraction property guarantees $\lVert v_k - v_\pi \rVert_\infty \le \gamma^k \lVert v_0 - v_\pi \rVert_\infty$. What upper bound does it give on the largest error after $k = 5$ sweeps? Give your answer to two decimal places.
+answer: 3.28
+tol: 0.01
+check: 0.8 ** 5 * 10
+hint: The initial error is $\lVert v_0 - v_\pi \rVert_\infty = 10$; multiply by $\gamma^5$.
+solution: The bound is $0.8^5 \times 10 = 0.32768 \times 10 \approx 3.28$. It is only a guarantee: the actual error can be smaller.
+
+@practice mc
+prompt: Why does policy iteration on a finite MDP stop after a finite number of iterations?
+choice*: There are finitely many deterministic policies, and each greedy improvement strictly improves the value of some state unless the policy is already optimal.
+choice: Policy evaluation reaches the exact value function after one sweep, so improvement is final.
+choice: The discount factor shrinks with each iteration, so later improvements are too small to change the policy.
+choice: The greedy policy always picks the action with the largest immediate reward, so it is optimal at once.
+hint: Think of the sequence of policies as a path through a finite set, along which the values never decrease.
+solution: By the policy improvement theorem, each new policy is at least as good as the previous one and strictly better somewhere unless the previous one is optimal, so no policy repeats; with a finite set of deterministic policies, the process must stop. Evaluation is iterative, the discount factor is fixed, and greedy improvement uses $q_\pi$, which includes future values, not just the immediate reward.
+
+@practice code
+prompt: Write `evaluate_inplace(P, pi, gamma, sweeps, order)` for an MDP `P[s][a] = [(prob, next_state, reward), ...]` (terminal states are not keys of `P` and are worth 0) and a policy `pi[s][a] = probability`. Start with `v[s] = 0.0` for every key of `P` and run `sweeps` in-place sweeps: in each sweep visit the states in the list `order` and overwrite `v[s]` immediately with $\sum_a \pi(a \mid s)\sum p\,(r + \gamma v(s'))$ using the current contents of `v`. Return `v`.
+starter:
+```python
+def evaluate_inplace(P, pi, gamma, sweeps, order):
+    pass
+```
+tests:
+```python
+Pc = {0: {'go': [(1.0, 1, 1)]}, 1: {'go': [(1.0, 2, 1)]},
+      2: {'go': [(1.0, 'T', 10)]}}
+pic = {s: {'go': 1.0} for s in Pc}
+assert evaluate_inplace(Pc, pic, 0.5, 1, [0, 1, 2]) == {0: 1.0, 1: 1.0, 2: 10.0}
+assert evaluate_inplace(Pc, pic, 0.5, 1, [2, 1, 0]) == {0: 4.0, 1: 6.0, 2: 10.0}
+assert evaluate_inplace(Pc, pic, 0.5, 0, [0, 1, 2]) == {0: 0.0, 1: 0.0, 2: 0.0}
+G = {(0, 1): {'U': [(1.0, (0, 1), -1)], 'D': [(1.0, (1, 1), -1)],
+              'L': [(1.0, (0, 0), -1)], 'R': [(1.0, (0, 1), -1)]},
+     (1, 0): {'U': [(1.0, (0, 0), -1)], 'D': [(1.0, (1, 0), -1)],
+              'L': [(1.0, (1, 0), -1)], 'R': [(1.0, (1, 1), -1)]},
+     (1, 1): {'U': [(1.0, (0, 1), -1)], 'D': [(1.0, (1, 1), -1)],
+              'L': [(1.0, (1, 0), -1)], 'R': [(1.0, (1, 1), -1)]}}
+pig = {s: {a: 0.25 for a in 'UDLR'} for s in G}
+v = evaluate_inplace(G, pig, 1.0, 2, [(0, 1), (1, 0), (1, 1)])
+assert abs(v[(0, 1)] + 1.875) < 1e-9 and abs(v[(1, 1)] + 2.6875) < 1e-9
+v = evaluate_inplace(G, pig, 1.0, 1, [(1, 1), (1, 0), (0, 1)])
+assert abs(v[(1, 1)] + 1.0) < 1e-9 and abs(v[(0, 1)] + 1.25) < 1e-9
+```
+model:
+```python
+def evaluate_inplace(P, pi, gamma, sweeps, order):
+    """In-place iterative policy evaluation with a fixed visiting order."""
+    v = {s: 0.0 for s in P}
+    for _ in range(sweeps):
+        for s in order:
+            total = 0.0
+            for a, outcomes in P[s].items():
+                w = pi[s].get(a, 0.0)
+                total += w * sum(p * (r + gamma * v.get(s2, 0.0))
+                                 for p, s2, r in outcomes)
+            v[s] = total
+    return v
+```
+hint: Do not copy the dictionary at the start of a sweep; read from and write to the same `v`, so later states see new values.
+solution: Each visit computes the expected one-step backup from the current `v` and writes it back at once. On the chain, visiting the states from last to first propagates the terminal reward all the way back in a single sweep, while the forward order moves it only one state per sweep; a synchronous implementation would give the same answer for both orders, so the second test catches it.
+
+@practice code
+prompt: Write `policy_iteration(P, gamma, theta)` for an MDP `P[s][a] = [(prob, next_state, reward), ...]` (terminal states are not keys of `P`, value 0) with $\gamma < 1$. Start with the policy that picks the first action listed in `P[s]` in every state. Repeat: (1) evaluate the policy with synchronous sweeps from $v = 0$ until the largest change in a sweep is below `theta`; (2) improve: in each state compute $q(s, a) = \sum p\,(r + \gamma v(s'))$ for all actions; keep the current action if its $q$ is at least $\max_a q - 10^{-9}$, otherwise switch to the first listed action whose $q$ is at least $\max_a q - 10^{-9}$. Stop when no action changes. Return `(policy, v)`, where `policy[s]` is an action.
+starter:
+```python
+def policy_iteration(P, gamma, theta):
+    pass
+```
+tests:
+```python
+ACT = [('U', (-1, 0)), ('D', (1, 0)), ('L', (0, -1)), ('R', (0, 1))]
+
+def grid(rows, cols, terminals):
+    P = {}
+    for r in range(rows):
+        for c in range(cols):
+            if (r, c) in terminals:
+                continue
+            P[(r, c)] = {}
+            for a, (dr, dc) in ACT:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < rows and 0 <= nc < cols):
+                    nr, nc = r, c
+                P[(r, c)][a] = [(1.0, (nr, nc), -1.0)]
+    return P
+
+P = grid(1, 4, {(0, 3)})
+pol, v = policy_iteration(P, 0.9, 1e-10)
+assert all(pol[s] == 'R' for s in P)
+assert abs(v[(0, 0)] + 2.71) < 1e-6 and abs(v[(0, 2)] + 1.0) < 1e-6
+P = grid(2, 3, {(0, 2)})
+pol, v = policy_iteration(P, 0.9, 1e-10)
+assert pol[(0, 0)] == 'R' and pol[(0, 1)] == 'R' and pol[(1, 2)] == 'U'
+want = {(0, 0): -1.9, (0, 1): -1.0, (1, 0): -2.71, (1, 1): -1.9, (1, 2): -1.0}
+assert all(abs(v[s] - want[s]) < 1e-6 for s in want)
+for s in P:
+    q = {a: sum(p * (r + 0.9 * v.get(s2, 0.0)) for p, s2, r in o)
+         for a, o in P[s].items()}
+    assert q[pol[s]] > max(q.values()) - 1e-6
+```
+model:
+```python
+def policy_iteration(P, gamma, theta):
+    """Policy iteration with stable tie-breaking."""
+    policy = {s: next(iter(P[s])) for s in P}
+    while True:
+        v = {s: 0.0 for s in P}
+        while True:
+            new_v = {s: sum(p * (r + gamma * v.get(s2, 0.0))
+                            for p, s2, r in P[s][policy[s]]) for s in P}
+            delta = max(abs(new_v[s] - v[s]) for s in P)
+            v = new_v
+            if delta < theta:
+                break
+        changed = False
+        for s in P:
+            q = {a: sum(p * (r + gamma * v.get(s2, 0.0)) for p, s2, r in o)
+                 for a, o in P[s].items()}
+            best = max(q.values())
+            if q[policy[s]] < best - 1e-9:
+                policy[s] = next(a for a in P[s] if q[a] >= best - 1e-9)
+                changed = True
+        if not changed:
+            return policy, v
+```
+hint: The outer loop evaluates and improves; the inner loop is a synchronous sweep until the change is below `theta`. Only switch an action when the current one is clearly worse than the best.
+solution: Evaluating a deterministic policy only needs its own action's outcomes. The improvement step switches an action only when the current one falls more than $10^{-9}$ below the best, so the loop ends when the policy is greedy for its own value function. The starting policy on the corridor takes `U`, which leaves the agent in place forever, so the first evaluation gives $-10$ everywhere and the improvement step must repair it.
+
+@quiz code
+prompt: Write `improve_policy(P, v, gamma, policy)` for an MDP `P[s][a] = [(prob, next_state, reward), ...]` (terminal states worth 0, missing from `v`). `v` is a dictionary of state values and `policy[s]` the current action of each state. Return a new dictionary: in each state compute $q(s, a) = \sum p\,(r + \gamma v(s'))$ for every action; keep the current action if its $q$ is at least $\max_a q - 10^{-9}$, otherwise use the first listed action whose $q$ is at least $\max_a q - 10^{-9}$. Do not modify the input policy.
+starter:
+```python
+def improve_policy(P, v, gamma, policy):
+    pass
+```
+tests:
+```python
+P = {(0, 1): {'U': [(1.0, (0, 1), -1)], 'D': [(1.0, (1, 1), -1)],
+              'L': [(1.0, (0, 0), -1)], 'R': [(1.0, (0, 1), -1)]},
+     (1, 0): {'U': [(1.0, (0, 0), -1)], 'D': [(1.0, (1, 0), -1)],
+              'L': [(1.0, (1, 0), -1)], 'R': [(1.0, (1, 1), -1)]},
+     (1, 1): {'U': [(1.0, (0, 1), -1)], 'D': [(1.0, (1, 1), -1)],
+              'L': [(1.0, (1, 0), -1)], 'R': [(1.0, (1, 1), -1)]}}
+v = {(0, 1): -1.0, (1, 0): -1.0, (1, 1): -2.0}
+old = {(0, 1): 'U', (1, 0): 'U', (1, 1): 'L'}
+new = improve_policy(P, v, 1.0, old)
+assert new == {(0, 1): 'L', (1, 0): 'U', (1, 1): 'L'}
+assert old == {(0, 1): 'U', (1, 0): 'U', (1, 1): 'L'}
+assert improve_policy(P, v, 1.0, {(0, 1): 'U', (1, 0): 'U', (1, 1): 'D'}) == \
+    {(0, 1): 'L', (1, 0): 'U', (1, 1): 'U'}
+assert improve_policy(P, v, 1.0, new) == new
+```
+model:
+```python
+def improve_policy(P, v, gamma, policy):
+    """Greedy improvement with stable tie-breaking."""
+    new_policy = {}
+    for s in P:
+        q = {a: sum(p * (r + gamma * v.get(s2, 0.0)) for p, s2, r in outs)
+             for a, outs in P[s].items()}
+        best = max(q.values())
+        if q[policy[s]] >= best - 1e-9:
+            new_policy[s] = policy[s]
+        else:
+            new_policy[s] = next(a for a in P[s] if q[a] >= best - 1e-9)
+    return new_policy
+```
+hint: Compute all action values of a state, find the maximum, and check the current action first before searching in the listed order.
+solution: The rule changes an action only when it is clearly suboptimal. In state $(1, 1)$ the actions `U` and `L` tie, so a current `L` stays and a current `D` becomes `U`, the first tied action. The last test shows that the improved policy is stable when improved again.
+
+@quiz num
+prompt: In a gridworld sweep with $\gamma = 0.9$ and reward $-1$ per move, the uniform random policy is evaluated in a cell whose four moves lead to cells (or back to the same cell, at a wall) with current values $-2$, $-4$, $-3$ and $-1$. What is the cell's new value after a synchronous sweep? Give your answer to two decimal places.
+answer: -3.25
+tol: 0.01
+check: -1 + 0.9 * (-2 - 4 - 3 - 1) / 4
+hint: Each move gives $-1 + 0.9\,v(s')$; the policy averages the four equally likely moves.
+solution: The mean of the four neighbor values is $(-2 - 4 - 3 - 1)/4 = -2.5$, so the new value is $-1 + 0.9 \times (-2.5) = -3.25$.
+
+@quiz text
+prompt: What does this program print?
+```python
+v = [0.0, 0.0, 0.0]
+r = [2, 4, 8]
+for sweep in range(2):
+    for i in range(3):
+        nxt = v[i + 1] if i < 2 else 0.0
+        v[i] = r[i] + 0.5 * nxt
+print(v)
+```
+answer: [4.0, 8.0, 8.0]
+check: run("v = [0.0, 0.0, 0.0]\nr = [2, 4, 8]\nfor sweep in range(2):\n    for i in range(3):\n        nxt = v[i + 1] if i < 2 else 0.0\n        v[i] = r[i] + 0.5 * nxt\nprint(v)")
+hint: The update is in place and goes from state 0 to state 2, so state 0 uses the old value of state 1 in the first sweep.
+solution: In the first sweep state 0 uses the old $v_1 = 0$, giving 2.0; state 1 uses the old $v_2 = 0$, giving 4.0; state 2 gives 8.0. In the second sweep state 0 becomes $2 + 0.5 \times 4 = 4.0$, state 1 becomes $4 + 0.5 \times 8 = 8.0$, and state 2 stays 8.0. It prints `[4.0, 8.0, 8.0]`.

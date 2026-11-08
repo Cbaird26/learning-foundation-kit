@@ -93,3 +93,4 @@ Decisions so far:
 - 2026-11-07: C17 written (0 errors) and in review; C21 started.
 - 2026-11-07: C15 reviewed; C16, C18 and C19 written (0 errors) and in review; C22 started.
 - 2026-11-07: C18 reviewed (24 fixes); C23 started.
+- 2026-11-07: C17 reviewed (34 fixes plus one follow-up).

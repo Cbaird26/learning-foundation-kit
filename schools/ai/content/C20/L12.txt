@@ -1,0 +1,233 @@
+@lesson
+title: Robustness, bias and the responsible use of vision systems
+summary: Evaluate a vision model's accuracy and error rates across subgroups with honest uncertainty, demonstrate an adversarial perturbation on a toy classifier, and describe the documented risks and safeguards for face analysis and other vision systems.
+objective: Compute subgroup accuracy, error rates, worst-group gaps and confidence intervals for a test set.
+objective: Explain distribution shift, spurious correlations and adversarial examples, with their defenses and limits.
+objective: Describe documented risks of face analysis and the documentation and oversight practices that address them.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the recognition chapter, the discussion of ethics and fairness in computer vision, and the evaluation of recognition systems.
+@article
+A model scores 94% accuracy on its test set. Is it good? That depends on who is in the test set and what the world looks like when the model is used. This lesson is about asking those two questions with numbers.
+
+### Conventions used in this course
+
+A test set is given as three parallel lists of equal length: `preds` (predicted labels), `labels` (true labels) and `groups` (a group name for each example, for instance a lighting condition, a camera type or a demographic group recorded for auditing). For binary tasks the labels are 0 and 1, with 1 the positive class.
+
+### Evaluating by subgroup
+
+Overall accuracy averages over the whole test set, so a small group barely moves it. Suppose group A has 200 examples with 92% accuracy and group B has 50 examples with 80%. The overall accuracy is $(184 + 40)/250 = 89.6\%$, which looks fine, while group B's error rate is 20%, two and a half times group A's 8%. The remedy is **disaggregated evaluation**: report each subgroup's accuracy, its error rates, and the gap between best and worst group. In binary tasks the error rates differ in kind: the **false positive rate** $\mathrm{FP}/(\mathrm{FP} + \mathrm{TN})$ and the **false negative rate** $\mathrm{FN}/(\mathrm{FN} + \mathrm{TP})$ can differ between groups even when accuracy is similar, and which error is more harmful depends on the use (a wrongly flagged person versus a missed detection).
+
+Small groups give uncertain estimates. With $n$ examples and accuracy $\hat{p}$, a normal-approximation 95% interval is $\hat{p} \pm 1.96\sqrt{\hat{p}(1 - \hat{p})/n}$. For $\hat{p} = 0.85$ and $n = 40$ the half-width is $0.111$: the true accuracy could plausibly be anywhere from 74% to 96%. A gap between two small groups may be noise, and a missing gap may be hidden by it, so report group sizes and intervals. Several fairness criteria (equal error rates across groups, equal predictive value across groups) cannot in general all hold at once when the groups have different base rates (Kleinberg, Mullainathan and Raghavan, 2016; Chouldechova, 2017), so choosing which to prioritize is a judgment that belongs to the people affected by the system as well as the engineers.
+
+### Robustness
+
+**Distribution shift** means the data in use differ from the training data: different cameras, weather, lighting, geography or time. Models can be brittle to **corruptions** such as noise, blur and compression, which benchmarks apply to test images at several severities. **Spurious correlations** are shortcuts: if photographs of one class were mostly taken against a certain background, a network may learn the background, and fail when the correlation breaks; disaggregating by background exposes this.
+
+**Adversarial examples** (Szegedy and colleagues, 2013) are inputs with small, deliberately chosen perturbations that change a model's prediction. The fast gradient sign method (Goodfellow, Shlens and Szegedy, 2014) moves each input coordinate by $\varepsilon$ in the direction that most increases the loss. A toy example makes the mechanism visible: take a linear classifier on two features with score $s = \mathbf{w}^\top\mathbf{x} + b$ and weights $\mathbf{w} = (1, -2)$, $b = 0$, and the input $\mathbf{x} = (1, 0.2)$, with $s = 0.6 > 0$. Moving each coordinate by $0.3$ against the sign of its weight gives $\mathbf{x}' = (0.7, 0.5)$ and $s' = -0.3 < 0$: the class flips although no coordinate moved by more than 0.3. In high dimension the effect is stronger, because many tiny changes add up. Defenses such as adversarial training, input preprocessing and certified bounds reduce the problem in some settings but none is a complete solution, and a defense should be evaluated against attacks designed to defeat it. We study these ideas only on tiny models; attacking a deployed system you do not own is both unethical and often illegal.
+
+### Face analysis and responsible use
+
+Three tasks are often confused. **Face detection** finds where faces are. **Face recognition** compares faces: *verification* asks whether two images show the same person (1-to-1), and *identification* searches a gallery for a match (1-to-N). **Attribute or emotion inference** guesses properties from a face. Published audits have documented that error rates of face analysis systems can differ across demographic groups: a 2018 study (Buolamwini and Gebru) of commercial gender-classification systems found the largest errors for darker-skinned women, and a 2019 evaluation by the US National Institute of Standards and Technology found that false positive and false negative rates in face recognition varied across algorithms and demographic groups. Whether the scientific basis for inferring inner emotional states from facial expressions is sound is contested among researchers, which is one reason regulators treat that use cautiously.
+
+Informed people disagree about face recognition by the police. Supporters point to finding missing persons and suspects of serious crimes; critics point to mass surveillance, chilling effects on assembly and speech, and the harms of misidentification. The law differs by place. The EU AI Act prohibits (from 2 February 2025) several practices, among them building face-recognition databases by untargeted scraping of images, inferring emotions in workplaces and schools (with narrow exceptions) and real-time remote biometric identification in public spaces for law enforcement (with narrow exceptions); other uses of biometric identification are classed as high-risk. Laws and standards change, so check the current text.
+
+Good practice around vision systems includes: asking first whether the system is needed and who bears the cost of its errors; collecting data with consent and minimizing what is kept; documenting the intended use and limits in a **model card** (Mitchell and colleagues, 2019) and the data in a datasheet for the data set (Gebru and colleagues); testing by subgroup and under shift before deployment and monitoring afterward; keeping a human able to review and overturn consequential decisions; and giving affected people a way to contest outcomes.
+
+### In code
+
+```python
+def subgroup_accuracy(preds, labels, groups):
+    """Return {group: accuracy} for parallel lists of predictions,
+    true labels and group names."""
+    correct, total = {}, {}
+    for p, y, g in zip(preds, labels, groups):
+        total[g] = total.get(g, 0) + 1
+        correct[g] = correct.get(g, 0) + (1 if p == y else 0)
+    return {g: correct[g] / total[g] for g in total}
+
+preds = [1, 0, 1, 1, 0, 0]
+labels = [1, 0, 0, 1, 0, 1]
+groups = ['x', 'x', 'x', 'y', 'y', 'y']
+print(subgroup_accuracy(preds, labels, groups))
+```
+
+With pandas this is `df.groupby('group').apply(lambda d: (d.pred == d.label).mean())`; the loop shows what it does.
+@example
+title: Disaggregated accuracy and an interval
+problem: A test set has 100 examples of group A (90 correct) and 25 of group B (18 correct). Report the overall accuracy, each group's accuracy, and a 95% normal-approximation interval half-width for group B.
+step: Overall: $(90 + 18)/125 = 108/125 = 0.864$. Group A: $0.9$. Group B: $18/25 = 0.72$.
+step: The gap between groups is $0.9 - 0.72 = 0.18$, although the overall accuracy of 86.4% hides it.
+step: Half-width for group B: $1.96\sqrt{0.72 \cdot 0.28/25} = 1.96\sqrt{0.008064} = 1.96 \cdot 0.0898 \approx 0.176$.
+step: The interval is about $0.72 \pm 0.176$, from 54% to 90%: with only 25 examples the gap is suggestive, but the interval for group B reaches almost to group A's 90%, so more data from group B is needed before concluding.
+answer: Overall 0.864, A 0.90, B 0.72, with a half-width of about 0.176 for B.
+@example
+title: A toy adversarial perturbation
+problem: A linear classifier has $\mathbf{w} = (2, -1)$, $b = -1$ and predicts class 1 when $s = \mathbf{w}^\top\mathbf{x} + b > 0$. For $\mathbf{x} = (1.5, 0.5)$, find the smallest budget among $\varepsilon \in \{0.25, 0.5, 1\}$ for which moving each coordinate by $\varepsilon$ against the sign of its weight flips the class.
+step: The score is $2(1.5) - 0.5 - 1 = 1.5 > 0$, so the class is 1. To lower the score, decrease $x_1$ (its weight is positive) and increase $x_2$ (its weight is negative).
+step: Moving by $\varepsilon$ changes the score by $-\varepsilon\,(|2| + |-1|) = -3\varepsilon$.
+step: The new score is $1.5 - 3\varepsilon$: for $\varepsilon = 0.25$ it is $0.75$, for $0.5$ it is $0$ (not greater than 0, so the class becomes 0), and for 1 it is $-1.5$.
+step: The smallest budget in the list that flips the class is $\varepsilon = 0.5$, which sets the score exactly to the decision boundary.
+answer: $\varepsilon = 0.5$.
+@mistakes
+- Reporting only overall accuracy: a small group barely changes it, so a large subgroup gap can hide behind a high average.
+- Reading a gap between two small groups as proof of bias, or no gap as proof of fairness, without group sizes or intervals.
+- Treating a defense against one attack as a guarantee: a defense must be tested against attacks adapted to it, and none is complete.
+@practice num
+prompt: A subgroup of 40 test images has measured accuracy 0.85. Using the normal approximation $1.96\sqrt{\hat{p}(1 - \hat{p})/n}$, what is the half-width of the 95% interval, to three decimal places?
+answer: 0.111
+tol: 0.001
+check: 1.96 * sqrt(0.85 * 0.15 / 40)
+hint: Compute $\hat{p}(1-\hat{p})/n = 0.85 \cdot 0.15/40$, take the square root, and multiply by 1.96.
+solution: $0.85 \cdot 0.15/40 = 0.0031875$, whose square root is $0.05646$; times 1.96 gives $0.1107 \approx 0.111$.
+@practice code
+prompt: Write `group_error_rates(preds, labels, groups)` for binary labels (0 or 1) in three parallel lists. Return a dictionary mapping each group name to the tuple `(fpr, fnr)`: `fpr` is the fraction of that group's true negatives (label 0) predicted 1, and `fnr` the fraction of its true positives (label 1) predicted 0. If a group has no negatives, its `fpr` is `None`; if it has no positives, its `fnr` is `None`. For example, a group with labels `[1, 0]` and predictions `[1, 0]` gives `(0.0, 0.0)`.
+starter:
+```python
+def group_error_rates(preds, labels, groups):
+    pass
+```
+tests:
+```python
+labels = [1, 1, 0, 0, 1, 0, 1, 1]
+preds = [1, 0, 0, 1, 1, 0, 1, 1]
+groups = ['a', 'a', 'a', 'a', 'b', 'b', 'c', 'c']
+r = group_error_rates(preds, labels, groups)
+assert r['a'] == (0.5, 0.5)
+assert r['b'] == (0.0, 0.0)
+assert r['c'] == (None, 0.0)
+assert set(r) == {'a', 'b', 'c'}
+r = group_error_rates([1, 1, 0], [0, 0, 0], ['z', 'z', 'z'])
+assert abs(r['z'][0] - 2 / 3) < 1e-9 and r['z'][1] is None
+```
+model:
+```python
+def group_error_rates(preds, labels, groups):
+    """Per-group (false positive rate, false negative rate)."""
+    stats = {}
+    for p, y, g in zip(preds, labels, groups):
+        s = stats.setdefault(g, [0, 0, 0, 0])  # fp, neg, fn, pos
+        if y == 0:
+            s[1] += 1
+            s[0] += 1 if p == 1 else 0
+        else:
+            s[3] += 1
+            s[2] += 1 if p == 0 else 0
+    out = {}
+    for g, (fp, neg, fn, pos) in stats.items():
+        out[g] = (fp / neg if neg else None, fn / pos if pos else None)
+    return out
+```
+hint: Keep four counts per group (false positives, negatives, false negatives, positives) and divide at the end, guarding against zero denominators.
+solution: The two rates have different denominators: negatives for the false positive rate and positives for the false negative rate. A group with no examples of one kind has an undefined rate, which the last two tests check.
+@practice num
+prompt: Group A has 300 test images with 276 correct predictions and group B has 100 test images with 70 correct predictions. What is the overall accuracy on the combined test set, to three decimal places?
+answer: 0.865
+tol: 0.001
+check: (276 + 70) / (300 + 100)
+hint: Add the correct counts and divide by the total count, not the average of the two accuracies.
+solution: $(276 + 70)/400 = 346/400 = 0.865$, while the group accuracies are $0.92$ and $0.70$; the unweighted average of those two (0.81) would be wrong.
+@practice code
+prompt: Write `fgsm_linear(w, b, x, eps)` for a linear classifier with score `s = sum(w[i] * x[i]) + b` that predicts class 1 if `s > 0` and class 0 otherwise. Let `y = 1` if `s > 0` and `y = -1` otherwise. Return `(x_adv, flipped)` where `x_adv[i] = x[i] - eps * y * sign(w[i])` (with `sign(0) = 0`), which moves each coordinate against the current class, and `flipped` is True if the predicted class of `x_adv` differs from that of `x`. This is a toy demonstration on a two- or few-feature model. For example, `fgsm_linear([1, -2], 0, [1, 0.2], 0.3)` returns about `([0.7, 0.5], True)`.
+starter:
+```python
+def fgsm_linear(w, b, x, eps):
+    pass
+```
+tests:
+```python
+def close(u, v):
+    return all(abs(a - c) < 1e-9 for a, c in zip(u, v))
+
+xa, fl = fgsm_linear([1, -2], 0, [1, 0.2], 0.3)
+assert close(xa, [0.7, 0.5]) and fl is True
+xa, fl = fgsm_linear([1, -2], 0, [1, 0.2], 0.1)
+assert close(xa, [0.9, 0.3]) and fl is False
+xa, fl = fgsm_linear([0, 1], -0.5, [3, 1], 0.6)
+assert close(xa, [3, 0.4]) and fl is True
+xa, fl = fgsm_linear([1, 1], 0, [-1, -0.5], 2)
+assert close(xa, [1, 1.5]) and fl is True
+```
+model:
+```python
+def fgsm_linear(w, b, x, eps):
+    """One signed-gradient step on a linear classifier's score."""
+    def score(v):
+        return sum(wi * vi for wi, vi in zip(w, v)) + b
+
+    def sign(a):
+        return (a > 0) - (a < 0)
+
+    s = score(x)
+    y = 1 if s > 0 else -1
+    x_adv = [xi - eps * y * sign(wi) for xi, wi in zip(x, w)]
+    return x_adv, (score(x_adv) > 0) != (s > 0)
+```
+hint: Compute the score, set `y` from its sign, move every coordinate by `eps` against `y * sign(w[i])`, and compare the classes before and after.
+solution: For a linear model the score changes by `-eps * y * sum(abs(w))` under this step, which is the largest change possible with each coordinate moved by at most `eps`. A coordinate with weight 0 does not move, as the third test shows, and the fourth test attacks an input that starts in class 0.
+@practice code
+prompt: Write `worst_group_report(preds, labels, groups)` for three parallel lists. Compute the overall accuracy and each group's accuracy, and return the tuple `(overall, worst_group, gap)`: `overall` is the fraction of all examples predicted correctly, `worst_group` is the name of the group with the lowest accuracy (if tied, the group that comes first in sorted order), and `gap` is the highest group accuracy minus the lowest. For example, a test set with groups `a` (accuracy 0.75) and `b` (accuracy 0.5) and overall 0.625 returns `(0.625, 'b', 0.25)`.
+starter:
+```python
+def worst_group_report(preds, labels, groups):
+    pass
+```
+tests:
+```python
+preds = [1, 1, 0, 0, 1, 0, 1, 1]
+labels = [1, 0, 0, 0, 1, 1, 1, 0]
+groups = ['a', 'a', 'a', 'a', 'b', 'b', 'b', 'b']
+o, g, gap = worst_group_report(preds, labels, groups)
+assert abs(o - 0.625) < 1e-9 and g == 'b' and abs(gap - 0.25) < 1e-9
+o, g, gap = worst_group_report([1, 0], [1, 0], ['y', 'x'])
+assert o == 1.0 and g == 'x' and gap == 0.0
+o, g, gap = worst_group_report([1, 1, 1, 0], [1, 1, 0, 1], ['p', 'p', 'q', 'q'])
+assert abs(o - 0.5) < 1e-9 and g == 'q' and abs(gap - 1.0) < 1e-9
+```
+model:
+```python
+def worst_group_report(preds, labels, groups):
+    """Overall accuracy, the worst group and the best-minus-worst gap."""
+    total, correct = {}, {}
+    for p, y, g in zip(preds, labels, groups):
+        total[g] = total.get(g, 0) + 1
+        correct[g] = correct.get(g, 0) + (1 if p == y else 0)
+    acc = {g: correct[g] / total[g] for g in total}
+    overall = sum(correct.values()) / sum(total.values())
+    worst = min(sorted(acc), key=lambda g: acc[g])
+    return overall, worst, max(acc.values()) - acc[worst]
+```
+hint: Count correct predictions and examples per group, then take the minimum over the groups in sorted order so ties go to the alphabetically first name.
+solution: `min` returns the first minimal element it meets, so iterating over sorted group names breaks ties alphabetically. The overall accuracy pools all examples, which is not the mean of group accuracies when the groups differ in size.
+@quiz text
+prompt: What does this program print?
+```python
+labels = [1, 0, 1, 1, 0, 0]
+preds = [1, 0, 0, 1, 1, 1]
+groups = ['a', 'a', 'a', 'b', 'b', 'b']
+for g in ['a', 'b']:
+    pairs = [(p, y) for p, y, h in zip(preds, labels, groups) if h == g]
+    print(g, round(sum(p == y for p, y in pairs) / len(pairs), 2))
+```
+answer:
+```
+a 0.67
+b 0.33
+```
+check: run("labels = [1, 0, 1, 1, 0, 0]\npreds = [1, 0, 0, 1, 1, 1]\ngroups = ['a', 'a', 'a', 'b', 'b', 'b']\nfor g in ['a', 'b']:\n    pairs = [(p, y) for p, y, h in zip(preds, labels, groups) if h == g]\n    print(g, round(sum(p == y for p, y in pairs) / len(pairs), 2))")
+hint: Group `a` is the first three examples and group `b` the last three; count matches in each.
+solution: Group `a` has predictions `[1, 0, 0]` against labels `[1, 0, 1]`: 2 of 3 correct, 0.67. Group `b` has `[1, 1, 1]` against `[1, 0, 0]`: 1 of 3 correct, 0.33.
+@quiz mc
+prompt: A face-verification system reports 96% accuracy on a test set in which one demographic group makes up 5% of the examples. Which conclusion is justified by that number alone?
+choice*: Accuracy within the small group could be much lower than 96%, so per-group results are needed.
+choice: Accuracy is at least 96% in every group.
+choice: The system is fair, because overall accuracy is high.
+choice: The false positive and false negative rates must be equal in all groups.
+hint: How much can a group that makes up 5% of the examples move the overall average?
+solution: A 5% group can have, for example, 60% accuracy while the other 95% has 98%, giving about 96% overall. So the overall number says little about any one group, which is why disaggregated evaluation with group sizes is needed. Fairness cannot be read from one aggregate number, and error rates by type are separate quantities.
+@quiz self
+prompt: A hospital wants to use an image classifier to flag skin photographs for review. The model was developed on photographs from two clinics. Write a short evaluation and deployment plan: which subgroups and conditions you would test, which numbers you would report (including uncertainty), what documentation you would produce, and what would make you decide not to deploy.
+hint: Consider who is in the photographs, how they were taken, which error is worse for a patient, and how few examples some groups may have.
+solution: Subgroups: skin tone range, age and sex, body site, camera and lighting, clinic of origin and image quality, chosen with clinicians and checked against who will actually use the tool. Numbers: accuracy, sensitivity (false negative rate) and false positive rate per subgroup, with group sizes and 95% intervals, the worst-group gap, calibration of the confidence, and performance under corruptions such as blur and poor lighting; because a missed condition is usually worse than an unnecessary review, report sensitivity at the operating threshold and choose the threshold with clinicians. Test on data from a third clinic that was not used in development, since distribution shift between sites is the likely failure. Documentation: a model card with intended use (flag for human review, not a diagnosis), training data description and gaps, subgroup results with intervals, known failure modes and contact for reporting problems. Do not deploy, or restrict use, if a subgroup's sensitivity is much lower than others and cannot be improved, if the subgroup is too small to be evaluated reliably, if performance drops on the new site, or if clinicians cannot review and override the flags. Plan monitoring after release and a way to retrain and re-test.
+rubric: Names relevant subgroups and conditions (for example skin tone, camera, site) and a held-out site for testing shift.
+rubric: Reports per-group error rates with sample sizes and confidence intervals, and discusses which error is worse.
+rubric: Describes documentation such as a model card with intended use and limits.
+rubric: States concrete conditions for not deploying and includes human oversight and monitoring.
