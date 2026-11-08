@@ -1,0 +1,234 @@
+@lesson
+title: Data augmentation and training vision models
+summary: Apply label-preserving image transformations, standardize inputs, mix training examples, and decide when to stop training a vision model.
+objective: Choose augmentations that preserve the label for a given task and apply them to images and bounding boxes.
+objective: Standardize inputs, use learning-rate schedules, and apply early stopping and transfer learning sensibly.
+objective: Implement rotation, mixup and an early-stopping rule in plain Python.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the chapter on deep learning, the sections on training, regularization and data augmentation, and on transfer learning.
+@article
+A convolutional network with a million parameters trained on a few thousand photos can memorize them. It gets every training image right and fails on a photo taken from one step to the left. One remedy is more data, but photos cost money to collect and label. Another is to manufacture variety: show the network each photo flipped, shifted, slightly darker, and claim the label has not changed. That is **data augmentation**.
+
+### Conventions used in this course
+
+An image is a list of rows, row-major (`img[r][c]`); height $H = $ `len(img)`, width $W = $ `len(img[0])`. Boxes are written $(x_1, y_1, x_2, y_2)$ with $x$ the column and $y$ the row, where $(x_1, y_1)$ is the top-left corner and the right and bottom edges are **exclusive**: the box covers columns $x_1, \dots, x_2 - 1$ and rows $y_1, \dots, y_2 - 1$ and has width $x_2 - x_1$.
+
+### Label-preserving transformations
+
+An augmentation is useful when it changes the picture but not the correct answer. Common ones are horizontal flips, random crops, small rotations and scalings, brightness and contrast jitter, color jitter, and added noise. Whether a transformation preserves the label depends on the task. Flipping a photo of a dog keeps it a dog, but flipping a handwritten "2" does not give a valid digit, and rotating a "6" by 180 degrees gives a "9". Satellite images may be rotation-invariant while photos of street scenes are not upside down. Augmentation encodes the **invariances** you believe in, and a wrong guess is a form of label noise.
+
+For detection, the geometry must be applied to the boxes too. A horizontal flip of an image of width $W$ sends a box $(x_1, y_1, x_2, y_2)$ to $(W - x_2,\ y_1,\ W - x_1,\ y_2)$: the left and right edges swap and reflect, and the exclusive convention is preserved.
+
+A random crop of size $h \times w$ from an $H \times W$ image has $(H - h + 1)(W - w + 1)$ possible positions. Cropping $28 \times 28$ from $32 \times 32$ gives $25$ positions, and with a flip, $50$ distinct views.
+
+**Mixup** (Zhang and colleagues, 2017) trains on convex combinations of two examples: $\tilde{\mathbf{x}} = \lambda \mathbf{x}_1 + (1 - \lambda) \mathbf{x}_2$ and $\tilde{\mathbf{y}} = \lambda \mathbf{y}_1 + (1 - \lambda) \mathbf{y}_2$ with one-hot labels and $\lambda \in [0, 1]$, usually drawn at random. It is a regularizer that encourages linear behavior between examples.
+
+### Preparing inputs and training
+
+**Standardization** subtracts the dataset mean and divides by the standard deviation, per channel, so inputs have mean 0 and variance 1; it makes optimization better conditioned. The mean and standard deviation are computed on the training set only and reused on validation and test data. For pixels $10, 20, 30, 40$, the mean is 25, the population standard deviation is $\sqrt{125} \approx 11.18$, and the pixel 40 becomes $15/11.18 = 1.342$.
+
+The learning rate is usually decayed. A **step schedule** multiplies it by a factor at fixed epochs; a **cosine schedule** sets $\eta_t = \tfrac{1}{2}\eta_{\max}\big(1 + \cos(\pi t / T)\big)$ for $t = 0, \dots, T$. With $\eta_{\max} = 0.1$ and $T = 4$ the values are $0.1,\ 0.0854,\ 0.05,\ 0.0146,\ 0$.
+
+**Transfer learning** starts from a network pretrained on a large data set (such as ImageNet) and either trains only a new final layer on the features (a linear probe or frozen backbone) or fine-tunes all layers with a small learning rate. It helps most when the new data set is small. Further regularizers include weight decay, dropout (Srivastava and colleagues, 2014) and batch normalization (Ioffe and Szegedy, 2015).
+
+**Early stopping** watches the loss on a held-out validation set. Training loss keeps falling, but validation loss starts to rise when the model begins to overfit. With **patience** $p$, training stops after $p$ epochs without a new best validation loss, and the weights from the best epoch are kept. Never use the test set for this decision.
+
+### In code
+
+```python
+def flip_h(img):
+    """Horizontal flip: reverse every row."""
+    return [row[::-1] for row in img]
+
+def flip_box(box, width):
+    x1, y1, x2, y2 = box
+    return (width - x2, y1, width - x1, y2)
+
+img = [[1, 2, 3], [4, 5, 6]]
+print(flip_h(img), flip_box((0, 0, 2, 1), 3))
+```
+
+PyTorch's `torchvision.transforms` offers `RandomHorizontalFlip`, `RandomCrop` and `ColorJitter` as callable objects that apply a random transformation to each image each time it is loaded, so the model sees a different version every epoch.
+@example
+title: Flipping a box and counting views
+problem: An image is 100 pixels wide and has a box $(10, 20, 40, 60)$ with exclusive right and bottom edges. After a horizontal flip, what is the box? How many distinct views does random $24 \times 24$ cropping from a $28 \times 28$ image give, with and without flips?
+step: The new left edge is $W - x_2 = 100 - 40 = 60$ and the new right edge is $W - x_1 = 100 - 10 = 90$; $y_1$ and $y_2$ are unchanged. The flipped box is $(60, 20, 90, 60)$.
+step: Check the width: $90 - 60 = 30 = 40 - 10$, so the flip preserves the box size.
+step: The number of crop positions is $(28 - 24 + 1)^2 = 5^2 = 25$.
+step: With the flip, each crop can be mirrored, so there are $2 \cdot 25 = 50$ views.
+answer: Flipped box $(60, 20, 90, 60)$; 25 crops, or 50 views with flips.
+@example
+title: Early stopping with patience 2
+problem: Validation losses at epoch indices $0, 1, \dots, 7$ are $0.92, 0.71, 0.60, 0.58, 0.61, 0.63, 0.66, 0.59$. With patience 2, where does training stop and which epoch's weights are kept?
+step: Epoch 0 gives the first best loss, 0.92. Epochs 1, 2 and 3 each improve it, so after epoch 3 the best is 0.58.
+step: Epoch 4 has 0.61, which is worse than 0.58, so one epoch without improvement. Epoch 5 has 0.63, so two.
+step: Patience 2 is exhausted at epoch 5, so training stops there and never sees epoch 7's 0.59 (which still would not have beaten 0.58).
+step: The weights from epoch 3, the best validation loss, are kept.
+answer: Stop at epoch index 5; keep the weights from epoch index 3.
+@mistakes
+- Augmenting the validation or test set: they should measure performance on real, unmodified data, so augmentations are applied to training data only.
+- Applying a transformation that changes the label, such as flipping digits or text, or rotating a "6" to a "9".
+- Computing the standardization statistics on the whole data set including validation and test data: the mean and standard deviation come from the training set only.
+@practice num
+prompt: Random crops of size $48 \times 48$ are taken from $64 \times 64$ images, and each crop may also be flipped horizontally. How many distinct augmented views does one image give?
+answer: 578
+unit: views
+check: 2 * (64 - 48 + 1) ** 2
+hint: Count the top-left positions along each axis, multiply them, and double for the flip.
+solution: There are $64 - 48 + 1 = 17$ positions along each axis, so $17^2 = 289$ crops, and $2 \cdot 289 = 578$ views.
+@practice code
+prompt: Write `rot90_cw(img)` that rotates an image by 90 degrees clockwise and returns a new list of rows. `img` is a nonempty list of rows with $H$ rows and $W$ columns (row-major); the result has $W$ rows and $H$ columns, and the top row of the input becomes the right column of the output read from top to bottom. For example, `rot90_cw([[1, 2, 3], [4, 5, 6]])` returns `[[4, 1], [5, 2], [6, 3]]`.
+starter:
+```python
+def rot90_cw(img):
+    pass
+```
+tests:
+```python
+assert rot90_cw([[1, 2, 3], [4, 5, 6]]) == [[4, 1], [5, 2], [6, 3]]
+assert rot90_cw([[1]]) == [[1]]
+assert rot90_cw([[1], [2], [3]]) == [[3, 2, 1]]
+im = [[1, 2], [3, 4], [5, 6]]
+r = im
+for _ in range(4):
+    r = rot90_cw(r)
+assert r == im
+```
+model:
+```python
+def rot90_cw(img):
+    """Rotate 90 degrees clockwise: new[r][c] = img[H - 1 - c][r]."""
+    h, w = len(img), len(img[0])
+    return [[img[h - 1 - c][r] for c in range(h)] for r in range(w)]
+```
+hint: The output has `W` rows and `H` rows' worth of columns; output pixel `(r, c)` comes from input row `H - 1 - c` and column `r`.
+solution: Clockwise rotation reads the input columns from left to right as the output rows, each column read bottom to top. Rotating four times must return the original image, which the last test checks and which a counterclockwise rotation would also pass, so the first test fixes the direction.
+@practice tuple
+prompt: An image is 64 pixels wide and 48 tall. A box $(5, 8, 20, 30)$ (columns and rows, exclusive right and bottom edges) is flipped horizontally. Give the new box as $(x_1, y_1, x_2, y_2)$.
+answer: (44, 8, 59, 30)
+check: (64 - 20, 8, 64 - 5, 30)
+hint: Reflect the left edge to $W - x_2$ and the right edge to $W - x_1$.
+solution: The new left edge is $64 - 20 = 44$ and the new right edge is $64 - 5 = 59$; the rows do not change. The width $59 - 44 = 15$ equals the original $20 - 5$.
+@practice code
+prompt: Write `mixup(a, b, lam)` where `a` and `b` are pairs `(img, label)`: `img` is a list of rows of numbers (row-major, same shape for both) and `label` is a list of numbers (a one-hot vector, same length for both). Return a pair `(img, label)` whose entries are `lam * a_entry + (1 - lam) * b_entry`, as lists of floats. For example, `mixup(([[0, 100]], [1, 0]), ([[100, 0]], [0, 1]), 0.7)` returns `([[70.0, 30.0]], [0.7, 0.3])`.
+starter:
+```python
+def mixup(a, b, lam):
+    pass
+```
+tests:
+```python
+def close(u, v):
+    return all(abs(p - q) < 1e-9 for p, q in zip(u, v))
+
+img, lab = mixup(([[0, 100]], [1, 0]), ([[100, 0]], [0, 1]), 0.7)
+assert close(img[0], [70.0, 30.0]) and close(lab, [0.7, 0.3])
+img, lab = mixup(([[10, 20], [30, 40]], [0, 1, 0]), ([[50, 0], [0, 10]], [1, 0, 0]), 1.0)
+assert close(img[0], [10, 20]) and close(img[1], [30, 40]) and close(lab, [0, 1, 0])
+img, lab = mixup(([[10, 20], [30, 40]], [0, 1, 0]), ([[50, 0], [0, 10]], [1, 0, 0]), 0.0)
+assert close(img[0], [50, 0]) and close(lab, [1, 0, 0])
+img, lab = mixup(([[8]], [1, 0]), ([[2]], [0, 1]), 0.25)
+assert close(img[0], [3.5]) and close(lab, [0.25, 0.75])
+```
+model:
+```python
+def mixup(a, b, lam):
+    """Convex combination of two (image, one-hot label) pairs."""
+    (img_a, lab_a), (img_b, lab_b) = a, b
+    img = [[lam * p + (1 - lam) * q for p, q in zip(ra, rb)]
+           for ra, rb in zip(img_a, img_b)]
+    lab = [lam * p + (1 - lam) * q for p, q in zip(lab_a, lab_b)]
+    return img, lab
+```
+hint: Combine the two images pixel by pixel and the two label vectors entry by entry, with weight `lam` on the first and `1 - lam` on the second.
+solution: Mixup mixes the labels with exactly the same weights as the images. The last test, with `lam = 0.25`, checks that the weight multiplies the first argument and the complement the second.
+@practice code
+prompt: Write `early_stop(val_losses, patience)` that simulates early stopping on a list of validation losses, one per epoch (index 0, 1, 2, ...). Epoch 0 is the first best loss. Afterwards an epoch counts as an improvement only if its loss is strictly lower than the best so far; otherwise the count of epochs without improvement increases by 1 (and resets to 0 on an improvement). Training stops at the first epoch where that count reaches `patience`. Return the tuple `(best_epoch, stop_epoch)`; if the count never reaches `patience`, `stop_epoch` is the last index. For example, `early_stop([0.5, 0.6, 0.7], 1)` returns `(0, 1)`.
+starter:
+```python
+def early_stop(val_losses, patience):
+    pass
+```
+tests:
+```python
+assert early_stop([1.0, 0.8, 0.7, 0.72, 0.71, 0.73, 0.5], 3) == (2, 5)
+assert early_stop([0.5, 0.6, 0.7], 1) == (0, 1)
+assert early_stop([1, 0.9, 0.8], 2) == (2, 2)
+assert early_stop([0.5, 0.5, 0.4], 2) == (2, 2)
+assert early_stop([0.9], 3) == (0, 0)
+```
+model:
+```python
+def early_stop(val_losses, patience):
+    """Return (best_epoch, stop_epoch) under a patience rule."""
+    best = 0
+    best_loss = val_losses[0]
+    waited = 0
+    for epoch in range(1, len(val_losses)):
+        if val_losses[epoch] < best_loss:
+            best, best_loss, waited = epoch, val_losses[epoch], 0
+        else:
+            waited += 1
+            if waited >= patience:
+                return best, epoch
+    return best, len(val_losses) - 1
+```
+hint: Keep the best loss so far and a counter of epochs since it was set; return as soon as the counter reaches the patience.
+solution: The first test shows that the rise at epochs 3 to 5 exhausts a patience of 3 before the later low value 0.5 at epoch 6 can matter: the function must stop at epoch 5. The fourth test has an equal loss, which is not a strict improvement, and then a real one before the patience runs out.
+@quiz text
+prompt: What does this program print?
+```python
+img = [[1, 2, 3], [4, 5, 6]]
+flipped = [row[::-1] for row in img]
+crop = [row[1:] for row in flipped]
+print(crop)
+```
+answer: [[2, 1], [5, 4]]
+check: run("img = [[1, 2, 3], [4, 5, 6]]\nflipped = [row[::-1] for row in img]\ncrop = [row[1:] for row in flipped]\nprint(crop)")
+hint: First reverse each row, then drop the first column of the flipped image.
+solution: The flip gives $[[3, 2, 1], [6, 5, 4]]$, and dropping the first column (the 3 and the 6) leaves `[[2, 1], [5, 4]]`.
+@quiz code
+prompt: Write `standardize(images)` where `images` is a nonempty list of grayscale images, each a list of rows of numbers (row-major). Compute the mean and the population standard deviation (divide by the pixel count, not by the count minus one) over all pixels of all images, and return `(new_images, mean, std)` where each pixel of `new_images` is `(p - mean) / std`. If the standard deviation is 0, divide by 1.0 instead and return 1.0 as `std`. For example, `standardize([[[10, 20], [30, 40]]])` returns pixels of about `[-1.342, -0.447, 0.447, 1.342]`, mean 25 and `std` about 11.18.
+starter:
+```python
+def standardize(images):
+    pass
+```
+tests:
+```python
+import math
+new, mean, std = standardize([[[10, 20], [30, 40]]])
+assert abs(mean - 25) < 1e-9 and abs(std - math.sqrt(125)) < 1e-9
+flat = [p for row in new[0] for p in row]
+want = [-15 / std, -5 / std, 5 / std, 15 / std]
+assert all(abs(a - b) < 1e-9 for a, b in zip(flat, want))
+new, mean, std = standardize([[[4, 4]], [[8, 8]]])
+assert abs(mean - 6) < 1e-9 and abs(std - 2) < 1e-9
+assert abs(new[0][0][0] + 1) < 1e-9 and abs(new[1][0][1] - 1) < 1e-9
+new, mean, std = standardize([[[7, 7], [7, 7]]])
+assert std == 1.0 and all(p == 0 for row in new[0] for p in row)
+```
+model:
+```python
+import math
+
+def standardize(images):
+    """Standardize pixels with the data set mean and population std."""
+    pixels = [p for img in images for row in img for p in row]
+    mean = sum(pixels) / len(pixels)
+    var = sum((p - mean) ** 2 for p in pixels) / len(pixels)
+    std = math.sqrt(var)
+    if std == 0:
+        std = 1.0
+    new = [[[(p - mean) / std for p in row] for row in img] for img in images]
+    return new, mean, std
+```
+hint: Flatten all pixels of all images into one list for the mean and variance, then rescale each image with those two numbers.
+solution: The statistics are shared across all images, not computed per image, which the second test checks (two constant images with different values). The variance divides by the pixel count, and the zero-variance case avoids dividing by zero.
+@quiz mc
+prompt: A team trains a classifier for photographs of street signs that include text. Which augmentation is most likely to change the correct label for many images?
+choice*: Horizontal flipping of the images.
+choice: Small random changes of brightness.
+choice: Random crops that keep most of the sign.
+choice: Adding a little Gaussian noise to the pixels.
+hint: Ask which transformation turns a valid image of a class into an image of a different class or of no valid class.
+solution: Flipping mirrors the text and can turn some signs and letters into other signs, shapes or invalid images, so it may break label preservation. Mild brightness changes, crops that keep the sign and small noise all leave the sign recognizable.

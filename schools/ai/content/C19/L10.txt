@@ -1,0 +1,246 @@
+@lesson
+title: Decoding: greedy search, beam search and sampling
+summary: Generate text from a language model with greedy search, beam search, temperature, top-k and top-p sampling, and explain what each choice trades off.
+objective: Implement greedy decoding and beam search for a model that gives next-token distributions, with fixed tie-breaking.
+objective: Apply temperature, top-k and top-p (nucleus) filtering to a next-token distribution and compute the result.
+objective: Explain why the most probable sequence is not found by greedy search, and why maximizing probability is not always the goal.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapter on large language models: the sections on decoding, sampling and beam search.
+@article
+A trained language model gives, for each prefix, a probability distribution over the next token. It does not say what text to write. **Decoding** is the procedure that turns those distributions into an output sequence, and the choice matters as much as the model for the quality, diversity and cost of the output.
+
+### The search problem
+
+The model assigns a sequence $y_1\dots y_m$ the probability $\prod_t p(y_t \mid y_{<t})$. The most probable sequence is the **maximum a posteriori** (MAP) output, but there are $|V|^m$ candidates, so we search approximately. Our toy model has tokens $a, b, x, y, z$ and an end token `</s>`:
+
+| prefix | next-token distribution |
+|---|---|
+| (empty) | a 0.6, b 0.4 |
+| a | x 0.4, y 0.3, z 0.3 |
+| b | `</s>` 0.9, x 0.1 |
+| x, y or z | `</s>` 1.0 |
+
+**Greedy decoding** takes the most probable token at each step, with ties broken by the alphabetically smaller token. Here it picks a (0.6), then x (0.4), then `</s>`: the sequence "a x" with probability $0.6 \times 0.4 = 0.24$. But the sequence "b" has probability $0.4 \times 0.9 = 0.36$, which is higher. A locally best first step can lead to poor continuations.
+
+### Beam search
+
+**Beam search** keeps the $B$ best partial sequences (by total log-probability) at every step. For each step: extend every unfinished hypothesis by every token, rank all extensions by log-probability (ties broken by the token sequence, alphabetically), keep the top $B$, and move those that ended with `</s>` to a finished list. Stop when no unfinished hypothesis remains or a maximum length is reached, then return the finished hypothesis with the highest score. With $B = 1$ it is greedy decoding. With $B = 2$ on our model: after step 1 the beam holds a (0.6) and b (0.4); after step 2 the candidates are "b `</s>`" (0.36), "a x" (0.24), "a y" and "a z" (0.18 each) and "b x" (0.04), so the beam keeps "b `</s>`", which finishes, and "a x". Step 3 finishes "a x `</s>`" (0.24). The best finished sequence is "b" with probability 0.36. Beam search is not exact either: a larger $B$ explores more but costs $B|V|$ candidate scores per step.
+
+Raw probability favors short sequences, because each extra token multiplies by a number below 1. A common fix is **length normalization**: rank finished hypotheses by the average log-probability per token (including `</s>`) instead of the total. For our model, "b" scores $\ln 0.36 / 2 = -0.511$ and "a x" scores $\ln 0.24 / 3 = -0.476$, so with normalization the longer sequence wins.
+
+```python
+import math
+
+def greedy(model, max_len):
+    """model(prefix_tuple) -> {token: prob}. Ties go to the smaller token."""
+    seq = []
+    for _ in range(max_len):
+        dist = model(tuple(seq))
+        token = min(dist, key=lambda t: (-dist[t], t))
+        if token == "</s>":
+            break
+        seq.append(token)
+    return seq
+
+def beam_search(model, width, max_len):
+    beams, finished = [((), 0.0)], []
+    for _ in range(max_len):
+        cands = [(seq + (t,), lp + math.log(p))
+                 for seq, lp in beams for t, p in model(seq).items() if p > 0]
+        cands.sort(key=lambda c: (-c[1], c[0]))
+        beams = []
+        for c in cands[:width]:
+            (finished if c[0][-1] == "</s>" else beams).append(c)
+        if not beams:
+            break
+    finished += beams
+    best = min(finished, key=lambda c: (-c[1], c[0]))[0]
+    return [t for t in best if t != "</s>"]
+```
+
+### Sampling
+
+Maximizing probability tends to give repetitive, generic text in open-ended generation; it suits translation or summarization, where there is a narrow set of good outputs, better than story writing. **Sampling** draws each token at random from the model's distribution, which gives diverse output but sometimes picks a very unlikely token. Three controls reshape the distribution before sampling:
+
+- **Temperature** $T > 0$: $p_i \leftarrow p_i^{1/T} / \sum_j p_j^{1/T}$. For logits $z_i$ this is $\operatorname{softmax}(z_i/T)$. Low $T$ sharpens the distribution toward greedy decoding; $T = 1$ leaves it unchanged; high $T$ flattens it toward uniform.
+- **Top-$k$**: keep the $k$ most probable tokens, set the rest to 0 and renormalize.
+- **Top-$p$** (nucleus sampling, Holtzman and colleagues, 2019): keep the smallest set of most probable tokens whose cumulative probability is at least $p$, and renormalize. The number of tokens kept adapts to how confident the model is, unlike a fixed $k$.
+
+Each controls the tradeoff between diversity and the risk of incoherent text, and the settings that work depend on the model and the task.
+
+@example
+title: Top-k and top-p filtering
+problem: A next-token distribution is $a: 0.5$, $b: 0.3$, $c: 0.15$, $d: 0.05$. Apply top-$k$ with $k = 2$, and top-$p$ with $p = 0.9$.
+step: Top-2 keeps $a$ and $b$, with total mass $0.8$. Renormalize: $a = 0.5/0.8 = 0.625$ and $b = 0.3/0.8 = 0.375$.
+step: For top-$p$, sort and accumulate: $0.5$, then $0.8$ (still below 0.9), then $0.95$ (at least 0.9) after adding $c$. The nucleus is $\{a, b, c\}$ with mass $0.95$.
+step: Renormalize: $a = 0.5263$, $b = 0.3158$, $c = 0.1579$; token $d$ gets probability 0.
+answer: Top-2: $a = 0.625$, $b = 0.375$. Top-0.9: $a = 0.526$, $b = 0.316$, $c = 0.158$.
+
+@example
+title: Temperature
+problem: Apply temperature $T = 0.5$ to the distribution $a: 0.5$, $b: 0.3$, $c: 0.15$, $d: 0.05$.
+step: Raise each probability to the power $1/T = 2$: $0.25$, $0.09$, $0.0225$, $0.0025$.
+step: The sum is $0.365$. Divide: $0.6849$, $0.2466$, $0.0616$, $0.0068$.
+step: The most probable token gained mass (from $0.5$ to $0.685$): low temperature sharpens.
+answer: $(0.685, 0.247, 0.062, 0.007)$.
+
+@mistakes
+- Believing that beam search finds the most probable sequence: it is a heuristic, exact only if the beam never discards the optimum.
+- Ranking hypotheses of different lengths by total log-probability without thinking about the bias toward short ones.
+- Applying the temperature after top-$k$ without renormalizing, or the reverse, and getting probabilities that do not sum to 1.
+- Treating the highest-probability text as the best text: for open-ended generation it is often repetitive.
+
+@practice num
+prompt: A model assigns the probabilities $0.5$, $0.4$ and $0.9$ to the three tokens of a generated sequence, each given the tokens before it. What is the total log-probability (natural logarithm) of the sequence? Give your answer to three decimal places.
+answer: -1.715
+tol: 0.001
+check: log(0.5) + log(0.4) + log(0.9)
+hint: The log of a product is the sum of the logs.
+solution: The sequence probability is $0.5 \times 0.4 \times 0.9 = 0.18$, and $\ln 0.18 \approx -1.715$.
+
+@practice num
+prompt: A next-token distribution is $0.6$ for token one and $0.4$ for token two. After applying temperature $T = 2$, what is the probability of token one? Give your answer to three decimal places.
+answer: 0.551
+tol: 0.001
+check: 0.6 ** 0.5 / (0.6 ** 0.5 + 0.4 ** 0.5)
+hint: Raise each probability to the power $1/T = 0.5$ (a square root) and renormalize.
+solution: $\sqrt{0.6} = 0.7746$ and $\sqrt{0.4} = 0.6325$. The sum is $1.4071$, so token one gets $0.7746/1.4071 \approx 0.551$; the distribution became flatter.
+
+@practice mc
+prompt: How does top-$p$ (nucleus) sampling differ from top-$k$ sampling?
+choice*: Top-$p$ keeps a variable number of tokens, the fewest whose probabilities add up to at least $p$, while top-$k$ always keeps exactly $k$.
+choice: Top-$p$ always keeps exactly $p$ tokens, and top-$k$ keeps those with probability above $k$.
+choice: Top-$p$ is deterministic and top-$k$ is random.
+choice: Top-$p$ changes the model's weights, while top-$k$ does not.
+hint: Think about a confident distribution (one token with probability 0.97) and a flat one. How many tokens does each rule keep?
+solution: Top-$p$ keeps few tokens when the model is confident and many when it is uncertain, because it stops at cumulative probability $p$. Top-$k$ keeps a fixed number. Both are random sampling methods applied to the distribution, and neither changes the weights.
+
+@practice code
+prompt: Write `top_p_filter(probs, p)` for `probs`, a dict from token to probability that sums to 1, and a threshold `0 < p <= 1`. Sort the tokens by decreasing probability, ties by token (alphabetically smaller first). Keep tokens in that order until the cumulative probability is at least `p` (compare with `>= p - 1e-12`); the token that reaches the threshold is kept. Return a new dict of the kept tokens with probabilities renormalized to sum to 1.
+starter:
+```python
+def top_p_filter(probs, p):
+    return dict(probs)
+```
+tests:
+```python
+d = {"a": 0.5, "b": 0.3, "c": 0.15, "d": 0.05}
+r = top_p_filter(d, 0.9)
+assert set(r) == {"a", "b", "c"}
+assert abs(r["a"] - 0.5 / 0.95) < 1e-9 and abs(r["c"] - 0.15 / 0.95) < 1e-9
+assert top_p_filter(d, 0.5) == {"a": 1.0}
+assert set(top_p_filter(d, 1.0)) == {"a", "b", "c", "d"}
+r = top_p_filter({"x": 0.5, "y": 0.25, "z": 0.25}, 0.7)
+assert set(r) == {"x", "y"} and abs(r["x"] - 2 / 3) < 1e-9
+```
+model:
+```python
+def top_p_filter(probs, p):
+    """Nucleus filtering: smallest top set with cumulative probability >= p."""
+    ordered = sorted(probs.items(), key=lambda kv: (-kv[1], kv[0]))
+    kept, total = [], 0.0
+    for token, prob in ordered:
+        kept.append((token, prob))
+        total += prob
+        if total >= p - 1e-12:
+            break
+    return {token: prob / total for token, prob in kept}
+```
+hint: Sort by decreasing probability, add tokens one at a time to the kept list and to a running total, and stop right after the total reaches `p`.
+solution: The token that crosses the threshold is included, because the nucleus is the smallest set whose mass is at least `p`. Dividing by the kept mass renormalizes. The tie-break rule matters in the last test, where `y` and `z` have equal probability.
+
+@practice code
+prompt: Write `beam_search_norm(model, width, max_len)` for a model `model(prefix_tuple) -> {token: probability}` whose end token is `"</s>"`. Start from the empty prefix with log-probability 0. At each of at most `max_len` steps: extend every unfinished hypothesis with every token of positive probability, sort all extensions by total log-probability descending (ties: by the token tuple ascending), keep the first `width`, and move hypotheses ending in `"</s>"` to a finished list. Stop early if no unfinished hypothesis remains. At the end add the unfinished ones to the finished list and return the one with the best length-normalized score, which is total log-probability divided by the number of tokens (including `"</s>"`); ties by token tuple ascending. Return it as a list without the `"</s>"` token.
+starter:
+```python
+def beam_search_norm(model, width, max_len):
+    return []
+```
+tests:
+```python
+T = {"p": {"r": 0.6, "</s>": 0.4}, "q": {"</s>": 0.8, "r": 0.2}, "r": {"</s>": 1.0}}
+def model(prefix):
+    if not prefix:
+        return {"p": 0.5, "q": 0.5}
+    return T[prefix[-1]]
+assert beam_search_norm(model, 2, 10) == ["p", "r"]
+assert beam_search_norm(model, 1, 10) == ["p", "r"]
+assert beam_search_norm(model, 3, 10) == ["p", "r"]
+assert beam_search_norm(model, 2, 1) == ["p"]
+assert beam_search_norm(lambda s: {"</s>": 1.0}, 2, 5) == []
+```
+model:
+```python
+import math
+
+
+def beam_search_norm(model, width, max_len):
+    """Beam search that picks the best finished hypothesis by mean log-probability."""
+    beams, finished = [((), 0.0)], []
+    for _ in range(max_len):
+        cands = [(seq + (t,), lp + math.log(p))
+                 for seq, lp in beams for t, p in model(seq).items() if p > 0]
+        cands.sort(key=lambda c: (-c[1], c[0]))
+        beams = []
+        for c in cands[:width]:
+            (finished if c[0][-1] == "</s>" else beams).append(c)
+        if not beams:
+            break
+    finished += beams
+    best = min(finished, key=lambda c: (-c[1] / len(c[0]), c[0]))[0]
+    return [t for t in best if t != "</s>"]
+```
+hint: Prune by total log-probability at each step, but choose the final answer by dividing each total by its length.
+solution: Pruning and final selection use different scores. With this model the shorter sequence "q" has total probability 0.4, higher than the 0.3 of "p r", but its mean log-probability per token is lower, so normalization chooses "p r". Using the total instead returns `["q"]` for beam width 2.
+
+@quiz code
+prompt: Write `temperature_probs(logits, T)` that returns the list of probabilities `softmax(logits / T)` for a list of floats `logits` and `T > 0`. It must give correct results for large logits such as 1000, so subtract the maximum scaled logit before exponentiating.
+starter:
+```python
+def temperature_probs(logits, T):
+    return list(logits)
+```
+tests:
+```python
+import math
+got = temperature_probs([2.0, 0.0], 1.0)
+assert abs(got[0] - 1 / (1 + math.exp(-2))) < 1e-9
+got = temperature_probs([2.0, 0.0], 2.0)
+assert abs(got[0] - 1 / (1 + math.exp(-1))) < 1e-9
+got = temperature_probs([1000.0, 999.0], 1.0)
+assert abs(got[0] - 1 / (1 + math.exp(-1))) < 1e-9
+got = temperature_probs([1.0, 1.0, 1.0], 0.5)
+assert all(abs(g - 1 / 3) < 1e-9 for g in got)
+assert abs(sum(temperature_probs([3.0, 1.0, -2.0], 0.3)) - 1) < 1e-9
+```
+model:
+```python
+import math
+
+
+def temperature_probs(logits, T):
+    """Softmax of logits / T, computed stably."""
+    scaled = [z / T for z in logits]
+    top = max(scaled)
+    exps = [math.exp(s - top) for s in scaled]
+    total = sum(exps)
+    return [e / total for e in exps]
+```
+hint: Divide each logit by `T` first, subtract the largest scaled value, then exponentiate and normalize.
+solution: Subtracting the maximum does not change a softmax but keeps the exponentials at most 1, so logits of 1000 do not overflow. Dividing by `T` before the softmax is the same as raising probabilities to the power $1/T$ and renormalizing.
+
+@quiz num
+prompt: A next-token distribution is $0.4$, $0.3$, $0.2$, $0.1$ for four tokens in this order. After top-$k$ filtering with $k = 3$ and renormalization, what is the probability of the second token? Give your answer to three decimal places.
+answer: 0.333
+tol: 0.001
+check: 0.3 / (0.4 + 0.3 + 0.2)
+hint: Keep the three most probable tokens and divide each of their probabilities by their total.
+solution: The three kept tokens have total mass $0.9$, so the second token gets $0.3/0.9 = 1/3 \approx 0.333$.
+
+@quiz mc
+prompt: For a language model, what is the relationship between beam search with width 1 and greedy decoding?
+choice*: They are the same procedure: with a beam of one hypothesis, each step keeps only the single most probable extension.
+choice: Beam search with width 1 samples randomly, while greedy decoding does not.
+choice: Beam search with width 1 always finds the most probable sequence.
+choice: Greedy decoding keeps several hypotheses, but beam search keeps one.
+hint: How many hypotheses does a beam of width 1 keep after each step?
+solution: A beam of width 1 keeps the single best extension at every step, which is what greedy decoding does. It does not sample, it can miss the most probable sequence, and greedy decoding keeps one hypothesis.

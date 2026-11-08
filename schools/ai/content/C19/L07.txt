@@ -1,0 +1,263 @@
+@lesson
+title: Sequence labeling: part-of-speech tagging and named entities
+summary: Tag each word of a sentence with a hidden Markov model and the Viterbi algorithm, and read and score named-entity tags in the BIO scheme.
+objective: Define a hidden Markov model for tagging and compute the probability of a tag sequence for a sentence.
+objective: Run the Viterbi algorithm by hand and in code, with a fixed rule for ties.
+objective: Convert BIO tag sequences into entity spans and explain how sequence models are scored on them.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapter on sequence labeling for parts of speech and named entities: the sections on hidden Markov models and the Viterbi algorithm.
+@article
+In "the saw is sharp" the word "saw" is a noun, and in "I saw it" it is a verb. No dictionary can settle this: the tag depends on the neighbors. **Sequence labeling** assigns one label to each token of a sentence while letting neighboring labels influence one another. Two classic tasks are **part-of-speech (POS) tagging**, with labels such as noun, verb and determiner (the Universal Dependencies scheme has 17 coarse tags), and **named-entity recognition** (NER), which finds spans naming people, places or organizations.
+
+### The hidden Markov model
+
+A **hidden Markov model** (HMM) generates a sentence by a chain of hidden tags. It has an initial distribution $\pi(t)$, a transition matrix $A(t', t) = P(t_i = t \mid t_{i-1} = t')$ and emissions $B(t, w) = P(w_i = w \mid t_i = t)$. The joint probability of tags $t_1\dots t_n$ and words $w_1\dots w_n$ is
+$$P(\mathbf{t}, \mathbf{w}) = \pi(t_1)\,B(t_1, w_1)\prod_{i=2}^{n} A(t_{i-1}, t_i)\,B(t_i, w_i).$$
+Two assumptions are built in: a tag depends only on the previous tag, and a word depends only on its own tag. Tagging means finding $\hat{\mathbf t} = \arg\max_{\mathbf t} P(\mathbf t, \mathbf w)$ (the same maximizer as for $P(\mathbf t \mid \mathbf w)$, since $P(\mathbf w)$ is fixed). The parameters are estimated by counting in a tagged corpus: $A(t',t) = c(t',t)/c(t')$ and $B(t,w) = c(t,w)/c(t)$.
+
+Our toy model has tags D (determiner), N (noun) and V (verb), and $\pi = (D\!:\!0.6,\ N\!:\!0.3,\ V\!:\!0.1)$.
+
+| from \ to | D | N | V |
+|---|---|---|---|
+| D | 0.0 | 0.9 | 0.1 |
+| N | 0.2 | 0.2 | 0.6 |
+| V | 0.5 | 0.4 | 0.1 |
+
+| tag | emissions |
+|---|---|
+| D | the 0.6, a 0.4 |
+| N | dog 0.3, cat 0.3, runs 0.1, saw 0.3 |
+| V | runs 0.3, sees 0.4, saw 0.3 |
+
+### Viterbi
+
+There are $K^n$ tag sequences for $n$ words and $K$ tags. The **Viterbi algorithm** finds the best one in $O(nK^2)$ time by dynamic programming. Let $\delta_i(t)$ be the probability of the best tag sequence for the first $i$ words that ends in tag $t$:
+$$\delta_1(t) = \pi(t)B(t, w_1),\qquad \delta_i(t) = \Big[\max_{t'} \delta_{i-1}(t')\,A(t', t)\Big] B(t, w_i).$$
+Store the maximizing $t'$ as a back-pointer, and at the end follow the back-pointers from the best final tag. Ties are broken in favor of the tag listed first. For "the dog runs":
+
+| $i$ | word | $\delta_i(\mathrm{D})$ | $\delta_i(\mathrm{N})$ | $\delta_i(\mathrm{V})$ |
+|---|---|---|---|---|
+| 1 | the | 0.36 | 0 | 0 |
+| 2 | dog | 0 | 0.0972 | 0 |
+| 3 | runs | 0 | 0.001944 | 0.017496 |
+
+At $i = 3$, $\delta(\mathrm N) = 0.0972\cdot 0.2\cdot 0.1 = 0.001944$ and $\delta(\mathrm V) = 0.0972\cdot 0.6\cdot 0.3 = 0.017496$. The best sequence is D N V with probability $0.017496$.
+
+```python
+def viterbi(obs, states, pi, A, B):
+    """Return (best tag list, its probability). Ties go to the earlier state."""
+    delta = [{s: pi[s] * B[s].get(obs[0], 0.0) for s in states}]
+    back = []
+    for word in obs[1:]:
+        row, ptr = {}, {}
+        for s in states:
+            best, best_p = states[0], -1.0
+            for r in states:
+                p = delta[-1][r] * A[r][s]
+                if p > best_p:
+                    best, best_p = r, p
+            row[s] = best_p * B[s].get(word, 0.0)
+            ptr[s] = best
+        delta.append(row)
+        back.append(ptr)
+    last = states[0]
+    for s in states:
+        if delta[-1][s] > delta[-1][last]:
+            last = s
+    path = [last]
+    for ptr in reversed(back):
+        path.append(ptr[path[-1]])
+    return path[::-1], delta[-1][last]
+```
+
+For long sentences, products of probabilities underflow, so implementations add log probabilities instead; the maximization is unchanged. HMM taggers are limited: they cannot use features of the word such as its suffix or capitalization. **Conditional random fields** (Lafferty, McCallum and Pereira, 2001) and later neural taggers condition on such features and on the whole sentence.
+
+### Named entities and the BIO scheme
+
+NER is turned into tagging with the **BIO** scheme: `B-X` begins an entity of type X, `I-X` continues it, and `O` is outside any entity. "Ada Lovelace visited Paris" is tagged B-PER, I-PER, O, B-LOC. Reading the tags back gives the spans: PER covering words 0 to 1 and LOC covering word 3. NER is scored at the **entity level**: a predicted entity counts as correct only if both its span and type match a gold entity exactly, and precision, recall and F1 are computed over entities, not words. A tagger that gets "Ada" right and "Lovelace" wrong gets word accuracy $3/4$ but finds no correct entity.
+
+@example
+title: Viterbi on two words
+problem: With the toy model above, find the best tag sequence and its probability for "dog saw".
+step: Initialize: $\delta_1(\mathrm N) = 0.3 \cdot 0.3 = 0.09$. D has no emission for "dog" and V neither, so $\delta_1(\mathrm D) = \delta_1(\mathrm V) = 0$.
+step: For "saw" and tag N: the only nonzero predecessor is N, with $0.09 \cdot A(\mathrm N, \mathrm N) = 0.018$, then times $B(\mathrm N, \text{saw}) = 0.3$ gives $0.0054$.
+step: For tag V: $0.09 \cdot A(\mathrm N, \mathrm V) = 0.054$, times $B(\mathrm V, \text{saw}) = 0.3$ gives $0.0162$. Tag D cannot emit "saw".
+step: The best final tag is V, with back-pointer N, so the sequence is N V.
+answer: N V, with probability $0.0162$.
+
+@example
+title: Spans from BIO tags
+problem: Convert the tags `B-ORG I-ORG O O B-PER` for the five words "Acme Tools hired two Ada" into entity spans.
+step: Word 0 is `B-ORG` and word 1 is `I-ORG`, so an ORG entity covers words 0 and 1.
+step: Words 2 and 3 are `O`, outside any entity.
+step: Word 4 is `B-PER`, a new entity of one word.
+answer: (ORG, words 0 to 1) and (PER, word 4).
+
+@mistakes
+- Maximizing each tag separately: the best tag for every word can form a sequence that the transitions make very unlikely. Viterbi optimizes the whole sequence.
+- Confusing the maximum (Viterbi) with the sum over all tag sequences (the forward algorithm, which gives the probability of the sentence).
+- Starting the recursion with the transition from a tag instead of the initial distribution $\pi$.
+- Scoring NER by word accuracy; most words are `O`, so accuracy is high even when entities are missed.
+
+@practice num
+prompt: An HMM has tags N and V, with $\pi(\mathrm N) = 0.7$, $\pi(\mathrm V) = 0.3$; transitions $A(\mathrm N,\mathrm N) = 0.4$, $A(\mathrm N,\mathrm V) = 0.6$, $A(\mathrm V,\mathrm N) = 0.8$, $A(\mathrm V,\mathrm V) = 0.2$; emissions N: fish 0.5, swim 0.1, people 0.4 and V: fish 0.3, swim 0.6, people 0.1. What is the probability of the best tag sequence for "fish swim"? Give your answer to three decimal places.
+answer: 0.126
+tol: 0.001
+check: max([0.7 * 0.5 * 0.4 * 0.1, 0.7 * 0.5 * 0.6 * 0.6, 0.3 * 0.3 * 0.8 * 0.1, 0.3 * 0.3 * 0.2 * 0.6])
+hint: Compute $\delta_1(\mathrm N)$ and $\delta_1(\mathrm V)$, then for each final tag take the better predecessor.
+solution: $\delta_1(\mathrm N) = 0.35$ and $\delta_1(\mathrm V) = 0.09$. For the final tag V: from N, $0.35 \cdot 0.6 = 0.21$; from V, $0.09 \cdot 0.2 = 0.018$; the best is $0.21$, times $B(\mathrm V, \text{swim}) = 0.6$ gives $0.126$. For N the best is $0.14 \cdot 0.1 = 0.014$. The best sequence is N V with probability $0.126$.
+
+@practice num
+prompt: An HMM has tags N and V, with $\pi = (0.7, 0.3)$, transitions $A(\mathrm N,\cdot) = (0.4, 0.6)$ and $A(\mathrm V,\cdot) = (0.8, 0.2)$ (to N, then to V), and emissions N: fish 0.5, swim 0.1; V: fish 0.3, swim 0.6. What is the total probability of the sentence "fish swim", summed over all tag sequences? Give your answer to three decimal places.
+answer: 0.158
+tol: 0.001
+check: sum(pi * be * a * bs for pi, be, a, bs in [(0.7, 0.5, 0.4, 0.1), (0.7, 0.5, 0.6, 0.6), (0.3, 0.3, 0.8, 0.1), (0.3, 0.3, 0.2, 0.6)])
+hint: There are four tag sequences. Compute the joint probability of each and add them.
+solution: The four joint probabilities are $0.014$ (N N), $0.126$ (N V), $0.0072$ (V N) and $0.0108$ (V V). Their sum is $0.158$.
+
+@practice mc
+prompt: A sentence has 20 words and the tag set has 12 tags. What is the main advantage of the Viterbi algorithm over scoring every tag sequence?
+choice*: It finds the best sequence with about $20 \cdot 12^2$ transition evaluations instead of $12^{20}$ sequences.
+choice: It finds the tag sequence that maximizes each word's tag probability separately.
+choice: It computes the probability of the sentence by summing over tag sequences.
+choice: It makes the HMM independent of the transition probabilities.
+hint: Dynamic programming stores the best score for each (position, tag), so each step compares $K \times K$ pairs.
+solution: Viterbi stores the best score of each tag at each position, so it needs $O(nK^2)$ steps instead of $K^n$. It optimizes the whole sequence, not each tag alone, it takes the maximum rather than the sum (that is the forward algorithm), and it uses the transitions fully.
+
+@practice code
+prompt: Write `forward_prob(obs, states, pi, A, B)` that returns the probability of the observation list `obs` under an HMM, summed over all tag sequences (the forward algorithm). `pi` maps a state to its initial probability, `A[r][s]` is the transition probability, and `B[s]` is a dict from word to emission probability (a missing word has probability 0). An empty `obs` has probability `1.0`. Do not enumerate tag sequences.
+starter:
+```python
+def forward_prob(obs, states, pi, A, B):
+    return 0.0
+```
+tests:
+```python
+S = ["N", "V"]
+pi = {"N": 0.7, "V": 0.3}
+A = {"N": {"N": 0.4, "V": 0.6}, "V": {"N": 0.8, "V": 0.2}}
+B = {"N": {"fish": 0.5, "swim": 0.1, "people": 0.4}, "V": {"fish": 0.3, "swim": 0.6, "people": 0.1}}
+assert abs(forward_prob(["fish", "swim"], S, pi, A, B) - 0.158) < 1e-9
+assert abs(forward_prob(["fish"], S, pi, A, B) - 0.44) < 1e-9
+assert forward_prob([], S, pi, A, B) == 1.0
+assert forward_prob(["fish", "zebra"], S, pi, A, B) == 0.0
+assert abs(forward_prob(["people", "fish", "swim"], S, pi, A, B) - 0.03764) < 1e-9
+```
+model:
+```python
+def forward_prob(obs, states, pi, A, B):
+    """Forward algorithm: total probability of obs under the HMM."""
+    if not obs:
+        return 1.0
+    alpha = {s: pi[s] * B[s].get(obs[0], 0.0) for s in states}
+    for word in obs[1:]:
+        alpha = {
+            s: sum(alpha[r] * A[r][s] for r in states) * B[s].get(word, 0.0)
+            for s in states
+        }
+    return sum(alpha.values())
+```
+hint: This is the Viterbi recursion with the maximum over previous tags replaced by a sum, and the final answer is the sum over the last tags.
+solution: Let `alpha[s]` be the probability of the words so far, summed over all tag sequences ending in `s`. Each step sums over the previous tag and multiplies by the emission. The test with the unknown word "zebra" gives 0, because no tag can emit it.
+
+@practice code
+prompt: Write `bio_to_spans(tags)` that converts a list of BIO tags into a list of spans `(type, start, end)` with `end` exclusive, in order of position. `B-X` starts a new span of type `X`. `I-X` continues the open span if there is one and its type is `X`; otherwise it starts a new span of type `X`. `O` closes any open span. For example, `bio_to_spans(["B-PER", "I-PER", "O", "B-LOC"])` returns `[("PER", 0, 2), ("LOC", 3, 4)]`.
+starter:
+```python
+def bio_to_spans(tags):
+    return []
+```
+tests:
+```python
+assert bio_to_spans(["B-PER", "I-PER", "O", "B-LOC"]) == [("PER", 0, 2), ("LOC", 3, 4)]
+assert bio_to_spans(["O", "I-LOC", "I-LOC"]) == [("LOC", 1, 3)]
+assert bio_to_spans(["B-ORG", "I-LOC"]) == [("ORG", 0, 1), ("LOC", 1, 2)]
+assert bio_to_spans(["B-PER", "B-PER"]) == [("PER", 0, 1), ("PER", 1, 2)]
+assert bio_to_spans([]) == []
+assert bio_to_spans(["O", "O"]) == []
+```
+model:
+```python
+def bio_to_spans(tags):
+    """Entity spans (type, start, end_exclusive) from BIO tags."""
+    spans = []
+    start, kind = None, None
+    for i, tag in enumerate(tags):
+        if tag == "O":
+            if kind is not None:
+                spans.append((kind, start, i))
+            start, kind = None, None
+            continue
+        prefix, label = tag.split("-", 1)
+        if prefix == "B" or kind != label:
+            if kind is not None:
+                spans.append((kind, start, i))
+            start, kind = i, label
+    if kind is not None:
+        spans.append((kind, start, len(tags)))
+    return spans
+```
+hint: Keep the start index and type of the currently open span; close it when you see `O`, a `B` tag, or an `I` tag of a different type, and close it at the end of the list.
+solution: A span closes in four situations: an `O`, a new `B`, an `I` with another type, and the end of the input. The lenient rule that an `I-X` can start a span makes the second test return a span even without a `B`.
+
+@quiz code
+prompt: Write `estimate_hmm(tagged)` for `tagged`, a list of sentences, each a list of `(word, tag)` pairs. Return `(pi, A, B)` as dicts built by maximum-likelihood counting, without smoothing and with only the observed entries. `pi[t]` is the fraction of sentences that start with tag `t`. `A[t1][t2]` is the count of `t1` followed directly by `t2`, divided by the number of times `t1` is followed by any tag. `B[t][w]` is the count of word `w` with tag `t`, divided by the number of tokens with tag `t`.
+starter:
+```python
+def estimate_hmm(tagged):
+    return {}, {}, {}
+```
+tests:
+```python
+data = [[("the", "D"), ("dog", "N"), ("runs", "V")],
+        [("a", "D"), ("cat", "N"), ("sleeps", "V")],
+        [("dogs", "N"), ("run", "V")],
+        [("cats", "N"), ("dogs", "N")]]
+pi, A, B = estimate_hmm(data)
+assert pi == {"D": 0.5, "N": 0.5}
+assert abs(A["D"]["N"] - 1.0) < 1e-9
+assert abs(A["N"]["V"] - 0.75) < 1e-9 and abs(A["N"]["N"] - 0.25) < 1e-9
+assert "V" not in A
+assert abs(B["N"]["dogs"] - 0.4) < 1e-9 and abs(B["N"]["cat"] - 0.2) < 1e-9
+assert abs(B["V"]["run"] - 1 / 3) < 1e-9 and abs(B["D"]["a"] - 0.5) < 1e-9
+```
+model:
+```python
+from collections import Counter, defaultdict
+
+
+def estimate_hmm(tagged):
+    """Maximum-likelihood initial, transition and emission probabilities."""
+    starts = Counter()
+    trans = defaultdict(Counter)
+    emit = defaultdict(Counter)
+    for sent in tagged:
+        starts[sent[0][1]] += 1
+        for (_, t1), (_, t2) in zip(sent, sent[1:]):
+            trans[t1][t2] += 1
+        for word, tag in sent:
+            emit[tag][word] += 1
+    pi = {t: c / len(tagged) for t, c in starts.items()}
+    A = {t1: {t2: c / sum(row.values()) for t2, c in row.items()}
+         for t1, row in trans.items()}
+    B = {t: {w: c / sum(row.values()) for w, c in row.items()}
+         for t, row in emit.items()}
+    return pi, A, B
+```
+hint: Use three counters: sentence-initial tags, tag bigrams, and (tag, word) pairs, then normalize each row.
+solution: Transition rows are normalized by the number of transitions out of a tag, not by the number of tokens with that tag: tag V is last in every sentence here, so it has no row in `A`. Emission rows are normalized by all tokens of the tag.
+
+@quiz num
+prompt: A sentence has 6 words and the tag set has 12 tags. How many (previous tag, tag) transition products does the Viterbi algorithm evaluate in total, counting only the steps from word 2 onward?
+answer: 720
+check: (6 - 1) * 12 * 12
+hint: At each of the 5 later positions, every one of the 12 tags is compared against every one of the 12 previous tags.
+solution: Each of the $n - 1 = 5$ steps considers $12 \times 12 = 144$ pairs, so $5 \cdot 144 = 720$, compared with $12^6 = 2{,}985{,}984$ possible tag sequences.
+
+@quiz mc
+prompt: A system predicts `B-PER I-PER O` for "Ada Lovelace said" while the gold tags are `B-PER O O`. How is this scored by entity-level precision and recall for the type PER?
+choice*: The predicted entity (words 0 to 1) does not match the gold entity (word 0) exactly, so it counts as a false positive and the gold entity as a false negative.
+choice: It counts as correct, because the first word was tagged correctly.
+choice: It counts as half correct, since one of the two predicted words is right.
+choice: It is ignored, because the sentence contains only one entity.
+hint: Entity-level scoring needs both the span and the type to match exactly.
+solution: The predicted span (0, 2) differs from the gold span (0, 1), so it is a false positive and the gold entity is missed, a false negative. Word-level accuracy would give credit for two of three words, which is why NER is scored on entities.

@@ -116,12 +116,12 @@ answer: Pseudo-residuals $\approx (0.5, 0.119, -0.269)$.
 - Forgetting that for classification the pseudo-residuals are $y - \sigma(F)$ with $F$ on the log-odds scale, and averaging probabilities of trees instead of adding scores.
 
 @practice num
-prompt: A boosted classifier gives an example with label $y = 1$ the log-odds score $F = 0.8$. Using logistic loss, what is the pseudo-residual $y - \sigma(F)$? Give three decimal places.
-answer: 0.31
+prompt: A boosted classifier gives an example with label $y = 1$ the log-odds score $F = -0.5$. Using logistic loss, what is the pseudo-residual $y - \sigma(F)$? Give three decimal places.
+answer: 0.622
 tol: 0.001
-check: 1 - 1 / (1 + math.exp(-0.8))
-hint: First compute $\sigma(0.8)$; it is about $0.690$.
-solution: $\sigma(0.8) = 1/(1 + e^{-0.8}) \approx 0.690$, so the pseudo-residual is $1 - 0.690 = 0.310$. A positive residual says the score should increase.
+check: 1 - 1 / (1 + math.exp(0.5))
+hint: First compute $\sigma(-0.5)$; it is about $0.378$.
+solution: $\sigma(-0.5) = 1/(1 + e^{0.5}) \approx 0.378$, so the pseudo-residual is $1 - 0.378 = 0.622$. A positive residual says the score should increase.
 
 @practice num
 prompt: Targets are $y = (4, 6, 14)$. Gradient boosting with squared loss starts at the mean. Round 1 fits a stump to the residuals that predicts the left-group mean on the first two points and the right-group mean on the third. With learning rate $\nu = 0.5$, what is the training MSE after round 1? Give three decimal places.
@@ -141,49 +141,47 @@ hint: Think of gradient descent on the values $F(\mathbf{x}_i)$: which quantity 
 solution: For $\ell = \tfrac{1}{2}(y - F)^2$ the negative gradient with respect to $F$ is $y - F$, evaluated at the current ensemble's predictions, so each tree is fit to the residuals of the whole current model. Fitting the targets on bootstrap samples describes bagging; the sign of the error is the negative gradient only for absolute-error loss.
 
 @practice code
-prompt: Write `fit_reg_stump(xs, ys)` that fits a regression stump to one numeric feature. `xs` and `ys` are lists of numbers. Try thresholds halfway between consecutive distinct sorted values of `xs`; examples with `x <= t` go left. Each side predicts the mean of its targets, and the cost is the total sum of squared errors of both sides. Return `(t, left_mean, right_mean)` for the cheapest threshold, taking the first on ties (replace the best only if smaller by more than $10^{-12}$). If all values of `xs` are equal, return `(xs[0], m, m)` with `m` the mean of `ys`.
+prompt: Boosting with absolute-error loss uses weak learners whose leaves hold medians. Write `fit_median_stump(xs, ys)` that fits a stump to one numeric feature. `xs` and `ys` are lists of numbers. Try thresholds halfway between consecutive distinct sorted values of `xs`; examples with `x <= t` go left. Each side predicts the median of its targets (for an even count, the mean of the two middle values), and the cost of a threshold is the total absolute deviation of the targets from their side's median, summed over both sides. Return `(t, left_median, right_median)` for the cheapest threshold, taking the first on ties (replace the best only if smaller by more than $10^{-12}$). If all values of `xs` are equal, return `(xs[0], m, m)` with `m` the median of `ys`.
 starter:
 ```python
-def fit_reg_stump(xs, ys):
+def fit_median_stump(xs, ys):
     pass
 ```
 tests:
 ```python
-t, a, b = fit_reg_stump([1, 2, 3, 4], [1, 1, 1, 5])
-assert abs(t - 3.5) < 1e-9 and abs(a - 1.0) < 1e-9 and abs(b - 5.0) < 1e-9
-t, a, b = fit_reg_stump([3, 1, 2, 4, 5], [6, 0, 1, 7, 8])
-assert abs(t - 2.5) < 1e-9 and abs(a - 0.5) < 1e-9 and abs(b - 7.0) < 1e-9
-t, a, b = fit_reg_stump([1, 2, 3, 4, 5], [0, 0, 0, 0, 0])
-assert abs(t - 1.5) < 1e-9 and a == 0 and b == 0
-t, a, b = fit_reg_stump([7, 7, 7], [1.0, 2.0, 6.0])
-assert t == 7 and abs(a - 3.0) < 1e-9 and abs(b - 3.0) < 1e-9
+assert fit_median_stump([1, 2, 3, 4, 5, 6], [1, 2, 2, 9, 10, 40]) == (5.5, 2, 40)
+assert fit_median_stump([3, 1, 2, 4, 5], [6, 0, 1, 7, 8]) == (2.5, 0.5, 7)
+assert fit_median_stump([1, 2, 3, 4], [1, 3, 1, 3]) == (1.5, 1, 3)
+assert fit_median_stump([7, 7, 7], [1.0, 2.0, 6.0]) == (7, 2.0, 2.0)
 ```
 model:
 ```python
-def fit_reg_stump(xs, ys):
-    """Best single-threshold regression stump by squared error."""
+from statistics import median
+
+def fit_median_stump(xs, ys):
+    """Best single-threshold stump by absolute error, with median leaves."""
     values = sorted(set(xs))
     best = None
     for lo, hi in zip(values, values[1:]):
         t = (lo + hi) / 2
         left = [r for v, r in zip(xs, ys) if v <= t]
         right = [r for v, r in zip(xs, ys) if v > t]
-        ml = sum(left) / len(left)
-        mr = sum(right) / len(right)
-        sse = (sum((r - ml) ** 2 for r in left)
-               + sum((r - mr) ** 2 for r in right))
-        if best is None or sse < best[0] - 1e-12:
-            best = (sse, t, ml, mr)
+        ml = median(left)
+        mr = median(right)
+        cost = (sum(abs(r - ml) for r in left)
+                + sum(abs(r - mr) for r in right))
+        if best is None or cost < best[0] - 1e-12:
+            best = (cost, t, ml, mr)
     if best is None:
-        m = sum(ys) / len(ys)
+        m = median(ys)
         return (xs[0], m, m)
     return best[1:]
 ```
-hint: For each midpoint split the targets into two lists, take each list's mean, and add up the squared deviations from those means.
-solution: The cost of a split is the sum of squared deviations from each side's own mean. The third test has equal costs at every threshold, so the first threshold wins; the last test has no valid threshold and must fall back on the overall mean.
+hint: For each midpoint split the targets into two lists, take each list's median (the `statistics` module has one), and add up the absolute deviations from those medians.
+solution: The constant that minimizes a sum of absolute deviations is the median, so each side predicts its median and the cost is measured in absolute error. In the first test the right side is $(40)$ and the left side $(1, 2, 2, 9, 10)$ has median $2$, not the mean $4.8$, so a stump with mean leaves would report different values; the third test ties two thresholds and the first wins; the last test has no valid threshold and must use the median of all targets, $2$.
 
 @practice code
-prompt: Write `gradient_boost(xs, ys, rounds, lr)` that runs gradient boosting with squared loss on one numeric feature and returns the final predictions on the training points as a list (in the order of `xs`). Start every prediction at the mean of `ys`; in each of `rounds` rounds compute the residuals, fit a stump to them with the provided `fit_reg_stump`, and add `lr` times the stump's output (`a` if `x <= t` else `b`) to every prediction.
+prompt: Write `best_rounds(xs, ys, xv, yv, lr, max_rounds)` that chooses the number of boosting rounds by early stopping. Train gradient boosting with squared loss on the training points `(xs, ys)` (one numeric feature): start every prediction at the mean of `ys`; in each round compute the residuals on the training points, fit a stump to them with the provided `fit_reg_stump`, and add `lr` times the stump's output (`a` if `x <= t` else `b`) to every prediction, on the training points and on the validation points `xv`. After each of `0, 1, ..., max_rounds` rounds compute the mean squared error on the validation targets `yv`. Return the number of rounds with the smallest validation error, preferring the smaller number on ties. The validation data must not be used to fit anything.
 starter:
 ```python
 def fit_reg_stump(xs, ys):
@@ -204,22 +202,20 @@ def fit_reg_stump(xs, ys):
         return (xs[0], m, m)
     return best[1:]
 
-def gradient_boost(xs, ys, rounds, lr):
+def best_rounds(xs, ys, xv, yv, lr, max_rounds):
     pass
 ```
 tests:
 ```python
-xs = [1, 2, 3, 4]
-ys = [0, 0, 4, 4]
-def close(a, b):
-    return all(abs(u - v) < 1e-9 for u, v in zip(a, b)) and len(a) == len(b)
-assert close(gradient_boost(xs, ys, 0, 1.0), [2.0] * 4)
-assert close(gradient_boost(xs, ys, 1, 1.0), [0.0, 0.0, 4.0, 4.0])
-assert close(gradient_boost(xs, ys, 1, 0.5), [1.0, 1.0, 3.0, 3.0])
-assert close(gradient_boost(xs, ys, 2, 0.5), [0.5, 0.5, 3.5, 3.5])
-assert close(gradient_boost([1, 2, 3, 4, 5], [1, 3, 2, 8, 9], 3, 0.5),
-             [1.825, 2.85625, 2.85625, 7.73125, 7.73125])
-assert close(gradient_boost([5, 1, 3], [7, 1, 4], 2, 1.0), [7.0, 0.25, 4.75])
+xs = [1, 2, 3, 4, 5, 6, 7, 8]
+ys = [2, 0, 3, 1, 9, 12, 8, 11]
+xv = [1.5, 3.5, 5.5, 7.5]
+yv = [1, 2, 10, 10]
+assert best_rounds(xs, ys, xv, yv, 1.0, 8) == 1
+assert best_rounds(xs, ys, xv, yv, 0.5, 8) == 5
+assert best_rounds(xs, ys, xv, yv, 0.5, 3) == 3
+assert best_rounds(xs, ys, xv, yv, 0.5, 0) == 0
+assert best_rounds([1, 2, 3], [5, 5, 5], [2], [4], 0.5, 4) == 0
 ```
 model:
 ```python
@@ -241,17 +237,29 @@ def fit_reg_stump(xs, ys):
         return (xs[0], m, m)
     return best[1:]
 
-def gradient_boost(xs, ys, rounds, lr):
-    """Boosted regression stumps with squared loss; returns fitted values."""
-    F = [sum(ys) / len(ys)] * len(ys)
-    for _ in range(rounds):
+def best_rounds(xs, ys, xv, yv, lr, max_rounds):
+    """Number of rounds with the lowest validation MSE (ties: fewer)."""
+    base = sum(ys) / len(ys)
+    F = [base] * len(ys)
+    Fv = [base] * len(xv)
+
+    def val_mse():
+        return sum((t - f) ** 2 for t, f in zip(yv, Fv)) / len(yv)
+
+    best_m = 0
+    best_err = val_mse()
+    for m in range(1, max_rounds + 1):
         resid = [t - f for t, f in zip(ys, F)]
         thr, a, b = fit_reg_stump(xs, resid)
         F = [f + lr * (a if v <= thr else b) for f, v in zip(F, xs)]
-    return F
+        Fv = [f + lr * (a if v <= thr else b) for f, v in zip(Fv, xv)]
+        err = val_mse()
+        if err < best_err:
+            best_m, best_err = m, err
+    return best_m
 ```
-hint: Inside the loop, compute residuals from the current predictions, fit a stump to those residuals, and add `lr` times its output to every prediction.
-solution: Each round fits the current residuals, not the targets, and applies only a fraction `lr` of the stump's output. In the second test, one full step ($\nu = 1$) fits the two-level data exactly; with $\nu = 0.5$ half of each residual remains, and a second round removes half of that, giving $0.5$ and $3.5$.
+hint: Keep two prediction lists, one for the training points (to compute residuals) and one for the validation points (to score), and update both with the same stump each round.
+solution: The stumps are fit only to training residuals; the validation points are only scored. With $\nu = 1$ the first round already gives the lowest validation error and later rounds fit noise in the training targets, so the answer is 1; with $\nu = 0.5$ the validation error keeps falling until round 5. The last test has a flat validation curve, which must return 0 rounds, the smaller number.
 
 @quiz code
 prompt: Write `pseudo_residuals(y, F, loss)` returning the list of negative gradients of the loss with respect to the current scores `F`. For `loss == "squared"` (the loss $\tfrac{1}{2}(y - F)^2$) it is $y_i - F_i$. For `loss == "logistic"` (labels $y_i \in \{0, 1\}$ and `F` the log-odds) it is $y_i - \sigma(F_i)$; the sigmoid must not overflow for scores such as $-800$ or $800$. For `loss == "absolute"` it is $+1$ if $y_i > F_i$, $-1$ if $y_i < F_i$ and $0$ if equal. Raise `ValueError` for any other loss name.

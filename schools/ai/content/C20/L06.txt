@@ -1,0 +1,220 @@
+@lesson
+title: Object detection: bounding boxes and intersection over union
+summary: Describe detections as boxes with scores and labels, compute intersection over union under a stated edge convention, and encode boxes relative to anchors.
+objective: Convert between box formats and compute areas and intersection over union for pairs of boxes.
+objective: Explain how anchors, box regression and a combined classification and localization loss turn detection into learning.
+objective: Implement IoU under inclusive and exclusive edge conventions, an IoU matrix and box encoding in plain Python.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the section on object detection in the recognition chapter.
+@article
+A classifier answers "what is in this picture?" A detector answers "what is where?": for a photo of a street it returns a list of rectangles, each with a class and a confidence score. To train and grade it we need a way to say how well a predicted rectangle matches the true one. "Close" has to become a number.
+
+### Conventions used in this course
+
+A box is $(x_1, y_1, x_2, y_2)$ with $x$ the column and $y$ the row, measured from the top-left of the image, with $x_1 < x_2$ and $y_1 < y_2$ for a nonempty box. We use **exclusive** right and bottom edges unless a problem says otherwise: the box covers columns $x_1, \dots, x_2 - 1$ and rows $y_1, \dots, y_2 - 1$, so width $= x_2 - x_1$ and area $= (x_2 - x_1)(y_2 - y_1)$. With **inclusive** edges the box covers columns $x_1, \dots, x_2$, so width $= x_2 - x_1 + 1$. The two conventions give different areas and different IoU values for the same four numbers, so always state which one you use. A second common format is $(c_x, c_y, w, h)$, the center, width and height; then $x_1 = c_x - w/2$, $x_2 = c_x + w/2$ and likewise for $y$.
+
+### Intersection over union
+
+The **intersection over union** (IoU, also called the Jaccard index) of boxes $A$ and $B$ is
+
+$$\operatorname{IoU}(A, B) = \frac{\operatorname{area}(A \cap B)}{\operatorname{area}(A \cup B)} = \frac{\operatorname{area}(A \cap B)}{\operatorname{area}(A) + \operatorname{area}(B) - \operatorname{area}(A \cap B)}.$$
+
+The intersection of two boxes is again a box, with corners $(\max x_1, \max y_1)$ and $(\min x_2, \min y_2)$; if either side comes out negative the boxes do not overlap and the intersection area is 0. IoU lies in $[0, 1]$, is 0 for disjoint boxes and 1 only for identical ones, is symmetric, and does not change if both boxes are scaled by the same factor. A prediction is usually counted as correct when its IoU with a true box is at least a threshold such as 0.5.
+
+For $A = (10, 10, 50, 50)$ and $B = (30, 20, 70, 60)$ the overlap runs from column 30 to 50 (width 20) and from row 20 to 50 (height 30), so the intersection is $600$. Each box has area $1600$, so the union is $1600 + 1600 - 600 = 2600$ and $\operatorname{IoU} = 600/2600 \approx 0.231$.
+
+### From boxes to a learning problem
+
+Early detectors slid a classifier over many windows. The R-CNN family (Girshick and colleagues, 2014) classified region proposals, and Faster R-CNN (Ren and colleagues, 2015) learned the proposals with a region proposal network. One-stage detectors such as YOLO (Redmon and colleagues, 2015) predict boxes and classes for all grid cells in a single pass. Most of these start from **anchor boxes**, a fixed set of boxes of several sizes and aspect ratios placed at every position. An anchor is labeled positive if its IoU with a true box is at least a threshold (often 0.5 or 0.7), negative if it is below a lower one, and is ignored in between.
+
+The network predicts, for each anchor, class scores and four **regression targets**. With anchor center $(a_x, a_y)$, size $(a_w, a_h)$ and true box center $(g_x, g_y)$, size $(g_w, g_h)$:
+
+$$t_x = \frac{g_x - a_x}{a_w}, \quad t_y = \frac{g_y - a_y}{a_h}, \quad t_w = \log\frac{g_w}{a_w}, \quad t_h = \log\frac{g_h}{a_h}.$$
+
+Offsets are divided by the anchor size so they do not depend on scale, and the log makes a width twice as large the same distance from 0 as one half as large, up to sign. The loss adds a classification term (cross-entropy) and a localization term on positive anchors, for example the smooth $\ell_1$ loss, $0.5\,u^2$ if $|u| < 1$ and $|u| - 0.5$ otherwise. Because many anchors cover the same object, the raw output holds many overlapping boxes; next week's non-maximum suppression removes them.
+
+### In code
+
+```python
+def area(box):
+    x1, y1, x2, y2 = box
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+def iou(a, b):
+    """IoU of boxes (x1, y1, x2, y2) with exclusive right/bottom edges."""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    union = area(a) + area(b) - inter
+    return inter / union if union > 0 else 0.0
+
+print(iou((10, 10, 50, 50), (30, 20, 70, 60)))
+```
+
+Libraries such as torchvision provide `box_iou`, which computes a whole matrix of IoUs between two lists of boxes on the GPU; the arithmetic is the same.
+@example
+title: IoU of two shifted boxes
+problem: Boxes $A = (0, 0, 8, 6)$ and $B = (4, 3, 12, 9)$ use exclusive edges. Compute their IoU.
+step: The intersection corners are $(\max(0,4), \max(0,3)) = (4, 3)$ and $(\min(8,12), \min(6,9)) = (8, 6)$, so the overlap is $4$ wide and $3$ tall, with area $12$.
+step: The areas are $8 \cdot 6 = 48$ for $A$ and $8 \cdot 6 = 48$ for $B$.
+step: The union is $48 + 48 - 12 = 84$.
+step: $\operatorname{IoU} = 12/84 = 1/7 \approx 0.143$.
+answer: $\operatorname{IoU} = 1/7 \approx 0.143$.
+@example
+title: Encoding a box relative to an anchor
+problem: An anchor is $(20, 20, 60, 60)$ and the true box is $(30, 25, 70, 45)$, both with exclusive edges. Compute $(t_x, t_y, t_w, t_h)$.
+step: The anchor has center $(40, 40)$ and size $40 \times 40$; the true box has center $(50, 35)$ and size $40 \times 20$.
+step: $t_x = (50 - 40)/40 = 0.25$ and $t_y = (35 - 40)/40 = -0.125$.
+step: $t_w = \log(40/40) = 0$ and $t_h = \log(20/40) = -\log 2 \approx -0.693$.
+answer: $(t_x, t_y, t_w, t_h) = (0.25, -0.125, 0, -0.693)$.
+@mistakes
+- Using the inclusive and exclusive conventions interchangeably: boxes that merely touch have IoU 0 with exclusive edges but a positive IoU with inclusive edges.
+- Computing the overlap width as $\min(x_2) - \max(x_1)$ without clamping at 0: two disjoint boxes then get a negative width, and two negatives multiply to a fake positive area.
+- Dividing the intersection by the area of one box instead of the union: that is the overlap fraction of that box, not IoU, and it equals 1 for a small box inside a large one.
+@practice num
+prompt: Boxes $(0, 0, 4, 4)$ and $(2, 2, 6, 6)$ use exclusive right and bottom edges. What is their IoU, to three decimal places?
+answer: 0.143
+tol: 0.001
+check: (2 * 2) / (4 * 4 + 4 * 4 - 2 * 2)
+hint: The overlap is the square from $(2, 2)$ to $(4, 4)$.
+solution: The intersection is $2 \times 2 = 4$, each box has area 16, so the union is $16 + 16 - 4 = 28$ and $\operatorname{IoU} = 4/28 = 1/7 \approx 0.143$.
+@practice code
+prompt: Write `iou_inclusive(a, b)` for boxes `(x1, y1, x2, y2)` with **inclusive** edges: a box covers columns `x1` to `x2` and rows `y1` to `y2` including both ends, so its width is `x2 - x1 + 1` and its height `y2 - y1 + 1`. Return the IoU as a float, and 0.0 when the boxes do not share any pixel. For example, `iou_inclusive((0, 0, 3, 3), (2, 2, 5, 5))` returns `1/7`.
+starter:
+```python
+def iou_inclusive(a, b):
+    pass
+```
+tests:
+```python
+assert abs(iou_inclusive((0, 0, 3, 3), (2, 2, 5, 5)) - 1 / 7) < 1e-9
+assert abs(iou_inclusive((0, 0, 3, 3), (3, 0, 6, 3)) - 1 / 7) < 1e-9
+assert abs(iou_inclusive((4, 4, 8, 8), (4, 4, 8, 8)) - 1.0) < 1e-9
+assert iou_inclusive((0, 0, 1, 1), (5, 5, 6, 6)) == 0.0
+assert abs(iou_inclusive((0, 0, 9, 9), (2, 2, 4, 4)) - 0.09) < 1e-9
+```
+model:
+```python
+def iou_inclusive(a, b):
+    """IoU with inclusive edges (pixel-index convention)."""
+    w = min(a[2], b[2]) - max(a[0], b[0]) + 1
+    h = min(a[3], b[3]) - max(a[1], b[1]) + 1
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    area_a = (a[2] - a[0] + 1) * (a[3] - a[1] + 1)
+    area_b = (b[2] - b[0] + 1) * (b[3] - b[1] + 1)
+    return inter / (area_a + area_b - inter)
+```
+hint: Every width and height gets a `+ 1`, including the overlap's; check for no overlap before multiplying.
+solution: With inclusive edges the two boxes in the second test share column 3 and so overlap in $1 \times 4$ pixels, giving $4/28$; with exclusive edges the same four-number boxes would have IoU 0. The disjoint case must return 0 before any division.
+@practice num
+prompt: An anchor has center $(50, 50)$ and size $40 \times 20$ (width 40, height 20). The true box has center $(60, 45)$ and size $80 \times 20$. Using the encoding in the article with natural logarithms, what is $t_w$, to three decimal places?
+answer: 0.693
+tol: 0.001
+check: log(80 / 40)
+hint: $t_w = \log(g_w / a_w)$.
+solution: The true width is twice the anchor width, so $t_w = \log 2 \approx 0.693$. The other targets are $t_x = 10/40 = 0.25$, $t_y = -5/20 = -0.25$ and $t_h = \log 1 = 0$.
+@practice code
+prompt: Write `iou_matrix(boxes_a, boxes_b)` that returns a list of rows: entry `[i][j]` is the IoU of `boxes_a[i]` and `boxes_b[j]`. Boxes are `(x1, y1, x2, y2)` with **exclusive** right and bottom edges; non-overlapping boxes have IoU 0.0. If `boxes_a` is empty return `[]`. For example, `iou_matrix([(0, 0, 4, 4)], [(2, 2, 6, 6), (0, 0, 4, 4)])` returns `[[1/7, 1.0]]`.
+starter:
+```python
+def iou_matrix(boxes_a, boxes_b):
+    pass
+```
+tests:
+```python
+A = [(0, 0, 4, 4), (10, 10, 14, 14)]
+B = [(2, 2, 6, 6), (0, 0, 4, 4), (10, 10, 14, 16)]
+got = iou_matrix(A, B)
+want = [[1 / 7, 1.0, 0.0], [0.0, 0.0, 2 / 3]]
+assert len(got) == 2 and all(len(r) == 3 for r in got)
+assert all(abs(g - w) < 1e-9 for rg, rw in zip(got, want) for g, w in zip(rg, rw))
+assert iou_matrix([], B) == []
+assert iou_matrix([(0, 0, 2, 2)], []) == [[]]
+assert iou_matrix([(0, 0, 2, 2)], [(2, 0, 4, 2)]) == [[0.0]]
+```
+model:
+```python
+def iou_matrix(boxes_a, boxes_b):
+    """Pairwise IoU of exclusive-edge boxes."""
+    def one(a, b):
+        w = min(a[2], b[2]) - max(a[0], b[0])
+        h = min(a[3], b[3]) - max(a[1], b[1])
+        if w <= 0 or h <= 0:
+            return 0.0
+        inter = w * h
+        area_a = (a[2] - a[0]) * (a[3] - a[1])
+        area_b = (b[2] - b[0]) * (b[3] - b[1])
+        return inter / (area_a + area_b - inter)
+
+    return [[one(a, b) for b in boxes_b] for a in boxes_a]
+```
+hint: Write a helper for one pair, with a clamp for the no-overlap case, and call it for every pair in a nested comprehension.
+solution: Row `i` belongs to `boxes_a[i]`. The last test has boxes that touch along an edge, which under the exclusive convention share no pixels, so the IoU is exactly 0.0; and with an empty second list each row is an empty list.
+@practice code
+prompt: Write `encode_box(anchor, gt)` where `anchor` and `gt` are boxes `(x1, y1, x2, y2)` with exclusive edges and positive width and height. Convert each to center `(cx, cy)` and size `(w, h)` (center $= (x_1 + x_2)/2$), and return the tuple `(tx, ty, tw, th)` with `tx = (gx - ax) / aw`, `ty = (gy - ay) / ah`, `tw = log(gw / aw)` and `th = log(gh / ah)` using the natural logarithm. For example, `encode_box((20, 20, 60, 60), (30, 25, 70, 45))` returns `(0.25, -0.125, 0.0, -log(2))`.
+starter:
+```python
+def encode_box(anchor, gt):
+    pass
+```
+tests:
+```python
+import math
+t = encode_box((20, 20, 60, 60), (30, 25, 70, 45))
+want = (0.25, -0.125, 0.0, -math.log(2))
+assert all(abs(a - b) < 1e-9 for a, b in zip(t, want))
+t = encode_box((40, 40, 60, 60), (50, 45, 90, 65))
+want = (1.0, 0.25, math.log(2), 0.0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(t, want))
+t = encode_box((0, 0, 10, 20), (0, 0, 10, 20))
+assert all(abs(a) < 1e-9 for a in t)
+t = encode_box((0, 0, 4, 4), (0, 0, 16, 1))
+assert abs(t[2] - math.log(4)) < 1e-9 and abs(t[3] - math.log(0.25)) < 1e-9
+```
+model:
+```python
+import math
+
+def encode_box(anchor, gt):
+    """Regression targets of a ground-truth box relative to an anchor."""
+    def center_size(b):
+        x1, y1, x2, y2 = b
+        return (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
+
+    ax, ay, aw, ah = center_size(anchor)
+    gx, gy, gw, gh = center_size(gt)
+    return ((gx - ax) / aw, (gy - ay) / ah,
+            math.log(gw / aw), math.log(gh / ah))
+```
+hint: Compute center and size for both boxes, then divide the center offsets by the anchor's width and height and take logs of the size ratios.
+solution: The targets are scale-free: the offsets are measured in anchor widths and heights and the sizes as log ratios. The last test uses a very wide, flat box against a square anchor so that mixing up width and height changes the answer.
+@quiz text
+prompt: What does this program print?
+```python
+a = (0, 0, 6, 4)
+b = (3, 1, 9, 7)
+ix = min(a[2], b[2]) - max(a[0], b[0])
+iy = min(a[3], b[3]) - max(a[1], b[1])
+print(ix, iy, ix * iy)
+```
+answer: 3 3 9
+check: run("a = (0, 0, 6, 4)\nb = (3, 1, 9, 7)\nix = min(a[2], b[2]) - max(a[0], b[0])\niy = min(a[3], b[3]) - max(a[1], b[1])\nprint(ix, iy, ix * iy)")
+hint: The overlap in columns runs from $\max(0, 3)$ to $\min(6, 9)$, and the overlap in rows from $\max(0, 1)$ to $\min(4, 7)$.
+solution: Columns overlap from 3 to 6, a width of 3, and rows from 1 to 4, a height of 3, so the program prints `3 3 9`.
+@quiz mc
+prompt: Box $A$ lies completely inside box $B$ (exclusive edges). $A$ has area 20 and $B$ has area 80. What is $\operatorname{IoU}(A, B)$?
+choice*: 0.25
+choice: 1.0
+choice: 0.20
+choice: 0.80
+hint: When $A \subseteq B$, the intersection is $A$ and the union is $B$.
+solution: The intersection is $A$ (area 20) and the union is $B$ (area 80), so $\operatorname{IoU} = 20/80 = 0.25$. The value 1.0 holds only for identical boxes, and 0.20 and 0.80 come from dividing by the wrong areas.
+@quiz ms
+prompt: Which statements about intersection over union are true for boxes with exclusive edges? Select all that apply.
+choice*: $\operatorname{IoU}(A, B) = \operatorname{IoU}(B, A)$.
+choice*: Scaling both boxes by the same factor about the origin does not change the IoU.
+choice*: Two boxes that share only an edge have IoU 0.
+choice: Treating the same four numbers as inclusive instead of exclusive edges never changes the IoU.
+hint: Check each statement with a small example, such as the unit squares $(0,0,1,1)$ and $(1,0,2,1)$.
+solution: The formula is symmetric. Scaling multiplies every area by the square of the factor, which cancels in the ratio. Boxes touching along an edge have zero-area intersection under the exclusive convention. Changing conventions changes the areas, and so the ratio, as in the touching example, where inclusive edges give a positive IoU.

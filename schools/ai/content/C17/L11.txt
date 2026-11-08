@@ -1,0 +1,211 @@
+@lesson
+title: Residual connections and very deep networks
+summary: Compute the forward pass and the gradient of residual blocks, and explain with the chain rule why the identity shortcut lets gradients reach very deep networks.
+objective: Compute the output of a residual block $\mathbf{y} = \mathbf{x} + F(\mathbf{x})$.
+objective: Show with the chain rule that the identity path contributes a term $\mathbf{I}$ to the Jacobian and compare the gradient through plain and residual stacks.
+objective: Implement residual blocks and stacks in plain Python.
+reading: Understanding Deep Learning (Prince), the chapter on residual networks; the residual network paper (He and colleagues, 2015).
+@article
+You can make a network deeper by stacking more layers, but a surprising thing happened when researchers tried it: beyond a certain depth, plain stacks got *worse*, and not only on test data. Their training error was higher than that of a shallower network, even though the deeper network could in principle imitate the shallow one by learning identity layers. Optimization, not capacity, was the problem. **Residual networks** (He and colleagues, 2015) fixed it with one small change.
+
+### The residual block
+
+A plain block computes $\mathbf{y} = F(\mathbf{x})$. A **residual block** adds its input back:
+
+$$\mathbf{y} = \mathbf{x} + F(\mathbf{x}),$$
+
+where $F$ is a small network (for example a linear layer followed by ReLU, or two such layers). The extra path from $\mathbf{x}$ to $\mathbf{y}$ is the **shortcut** or **skip connection**. The block only has to learn a *correction* $F$, and if $F \approx 0$ the block is the identity, which is easy to represent: set the weights of $F$'s last layer to zero. For a block with $F(\mathbf{x}) = \operatorname{ReLU}(\mathbf{W}\mathbf{x} + \mathbf{b})$ and $\mathbf{x} = (2, -1)$, $\mathbf{W} = \begin{pmatrix} 1 & -1 \\ -1 & 0.5 \end{pmatrix}$, $\mathbf{b} = (-1, 1)$: $\mathbf{W}\mathbf{x} + \mathbf{b} = (2, -1.5)$, so $F = (2, 0)$ and $\mathbf{y} = (4, -1)$. The addition requires $F(\mathbf{x})$ and $\mathbf{x}$ to have the same shape; when a block changes the width, the shortcut uses a learned linear projection $\mathbf{W}_s \mathbf{x}$ instead.
+
+### Why gradients survive
+
+Differentiate $\mathbf{y} = \mathbf{x} + F(\mathbf{x})$. The Jacobian is
+
+$$\frac{\partial \mathbf{y}}{\partial \mathbf{x}} = \mathbf{I} + \frac{\partial F}{\partial \mathbf{x}}.$$
+
+Backpropagating through the block multiplies the upstream gradient by this matrix, so the upstream gradient arrives at $\mathbf{x}$ *unchanged* plus whatever flows through $F$. Compare a scalar chain of $L$ blocks whose layer function has derivative $f'$ at every layer. A plain stack multiplies the gradient by $f'$ per layer, giving $(f')^L$; a residual stack multiplies by $1 + f'$, giving $(1 + f')^L$. With $f' = 0.1$:
+
+| depth $L$ | plain $(f')^L$ | residual $(1+f')^L$ |
+|---|---|---|
+| 5 | $10^{-5}$ | 1.6105 |
+| 10 | $10^{-10}$ | 2.5937 |
+| 20 | $10^{-20}$ | 6.7275 |
+
+The plain stack's gradient vanishes; the residual stack's does not, because of the identity term. Expanding the product of $L$ blocks $\prod_l (\mathbf{I} + \mathbf{J}_l)$ gives a sum over all subsets of blocks that the gradient passes *through*, including the empty subset: a path that skips every block and carries the gradient directly from the output to the input. That is why very deep residual networks (hundreds of layers) train. The same factor can also exceed 1 and compound if the $f'$ are large, which is why normalization layers (Week 9) and careful scaling of the last layer in each block are used together with skip connections.
+
+### Where residual connections appear
+
+Convolutional residual networks (C18) place two convolutions inside $F$, with batch normalization. Transformers (C19) wrap both the attention sub-layer and the feed-forward sub-layer in residual connections together with layer normalization: the model's "residual stream" is the running sum of all blocks' outputs. A residual connection is also what makes it reasonable to initialize a deep model so that it starts as nearly the identity.
+
+### In code
+
+```python
+def residual_block(x, W, b):
+    f = [max(0.0, sum(w * v for w, v in zip(row, x)) + c)
+         for row, c in zip(W, b)]
+    return [xi + fi for xi, fi in zip(x, f)]
+
+y = residual_block([2.0, -1.0], [[1.0, -1.0], [-1.0, 0.5]], [-1.0, 1.0])
+print(y)
+
+g_plain = g_res = 1.0
+for _ in range(10):
+    g_plain *= 0.1
+    g_res *= 1 + 0.1
+print(g_plain, round(g_res, 4))
+```
+
+The first print shows `[4.0, -1.0]`; the second shows about `1e-10` and `2.5937`. In PyTorch a residual block is a module whose `forward` returns `x + self.f(x)`.
+
+@example
+title: A residual stack versus a plain stack
+problem: Three layers each apply $y \leftarrow y + 0.1y^2$ (residual) or $y \leftarrow 0.1y^2$ (plain) to the input $y_0 = 1$. Compute the outputs and $dy_3/dy_0$ for each.
+step: Residual forward: $y_1 = 1 + 0.1 = 1.1$, $y_2 = 1.1 + 0.121 = 1.221$, $y_3 = 1.221 + 0.1491 = 1.3701$.
+step: Residual derivative of each layer is $1 + 0.2y$, evaluated at the layer's input: $1.2$, $1.22$, $1.2442$. The product is $1.8215$.
+step: Plain forward: $y_1 = 0.1$, $y_2 = 0.001$, $y_3 = 10^{-7}$. The layer derivative is $0.2y$ at the input: $0.2$, $0.02$, $0.0002$, with product $8 \times 10^{-7}$.
+answer: Residual: output $1.370$, derivative $1.8215$. Plain: output $10^{-7}$, derivative $8 \times 10^{-7}$.
+
+@example
+title: A block that starts as the identity
+problem: A residual block has $F(\mathbf{x}) = \mathbf{W}\mathbf{x}$ with $\mathbf{W} = \mathbf{0}$. What are its output and its Jacobian, and why is this a good starting point for a deep stack?
+step: Output: $\mathbf{y} = \mathbf{x} + \mathbf{0}\mathbf{x} = \mathbf{x}$.
+step: Jacobian: $\mathbf{I} + \mathbf{W} = \mathbf{I}$.
+step: A stack of such blocks computes the identity and passes gradients through unchanged, so the whole network starts in a well-behaved state, and each block learns a small correction away from it.
+answer: The block is the identity with Jacobian $\mathbf{I}$; the stack starts neither amplifying nor shrinking signals or gradients.
+
+@mistakes
+- Adding tensors of different shapes: the skip connection needs $F(\mathbf{x})$ and $\mathbf{x}$ to have the same dimension, or a projection on the shortcut.
+- Thinking the shortcut has parameters to learn: an identity shortcut has none; only a projection shortcut (used to change width) does.
+- Putting the activation after the addition when the design calls for it before (or the reverse) without considering the effect: where the nonlinearity and the normalization sit relative to the addition changes how well the identity path carries signals.
+- Saying residual connections "solve" vanishing gradients entirely: they give gradients a short path, but the layers inside $F$ still need good initialization and scale control.
+
+@practice num
+prompt: A residual block computes $\mathbf{y} = \mathbf{x} + \operatorname{ReLU}(\mathbf{W}\mathbf{x} + \mathbf{b})$ with $\mathbf{x} = (1, 3)$, $\mathbf{W} = \begin{pmatrix} 2 & -1 \\ 1 & 1 \end{pmatrix}$ and $\mathbf{b} = (-1, -5)$. What is the sum of the two entries of $\mathbf{y}$?
+answer: 4
+check: sum(xi + max(0, sum(w * v for w, v in zip(row, [1, 3])) + c) for xi, row, c in zip([1, 3], [[2, -1], [1, 1]], [-1, -5]))
+hint: Compute $\mathbf{W}\mathbf{x} + \mathbf{b}$, apply ReLU to each entry, and add $\mathbf{x}$.
+solution: $\mathbf{W}\mathbf{x} = (2 - 3, 1 + 3) = (-1, 4)$, so $\mathbf{W}\mathbf{x} + \mathbf{b} = (-2, -1)$. ReLU gives $(0, 0)$, so $\mathbf{y} = \mathbf{x} = (1, 3)$ and the sum is 4.
+
+@practice num
+prompt: A stack of 6 residual blocks has the layer derivative $f' = 0.2$ in every block, so each block multiplies the gradient by $1 + f'$. By what factor is the gradient multiplied through the whole stack? Give your answer to three decimal places.
+answer: 2.986
+tol: 0.001
+check: 1.2 ** 6
+hint: Raise $1 + f'$ to the power 6.
+solution: $(1 + 0.2)^6 = 1.2^6 = 2.986$. A plain stack with the same $f'$ would multiply by $0.2^6 = 6.4 \times 10^{-5}$.
+
+@practice mc
+prompt: Why does the skip connection $\mathbf{y} = \mathbf{x} + F(\mathbf{x})$ help the gradient reach early layers of a very deep network?
+choice*: The Jacobian is $\mathbf{I} + \partial F/\partial \mathbf{x}$, so the identity term carries the upstream gradient through the block without shrinking it.
+choice: The shortcut makes $F$ linear, so its derivative is constant.
+choice: The shortcut reduces the number of parameters, so there are fewer gradients to vanish.
+choice: The shortcut lets the network skip the nonlinear activations at test time.
+hint: Differentiate $\mathbf{x} + F(\mathbf{x})$ with respect to $\mathbf{x}$.
+solution: The derivative of the added $\mathbf{x}$ is the identity, so the backward pass multiplies by $\mathbf{I} + \partial F/\partial\mathbf{x}$, not by $\partial F/\partial\mathbf{x}$ alone. The shortcut does not make $F$ linear, does not reduce parameters and is not removed at test time.
+
+@practice code
+prompt: Write `residual_block(x, W, b)` where `x` is a list of `d` floats, `W` is a `d` by `d` matrix (list of rows) and `b` a list of `d` floats. Return the list `y` with `y = x + ReLU(W x + b)` computed entrywise. For example, `residual_block([2.0, -1.0], [[1.0, -1.0], [-1.0, 0.5]], [-1.0, 1.0])` returns `[4.0, -1.0]`.
+starter:
+```python
+def residual_block(x, W, b):
+    return list(x)
+```
+tests:
+```python
+y = residual_block([2.0, -1.0], [[1.0, -1.0], [-1.0, 0.5]], [-1.0, 1.0])
+assert abs(y[0] - 4.0) < 1e-9 and abs(y[1] + 1.0) < 1e-9
+y = residual_block([1.0, 2.0], [[-1.0, 0.0], [0.0, -1.0]], [0.5, 0.0])
+assert y == [1.0, 2.0]
+y = residual_block([1.0, 2.0], [[0.0, 0.0], [0.0, 0.0]], [1.0, 2.0])
+assert abs(y[0] - 2.0) < 1e-9 and abs(y[1] - 4.0) < 1e-9
+y = residual_block([1.0, -2.0], [[1.0, 1.0], [2.0, 0.0]], [0.0, 0.0])
+assert abs(y[0] - 1.0) < 1e-9 and abs(y[1] - 0.0) < 1e-9
+assert len(residual_block([0.5], [[2.0]], [0.0])) == 1
+```
+model:
+```python
+def residual_block(x, W, b):
+    """Residual block y = x + ReLU(Wx + b)."""
+    f = [max(0.0, sum(w * v for w, v in zip(row, x)) + c)
+         for row, c in zip(W, b)]
+    return [xi + fi for xi, fi in zip(x, f)]
+```
+hint: Compute the list `f` of ReLU outputs for each row of `W`, then add it to `x` entry by entry.
+solution: The ReLU is applied to the pre-activations only, and the original `x` is added afterwards (not passed through the ReLU). The second test has all pre-activations negative, so the block is exactly the identity.
+
+@practice code
+prompt: Write `chain_grad(fprimes, residual)` that returns the derivative of the output of a chain of scalar layers with respect to the input, given the list `fprimes` of each layer's derivative. If `residual` is `False` each layer multiplies the gradient by `f'`, and if it is `True` each layer is $y \leftarrow y + f(y)$ and multiplies it by `1 + f'`. An empty list returns `1.0`. For example, `chain_grad([0.2, -0.5], True)` returns `0.6`.
+starter:
+```python
+def chain_grad(fprimes, residual):
+    return 0.0
+```
+tests:
+```python
+assert abs(chain_grad([0.2, -0.5], True) - 0.6) < 1e-9
+assert abs(chain_grad([0.2, -0.5], False) + 0.1) < 1e-9
+assert abs(chain_grad([0.1] * 10, True) - 2.5937424601) < 1e-6
+assert abs(chain_grad([0.1] * 10, False) - 1e-10) < 1e-15
+assert chain_grad([], True) == 1.0 and chain_grad([], False) == 1.0
+assert abs(chain_grad([-1.0, 5.0], True)) < 1e-12
+```
+model:
+```python
+def chain_grad(fprimes, residual):
+    """Gradient through a chain of layers, plain or residual."""
+    g = 1.0
+    for fp in fprimes:
+        g *= (1.0 + fp) if residual else fp
+    return g
+```
+hint: Start from 1.0 and multiply by `1 + fp` (residual) or `fp` (plain) for each layer.
+solution: A residual layer's local derivative is $1 + f'$, a plain layer's is $f'$. The last test shows that a layer with $f' = -1$ can cancel the identity path exactly, so residual connections help but do not guarantee that gradients survive for every $F$.
+
+@quiz text
+prompt: What does this program print?
+```python
+x = 1.0
+for f in [lambda v: 0.5 * v, lambda v: -0.5 * v, lambda v: 2 * v]:
+    x = x + f(x)
+print(x)
+```
+answer: 2.25
+check: run("x = 1.0\nfor f in [lambda v: 0.5 * v, lambda v: -0.5 * v, lambda v: 2 * v]:\n    x = x + f(x)\nprint(x)")
+hint: Each step multiplies $x$ by $1 + c$ for the constant $c$ of that layer.
+solution: The three factors are $1.5$, $0.5$ and $3$, so $x = 1 \cdot 1.5 \cdot 0.5 \cdot 3 = 2.25$.
+
+@quiz code
+prompt: Write `stack_forward(x, blocks, residual)` where `blocks` is a list of functions from a float to a float. If `residual` is `False`, apply them in order, `x = f(x)`. If `residual` is `True`, apply `x = x + f(x)` for each block in order. Return the final value. For example, with `blocks = [lambda v: 0.5 * v]`, the plain result from `x = 2.0` is `1.0` and the residual result is `3.0`.
+starter:
+```python
+def stack_forward(x, blocks, residual):
+    return x
+```
+tests:
+```python
+b = [lambda v: 0.5 * v]
+assert abs(stack_forward(2.0, b, False) - 1.0) < 1e-9
+assert abs(stack_forward(2.0, b, True) - 3.0) < 1e-9
+b3 = [lambda v: 0.5 * v, lambda v: -0.5 * v, lambda v: 2 * v]
+assert abs(stack_forward(1.0, b3, True) - 2.25) < 1e-9
+assert abs(stack_forward(1.0, b3, False) + 0.5) < 1e-9
+assert stack_forward(7.0, [], True) == 7.0
+assert abs(stack_forward(1.0, [lambda v: v * v] * 3, True) - 42.0) < 1e-9
+```
+model:
+```python
+def stack_forward(x, blocks, residual):
+    """Apply a list of scalar blocks, plain or with identity shortcuts."""
+    for f in blocks:
+        x = x + f(x) if residual else f(x)
+    return x
+```
+hint: Loop over the blocks; the residual case adds the block's output to the current value instead of replacing it.
+solution: The only difference between the two modes is whether the previous value is kept. The last test uses the block $f(v) = v^2$ three times with a shortcut: $1 \to 1 + 1 = 2 \to 2 + 4 = 6 \to 6 + 36 = 42$.
+
+@quiz self
+prompt: A colleague claims that residual connections work "because they make the network deeper without adding parameters". Explain what is right and wrong with this, and give the correct reason using the Jacobian of a block. Also say why zeroing the last layer's weights in each block is a sensible initialization.
+hint: Skip connections add no parameters (an identity shortcut), but that is not why they help; think about $\mathbf{I} + \partial F/\partial \mathbf{x}$ and about what the block computes when $F = 0$.
+solution: It is true that an identity shortcut adds no parameters and nothing to learn, but that is not the reason residual networks train better: a plain network of the same depth has the same number of parameters in $F$. The reason is the optimization benefit of the identity path: the block's Jacobian is $\mathbf{I} + \partial F/\partial\mathbf{x}$, so backpropagation passes the upstream gradient through the block unchanged and adds the contribution through $F$. Over $L$ blocks the gradient therefore has a direct path from the output to every block, whereas a plain stack's gradient is a product of $L$ factors that can shrink or blow up geometrically. Zeroing the weights of the last layer in $F$ makes $F = 0$, so each block is the identity at the start, with Jacobian $\mathbf{I}$; the whole deep stack begins as a well-behaved function and each block learns a small correction.
+rubric: Says an identity shortcut adds no parameters but that this is not why the connection helps.
+rubric: Gives the Jacobian $\mathbf{I} + \partial F/\partial\mathbf{x}$ and the direct gradient path as the reason.
+rubric: Explains that zero-initializing the last layer makes each block the identity at initialization.

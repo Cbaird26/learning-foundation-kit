@@ -1,0 +1,227 @@
+@lesson
+title: Neural language models and transformers for language
+summary: Build a neural language model from embeddings and a softmax, and compute scaled dot-product self-attention, with and without a causal mask, from scratch.
+objective: Describe a feedforward neural language model and count its parameters.
+objective: Compute single-head scaled dot-product attention by hand and in plain Python.
+objective: Explain the causal mask, positional encodings, layer normalization and how they combine in a transformer block.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapters on neural networks and on transformers and large language models; look up the topic self-attention.
+@article
+An $n$-gram model treats "the cat sat" and "the kitten sat" as unrelated, and it cannot look back more than a few words without running out of data. A **neural language model** fixes both problems: it maps words to vectors, so similar words share statistical strength, and it computes next-word probabilities with a function that has far fewer parameters than a count table.
+
+### A feedforward language model
+
+The first widely cited neural language model (Bengio and colleagues, 2003) predicts the next word $w_t$ from the previous $n$ words. Each word is looked up in an **embedding** table $\mathbf{E} \in \mathbb{R}^{|V| \times d}$, the $n$ embeddings are concatenated into one vector of length $nd$, a hidden layer applies a nonlinearity, and a final layer with a **softmax** gives a distribution over the vocabulary:
+$$\mathbf{h} = \tanh(\mathbf{W}_1 \mathbf{x} + \mathbf{b}_1),\qquad P(w_t = j \mid \text{context}) = \operatorname{softmax}(\mathbf{W}_2 \mathbf{h} + \mathbf{b}_2)_j.$$
+The parameter count is $|V|d$ for $\mathbf{E}$, $(nd)h + h$ for the hidden layer and $h|V| + |V|$ for the output layer. With $|V| = 1000$, $d = 50$, $n = 3$ and $h = 100$ this is $50{,}000 + 15{,}100 + 101{,}000 = 166{,}100$. The model is trained by minimizing cross-entropy with backpropagation, and its perplexity (week 4) is the measure of success. It still has a fixed window of $n$ words.
+
+### Self-attention
+
+A **transformer** (Vaswani and colleagues, 2017) drops the fixed window. Each position builds its new representation as a weighted average of the values of all positions it may look at, with weights computed from how well a **query** matches each **key**. For a sequence of $n$ vectors, let $\mathbf{Q}, \mathbf{K} \in \mathbb{R}^{n \times d_k}$ and $\mathbf{V} \in \mathbb{R}^{n \times d_v}$ be learned linear functions of the inputs, one row per position. Then
+$$\operatorname{Attention}(\mathbf{Q},\mathbf{K},\mathbf{V}) = \operatorname{softmax}\!\Big(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d_k}}\Big)\mathbf{V},$$
+with the softmax taken along each row. If the entries of a query and a key are independent with mean 0 and variance 1, their dot product has variance $d_k$; dividing by $\sqrt{d_k}$ keeps the scores in a range where the softmax is not saturated and its gradients do not vanish.
+
+For $\mathbf{Q} = \begin{pmatrix}1&0\\0&1\end{pmatrix}$, $\mathbf{K} = \begin{pmatrix}1&0\\1&1\end{pmatrix}$, $\mathbf{V} = \begin{pmatrix}1&2\\3&4\end{pmatrix}$ and $d_k = 2$, the scaled scores are $\begin{pmatrix}0.7071&0.7071\\0&0.7071\end{pmatrix}$, the row-wise softmax gives weights $(0.5, 0.5)$ and $(0.3302, 0.6698)$, and the outputs are $(2, 3)$ and $(2.3395, 3.3395)$.
+
+```python
+import math
+
+def softmax(scores):
+    m = max(scores)
+    exps = [math.exp(s - m) for s in scores]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def attention(Q, K, V):
+    """Q, K: lists of d_k-vectors; V: list of d_v-vectors. One output per query."""
+    d_k = len(Q[0])
+    out = []
+    for q in Q:
+        scores = [sum(a * b for a, b in zip(q, k)) / math.sqrt(d_k) for k in K]
+        w = softmax(scores)
+        out.append([sum(w[j] * V[j][c] for j in range(len(V))) for c in range(len(V[0]))])
+    return out
+```
+
+### Language modeling needs a causal mask
+
+A language model must predict word $t$ from words before $t$. If position $t$ could attend to position $t+1$, the task would be trivial. The **causal mask** sets the scores for all future positions to $-\infty$ before the softmax, so their weights are exactly 0. Position $t$ then attends to positions $1,\dots,t$ only. Training uses all positions of a sequence in parallel, each predicting its own next word, which is a major reason transformers train faster than recurrent networks on modern hardware. The cost is that attention compares every allowed pair of positions: $n^2$ scores, or $n(n+1)/2$ with the causal mask, so long inputs are expensive.
+
+### The rest of the block
+
+Attention alone ignores the order of positions: shuffling the inputs just shuffles the outputs. The original transformer adds **positional encodings**: for position $p$ and dimension pair $i$,
+$$\mathrm{PE}(p, 2i) = \sin\!\big(p / 10000^{2i/d}\big),\qquad \mathrm{PE}(p, 2i+1) = \cos\!\big(p / 10000^{2i/d}\big),$$
+added to the word embeddings (many later models learn the positions instead). **Multi-head attention** runs several attention heads with different learned projections in parallel and concatenates them. A **transformer block** applies attention, then a position-wise feedforward network, each wrapped in a **residual connection** (the layer's output is added to its input) and **layer normalization**, which rescales each vector to zero mean and unit variance: $\operatorname{LN}(\mathbf{x}) = (\mathbf{x} - \mu)/\sqrt{\sigma^2 + \epsilon}$ (then a learned scale and shift). Stacking such blocks and finishing with a softmax over the vocabulary gives a **decoder-only** language model; the same ingredients, without the mask, give an **encoder** that reads a whole sentence.
+
+@example
+title: Attention weights by hand
+problem: A query is $\mathbf{q} = (1, 1)$ and there are two keys $\mathbf{k}_1 = (2, 0)$ and $\mathbf{k}_2 = (0, 1)$ with values $\mathbf{v}_1 = (4, 0)$ and $\mathbf{v}_2 = (0, 8)$. Compute the attention output with $d_k = 2$.
+step: Dot products: $\mathbf{q}\cdot\mathbf{k}_1 = 2$ and $\mathbf{q}\cdot\mathbf{k}_2 = 1$. Scale by $1/\sqrt2$: scores $1.4142$ and $0.7071$.
+step: Softmax: $e^{1.4142} = 4.113$ and $e^{0.7071} = 2.028$, total $6.141$, so the weights are $0.6698$ and $0.3302$.
+step: Output: $0.6698\,(4, 0) + 0.3302\,(0, 8) = (2.679, 2.642)$.
+answer: $(2.679,\ 2.642)$.
+
+@example
+title: Parameters of a feedforward model
+problem: A feedforward language model has vocabulary 200, embedding size 10, context $n = 4$ and hidden size 20. Count its parameters.
+step: Embeddings: $200 \cdot 10 = 2000$.
+step: Hidden layer: input size $4 \cdot 10 = 40$, so $40 \cdot 20 + 20 = 820$.
+step: Output layer: $20 \cdot 200 + 200 = 4200$.
+step: Total: $2000 + 820 + 4200 = 7020$.
+answer: 7,020 parameters.
+
+@mistakes
+- Forgetting the $1/\sqrt{d_k}$ scaling, which makes the softmax saturate for large $d_k$.
+- Applying the softmax along columns instead of along each row: each query needs weights over the keys that sum to 1.
+- Masking by setting future scores to 0 instead of $-\infty$: a score of 0 still gets weight $e^0$ in the softmax.
+- Assuming attention knows word order without positional information.
+
+@practice num
+prompt: A query is $(2, 0)$, and there are two keys, $(1, 0)$ and $(0, 1)$, with $d_k = 2$. What attention weight does the first key receive? Give your answer to three decimal places.
+answer: 0.804
+tol: 0.001
+check: exp(2 / sqrt(2)) / (exp(2 / sqrt(2)) + exp(0))
+hint: The scaled scores are $2/\sqrt2$ and $0$. Apply the softmax to these two numbers.
+solution: The scores are $1.4142$ and $0$, so the first weight is $e^{1.4142}/(e^{1.4142} + 1) = 4.113/5.113 \approx 0.804$.
+
+@practice num
+prompt: A feedforward language model has a vocabulary of 500 words, embeddings of size 20, a context of 2 previous words and a hidden layer of 30 units. How many parameters does it have (embeddings, hidden layer and output layer, with biases in both layers)?
+answer: 26730
+check: 500 * 20 + (2 * 20) * 30 + 30 + 30 * 500 + 500
+hint: Add the embedding table, the hidden layer with its bias, and the output layer with its bias.
+solution: Embeddings: $500 \cdot 20 = 10{,}000$. Hidden layer: $(2\cdot 20)\cdot 30 + 30 = 1230$. Output layer: $30 \cdot 500 + 500 = 15{,}500$. The total is $26{,}730$.
+
+@practice mc
+prompt: Why does scaled dot-product attention divide the scores by $\sqrt{d_k}$?
+choice*: Dot products of longer vectors have larger variance, and without scaling the softmax would become nearly one-hot with tiny gradients.
+choice: To make the attention weights sum to one.
+choice: To remove the dependence on word order.
+choice: To make the keys and queries have different lengths.
+hint: The softmax is what makes weights sum to one. What does a large input do to the softmax?
+solution: For independent unit-variance entries the dot product has variance $d_k$, so for large $d_k$ the scores are large and the softmax saturates. Dividing by $\sqrt{d_k}$ keeps the variance near 1. The softmax already normalizes the weights, and word order is handled by positional information.
+
+@practice code
+prompt: Write `causal_attention(Q, K, V)` for lists of vectors of equal length `n` (one row per position; `Q` and `K` have `d_k` columns, `V` has `d_v`). Position `i` may attend only to positions `0..i`. Return a list of `n` output vectors: the weights are the softmax of `q_i . k_j / sqrt(d_k)` over `j <= i`, and the output is the weighted sum of the value rows. Subtract the maximum score before exponentiating.
+starter:
+```python
+def causal_attention(Q, K, V):
+    return [list(v) for v in V]
+```
+tests:
+```python
+import math
+Q = [[1, 0], [0, 1], [1, 1]]
+K = [[1, 0], [0, 1], [1, 1]]
+V = [[1, 0], [0, 1], [2, 2]]
+out = causal_attention(Q, K, V)
+want = [[1.0, 0.0], [0.3302384506733431, 0.6697615493266569], [1.2552347652268308, 1.2552347652268308]]
+assert all(abs(a - b) < 1e-9 for row, w in zip(out, want) for a, b in zip(row, w))
+assert causal_attention([[5, 5]], [[1, 1]], [[7, 9]]) == [[7.0, 9.0]]
+out2 = causal_attention([[0, 0], [1, 2]], [[1, 0], [0, 1]], [[5, 1], [1, 5]])
+assert abs(out2[0][0] - 5.0) < 1e-9 and abs(out2[1][0] - 2.3209538026933725) < 1e-9
+assert causal_attention([[1000.0], [1000.0]], [[1000.0], [1000.0]], [[1.0], [3.0]])[1][0] > 1.0
+```
+model:
+```python
+import math
+
+
+def causal_attention(Q, K, V):
+    """Scaled dot-product attention where position i sees positions 0..i."""
+    d_k = len(Q[0])
+    out = []
+    for i, q in enumerate(Q):
+        scores = [sum(a * b for a, b in zip(q, K[j])) / math.sqrt(d_k) for j in range(i + 1)]
+        top = max(scores)
+        exps = [math.exp(s - top) for s in scores]
+        total = sum(exps)
+        weights = [e / total for e in exps]
+        out.append([sum(weights[j] * V[j][c] for j in range(i + 1)) for c in range(len(V[0]))])
+    return out
+```
+hint: Compute scores only for `j` from 0 to `i`, which has the same effect as setting the future scores to minus infinity.
+solution: Restricting the sum to `j <= i` is equivalent to masking with $-\infty$. The first position can attend only to itself, so its output equals its own value row. The last test has huge scores; without subtracting the maximum, the exponentials overflow.
+
+@practice code
+prompt: Write `sinusoidal_pe(pos, dim)` that returns the sinusoidal positional encoding of position `pos` as a list of `dim` floats (`dim` is even). Entry `2*i` is `sin(pos / 10000 ** (2*i / dim))` and entry `2*i + 1` is `cos(pos / 10000 ** (2*i / dim))`. For example, `sinusoidal_pe(0, 4)` returns `[0.0, 1.0, 0.0, 1.0]`.
+starter:
+```python
+def sinusoidal_pe(pos, dim):
+    return [0.0] * dim
+```
+tests:
+```python
+import math
+assert sinusoidal_pe(0, 4) == [0.0, 1.0, 0.0, 1.0]
+got = sinusoidal_pe(1, 4)
+want = [math.sin(1), math.cos(1), math.sin(0.01), math.cos(0.01)]
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+got = sinusoidal_pe(3, 6)
+want = [0.1411200080598672, -0.9899924966004454, 0.13879810108005056,
+        0.990320699135675, 0.006463259070189646, 0.9999791129229608]
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+assert len(sinusoidal_pe(5, 8)) == 8
+```
+model:
+```python
+import math
+
+
+def sinusoidal_pe(pos, dim):
+    """Sinusoidal positional encoding of one position."""
+    out = []
+    for i in range(dim // 2):
+        angle = pos / 10000 ** (2 * i / dim)
+        out.append(math.sin(angle))
+        out.append(math.cos(angle))
+    return out
+```
+hint: Loop over the pair index `i` from 0 to `dim // 2 - 1`; each pair shares one angle and contributes a sine and then a cosine.
+solution: Each pair of dimensions is a sine and a cosine of the same angle, with a wavelength that grows geometrically with `i`: the first pair changes fastest with position, the last pair slowest. Position 0 gives zeros for the sines and ones for the cosines.
+
+@quiz code
+prompt: Write `layer_norm(x, eps)` that returns the layer-normalized version of the list `x`: subtract the mean, then divide by `sqrt(var + eps)`, where `var` is the population variance (the mean of the squared deviations, dividing by `len(x)`). There is no learned scale or shift. For example, `layer_norm([1, 2, 3], 0)` returns about `[-1.2247, 0.0, 1.2247]`.
+starter:
+```python
+def layer_norm(x, eps):
+    return list(x)
+```
+tests:
+```python
+import math
+got = layer_norm([1, 2, 3], 0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-math.sqrt(1.5), 0.0, math.sqrt(1.5)]))
+got = layer_norm([1, 2, 3], 1e-5)
+assert abs(got[0] + 1.2247356859083902) < 1e-9
+assert layer_norm([4, 4, 4], 1e-5) == [0.0, 0.0, 0.0]
+got = layer_norm([10, 20], 0)
+assert abs(got[0] + 1.0) < 1e-9 and abs(got[1] - 1.0) < 1e-9
+```
+model:
+```python
+import math
+
+
+def layer_norm(x, eps):
+    """Normalize a vector to zero mean and unit variance."""
+    mean = sum(x) / len(x)
+    var = sum((v - mean) ** 2 for v in x) / len(x)
+    return [(v - mean) / math.sqrt(var + eps) for v in x]
+```
+hint: Compute the mean, then the mean of squared deviations, then rescale each entry.
+solution: Layer normalization normalizes across the features of one vector, not across a batch of examples. The `eps` term keeps the division safe for a constant vector, whose variance is 0: the result is then all zeros.
+
+@quiz num
+prompt: A sequence has 8 positions. How many query-key score pairs does a causal self-attention head compute for the sequence, when position $i$ attends to positions $1,\dots,i$?
+answer: 36
+check: sum(range(1, 9))
+hint: Position $i$ computes $i$ scores. Add them for $i$ from 1 to 8.
+solution: The counts are $1 + 2 + \dots + 8 = 8 \cdot 9 / 2 = 36$, compared with $8^2 = 64$ without the mask.
+
+@quiz mc
+prompt: Why does a decoder-only language model use a causal mask during training?
+choice*: So that the prediction at each position cannot use the words that come after it, which would make next-word prediction trivial.
+choice: To reduce the vocabulary size at later positions.
+choice: To make the model invariant to the order of the input words.
+choice: To replace the softmax over the vocabulary.
+hint: Training predicts the next word at every position at once. What would position $t$ see without the mask?
+solution: Without the mask, the representation at position $t$ could copy the word at $t+1$, which is the target, and the model would learn nothing useful for generation. The mask hides future positions, and it does not change the vocabulary, the order sensitivity (positional information does that) or the output softmax.

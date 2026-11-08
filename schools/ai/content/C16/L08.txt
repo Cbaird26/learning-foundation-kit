@@ -1,0 +1,225 @@
+@lesson
+title: Anomaly detection
+summary: Score unusual points with z-scores, robust statistics, Mahalanobis distance, nearest-neighbor distance and isolation forests, and explain why each fails in some situations.
+objective: Compute z-scores, modified z-scores and Mahalanobis distances by hand and in code.
+objective: Explain the masking problem and why robust statistics and covariance-aware distances help.
+objective: Compute the isolation forest anomaly score from an average path length and flag points by a threshold.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on anomaly detection (outlier detection) in the chapter on density estimation and unsupervised methods; look up isolation forests and local outlier factor.
+
+@article
+A server logs how many seconds each request takes: $10, 11, 9, 10, 12, 30$. One request, the last, looks wrong, but nobody labeled it. **Anomaly detection** (outlier detection) scores how unusual each point is, using only data that is mostly normal. There are no labels, so every method rests on an assumption about what "normal" looks like.
+
+### Distance from the bulk: z-scores and their failure
+
+The **z-score** $z = (x - \bar{x})/s$ measures how many standard deviations a point is from the mean; the common "3-sigma" rule flags $\lvert z \rvert > 3$. For the request times, $\bar{x} = 13.67$ and the population standard deviation is $s = 7.36$, so the z-score of 30 is $2.22$: **not flagged**. The outlier inflated the mean and the standard deviation, which hid it, an effect called **masking**. A sample of $n$ points can never produce a population z-score above $\sqrt{n-1}$, which is $2.24$ for $n = 6$, so the 3-sigma rule cannot flag anything in so small a sample.
+
+Robust statistics repair this. Replace the mean by the **median** and the standard deviation by the **median absolute deviation** $\mathrm{MAD} = \operatorname{median}_i \lvert x_i - \tilde{x} \rvert$. The **modified z-score** is
+$$M_i = \frac{0.6745\,(x_i - \tilde{x})}{\mathrm{MAD}},$$
+where $0.6745$ makes the MAD comparable to a standard deviation for Gaussian data; a cutoff of $3.5$ is conventional. For the request times the median is $10.5$, the absolute deviations are $0.5, 0.5, 1.5, 0.5, 1.5, 19.5$, so $\mathrm{MAD} = 1.0$ and $M = 0.6745 \times 19.5 / 1 = 13.2$: clearly flagged.
+
+### Mahalanobis distance
+
+In several dimensions, a point can be unremarkable on each feature and still unusual in combination. The **Mahalanobis distance** to a distribution with mean $\boldsymbol{\mu}$ and covariance $\boldsymbol{\Sigma}$ is
+$$d_M(\mathbf{x})^2 = (\mathbf{x} - \boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1} (\mathbf{x} - \boldsymbol{\mu}).$$
+It rescales each direction by its spread and accounts for correlation. For Gaussian data in $d$ dimensions $d_M^2$ follows a chi-squared distribution with $d$ degrees of freedom, so in two dimensions about 5% of normal points have $d_M^2 > 5.99$. Using the same Gaussian as a density model and flagging low density is equivalent. With a heavy outlier cluster the estimated $\boldsymbol{\mu}$ and $\boldsymbol{\Sigma}$ are themselves distorted, which is masking again; robust covariance estimates address it.
+
+### Neighbors and density
+
+The **$k$-nearest-neighbor score** of a point is its distance to its $k$-th nearest neighbor: isolated points have large scores. It makes no Gaussian assumption but treats a sparse region as anomalous even if that region is simply a different cluster. The **local outlier factor** (Breunig and colleagues, 2000) compares a point's local density with that of its neighbors, so a point is anomalous only relative to its surroundings, which handles clusters of different density.
+
+### Isolation forests
+
+The **isolation forest** (Liu, Ting and Zhou, 2008) turns the idea around: anomalies are few and different, so they are *easy to isolate*. Build many random trees; each split picks a random feature and a random threshold between that feature's minimum and maximum in the current node. The **path length** $h(\mathbf{x})$ is the number of splits needed to isolate $\mathbf{x}$ in a tree. Averaging over trees gives $E[h(\mathbf{x})]$, which is short for anomalies. To compare across sample sizes $n$, normalize by the average path length of an unsuccessful search in a binary search tree,
+$$c(n) = 2\big(\ln(n-1) + \gamma\big) - \frac{2(n-1)}{n}, \qquad \gamma \approx 0.5772,$$
+and define the **anomaly score**
+$$s(\mathbf{x}, n) = 2^{-E[h(\mathbf{x})]/c(n)} .$$
+A score near 1 means anomalous; a score well below 0.5 means normal; scores near 0.5 for all points mean the data have no distinct anomalies. For $n = 256$, $c(256) = 10.245$, so an average path length of $4$ gives $s = 2^{-0.390} = 0.763$ and an average path length of $9$ gives $s = 0.544$.
+
+### Choosing a threshold, and its limits
+
+Scores must be turned into flags by a threshold, usually the top fraction of scores (a **contamination** rate), or a chi-squared quantile for Mahalanobis. Without labels you cannot measure precision or recall directly; with a few labeled anomalies you can, and because anomalies are rare, accuracy is useless (flagging nothing is 99% accurate when 1% are anomalies). Prefer precision and recall at a chosen number of alerts. Finally, "anomalous" does not mean "bad": a flagged point can be a data error, a rare but legitimate event, or a new kind of normal behavior, and a person must decide which.
+
+### In code
+
+```python
+def median(xs):
+    s = sorted(xs)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+times = [10, 11, 9, 10, 12, 30]
+med = median(times)
+mad = median([abs(x - med) for x in times])
+print(med, mad, [round(0.6745 * (x - med) / mad, 1) for x in times])
+```
+
+@example
+title: Modified z-scores
+problem: Which of the values $4, 5, 5, 6, 8, 40$ are flagged by the modified z-score with the cutoff $3.5$?
+step: Sort: $4, 5, 5, 6, 8, 40$. The median is $(5 + 6)/2 = 5.5$.
+step: Absolute deviations from 5.5: $1.5, 0.5, 0.5, 0.5, 2.5, 34.5$. Sorted: $0.5, 0.5, 0.5, 1.5, 2.5, 34.5$, so $\mathrm{MAD} = (0.5 + 1.5)/2 = 1.0$.
+step: Modified z-scores $0.6745 (x - 5.5)/1$: $-1.01, -0.34, -0.34, 0.34, 1.69, 23.27$.
+step: Only 40 exceeds 3.5 in absolute value. (The ordinary z-score of 40 is only $2.23$ here, using the population standard deviation $12.9$, so the 3-sigma rule would miss it.)
+answer: Only the value 40 is flagged ($M \approx 23.3$).
+
+@example
+title: Same distance, different Mahalanobis distance
+problem: Data have mean $(0, 0)$ and covariance $\boldsymbol{\Sigma} = \begin{pmatrix} 4 & 2 \\ 2 & 3 \end{pmatrix}$. Compare the points $(2, 2)$ and $(2, -2)$, which are the same Euclidean distance from the mean.
+step: The determinant is $4 \cdot 3 - 2 \cdot 2 = 8$, so $\boldsymbol{\Sigma}^{-1} = \tfrac{1}{8}\begin{pmatrix} 3 & -2 \\ -2 & 4 \end{pmatrix}$.
+step: The quadratic form is $d_M^2 = \tfrac18 (3x^2 - 4xy + 4y^2)$.
+step: At $(2, 2)$: $\tfrac18(12 - 16 + 16) = 1.5$. At $(2, -2)$: $\tfrac18(12 + 16 + 16) = 5.5$.
+step: The features are positively correlated, so a point along the diagonal $(2,2)$ is typical, while $(2, -2)$ goes against the correlation and is much more unusual, though it is no farther away in the ordinary sense.
+answer: $d_M^2 = 1.5$ for $(2, 2)$ and $5.5$ for $(2, -2)$.
+
+@mistakes
+- Trusting the 3-sigma rule on small samples or with several outliers: the outliers inflate the mean and standard deviation and mask themselves.
+- Using Euclidean distance on correlated or differently scaled features: a point against the correlation can be far more unusual than its raw distance suggests.
+- Reporting accuracy for a detector of rare events: a detector that flags nothing is almost perfectly accurate.
+- Treating every flagged point as an error: an anomaly is a point that is unusual under the model, which may be a rare real event.
+
+@practice num
+prompt: An isolation forest is trained on subsamples of $n = 256$ points, for which $c(256) = 2(\ln 255 + 0.5772156649) - 2 \cdot 255 / 256$. A point has an average path length $E[h] = 4$. What is its anomaly score $s = 2^{-E[h]/c(n)}$? Give your answer to three decimal places.
+answer: 0.763
+tol: 0.001
+check: 2 ** (-4 / (2 * (log(255) + 0.5772156649) - 2 * 255 / 256))
+hint: First compute $c(256)$, which is about 10.245, then the exponent $-4/c(256)$.
+solution: $c(256) = 2(5.5413 + 0.5772) - 1.9922 = 10.245$. The exponent is $-4/10.245 = -0.3904$, and $2^{-0.3904} = 0.763$, a score well above 0.5, so the point is fairly anomalous.
+
+@practice mc
+prompt: In a sample of eight response times, seven are near 10 seconds and one is 60 seconds. Why might the 3-sigma rule fail to flag the 60?
+choice*: The 60 inflates the mean and the standard deviation so much that its own z-score stays below 3.
+choice: The z-score ignores the largest value of the sample by definition.
+choice: The 3-sigma rule only works for data that are exactly uniform.
+choice: Standard deviations cannot be computed for samples with an outlier.
+hint: With $n$ points a population z-score cannot exceed $\sqrt{n - 1}$, and one extreme point contributes to both the mean and the standard deviation.
+solution: One extreme point raises the mean and, above all, the standard deviation, so its z-score is capped at $\sqrt{n-1} = 2.65$ for $n = 8$; this is masking. The z-score does not ignore any value, the rule assumes roughly Gaussian data and not uniform data, and the standard deviation exists regardless.
+
+@practice num
+prompt: From a ratings matrix factorization with rank 1 and $\lambda = 0.5$, the user factors are $p = (1, 2)$. Item $i$ was rated by both users, with the ratings $3$ and $5$. What is the alternating least squares update of the item factor $q_i$? Give your answer to three decimal places.
+answer: 2.364
+tol: 0.001
+check: (1 * 3 + 2 * 5) / (1 ** 2 + 2 ** 2 + 0.5)
+hint: Use $q_i = \sum_u r_{ui} p_u / (\sum_u p_u^2 + \lambda)$ over the two users who rated the item.
+solution: The numerator is $1 \cdot 3 + 2 \cdot 5 = 13$ and the denominator is $1 + 4 + 0.5 = 5.5$, so $q_i = 13/5.5 \approx 2.364$.
+
+@practice code
+prompt: Write `robust_outliers(xs, threshold)` that returns the sorted list of indices of the values flagged by the modified z-score $M_i = 0.6745\,(x_i - \tilde{x})/\mathrm{MAD}$, where $\tilde{x}$ is the median of `xs` (the mean of the two middle values for an even length) and $\mathrm{MAD}$ is the median of $\lvert x_i - \tilde{x} \rvert$. A value is flagged when $\lvert M_i \rvert > $ `threshold`. If the MAD is 0, return `[]`. For example, `robust_outliers([1, 2, 3, 4, 100], 3.5)` returns `[4]`.
+starter:
+```python
+def robust_outliers(xs, threshold):
+    return []
+```
+tests:
+```python
+assert robust_outliers([1, 2, 3, 4, 100], 3.5) == [4]
+assert robust_outliers([10, 11, 9, 10, 12, 30], 3.5) == [5]
+assert robust_outliers([1, 2, 3, 4, 100, -100], 3.5) == [4, 5]
+assert robust_outliers([5, 5, 5, 5], 3.5) == []
+assert robust_outliers([1, 2, 3], 3.5) == []
+assert robust_outliers([4, 5, 5, 6, 8, 40], 1.5) == [4, 5]
+```
+model:
+```python
+def robust_outliers(xs, threshold):
+    """Indices flagged by the modified z-score (median and MAD)."""
+
+    def median(values):
+        s = sorted(values)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    med = median(xs)
+    mad = median([abs(x - med) for x in xs])
+    if mad == 0:
+        return []
+    return [i for i, x in enumerate(xs)
+            if abs(0.6745 * (x - med) / mad) > threshold]
+```
+hint: Write a small median helper and use it twice: once for the values and once for the absolute deviations from that median.
+solution: The median of an even-length list averages the two middle values. The tests include an even-length list, a list where the ordinary 3-sigma rule fails, a MAD of zero, and a low threshold in the last test that flags both 8 and 40.
+
+@practice code
+prompt: Write `mahalanobis_sq(x, mean, cov)` that returns the squared Mahalanobis distance $(\mathbf{x} - \boldsymbol{\mu})^\top \boldsymbol{\Sigma}^{-1}(\mathbf{x} - \boldsymbol{\mu})$ for two-dimensional points: `x` and `mean` are lists of two floats and `cov` is a symmetric invertible 2 by 2 matrix as a list of two rows. Use the closed-form inverse of a 2 by 2 matrix. For example, `mahalanobis_sq([3.0, 4.0], [0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]])` returns `25.0`.
+starter:
+```python
+def mahalanobis_sq(x, mean, cov):
+    return sum((a - b) ** 2 for a, b in zip(x, mean))
+```
+tests:
+```python
+assert abs(mahalanobis_sq([3.0, 4.0], [0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]]) - 25.0) < 1e-9
+assert abs(mahalanobis_sq([2.0, 2.0], [0.0, 0.0], [[4.0, 2.0], [2.0, 3.0]]) - 1.5) < 1e-9
+assert abs(mahalanobis_sq([2.0, -2.0], [0.0, 0.0], [[4.0, 2.0], [2.0, 3.0]]) - 5.5) < 1e-9
+assert abs(mahalanobis_sq([5.0, 7.0], [4.0, 6.0], [[2.0, 0.0], [0.0, 8.0]]) - 0.625) < 1e-9
+assert abs(mahalanobis_sq([1.0, 1.0], [1.0, 1.0], [[3.0, 1.0], [1.0, 2.0]])) < 1e-9
+```
+model:
+```python
+def mahalanobis_sq(x, mean, cov):
+    """Squared Mahalanobis distance of a 2-D point."""
+    a, b = cov[0]
+    c, d = cov[1]
+    det = a * d - b * c
+    inv = [[d / det, -b / det], [-c / det, a / det]]
+    dx = [x[0] - mean[0], x[1] - mean[1]]
+    return sum(dx[i] * inv[i][j] * dx[j] for i in range(2) for j in range(2))
+```
+hint: The inverse of $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ is $\frac{1}{ad - bc}\begin{pmatrix} d & -b \\ -c & a \end{pmatrix}$. Then compute the quadratic form of the centered point.
+solution: Invert the covariance with the 2 by 2 formula, subtract the mean from the point and evaluate $\mathbf{d}^\top \boldsymbol{\Sigma}^{-1}\mathbf{d}$. The starter returns the squared Euclidean distance, which passes only the identity-covariance case; the second and third tests share a Euclidean distance but need different answers.
+
+@quiz text
+prompt: What does this program print?
+```python
+xs = [4, 5, 5, 6, 40]
+med = sorted(xs)[len(xs) // 2]
+mad = sorted(abs(x - med) for x in xs)[len(xs) // 2]
+print(med, mad)
+```
+answer: 5 1
+check: run("xs = [4, 5, 5, 6, 40]\nmed = sorted(xs)[len(xs) // 2]\nmad = sorted(abs(x - med) for x in xs)[len(xs) // 2]\nprint(med, mad)")
+hint: The list has five values, so the middle one is at index 2 after sorting. The absolute deviations from the median are $1, 0, 0, 1, 35$.
+solution: The sorted list is $4, 5, 5, 6, 40$, whose middle value is $5$. The absolute deviations are $1, 0, 0, 1, 35$, sorted $0, 0, 1, 1, 35$, with middle value $1$. The program prints `5 1`.
+
+@quiz code
+prompt: Write `knn_scores(points, k)` that returns, for each point, its Euclidean distance to its `k`-th nearest *other* point, as a list of floats in input order. `points` is a list of lists of floats with more than `k` points. For example, `knn_scores([[0.0], [1.0], [10.0]], 1)` returns `[1.0, 1.0, 9.0]`.
+starter:
+```python
+def knn_scores(points, k):
+    return [0.0 for _ in points]
+```
+tests:
+```python
+got = knn_scores([[0.0], [1.0], [10.0]], 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.0, 1.0, 9.0]))
+got = knn_scores([[0.0], [1.0], [2.0], [10.0]], 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [2.0, 1.0, 2.0, 9.0]))
+got = knn_scores([[0.0, 0.0], [3.0, 4.0], [0.0, 1.0]], 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.0, 4.242640687119285, 1.0]))
+got = knn_scores([[5.0], [5.0], [9.0]], 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.0, 4.0]))
+```
+model:
+```python
+from math import sqrt
+
+
+def knn_scores(points, k):
+    """Distance from each point to its k-th nearest other point."""
+    scores = []
+    for i, p in enumerate(points):
+        dists = sorted(sqrt(sum((a - b) ** 2 for a, b in zip(p, q)))
+                       for j, q in enumerate(points) if j != i)
+        scores.append(dists[k - 1])
+    return scores
+```
+hint: For each point, sort its distances to all the other points and take the entry at position `k - 1`.
+solution: Excluding the point itself matters: its distance to itself is 0 and would take the place of the nearest neighbor. The fourth test has two identical points, whose nearest-neighbor distance is 0 even though both are far from the third.
+
+@quiz ms
+prompt: Which of these statements about anomaly detection methods are true? Select all that apply.
+choice*: In an isolation forest, points that are separated from the rest after few random splits get short average path lengths and high anomaly scores.
+choice*: The Mahalanobis distance accounts for correlations between features, so it can flag a point whose individual feature values are all ordinary.
+choice*: A detector that flags no points is highly accurate when 1% of the points are anomalies, so accuracy is a poor way to judge anomaly detectors.
+choice: A point flagged as an anomaly is guaranteed to be an error in the data.
+hint: Recall the definition of the isolation score, the quadratic form $(\mathbf{x}-\boldsymbol{\mu})^\top\boldsymbol{\Sigma}^{-1}(\mathbf{x}-\boldsymbol{\mu})$ and the base rate of anomalies.
+solution: Anomalies are easy to isolate, so their paths are short and $s$ is close to 1. The inverse covariance in the Mahalanobis distance captures correlation. With 1% anomalies a detector that flags nothing is 99% accurate, so precision and recall are the right measures. An anomaly is only unusual, not necessarily wrong.

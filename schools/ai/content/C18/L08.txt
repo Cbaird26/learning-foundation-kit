@@ -1,0 +1,244 @@
+@lesson
+title: Embeddings and positional encodings
+summary: Look up and compare embeddings, build sinusoidal positional encodings, and trace how position changes self-attention on a tiny input.
+objective: Explain an embedding layer as a table lookup equal to a one-hot vector times a matrix, and compute cosine similarities.
+objective: Compute sinusoidal positional encodings by hand and prove they depend only on offsets in dot products.
+objective: Explain why self-attention needs positional information and compare learned and sinusoidal encodings.
+objective: Implement embedding arithmetic and positional encodings from scratch.
+reading: Dive into Deep Learning, the chapters on word embedding (word2vec) and on positional encoding in the transformer chapter on multi-head attention and self-attention.
+@article
+A network works with numbers, but its inputs are words, characters or subword units. The first layer of almost every language model turns each token into a vector. Then, because self-attention treats its inputs as an unordered set, a second ingredient injects the position of each token.
+
+### Embeddings
+An **embedding layer** is a table $\mathbf{E}$ with one row per vocabulary item and $d$ columns. Token $t$ becomes the row $\mathbf{E}_t$. This equals multiplying a one-hot vector by the matrix, $\mathbf{e}_t^\top \mathbf{E}$, but a lookup avoids the multiplication. The table has $|V| \cdot d$ parameters: a vocabulary of 5000 and $d = 64$ means 320,000 numbers. The rows are learned along with the rest of the network by gradient descent, because the lookup is differentiable with respect to the table entries.
+
+Embeddings can also be learned on their own. The word2vec models (Mikolov and colleagues, 2013) train vectors so that a word predicts, or is predicted by, its neighbors in text. Words that occur in similar contexts end up with similar vectors. We measure closeness with the **cosine similarity**
+
+$$\cos(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u}^\top \mathbf{v}}{\lVert \mathbf{u} \rVert_2 \lVert \mathbf{v} \rVert_2},$$
+
+which is 1 for vectors in the same direction, 0 for orthogonal vectors and $-1$ for opposite ones. In word2vec-style embeddings some relations appear as roughly constant offsets, so $\mathbf{v}_{\text{king}} - \mathbf{v}_{\text{man}} + \mathbf{v}_{\text{woman}}$ lies close to $\mathbf{v}_{\text{queen}}$. This works only approximately and on some relations; it is a useful picture, not a law. The same tokens, in a trained transformer, get **contextual** representations from later layers: the embedding is only the starting point.
+
+### Why position must be added
+Self-attention computes each output from scores between pairs of tokens. If you permute the input rows, the output rows are permuted in the same way: the layer is **permutation equivariant**, so "dog bites man" and "man bites dog" look alike to it. We fix this by adding a **positional encoding** $\mathbf{p}_i$ to each token embedding, so the input at position $i$ is $\mathbf{x}_i = \mathbf{E}_{t_i} + \mathbf{p}_i$.
+
+### Sinusoidal encodings
+Vaswani and colleagues (2017) used fixed vectors with sines and cosines of geometrically spaced wavelengths. For position $\text{pos}$ and pair index $i = 0, \dots, d/2 - 1$:
+
+$$p_{\text{pos},\,2i} = \sin\!\big(\text{pos}\cdot \omega_i\big), \quad p_{\text{pos},\,2i+1} = \cos\!\big(\text{pos}\cdot \omega_i\big), \quad \omega_i = 10000^{-2i/d}.$$
+
+For $d = 4$ the frequencies are $\omega_0 = 1$ and $\omega_1 = 0.01$. Position 0 is $(0, 1, 0, 1)$, and position 3 is $(\sin 3, \cos 3, \sin 0.03, \cos 0.03) = (0.141, -0.990, 0.030, 1.000)$. Low-index pairs oscillate quickly and distinguish neighboring positions; high-index pairs change slowly and distinguish distant ones, like the digits of a number.
+
+Two properties explain the design. First, each pair at position $\text{pos} + k$ is a rotation of the same pair at $\text{pos}$ by the angle $k\omega_i$, so $\mathbf{p}_{\text{pos}+k}$ is a linear function of $\mathbf{p}_{\text{pos}}$. Second, the dot product depends only on the offset:
+
+$$\mathbf{p}_a^\top \mathbf{p}_b = \sum_{i} \big[\sin(a\omega_i)\sin(b\omega_i) + \cos(a\omega_i)\cos(b\omega_i)\big] = \sum_i \cos\big((a - b)\omega_i\big).$$
+
+This uses $\cos(x - y) = \cos x \cos y + \sin x \sin y$. Also $\mathbf{p}_a^\top \mathbf{p}_a = d/2$ for every position.
+
+### Alternatives
+Many models instead learn a table of position embeddings, a second embedding layer with one row per position up to a maximum length; this cannot represent positions beyond the table. Other designs inject *relative* position into the attention scores, for example with learned biases or with rotation-based schemes. Which works best for long sequences is an ongoing research question.
+
+### In code
+```python
+def embed(tokens, table):
+    """Look up the vector of each token id."""
+    return [list(table[t]) for t in tokens]
+
+def add_vectors(A, B):
+    return [[a + b for a, b in zip(r, s)] for r, s in zip(A, B)]
+
+table = [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]
+pos = [[0.0, 1.0], [0.84, 0.54]]
+print(add_vectors(embed([2, 1], table), pos))
+```
+
+PyTorch provides `nn.Embedding` for the lookup; for the encodings, practitioners precompute a matrix of sines and cosines or use `nn.Embedding` for learned positions.
+
+@example
+title: A sinusoidal encoding by hand
+problem: Compute the sinusoidal positional encoding of position 2 for $d = 4$.
+step: The pair frequencies are $\omega_0 = 10000^{0} = 1$ and $\omega_1 = 10000^{-2/4} = 0.01$.
+step: The first pair uses the angle $2 \cdot 1 = 2$: $(\sin 2, \cos 2) = (0.9093, -0.4161)$.
+step: The second pair uses the angle $2 \cdot 0.01 = 0.02$: $(\sin 0.02, \cos 0.02) = (0.0200, 0.9998)$.
+answer: $\mathbf{p}_2 = (0.9093, -0.4161, 0.0200, 0.9998)$.
+
+@example
+title: Position changes the attention weights
+problem: Two tokens have embeddings $\mathbf{E}_2 = (0, 1)$ (first position) and $\mathbf{E}_0 = (1, 0)$ (second position). Add sinusoidal encodings for $d = 2$ (positions 0 and 1, $\omega_0 = 1$), then compute scaled dot-product self-attention output for the first token, with the inputs as queries, keys and values.
+step: The encodings are $\mathbf{p}_0 = (\sin 0, \cos 0) = (0, 1)$ and $\mathbf{p}_1 = (\sin 1, \cos 1) = (0.8415, 0.5403)$.
+step: The inputs are $\mathbf{x}_1 = (0, 1) + (0, 1) = (0, 2)$ and $\mathbf{x}_2 = (1, 0) + (0.8415, 0.5403) = (1.8415, 0.5403)$.
+step: Scores for the first query $(0, 2)$, scaled by $\sqrt 2$: against $\mathbf{x}_1$, $4/1.4142 = 2.828$; against $\mathbf{x}_2$, $1.0806/1.4142 = 0.764$. The weights are $(0.8874, 0.1126)$.
+step: The output is $0.8874\,(0, 2) + 0.1126\,(1.8415, 0.5403) = (0.2074, 1.8356)$.
+answer: The weights are $(0.8874, 0.1126)$ and the output is $(0.2074, 1.8356)$. Swapping the order of the tokens changes the positional terms and so the result.
+
+@mistakes
+- Believing the transformer knows word order automatically. Without added positions, permuting the tokens just permutes the outputs.
+- Confusing the embedding table's size ($|V| \cdot d$) with the number of tokens in a sequence; the table does not grow with sequence length.
+- Using the Euclidean distance and the cosine similarity interchangeably: cosine ignores vector length, so two vectors can be far apart in distance but have cosine 1.
+- Treating the king minus man plus woman result as exact; it is an approximate, relation-dependent pattern.
+
+@practice num
+prompt: A language model has a vocabulary of 5000 tokens and 64-dimensional embeddings. How many parameters does its embedding table have?
+answer: 320000
+unit: parameters
+check: 5000 * 64
+hint: The table has one row of $d$ numbers per vocabulary item.
+solution: $5000 \times 64 = 320000$ parameters.
+
+@practice num
+prompt: Two word vectors are $(3, 4)$ and $(4, 3)$. What is their cosine similarity?
+answer: 0.96
+tol: 0.001
+check: (3 * 4 + 4 * 3) / (5 * 5)
+hint: Both vectors have norm 5.
+solution: The dot product is $12 + 12 = 24$ and each norm is 5, so the cosine is $24/25 = 0.96$.
+
+@practice text
+prompt: What does this program print?
+```python
+from math import sin, cos
+pos, d = 1, 4
+row = []
+for i in range(d // 2):
+    w = 10000 ** (-2 * i / d)
+    row += [round(sin(pos * w), 3), round(cos(pos * w), 3)]
+print(row)
+```
+answer: [0.841, 0.54, 0.01, 1.0]
+check: run("from math import sin, cos\npos, d = 1, 4\nrow = []\nfor i in range(d // 2):\n    w = 10000 ** (-2 * i / d)\n    row += [round(sin(pos * w), 3), round(cos(pos * w), 3)]\nprint(row)")
+hint: The frequencies are 1 and 0.01; the printed list shows the pairs sine then cosine, each rounded to 3 places.
+solution: For the first pair the angle is 1: $(\sin 1, \cos 1) = (0.841, 0.540)$, printed as `0.841, 0.54`. For the second the angle is 0.01: $(0.010, 1.000)$, printed as `0.01, 1.0`.
+
+@practice code
+prompt: Write `sinusoidal_pe(n, d)` returning a list of `n` rows (positions `0` to `n-1`), each a list of `d` floats (`d` even), with `row[2*i] = sin(pos * w)` and `row[2*i+1] = cos(pos * w)` where `w = 10000 ** (-2 * i / d)`.
+starter:
+```python
+def sinusoidal_pe(n, d):
+    return [[0.0] * d for _ in range(n)]
+```
+tests:
+```python
+pe = sinusoidal_pe(6, 6)
+assert len(pe) == 6 and all(len(r) == 6 for r in pe)
+assert pe[0] == [0.0, 1.0, 0.0, 1.0, 0.0, 1.0]
+want = [-0.9589243, 0.2836622, 0.2300017, 0.9731902, 0.0107720, 0.9999420]
+assert all(abs(a - b) < 1e-6 for a, b in zip(pe[5], want))
+assert all(abs(sum(a * a for a in r) - 3.0) < 1e-9 for r in pe)
+assert sinusoidal_pe(0, 4) == []
+```
+model:
+```python
+from math import cos, sin
+
+
+def sinusoidal_pe(n, d):
+    """Sinusoidal positional encodings for positions 0 .. n-1."""
+    rows = []
+    for pos in range(n):
+        row = []
+        for i in range(d // 2):
+            w = 10000 ** (-2 * i / d)
+            row += [sin(pos * w), cos(pos * w)]
+        rows.append(row)
+    return rows
+```
+hint: Loop over positions, then over pair indices `i`; each pair contributes a sine and a cosine of the same angle.
+solution: The entries come in (sine, cosine) pairs that share an angle, which is why each row has squared norm $d/2$. The starter returns all zeros, so it fails the position-0 test, where every cosine is 1.
+
+@practice code
+prompt: Write `analogy(a, b, c, table)` where `table` maps words to 2D vectors (tuples). Compute the target vector `table[b] - table[a] + table[c]` and return the word, other than `a`, `b` and `c`, whose vector has the highest cosine similarity with the target. Ignore words whose vector is zero.
+starter:
+```python
+def analogy(a, b, c, table):
+    return a
+```
+tests:
+```python
+T = {'man': (0, 1), 'woman': (0, -1), 'king': (1, 1),
+     'queen': (1, -1), 'apple': (-1, 0)}
+assert analogy('man', 'king', 'woman', T) == 'queen'
+assert analogy('king', 'man', 'queen', T) == 'woman'
+assert analogy('apple', 'king', 'woman', T) == 'queen'
+T2 = dict(T, pear=(-2, 0))
+assert analogy('man', 'king', 'woman', T2) == 'queen'
+```
+model:
+```python
+from math import sqrt
+
+
+def analogy(a, b, c, table):
+    """Nearest word by cosine similarity to table[b] - table[a] + table[c]."""
+    target = [y - x + z for x, y, z in zip(table[a], table[b], table[c])]
+
+    def cosine(u, v):
+        nu = sqrt(sum(p * p for p in u))
+        nv = sqrt(sum(p * p for p in v))
+        return sum(p * q for p, q in zip(u, v)) / (nu * nv)
+
+    best, best_sim = None, None
+    for word, vec in table.items():
+        if word in (a, b, c) or all(x == 0 for x in vec):
+            continue
+        sim = cosine(target, vec)
+        if best_sim is None or sim > best_sim:
+            best, best_sim = word, sim
+    return best
+```
+hint: Compute the target vector, then scan the other words keeping the one with the largest cosine similarity.
+solution: Cosine similarity compares directions, so the word `pear`, whose vector is long, does not win by length alone. The query words are excluded because the target is often closest to one of them.
+
+@quiz mc
+prompt: Why does a transformer that uses self-attention need positional encodings?
+choice*: Self-attention is permutation equivariant, so without added positions it cannot tell the order of the tokens.
+choice: Self-attention can only process sequences of a fixed length.
+choice: Embedding tables do not contain enough parameters to represent word meaning.
+choice: Positional encodings are needed to make the softmax weights sum to 1.
+hint: What happens to the output of self-attention if two input tokens swap places?
+solution: Swapping two input tokens swaps the two corresponding outputs and changes nothing else, so order is invisible unless it is added to the inputs. Self-attention works for any length, and the softmax already normalizes the weights.
+
+@quiz num
+prompt: With $d = 4$ and the sinusoidal encoding of the article, what is the value of the first coordinate of the encoding at position 4? Give your answer to three decimal places.
+answer: -0.757
+tol: 0.001
+check: sin(4)
+hint: The first coordinate is $\sin(\text{pos} \cdot \omega_0)$ with $\omega_0 = 1$.
+solution: The first coordinate is $\sin(4 \cdot 1) = \sin 4 = -0.757$ (the angle is in radians).
+
+@quiz code
+prompt: Write `pe_dot(a, b, d)` that returns the dot product of the sinusoidal encodings (dimension `d`, even) of positions `a` and `b`, computed without building the vectors, using the identity that the dot product equals the sum over `i` from 0 to `d // 2 - 1` of `cos((a - b) * w)` with `w = 10000 ** (-2 * i / d)`.
+starter:
+```python
+def pe_dot(a, b, d):
+    return 0.0
+```
+tests:
+```python
+from math import sin, cos
+
+def pe(pos, d):
+    row = []
+    for i in range(d // 2):
+        w = 10000 ** (-2 * i / d)
+        row += [sin(pos * w), cos(pos * w)]
+    return row
+
+def dot(u, v):
+    return sum(x * y for x, y in zip(u, v))
+
+assert abs(pe_dot(3, 3, 4) - 2.0) < 1e-9
+assert abs(pe_dot(4, 2, 4) - dot(pe(4, 4), pe(2, 4))) < 1e-9
+assert abs(pe_dot(10, 7, 8) - dot(pe(10, 8), pe(7, 8))) < 1e-9
+assert abs(pe_dot(7, 5, 4) - pe_dot(4, 2, 4)) < 1e-9
+assert abs(pe_dot(2, 9, 6) - pe_dot(9, 2, 6)) < 1e-9
+```
+model:
+```python
+from math import cos
+
+
+def pe_dot(a, b, d):
+    """Dot product of two sinusoidal encodings; depends only on a - b."""
+    return sum(cos((a - b) * 10000 ** (-2 * i / d)) for i in range(d // 2))
+```
+hint: Use the identity $\cos(x - y) = \cos x \cos y + \sin x \sin y$ on each sine-cosine pair.
+solution: Each pair contributes $\cos((a - b)\omega_i)$, so the dot product depends only on $a - b$ and is symmetric. The fourth test shows that positions $(7, 5)$ and $(4, 2)$, both two apart, give the same value.

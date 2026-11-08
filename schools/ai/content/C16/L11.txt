@@ -1,0 +1,255 @@
+@lesson
+title: Probabilistic graphical models: Bayesian networks and Markov random fields
+summary: Factor a joint distribution with a Bayesian network, read conditional independence from the graph, answer queries by enumeration, and compute the partition function of a small Markov random field.
+objective: Write the joint distribution of a Bayesian network as a product of conditional probability tables and count its parameters.
+objective: Answer a conditional query in a small network by enumeration and explain explaining away.
+objective: Define a Markov random field by potentials and compute its partition function.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the chapters on directed graphical models (Bayesian networks) and undirected graphical models (Markov random fields).
+
+@article
+A burglar alarm rings. It could be a burglary or an earthquake, and neither is certain. If you then learn that an earthquake occurred, should you still suspect a burglary? Reasoning with several uncertain, related variables needs a joint distribution, and a joint distribution over $n$ binary variables has $2^n - 1$ free numbers: 31 for five variables, over a million for twenty. **Probabilistic graphical models** use a graph to say which variables interact directly, so that the joint distribution is built from small pieces.
+
+### Bayesian networks
+
+A **Bayesian network** is a directed acyclic graph with one node per variable. Each node $X_i$ has parents $\mathrm{pa}(X_i)$ and a **conditional probability table** (CPT) $P(X_i \mid \mathrm{pa}(X_i))$. The joint distribution is the product
+$$P(X_1, \dots, X_n) = \prod_{i=1}^{n} P\big(X_i \mid \mathrm{pa}(X_i)\big).$$
+Each binary node with $m$ parents needs $2^m$ free numbers, one probability for each parent configuration, so a network in which node $i$ has $m_i$ parents has $\sum_i 2^{m_i}$ parameters. Five binary nodes with $0, 1, 2, 1, 2$ parents need $1 + 2 + 4 + 2 + 4 = 13$ numbers instead of 31. The hidden Markov model of the last two lessons is a Bayesian network: a chain of states $z_1 \to z_2 \to \cdots$ with an observation hanging off each state.
+
+Our example has Burglary $B$ and Earthquake $E$ as parents of Alarm $A$ (edges $B \to A$, $E \to A$). Take $P(B{=}1) = 0.1$, $P(E{=}1) = 0.2$ and $P(A{=}1 \mid B, E) = 0.05, 0.3, 0.9, 0.95$ for $(B, E) = (0,0), (0,1), (1,0), (1,1)$.
+
+### Reading independence from the graph
+
+Three small patterns explain everything. In a **chain** $X \to Y \to Z$ and a **fork** $X \leftarrow Y \to Z$, the ends are dependent, but become independent given $Y$. In a **collider** $X \to Y \leftarrow Z$ the ends are independent, but become *dependent* when we condition on $Y$ or on any descendant of $Y$. This is **explaining away**: once the alarm is known to have rung, a burglary and an earthquake compete as explanations. The **d-separation** criterion combines these rules along every path: two sets of variables are conditionally independent given a third if every path between them is blocked.
+
+### Inference by enumeration
+
+To answer a query $P(Q \mid \mathbf{e})$, sum the joint over every variable that is neither the query nor the evidence, then normalize:
+$$P(Q = q \mid \mathbf{e}) = \frac{\sum_{\text{hidden}} P(q, \mathbf{e}, \text{hidden})}{\sum_{q'} \sum_{\text{hidden}} P(q', \mathbf{e}, \text{hidden})}.$$
+For the alarm network and the evidence $A = 1$, the four joint terms with $A = 1$ are
+
+| $B$ | $E$ | $P(B)P(E)P(A{=}1 \mid B, E)$ |
+|---|---|---|
+| 1 | 1 | $0.1 \times 0.2 \times 0.95 = 0.019$ |
+| 1 | 0 | $0.1 \times 0.8 \times 0.90 = 0.072$ |
+| 0 | 1 | $0.9 \times 0.2 \times 0.30 = 0.054$ |
+| 0 | 0 | $0.9 \times 0.8 \times 0.05 = 0.036$ |
+
+Their sum is $P(A{=}1) = 0.181$, so $P(B{=}1 \mid A{=}1) = (0.019 + 0.072)/0.181 = 0.503$, up from the prior $0.1$. If we also learn $E = 1$, only the rows with $E = 1$ remain: $P(B{=}1 \mid A{=}1, E{=}1) = 0.019/(0.019 + 0.054) = 0.260$. The earthquake explains the alarm away, and suspicion of burglary falls from 0.503 to 0.260, yet it remains above the prior of 0.1.
+
+Enumeration costs $2^n$ for $n$ binary variables. **Variable elimination** sums out variables one at a time and reuses intermediate tables, which is exponential only in the width of the elimination order; for trees and chains (such as HMMs) it is linear in $n$, and the forward algorithm is exactly this. Exact inference is NP-hard in general networks, which is why approximate methods (sampling, variational inference) exist.
+
+### Markov random fields
+
+A **Markov random field** (MRF) uses an undirected graph. Instead of conditional probabilities it has nonnegative **potentials** $\phi_c$ on the cliques (fully connected subsets) $c$ of the graph, and
+$$P(\mathbf{x}) = \frac{1}{Z} \prod_{c} \phi_c(\mathbf{x}_c), \qquad Z = \sum_{\mathbf{x}} \prod_{c} \phi_c(\mathbf{x}_c).$$
+The normalizer $Z$ is the **partition function**; potentials are not probabilities, and computing $Z$ is the hard part, since it sums over all $2^n$ configurations. Conditional independence is simple: two sets are independent given a third if removing the third separates them in the graph. By the Hammersley–Clifford theorem, a strictly positive distribution satisfies these independences exactly when it factorizes over the cliques. MRFs suit symmetric interactions such as neighboring pixels in an image, or spins in a magnet.
+
+Take a chain $x_1 - x_2 - x_3$ of binary variables with the same edge potential on each edge, $\phi(a, b) = 2$ if $a = b$ and $1$ otherwise. The eight configurations have unnormalized weights $4, 2, 1, 2, 2, 1, 2, 4$ for $000, 001, 010, 011, 100, 101, 110, 111$, so $Z = 18$, and for instance $P(000) = 4/18 = 0.222$.
+
+### In code
+
+```python
+from itertools import product
+
+def joint(order, parents, cpt, a):
+    p = 1.0
+    for node in order:
+        p1 = cpt[node][tuple(a[q] for q in parents[node])]
+        p *= p1 if a[node] == 1 else 1 - p1
+    return p
+
+order = ["B", "E", "A"]
+parents = {"B": [], "E": [], "A": ["B", "E"]}
+cpt = {"B": {(): 0.1}, "E": {(): 0.2},
+       "A": {(0, 0): 0.05, (0, 1): 0.3, (1, 0): 0.9, (1, 1): 0.95}}
+total = sum(joint(order, parents, cpt, dict(zip(order, v)))
+            for v in product((0, 1), repeat=3) if v[2] == 1)
+print(total)
+```
+
+@example
+title: A query in a chain network
+problem: A network $A \to B \to C$ has $P(A{=}1) = 0.4$, $P(B{=}1 \mid A{=}1) = 0.9$, $P(B{=}1 \mid A{=}0) = 0.2$, $P(C{=}1 \mid B{=}1) = 0.5$ and $P(C{=}1 \mid B{=}0) = 0.1$. Find $P(A{=}1 \mid C{=}1)$ by enumeration.
+step: The joint is $P(A)P(B \mid A)P(C \mid B)$. Enumerate $B$ for each value of $A$ with $C = 1$.
+step: For $A = 1$: $0.4 \times [\,0.9 \times 0.5 + 0.1 \times 0.1\,] = 0.4 \times 0.46 = 0.184$.
+step: For $A = 0$: $0.6 \times [\,0.2 \times 0.5 + 0.8 \times 0.1\,] = 0.6 \times 0.18 = 0.108$.
+step: Normalize: $P(C{=}1) = 0.184 + 0.108 = 0.292$, so $P(A{=}1 \mid C{=}1) = 0.184 / 0.292 = 0.630$, up from the prior $0.4$.
+answer: $P(A{=}1 \mid C{=}1) \approx 0.630$.
+
+@example
+title: Explaining away with a second cause
+problem: In the alarm network, find $P(E{=}1 \mid A{=}1, B{=}1)$ and compare it with the prior $P(E{=}1) = 0.2$.
+step: With $A = 1$ and $B = 1$ fixed, the joint terms for $E = 1$ and $E = 0$ are $0.1 \times 0.2 \times 0.95 = 0.019$ and $0.1 \times 0.8 \times 0.9 = 0.072$.
+step: Normalize: $0.019 / (0.019 + 0.072) = 0.209$.
+step: Compare: once a burglary is known, the alarm is already explained, so the earthquake is hardly more probable than before (0.209 against the prior 0.2). Without the burglary evidence, the alarm raises $P(E{=}1)$ much more.
+answer: $P(E{=}1 \mid A{=}1, B{=}1) \approx 0.209$, barely above the prior of $0.2$.
+
+@mistakes
+- Treating CPT entries as joint probabilities: each entry is a conditional probability, and the joint is the product over all nodes.
+- Concluding that independent causes stay independent after observing their common effect: conditioning on a collider makes its parents dependent.
+- Forgetting to normalize: the sum of joint terms with the evidence fixed is $P(\mathbf{e})$, not 1.
+- Reading MRF potentials as probabilities: they only need to be nonnegative, and the partition function $Z$ turns the product into a distribution.
+
+@practice num
+prompt: In a network $A \to B \to C$ of binary variables, $P(A{=}1) = 0.3$, $P(B{=}1 \mid A{=}1) = 0.8$, $P(B{=}1 \mid A{=}0) = 0.1$, $P(C{=}1 \mid B{=}1) = 0.7$ and $P(C{=}1 \mid B{=}0) = 0.2$. What is the joint probability $P(A{=}1, B{=}0, C{=}1)$?
+answer: 0.012
+tol: 0.0001
+check: 0.3 * (1 - 0.8) * 0.2
+hint: Multiply $P(A{=}1)$, then $P(B{=}0 \mid A{=}1) = 1 - 0.8$, then $P(C{=}1 \mid B{=}0)$.
+solution: $P(A{=}1) = 0.3$, $P(B{=}0 \mid A{=}1) = 0.2$ and $P(C{=}1 \mid B{=}0) = 0.2$, so the joint is $0.3 \times 0.2 \times 0.2 = 0.012$.
+
+@practice mc
+prompt: In a Bayesian network with the edges $X \to Z$ and $Y \to Z$ (so $Z$ is a collider), $X$ and $Y$ have no common ancestor. Which statement is correct?
+choice*: $X$ and $Y$ are independent, but they become dependent once $Z$ is observed.
+choice: $X$ and $Y$ are dependent, and they become independent once $Z$ is observed.
+choice: $X$ and $Y$ are independent, and they stay independent after $Z$ is observed.
+choice: $X$ and $Y$ are dependent whether or not $Z$ is observed.
+hint: Recall the three patterns: chain, fork and collider. Which one is blocked until the middle node is observed?
+solution: A collider blocks the path between its parents unless the collider (or a descendant) is observed, so $X$ and $Y$ are marginally independent. Observing $Z$ opens the path, creating dependence: the explaining-away effect. The other choices describe a chain or fork, or ignore conditioning.
+
+@practice code
+prompt: Write `joint(order, parents, cpt, assignment)` that returns the joint probability of a full assignment of binary variables in a Bayesian network. `order` is the list of node names (parents before children), `parents` maps each node to the list of its parents, `cpt[node]` maps the tuple of parent values (in the order given by `parents[node]`) to $P(\text{node} = 1 \mid \text{parents})$, and `assignment` maps each node to 0 or 1. For example, with `order = ["A"]`, `parents = {"A": []}`, `cpt = {"A": {(): 0.3}}`, `joint(order, parents, cpt, {"A": 0})` returns `0.7`.
+starter:
+```python
+def joint(order, parents, cpt, assignment):
+    return 1.0
+```
+tests:
+```python
+assert abs(joint(["A"], {"A": []}, {"A": {(): 0.3}}, {"A": 0}) - 0.7) < 1e-12
+order = ["B", "E", "A"]
+parents = {"B": [], "E": [], "A": ["B", "E"]}
+cpt = {"B": {(): 0.1}, "E": {(): 0.2},
+       "A": {(0, 0): 0.05, (0, 1): 0.3, (1, 0): 0.9, (1, 1): 0.95}}
+assert abs(joint(order, parents, cpt, {"B": 1, "E": 0, "A": 1}) - 0.072) < 1e-12
+assert abs(joint(order, parents, cpt, {"B": 0, "E": 0, "A": 0}) - 0.684) < 1e-12
+assert abs(joint(order, parents, cpt, {"B": 0, "E": 1, "A": 1}) - 0.054) < 1e-12
+order2 = ["A", "B", "C"]
+parents2 = {"A": [], "B": ["A"], "C": ["B"]}
+cpt2 = {"A": {(): 0.3}, "B": {(1,): 0.8, (0,): 0.1}, "C": {(1,): 0.7, (0,): 0.2}}
+assert abs(joint(order2, parents2, cpt2, {"A": 1, "B": 0, "C": 1}) - 0.012) < 1e-12
+```
+model:
+```python
+def joint(order, parents, cpt, assignment):
+    """Joint probability of a full assignment in a binary Bayesian network."""
+    prob = 1.0
+    for node in order:
+        key = tuple(assignment[p] for p in parents[node])
+        p_one = cpt[node][key]
+        prob *= p_one if assignment[node] == 1 else 1.0 - p_one
+    return prob
+```
+hint: For each node, look up $P(\text{node}=1)$ using the values of its parents, use `1 - p` if the node is 0 in the assignment, and multiply over all nodes.
+solution: Each node contributes one factor, either $p$ or $1 - p$, according to its value. The second test has a node with two parents, and the third checks that a value of 0 uses the complement.
+
+@practice code
+prompt: Write `query(order, parents, cpt, target, evidence)` that returns $P(\text{target} = 1 \mid \text{evidence})$ in a binary Bayesian network by enumeration: sum the joint probability over all assignments of all variables that agree with `evidence` (a dictionary from node to 0 or 1, possibly empty), separately for target equal to 1 and to 0, and normalize. The network is given as in the joint-probability function: `order`, `parents` and `cpt[node][parent_values]` $= P(\text{node}=1 \mid \text{parents})$. The target is not in the evidence. For example, for the single node `"A"` with $P(A{=}1) = 0.3$, `query(["A"], {"A": []}, {"A": {(): 0.3}}, "A", {})` returns `0.3`.
+starter:
+```python
+def query(order, parents, cpt, target, evidence):
+    return 0.5
+```
+tests:
+```python
+assert abs(query(["A"], {"A": []}, {"A": {(): 0.3}}, "A", {}) - 0.3) < 1e-12
+order = ["B", "E", "A"]
+parents = {"B": [], "E": [], "A": ["B", "E"]}
+cpt = {"B": {(): 0.1}, "E": {(): 0.2},
+       "A": {(0, 0): 0.05, (0, 1): 0.3, (1, 0): 0.9, (1, 1): 0.95}}
+assert abs(query(order, parents, cpt, "B", {"A": 1}) - 0.5027624309392266) < 1e-9
+assert abs(query(order, parents, cpt, "B", {"A": 1, "E": 1}) - 0.2602739726027397) < 1e-9
+assert abs(query(order, parents, cpt, "A", {}) - 0.181) < 1e-9
+assert abs(query(order, parents, cpt, "B", {"E": 1}) - 0.1) < 1e-9
+order2 = ["A", "B", "C"]
+parents2 = {"A": [], "B": ["A"], "C": ["B"]}
+cpt2 = {"A": {(): 0.3}, "B": {(1,): 0.8, (0,): 0.1}, "C": {(1,): 0.7, (0,): 0.2}}
+assert abs(query(order2, parents2, cpt2, "A", {"C": 1}) - 0.5070422535211268) < 1e-9
+assert abs(query(order2, parents2, cpt2, "A", {"B": 1, "C": 1}) - 0.7741935483870968) < 1e-9
+```
+model:
+```python
+from itertools import product
+
+
+def query(order, parents, cpt, target, evidence):
+    """P(target = 1 | evidence) by enumerating all assignments."""
+    totals = [0.0, 0.0]
+    for values in product((0, 1), repeat=len(order)):
+        a = dict(zip(order, values))
+        if any(a[k] != v for k, v in evidence.items()):
+            continue
+        prob = 1.0
+        for node in order:
+            key = tuple(a[p] for p in parents[node])
+            p_one = cpt[node][key]
+            prob *= p_one if a[node] == 1 else 1.0 - p_one
+        totals[a[target]] += prob
+    return totals[1] / (totals[0] + totals[1])
+```
+hint: Loop over all $2^n$ assignments, skip those that disagree with the evidence, add each joint probability to the total for the target's value, then divide the target-1 total by the sum of both totals.
+solution: Enumeration sums the joint over every assignment consistent with the evidence, for each value of the target, and then normalizes. The fifth test shows that $B$ is independent of $E$ (the answer is the prior 0.1). In the last two tests, observing $B$ as well as $C$ changes the answer for $A$ from 0.507 to 0.774, which equals $P(A{=}1 \mid B{=}1)$: given $B$, the node $C$ adds nothing about $A$.
+
+@practice num
+prompt: In the network $A \to B \to C$ with $P(A{=}1) = 0.3$, $P(B{=}1 \mid A{=}1) = 0.8$, $P(B{=}1 \mid A{=}0) = 0.1$, $P(C{=}1 \mid B{=}1) = 0.7$ and $P(C{=}1 \mid B{=}0) = 0.2$, what is $P(A{=}1 \mid C{=}1)$? Give your answer to three decimal places.
+answer: 0.507
+tol: 0.001
+check: (0.3 * (0.8 * 0.7 + 0.2 * 0.2)) / (0.3 * (0.8 * 0.7 + 0.2 * 0.2) + 0.7 * (0.1 * 0.7 + 0.9 * 0.2))
+hint: Sum over $B$ in the joint for $A = 1$ and for $A = 0$, with $C = 1$, and normalize.
+solution: For $A = 1$: $0.3 \times (0.8 \times 0.7 + 0.2 \times 0.2) = 0.3 \times 0.6 = 0.18$. For $A = 0$: $0.7 \times (0.1 \times 0.7 + 0.9 \times 0.2) = 0.7 \times 0.25 = 0.175$. So $P(A{=}1 \mid C{=}1) = 0.18/0.355 \approx 0.507$.
+
+@quiz text
+prompt: What does this program print?
+```python
+p_a = 0.1
+p_b_given_a = {1: 0.9, 0: 0.2}
+p_b = p_a * p_b_given_a[1] + (1 - p_a) * p_b_given_a[0]
+print(round(p_a * p_b_given_a[1] / p_b, 4))
+```
+answer: 0.3333
+check: run("p_a = 0.1\np_b_given_a = {1: 0.9, 0: 0.2}\np_b = p_a * p_b_given_a[1] + (1 - p_a) * p_b_given_a[0]\nprint(round(p_a * p_b_given_a[1] / p_b, 4))")
+hint: The variable `p_b` is the total probability of $B$; the printed value is Bayes' rule for $P(A{=}1 \mid B{=}1)$.
+solution: $P(B{=}1) = 0.1 \times 0.9 + 0.9 \times 0.2 = 0.09 + 0.18 = 0.27$, and $P(A{=}1 \mid B{=}1) = 0.09/0.27 = 1/3$. The program prints `0.3333`.
+
+@quiz code
+prompt: Write `partition_function(n, potentials)` that returns the partition function $Z$ of a pairwise Markov random field over `n` binary variables numbered `0` to `n - 1`. `potentials` is a dictionary mapping an edge `(i, j)` to a 2 by 2 table `phi` of nonnegative numbers, where `phi[a][b]` is the potential when variable `i` equals `a` and variable `j` equals `b`. $Z$ is the sum over all $2^n$ assignments of the product of the edge potentials; with no edges the product is 1. For example, `partition_function(2, {(0, 1): [[1, 2], [3, 4]]})` returns `10`.
+starter:
+```python
+def partition_function(n, potentials):
+    return 0.0
+```
+tests:
+```python
+eq = [[2, 1], [1, 2]]
+assert abs(partition_function(2, {(0, 1): [[1, 2], [3, 4]]}) - 10) < 1e-12
+assert abs(partition_function(3, {(0, 1): eq, (1, 2): eq}) - 18) < 1e-12
+assert abs(partition_function(3, {(0, 1): eq, (0, 2): eq, (1, 2): eq}) - 28) < 1e-12
+assert abs(partition_function(2, {}) - 4) < 1e-12
+assert abs(partition_function(3, {(0, 1): [[1, 2], [3, 4]], (1, 2): [[2, 0], [1, 3]]}) - 32) < 1e-12
+```
+model:
+```python
+from itertools import product
+
+
+def partition_function(n, potentials):
+    """Sum over all binary assignments of the product of edge potentials."""
+    total = 0.0
+    for x in product((0, 1), repeat=n):
+        weight = 1.0
+        for (i, j), phi in potentials.items():
+            weight *= phi[x[i]][x[j]]
+        total += weight
+    return total
+```
+hint: Loop over all assignments `x` of length `n`; for each, multiply `phi[x[i]][x[j]]` over the edges, and add the product to the total.
+solution: The partition function is the sum of unnormalized weights over all configurations. With no edges every configuration has weight 1, giving $2^n$ (the fourth test). The first test has an asymmetric table, which checks that `phi[a][b]` is indexed by the value of `i` first.
+
+@quiz ms
+prompt: Which statements about graphical models are true? Select all that apply.
+choice*: A Bayesian network over $n$ binary variables whose nodes have at most $m$ parents needs at most $n 2^m$ numbers, far fewer than $2^n - 1$ when $m$ is small.
+choice*: In a chain $X \to Y \to Z$, $X$ and $Z$ are conditionally independent given $Y$.
+choice*: Computing the partition function of a general Markov random field requires summing over exponentially many configurations.
+choice: In an MRF, the potentials of the cliques are conditional probabilities and must each sum to 1.
+hint: Count the parameters of a CPT, recall the chain pattern, and recall what $Z$ normalizes.
+solution: Each node has a table with $2^m$ free entries, so $n 2^m$ at most. Observing the middle of a chain blocks the path. $Z$ sums over all $2^n$ configurations, which is why exact MRF inference is hard in general. Potentials only need to be nonnegative; $Z$ does the normalizing.

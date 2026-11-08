@@ -1,0 +1,210 @@
+@lesson
+title: Self-supervised and contrastive learning
+summary: Build training signals from unlabeled data with next-token, masked-token and contrastive objectives, and compute the InfoNCE loss by hand and in code.
+objective: Explain how self-supervised learning creates labels from the data itself and name the main pretext tasks.
+objective: Compute the InfoNCE (contrastive) loss from similarities, and describe the roles of positives, negatives and temperature.
+objective: Build next-token and masked-token training examples from raw sequences.
+objective: Implement an in-batch contrastive loss from scratch.
+reading: Dive into Deep Learning, the chapters on pretraining (BERT and large-scale language-model pretraining); for contrastive learning, read a survey or lecture notes on SimCLR and InfoNCE.
+@article
+Labels are expensive: someone has to mark each image or sentence. Raw data, though, is nearly free. **Self-supervised learning** invents a prediction problem whose answer is hidden inside the data itself, trains a network to solve it, and keeps the learned representation. The invented problem is called a **pretext task**.
+
+### Predicting parts of the data
+Two pretext tasks dominate language. In **next-token prediction** the model reads a prefix and predicts the following token; from a sequence of $n$ tokens we get $n - 1$ training pairs for free. This is the objective of autoregressive models such as GPT-style networks (the GPT-3 paper is Brown and colleagues, 2020). In **masked-token prediction**, as in BERT (Devlin and colleagues, 2018), a few tokens are replaced by a special `[MASK]` symbol and the model predicts the originals from both sides. For the sentence "the cat sat down" with positions 1 and 3 masked, the input is "the [MASK] sat [MASK]" and the labels are "cat" and "down"; the loss is the average negative log-likelihood over masked positions only. If the model gives the right tokens probabilities 0.5 and 0.2, the loss is $(-\ln 0.5 - \ln 0.2)/2 = 1.151$ nats.
+
+### Contrastive learning
+For images there is no obvious "next token". **Contrastive learning** instead says: two *views* of the same image should have similar representations, and views of different images should not. SimCLR (Chen and colleagues, 2020) makes two views by random augmentations (crops, color changes), passes both through an encoder, and pulls the pair together while pushing apart the other examples in the batch.
+
+Given an anchor representation $\mathbf{z}$, one positive $\mathbf{z}^+$ and negatives $\mathbf{z}^-_1, \dots, \mathbf{z}^-_K$, with cosine similarity $s(\cdot, \cdot)$ and a **temperature** $\tau > 0$, the **InfoNCE** loss (van den Oord and colleagues, 2018) is
+
+$$L = -\log \frac{\exp(s(\mathbf{z}, \mathbf{z}^+)/\tau)}{\exp(s(\mathbf{z}, \mathbf{z}^+)/\tau) + \sum_{k=1}^{K}\exp(s(\mathbf{z}, \mathbf{z}^-_k)/\tau)}.$$
+
+It is the cross-entropy of a classifier that must pick the positive among $K + 1$ candidates. With $K + 1 = N$ candidates the loss is always at least 0, and when all similarities are equal it is exactly $\ln N$: for $N = 4$, $L = \ln 4 = 1.386$. A smaller $\tau$ sharpens the softmax and focuses the loss on the hardest negatives; a larger $\tau$ treats all negatives alike. The negative of the loss also gives a lower bound on mutual information between the views: $I \ge \log N - L$.
+
+In a batch of $B$ examples with views $\mathbf{z}_i$ and $\mathbf{z}'_i$, a simple version uses the other examples' second views as negatives, and averages the loss over the batch. Why do we need negatives at all? A loss that only pulls positives together is minimized by mapping every input to the same vector, a **collapse**. Negatives prevent this by making different inputs repel. Other methods avoid collapse without negatives, with other mechanisms, but those are beyond this lesson.
+
+### What the choices mean
+The augmentations define what the representation will ignore: if two crops of one image are positives, the encoder learns to ignore position and scale and to keep what is shared. Choosing augmentations is therefore a design decision that injects assumptions, not a neutral step. After pretraining, the encoder is reused for tasks with few labels by fine-tuning or by training a small classifier on the frozen features, the topic of the next lesson.
+
+### In code
+```python
+from math import exp, log, sqrt
+
+def cosine(u, v):
+    dot = sum(a * b for a, b in zip(u, v))
+    return dot / sqrt(sum(a * a for a in u) * sum(b * b for b in v))
+
+def info_nce(anchor, positive, negatives, tau):
+    """InfoNCE loss for one anchor, one positive and several negatives."""
+    logits = [cosine(anchor, positive) / tau]
+    logits += [cosine(anchor, n) / tau for n in negatives]
+    m = max(logits)
+    log_sum = m + log(sum(exp(a - m) for a in logits))
+    return log_sum - logits[0]
+
+print(info_nce([1, 0], [3, 4], [[0, 1], [-1, 0]], 0.5))
+```
+
+In PyTorch, the batch version is a matrix of similarities followed by `cross_entropy` with the diagonal as labels.
+
+@example
+title: InfoNCE by hand
+problem: An anchor is $(1, 0)$, its positive is $(3, 4)$ and the two negatives are $(0, 1)$ and $(-1, 0)$. With temperature $\tau = 0.5$, compute the InfoNCE loss.
+step: Cosine similarities: with the positive, $3/5 = 0.6$; with $(0, 1)$, $0$; with $(-1, 0)$, $-1$.
+step: Divide by $\tau$ to get the logits $1.2$, $0$ and $-2$. Exponentiate: $e^{1.2} = 3.3201$, $e^0 = 1$ and $e^{-2} = 0.1353$, with sum $4.4555$.
+step: The softmax probability of the positive is $3.3201/4.4555 = 0.7452$.
+step: The loss is $-\ln 0.7452 = 0.2941$.
+answer: $L \approx 0.2941$.
+
+@example
+title: Building masked and next-token examples
+problem: From the token sequence $(5, 8, 2, 9)$, list the next-token training pairs, and give the masked-token input and labels when position 2 is masked with the symbol $M$.
+step: For next-token prediction, each prefix predicts the following token: $(5) \to 8$, $(5, 8) \to 2$ and $(5, 8, 2) \to 9$. A sequence of 4 tokens gives 3 pairs.
+step: For masked prediction, replace the token at position 2 (counting from 0), which is 2, by $M$: the input is $(5, 8, M, 9)$.
+step: The label is the original token at the masked position: 2. Unmasked positions have no label and contribute no loss.
+answer: Pairs: $(5)\to 8$, $(5,8)\to 2$, $(5,8,2)\to 9$. Masked input $(5, 8, M, 9)$ with label 2 at position 2.
+
+@mistakes
+- Thinking self-supervised learning needs no human decisions. The pretext task and the augmentations are human choices that decide what the model learns to ignore.
+- Treating other images of the same class as negatives without noticing that they can be semantically similar (false negatives), which can hurt the representation.
+- Averaging the loss over all positions in masked-token prediction instead of over the masked positions only.
+- Dropping the negatives and keeping only the positive pairs. The loss is then minimized by collapsing every input to one vector.
+
+@practice num
+prompt: An InfoNCE loss uses temperature $\tau = 0.1$. The similarity of the anchor with its positive is $0.2$ and its similarity with the single negative is $0.8$. What is the loss? Give your answer to two decimal places.
+answer: 6.0
+tol: 0.01
+check: -log(exp(0.2 / 0.1) / (exp(0.2 / 0.1) + exp(0.8 / 0.1)))
+hint: The logits are $2$ and $8$; the loss is $\ln(1 + e^{6})$.
+solution: The probability of the positive is $e^2/(e^2 + e^8)$, so the loss is $-\ln\frac{1}{1 + e^{6}} = \ln(1 + e^6) = 6.0025$. A negative that looks more similar than the positive is punished heavily at low temperature.
+
+@practice num
+prompt: Two augmented views of one image have representations $(1, 2)$ and $(2, 1)$. What is their cosine similarity?
+answer: 0.8
+tol: 0.001
+check: (1 * 2 + 2 * 1) / (sqrt(5) * sqrt(5))
+hint: Both vectors have norm $\sqrt 5$.
+solution: The dot product is $2 + 2 = 4$ and the product of the norms is $\sqrt 5 \cdot \sqrt 5 = 5$, so the cosine is $0.8$.
+
+@practice text
+prompt: What does this program print?
+```python
+toks = ['the', 'cat', 'sat', 'down']
+masked = ['[M]' if i in (1, 3) else t for i, t in enumerate(toks)]
+print(masked)
+```
+answer: ['the', '[M]', 'sat', '[M]']
+check: run("toks = ['the', 'cat', 'sat', 'down']\nmasked = ['[M]' if i in (1, 3) else t for i, t in enumerate(toks)]\nprint(masked)")
+hint: Positions count from 0, so positions 1 and 3 are the second and fourth words.
+solution: The words at positions 1 and 3, `cat` and `down`, are replaced by `[M]`, so it prints `['the', '[M]', 'sat', '[M]']`.
+
+@practice code
+prompt: Write `next_token_pairs(seq, n)` that returns the list of `(context, target)` pairs for next-token prediction. For each position `i` from 1 to `len(seq) - 1`, the target is `seq[i]` and the context is the list of at most `n` tokens immediately before it, `seq[max(0, i - n):i]`. For example, `next_token_pairs([5, 8, 2], 5)` returns `[([5], 8), ([5, 8], 2)]`.
+starter:
+```python
+def next_token_pairs(seq, n):
+    return []
+```
+tests:
+```python
+assert next_token_pairs([5, 8, 2], 5) == [([5], 8), ([5, 8], 2)]
+assert next_token_pairs([1, 2, 3, 4], 2) == [([1], 2), ([1, 2], 3), ([2, 3], 4)]
+assert next_token_pairs([7], 3) == []
+assert next_token_pairs([], 3) == []
+assert len(next_token_pairs(list(range(10)), 4)) == 9
+```
+model:
+```python
+def next_token_pairs(seq, n):
+    """(context, target) pairs with contexts of at most n previous tokens."""
+    return [(list(seq[max(0, i - n):i]), seq[i]) for i in range(1, len(seq))]
+```
+hint: Loop over positions starting at 1, and slice the context with `max(0, i - n)` so it never starts before the sequence.
+solution: Each position after the first is a target, and its context is a window of at most `n` earlier tokens. The second test has a window of 2, which cuts off the earliest token when $i \ge 3$.
+
+@practice code
+prompt: Write `batch_contrastive_loss(Z1, Z2, tau)` where `Z1` and `Z2` are lists of $B$ vectors (the two views of $B$ examples). For each `i`, the logits are the cosine similarities of `Z1[i]` with every `Z2[j]`, divided by `tau`; the loss for `i` is the negative log of the softmax probability of index `i` (the positive). Return the average loss over `i`. Use the log-sum-exp form with the maximum subtracted.
+starter:
+```python
+def batch_contrastive_loss(Z1, Z2, tau):
+    return 0.0
+```
+tests:
+```python
+I2 = [[1, 0], [0, 1]]
+assert abs(batch_contrastive_loss(I2, I2, 1.0) - 0.3132617) < 1e-6
+assert abs(batch_contrastive_loss(I2, [[0, 1], [1, 0]], 1.0) - 1.3132617) < 1e-6
+assert abs(batch_contrastive_loss(I2, [[1, 0.2], [0.1, 1]], 0.5) - 0.1713488) < 1e-6
+Z1 = [[1, 1], [1, -1], [2, 0]]
+Z2 = [[3, 2], [1, -2], [1, 0.5]]
+assert abs(batch_contrastive_loss(Z1, Z2, 0.2) - 0.4300280) < 1e-6
+assert abs(batch_contrastive_loss([[1, 2]], [[5, 1]], 0.1)) < 1e-9
+```
+model:
+```python
+from math import exp, log, sqrt
+
+
+def batch_contrastive_loss(Z1, Z2, tau):
+    """Average cross-entropy of picking the matching view in the batch."""
+    def cosine(u, v):
+        dot = sum(a * b for a, b in zip(u, v))
+        return dot / sqrt(sum(a * a for a in u) * sum(b * b for b in v))
+
+    total = 0.0
+    for i, z in enumerate(Z1):
+        logits = [cosine(z, w) / tau for w in Z2]
+        m = max(logits)
+        log_sum = m + log(sum(exp(a - m) for a in logits))
+        total += log_sum - logits[i]
+    return total / len(Z1)
+```
+hint: For each row compute all similarities to the second view, then take log-sum-exp minus the logit of the matching index.
+solution: This is a cross-entropy loss where the correct class of row `i` is column `i`. With a batch of one there are no negatives, so the loss is exactly 0, as the last test checks.
+
+@quiz mc
+prompt: In SimCLR-style contrastive learning, what makes two inputs a positive pair?
+choice*: They are two different random augmentations of the same underlying example.
+choice: They are two different examples that share the same human-provided class label.
+choice: They are the same augmented view fed twice through the encoder with identical weights and no randomness.
+choice: They are the two examples in the batch with the largest cosine similarity.
+hint: Self-supervised learning does not use class labels.
+solution: Positives are two views of one example, produced by random augmentation, so no labels are needed. Pairing examples by class label is the supervised variant, identical inputs give no learning signal about invariance, and choosing the most similar examples would make the task circular.
+
+@quiz num
+prompt: An InfoNCE loss with temperature $\tau = 1$ has a positive similarity of $0.6$ and two negatives with similarity $0$. What is the loss? Give your answer to three decimal places.
+answer: 0.741
+tol: 0.001
+check: -log(exp(0.6) / (exp(0.6) + 2))
+hint: The softmax denominator is $e^{0.6} + 1 + 1$.
+solution: The loss is $\ln\frac{e^{0.6} + 2}{e^{0.6}} = \ln(1 + 2e^{-0.6}) = \ln 2.0976 = 0.741$.
+
+@quiz code
+prompt: Write `make_mlm_example(tokens, positions, mask_token)` that returns `(inputs, labels)`. `inputs` is a copy of `tokens` with the tokens at the given `positions` replaced by `mask_token`. `labels` is a list of the same length whose entry is the original token at each masked position and `None` elsewhere. The original list must not be modified. For example, `make_mlm_example([5, 8, 2], [1], 0)` returns `([5, 0, 2], [None, 8, None])`.
+starter:
+```python
+def make_mlm_example(tokens, positions, mask_token):
+    return list(tokens), [None] * len(tokens)
+```
+tests:
+```python
+assert make_mlm_example([5, 8, 2], [1], 0) == ([5, 0, 2], [None, 8, None])
+t = [1, 2, 3, 4]
+assert make_mlm_example(t, [0, 3], -1) == ([-1, 2, 3, -1], [1, None, None, 4])
+assert t == [1, 2, 3, 4]
+assert make_mlm_example(t, [], -1) == ([1, 2, 3, 4], [None, None, None, None])
+assert make_mlm_example(['a', 'b'], [1, 0], '[M]') == (['[M]', '[M]'], ['a', 'b'])
+```
+model:
+```python
+def make_mlm_example(tokens, positions, mask_token):
+    """Masked-token input and labels; labels are None at unmasked positions."""
+    inputs = list(tokens)
+    labels = [None] * len(tokens)
+    for i in positions:
+        labels[i] = tokens[i]
+        inputs[i] = mask_token
+    return inputs, labels
+```
+hint: Copy the list first, then for each masked position record the original token as the label and overwrite the input.
+solution: Reading the label from the original `tokens` list, not from the modified copy, matters when positions repeat or overlap. The test with the shared list checks that the function does not modify its argument.

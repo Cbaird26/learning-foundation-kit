@@ -1,0 +1,219 @@
+@lesson
+title: Images as arrays: pixels, channels and color spaces
+summary: Represent images as grids of integers, convert color to grayscale, and write point operations such as thresholding, contrast stretching and histogram equalization from scratch.
+objective: Describe grayscale and color images as arrays and compute their shapes and storage sizes.
+objective: Convert RGB pixels to grayscale and to the saturation and value of the HSV color space.
+objective: Implement thresholding, contrast stretching and histogram equalization in plain Python.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the chapter on image processing, the section on point operators, and the part of the image formation chapter on color.
+@article
+A photo looks like a scene, but to a program it is only numbers. Here is a tiny grayscale image with 3 rows and 4 columns, written as a list of rows:
+
+```text
+[[ 12,  40, 200, 220],
+ [ 15,  45, 210, 230],
+ [ 10,  38, 190, 250]]
+```
+
+Each number is a **pixel** value: the brightness measured at one spot, where 0 is black and 255 is white. This image is dark on the left and bright on the right, and you can see that from the numbers alone. Everything in computer vision starts from that fact: an image is an array, and vision is computing with arrays.
+
+### Conventions used in this course
+
+A grayscale image is a list of rows of integers from 0 to 255 (8 bits per pixel). It is **row-major**: `img[r][c]` is the pixel in row `r` (counted from the top, starting at 0) and column `c` (from the left). The shape is (height, width) $=$ (`len(img)`, `len(img[0])`). A color image has **channels**: the common RGB image stores three numbers per pixel, red, green and blue, so its shape is (height, width, 3), and in our code a pixel is a tuple `(r, g, b)`. Storage is $H \times W \times C$ bytes at 8 bits per value, so a 1080 by 1920 RGB image takes $1080 \cdot 1920 \cdot 3 = 6{,}220{,}800$ bytes before compression. Real libraries often use floats between 0 and 1 instead; dividing by 255 converts.
+
+### Color to gray
+
+Human vision is more sensitive to green than to blue, so a good gray value is a weighted sum rather than a plain average. A standard choice (the luma weights of ITU-R BT.601) is
+
+$$Y = 0.299\,R + 0.587\,G + 0.114\,B .$$
+
+The weights sum to 1, so white $(255,255,255)$ stays 255. Pure red $(255, 0, 0)$ gives $0.299 \cdot 255 = 76.245$, pure green gives $149.685$ and pure blue $29.07$: the three "equally bright" primaries look very different in gray.
+
+Other **color spaces** describe the same color with different numbers. In HSV, the value is $V = \max(R,G,B)$, the saturation is $S = (\max - \min)/\max$ (0 for gray, 1 for a pure color), and the hue is an angle on the color wheel. HSV separates "which color" from "how bright", which makes some color-based segmentation easier; YCbCr, used by many video and JPEG formats, separates luma from two color-difference channels.
+
+### Point operations
+
+A **point operation** computes each output pixel from the input pixel at the same place only. The simplest is **thresholding**: output 1 where $p \ge t$ and 0 elsewhere, which splits an image into foreground and background. **Contrast stretching** maps the darkest pixel to 0 and the brightest to 255 linearly:
+
+$$p' = \frac{p - p_{\min}}{p_{\max} - p_{\min}} \cdot 255 .$$
+
+For the image above $p_{\min} = 10$ and $p_{\max} = 250$, so $p = 100$ becomes $90/240 \cdot 255 = 95.625$.
+
+A **histogram** counts how many pixels take each value. **Histogram equalization** uses the cumulative histogram to spread the values out: with $N$ pixels, $\operatorname{cdf}(v)$ the number of pixels with value at most $v$, and $\operatorname{cdf}_{\min}$ the smallest nonzero cdf value, each value $v$ is sent to $\operatorname{round}\big((\operatorname{cdf}(v) - \operatorname{cdf}_{\min})/(N - \operatorname{cdf}_{\min}) \cdot (L-1)\big)$ for $L$ gray levels.
+
+### In code
+
+```python
+def to_gray(rgb):
+    """rgb: list of rows of (r, g, b) tuples; returns rows of floats."""
+    return [[0.299 * r + 0.587 * g + 0.114 * b for r, g, b in row]
+            for row in rgb]
+
+def histogram(img, levels=256):
+    counts = [0] * levels
+    for row in img:
+        for p in row:
+            counts[p] += 1
+    return counts
+
+def threshold(img, t):
+    return [[1 if p >= t else 0 for p in row] for row in img]
+
+img = [[12, 40, 200, 220], [15, 45, 210, 230], [10, 38, 190, 250]]
+print(threshold(img, 128))
+print(to_gray([[(255, 0, 0), (0, 255, 0)]]))
+```
+
+NumPy does the same with whole arrays: `img @ [0.299, 0.587, 0.114]` for the gray conversion and `img >= t` for thresholding. The loops above show what those one-liners compute.
+@example
+title: Gray value, saturation and value of one pixel
+problem: The pixel $(R,G,B) = (180, 90, 45)$ is given in 8-bit RGB. Find its gray value $Y$, its HSV value $V$ and its HSV saturation $S$.
+step: Apply the luma weights: $Y = 0.299 \cdot 180 + 0.587 \cdot 90 + 0.114 \cdot 45 = 53.82 + 52.83 + 5.13 = 111.78$.
+step: The value is the largest channel: $V = \max(180, 90, 45) = 180$ (or $180/255 \approx 0.706$ on a 0 to 1 scale).
+step: The saturation compares the largest and smallest channel: $S = (180 - 45)/180 = 0.75$.
+step: Check: the pixel is a fairly saturated orange-brown, and its gray value 111.78 is below $V = 180$, as expected because the blue and green channels pull the weighted sum down.
+answer: $Y = 111.78$, $V = 180$, $S = 0.75$.
+@example
+title: Equalizing a four-level image
+problem: An image with $L = 4$ gray levels is $\begin{bmatrix} 0 & 0 & 1 \\ 1 & 1 & 3 \end{bmatrix}$. Apply histogram equalization.
+step: Count the values: the histogram for levels 0, 1, 2, 3 is $[2, 3, 0, 1]$, and $N = 6$.
+step: The cumulative histogram is $[2, 5, 5, 6]$, so $\operatorname{cdf}_{\min} = 2$.
+step: Map each value: $0 \to 0$; $1 \to (5-2)/(6-2) \cdot 3 = 2.25 \to 2$; $3 \to (6-2)/(6-2) \cdot 3 = 3$.
+step: The result is $\begin{bmatrix} 0 & 0 & 2 \\ 2 & 2 & 3 \end{bmatrix}$: the three values 0, 1, 3 now sit at 0, 2, 3, so the middle value moved up toward the spread of a uniform histogram.
+answer: $\begin{bmatrix} 0 & 0 & 2 \\ 2 & 2 & 3 \end{bmatrix}$
+@mistakes
+- Mixing up the index order: `img[r][c]` is row then column, which is (y, x), not (x, y); the width is `len(img[0])` and the height is `len(img)`.
+- Averaging R, G and B equally and calling it luminance: the weighted sum gives green about five times the weight of blue, which matches how bright colors look.
+- Stretching contrast on a constant image: $p_{\max} - p_{\min} = 0$ makes the formula divide by zero, so handle that case separately.
+@practice num
+prompt: A pixel has $(R,G,B) = (200, 100, 50)$. Use the weights $0.299$, $0.587$, $0.114$ and give its gray value to one decimal place.
+answer: 124.2
+tol: 0.1
+check: 0.299 * 200 + 0.587 * 100 + 0.114 * 50
+hint: Multiply each channel by its weight and add the three products.
+solution: $0.299 \cdot 200 = 59.8$, $0.587 \cdot 100 = 58.7$ and $0.114 \cdot 50 = 5.7$; the sum is $124.2$.
+@practice code
+prompt: Write `binarize_mean(img)` that returns a new image of 0s and 1s the same shape as `img`: a pixel becomes 1 if it is strictly greater than the mean of all pixels in the image, and 0 otherwise. `img` is a nonempty list of rows of integers (row-major, `img[r][c]`). For example, `binarize_mean([[0, 100], [200, 100]])` returns `[[0, 0], [1, 0]]`.
+starter:
+```python
+def binarize_mean(img):
+    pass
+```
+tests:
+```python
+assert binarize_mean([[0, 100], [200, 100]]) == [[0, 0], [1, 0]]
+assert binarize_mean([[5, 5], [5, 5]]) == [[0, 0], [0, 0]]
+assert binarize_mean([[0, 0, 0, 90]]) == [[0, 0, 0, 1]]
+assert binarize_mean([[10, 20, 30], [40, 50, 60]]) == [[0, 0, 0], [1, 1, 1]]
+```
+model:
+```python
+def binarize_mean(img):
+    """Threshold an image at its own mean; strictly greater becomes 1."""
+    total = sum(sum(row) for row in img)
+    count = sum(len(row) for row in img)
+    mean = total / count
+    return [[1 if p > mean else 0 for p in row] for row in img]
+```
+hint: First compute the mean of all pixels over all rows, then compare each pixel with it.
+solution: The mean uses every pixel, so sum over rows and divide by the total pixel count. The comparison must be strict: in the constant image every pixel equals the mean, and a version using `>=` would turn them all into 1.
+@practice num
+prompt: A 1080 by 1920 image has three channels with 8 bits per value and is stored without compression. How many megabytes does it take, counting 1 MB as $10^6$ bytes? Give your answer to three decimal places.
+answer: 6.221
+tol: 0.001
+unit: MB
+check: 1080 * 1920 * 3 / 1e6
+hint: Each of the $1080 \times 1920$ pixels stores 3 values of 1 byte each.
+solution: $1080 \cdot 1920 \cdot 3 = 6{,}220{,}800$ bytes, which is $6.2208$ MB, or $6.221$ to three decimals.
+@practice code
+prompt: Write `contrast_stretch(img)` that linearly maps the smallest pixel of the image to 0 and the largest to 255: each output is `round((p - lo) / (hi - lo) * 255)` as an integer. If every pixel is equal (so `hi == lo`), return an image of all 0s. `img` is a list of rows of integers (row-major). Return a new list of rows. For example, `contrast_stretch([[0, 40], [120, 200]])` returns `[[0, 51], [153, 255]]`.
+starter:
+```python
+def contrast_stretch(img):
+    pass
+```
+tests:
+```python
+assert contrast_stretch([[0, 40], [120, 200]]) == [[0, 51], [153, 255]]
+assert contrast_stretch([[100, 104, 120]]) == [[0, 51, 255]]
+assert contrast_stretch([[7, 7]]) == [[0, 0]]
+assert contrast_stretch([[30], [50], [30]]) == [[0], [255], [0]]
+```
+model:
+```python
+def contrast_stretch(img):
+    """Map min to 0 and max to 255 linearly; constant images become 0."""
+    lo = min(min(row) for row in img)
+    hi = max(max(row) for row in img)
+    if hi == lo:
+        return [[0 for _ in row] for row in img]
+    scale = 255 / (hi - lo)
+    return [[int(round((p - lo) * scale)) for p in row] for row in img]
+```
+hint: Find the minimum and maximum over all rows, handle the case where they are equal, then apply the linear map to each pixel.
+solution: The map subtracts the minimum and scales by $255/(\text{hi} - \text{lo})$. The constant image must be handled before dividing, and the minimum and maximum must be taken over the whole image, not row by row; the last test would fail with per-row statistics.
+@practice code
+prompt: Write `equalize(img, levels)` for an image whose pixels are integers in `range(levels)`. Let `N` be the number of pixels, `cdf[v]` the number of pixels with value at most `v`, and `cdf_min` the smallest nonzero `cdf` value. Each pixel `v` becomes `round((cdf[v] - cdf_min) / (N - cdf_min) * (levels - 1))` as an integer. If `N == cdf_min` (all pixels equal), return all 0s. Image is a list of rows (row-major). For example, `equalize([[0, 0, 1], [1, 1, 3]], 4)` returns `[[0, 0, 2], [2, 2, 3]]`.
+starter:
+```python
+def equalize(img, levels):
+    pass
+```
+tests:
+```python
+assert equalize([[0, 0, 1], [1, 1, 3]], 4) == [[0, 0, 2], [2, 2, 3]]
+assert equalize([[1, 2, 3, 4]], 8) == [[0, 2, 5, 7]]
+assert equalize([[2, 2], [2, 2]], 4) == [[0, 0], [0, 0]]
+assert equalize([[3, 3, 0], [1, 3, 0]], 4) == [[3, 3, 0], [1, 3, 0]]
+```
+model:
+```python
+def equalize(img, levels):
+    """Histogram equalization with the standard cdf-based mapping."""
+    counts = [0] * levels
+    for row in img:
+        for p in row:
+            counts[p] += 1
+    n = sum(counts)
+    cdf = []
+    running = 0
+    for c in counts:
+        running += c
+        cdf.append(running)
+    cdf_min = min(c for c in cdf if c > 0)
+    if n == cdf_min:
+        return [[0 for _ in row] for row in img]
+    return [[int(round((cdf[p] - cdf_min) / (n - cdf_min) * (levels - 1)))
+             for p in row] for row in img]
+```
+hint: Build the histogram, accumulate it into a cdf, then map every pixel through the formula; remember the special case of a constant image.
+solution: The cdf counts pixels at or below each value, and the smallest nonzero cdf value is the count of the darkest value present. Subtracting it makes the darkest value map to 0 and the brightest to `levels - 1`. The constant image would divide by zero, hence the special case.
+@quiz text
+prompt: What does this program print?
+```python
+img = [[3, 1, 3], [0, 3, 1]]
+counts = [0] * 4
+for row in img:
+    for p in row:
+        counts[p] += 1
+print(counts)
+```
+answer: [1, 2, 0, 3]
+check: run("img = [[3, 1, 3], [0, 3, 1]]\ncounts = [0] * 4\nfor row in img:\n    for p in row:\n        counts[p] += 1\nprint(counts)")
+hint: Count how many times each of the values 0, 1, 2, 3 occurs in the two rows.
+solution: The value 0 occurs once, 1 twice, 2 never and 3 three times, so the program prints `[1, 2, 0, 3]`.
+@quiz mc
+prompt: An image is stored as a list of rows (row-major) with 6 rows and 9 columns of gray pixels. Which expression gives the number of pixels in one row?
+choice*: `len(img[0])`
+choice: `len(img)`
+choice: `len(img) * len(img[0])`
+choice: `len(img[0][0])`
+hint: The outer list holds rows; each row is itself a list of pixels.
+solution: `img[0]` is the first row, and its length is the number of columns, 9. `len(img)` is the number of rows, 6, and the product is the total pixel count, 54.
+@quiz ms
+prompt: Which statements about grayscale conversion and color spaces are true? Select all that apply.
+choice*: With the weights 0.299, 0.587 and 0.114, a white pixel $(255, 255, 255)$ has gray value 255.
+choice*: HSV value is the largest of the three RGB channels, and saturation is 0 for any pixel with equal R, G and B.
+choice*: A color image of height $H$ and width $W$ stored with 8 bits per channel needs $3HW$ bytes for the three channels.
+choice: Pure red, pure green and pure blue all have the same gray value under the luma weights.
+hint: Evaluate the weighted sum for white, and for the three primaries separately.
+solution: The weights sum to 1, so white stays 255. With equal channels the maximum equals the minimum, so saturation is 0. Three channels of one byte each take $3HW$ bytes. The primaries give 76.2, 149.7 and 29.1, so they do not share a gray value.

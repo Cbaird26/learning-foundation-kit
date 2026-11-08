@@ -1,0 +1,261 @@
+@lesson
+title: Text classification with naive Bayes and logistic regression
+summary: Classify short texts with a multinomial naive Bayes model and a logistic regression model, train both from scratch, and evaluate them with precision, recall and F1.
+objective: Train and apply a multinomial naive Bayes classifier with add-one smoothing, working in log space.
+objective: Write the logistic regression model for text, its cross-entropy loss and its gradient, and take a gradient step.
+objective: Compute accuracy, precision, recall and F1 for a classifier and explain when each is the right measure.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapters on naive Bayes, text classification and sentiment, and on logistic regression.
+@article
+Is a message spam? Is a review positive? Which topic does a news item belong to? Text classification assigns a label $y$ from a small set to a document $d$. Two classical methods are the best way to see the main ideas: a **generative** model of how documents are written (naive Bayes) and a **discriminative** model of the label given the document (logistic regression).
+
+### Bag of words
+
+Both methods start from the **bag-of-words** representation: forget word order and keep only which words occur, and how often. The document "good fun" and "fun good" are the same bag. It loses a lot, such as negation ("not good"), and still works well for many tasks.
+
+### Naive Bayes
+
+Bayes' rule gives $P(y \mid d) \propto P(y)\,P(d \mid y)$. The **naive** assumption is that the words are independent given the class, so for a document with words $w_1,\dots,w_m$:
+$$\hat{y} = \arg\max_y \Big[\log P(y) + \sum_{i=1}^{m} \log P(w_i \mid y)\Big].$$
+Parameters are estimated by counting. The prior is $P(y) = N_y/N$ (documents of class $y$ over all documents). The word probability uses add-one smoothing, as in week 3:
+$$P(w \mid y) = \frac{\mathrm{count}(w, y) + 1}{\sum_{w'} \mathrm{count}(w', y) + |V|}.$$
+Words not in the training vocabulary are ignored at test time. We add logs rather than multiply probabilities, which avoids underflow.
+
+Training data (invented): positive: "great fun movie", "good fun", "good acting"; negative: "boring slow movie", "bad boring", "slow bad acting". The vocabulary has $|V| = 8$ words; the positive class has 7 word tokens and the negative class 8, and both priors are $1/2$. Classify "bad movie":
+
+- positive: $\log\frac12 + \log\frac{0+1}{7+8} + \log\frac{1+1}{7+8} = -0.693 - 2.708 - 2.015 = -5.416$,
+- negative: $\log\frac12 + \log\frac{2+1}{8+8} + \log\frac{1+1}{8+8} = -0.693 - 1.674 - 2.079 = -4.447$.
+
+The negative score is larger, so the prediction is negative. The two scores are not probabilities; to get $P(y\mid d)$ we exponentiate and normalize.
+
+### Logistic regression
+
+Logistic regression models the label directly. For a binary label $y \in \{0,1\}$ and a feature vector $\mathbf{x}$ (for example word counts), $P(y = 1 \mid \mathbf{x}) = \sigma(\mathbf{w}^\top\mathbf{x} + b)$. The **cross-entropy loss** on one example is $\ell = -y\log \hat{p} - (1-y)\log(1-\hat{p})$ with $\hat p = \sigma(z)$, and its gradient is the simple expression
+$$\frac{\partial \ell}{\partial \mathbf{w}} = (\hat{p} - y)\,\mathbf{x},\qquad \frac{\partial \ell}{\partial b} = \hat{p} - y.$$
+(Derivation: $\frac{d\ell}{dz} = \hat p - y$ because $\sigma'(z) = \sigma(z)(1-\sigma(z))$, and $\partial z/\partial \mathbf{w} = \mathbf{x}$.) Gradient descent updates $\mathbf{w} \leftarrow \mathbf{w} - \eta(\hat p - y)\mathbf{x}$. Unlike naive Bayes, logistic regression does not assume independent features, so correlated words share the credit through the weights. Naive Bayes trains in one pass of counting and works well with little data; logistic regression usually wins with more data and correlated features, and it can be regularized.
+
+```python
+import math
+from collections import Counter
+
+def train_nb(docs):
+    """docs: list of (text, label). Returns priors, word counts, vocabulary."""
+    labels = Counter(label for _, label in docs)
+    counts = {label: Counter() for label in labels}
+    for text, label in docs:
+        counts[label].update(text.split())
+    vocab = {w for c in counts.values() for w in c}
+    return labels, counts, vocab
+
+def nb_scores(model, text):
+    labels, counts, vocab = model
+    n_docs = sum(labels.values())
+    scores = {}
+    for label in labels:
+        total = sum(counts[label].values())
+        s = math.log(labels[label] / n_docs)
+        for w in text.split():
+            if w in vocab:
+                s += math.log((counts[label][w] + 1) / (total + len(vocab)))
+        scores[label] = s
+    return scores
+
+def sgd_step(w, b, x, y, lr):
+    z = sum(wi * xi for wi, xi in zip(w, x)) + b
+    p = 1 / (1 + math.exp(-z))
+    return [wi - lr * (p - y) * xi for wi, xi in zip(w, x)], b - lr * (p - y)
+```
+
+### Evaluation
+
+With a positive class, a classifier's decisions fall into true positives (TP), false positives (FP) and false negatives (FN). **Precision** is $\mathrm{TP}/(\mathrm{TP}+\mathrm{FP})$, **recall** is $\mathrm{TP}/(\mathrm{TP}+\mathrm{FN})$, and **F1** is their harmonic mean $2PR/(P+R)$. **Accuracy** can mislead when classes are unbalanced: a filter that never flags spam is 95% accurate on a mailbox that is 5% spam, with recall 0.
+
+@example
+title: Scoring a document with naive Bayes
+problem: Using the six training documents above (priors $1/2$, $|V| = 8$, 7 positive tokens, 8 negative tokens), classify "fun fun slow".
+step: Positive class: $\log\frac12 + 2\log\frac{2+1}{15} + \log\frac{0+1}{15} = -0.693 - 3.219 - 2.708 = -6.620$.
+step: Negative class: $\log\frac12 + 2\log\frac{0+1}{16} + \log\frac{2+1}{16} = -0.693 - 5.545 - 1.674 = -7.912$.
+step: The positive score is higher: the repeated word "fun" outweighs "slow".
+answer: Positive (scores $-6.620$ and $-7.912$).
+
+@example
+title: One logistic-regression step
+problem: Features are the counts of (fun, boring, movie). The weights are $\mathbf{w} = (0.5, -0.5, 0)$ and $b = 0$. For the document "fun movie", $\mathbf{x} = (1, 0, 1)$ and $y = 1$. Take one gradient step with $\eta = 1$.
+step: Score $z = 0.5\cdot 1 + (-0.5)\cdot 0 + 0 = 0.5$, so $\hat p = \sigma(0.5) = 0.6225$, and the loss is $-\log 0.6225 = 0.4741$.
+step: The error is $\hat p - y = -0.3775$. The gradient is $-0.3775\,(1, 0, 1)$ for $\mathbf{w}$ and $-0.3775$ for $b$.
+step: Update: $\mathbf{w} = (0.8775, -0.5, 0.3775)$ and $b = 0.3775$.
+step: Check: now $z = 0.8775 + 0.3775 + 0.3775 = 1.6325$, $\hat p = 0.8365$ and the loss is $0.1785$, lower than before.
+answer: $\mathbf{w} = (0.8775, -0.5, 0.3775)$, $b = 0.3775$, loss from $0.4741$ to $0.1785$.
+
+@mistakes
+- Multiplying probabilities of many words and getting 0 by underflow; add logarithms instead.
+- Forgetting the $|V|$ in the denominator of the smoothed estimate, or using the vocabulary of one class only.
+- Treating the naive Bayes scores as probabilities, or its probabilities as well calibrated: the independence assumption makes them overconfident.
+- Reporting accuracy alone on unbalanced data.
+
+@practice num
+prompt: A naive Bayes spam filter is trained on the spam documents "win money now" and "win prize now" and the ham documents "meeting now", "lunch tomorrow" and "meeting tomorrow". The vocabulary has 7 words. Using add-one smoothing, what is $P(\text{now} \mid \text{spam})$? Give your answer to three decimal places.
+answer: 0.231
+tol: 0.001
+check: (2 + 1) / (6 + 7)
+hint: Count the occurrences of "now" in the spam documents and the total number of word tokens in them.
+solution: "now" occurs 2 times among the 6 spam tokens (win, money, now, win, prize, now), so $P = (2+1)/(6+7) = 3/13 \approx 0.231$.
+
+@practice num
+prompt: The same filter (priors $2/5$ for spam and $3/5$ for ham; 6 spam tokens, 6 ham tokens, 7 vocabulary words; the spam counts are win 2, now 2, money 1, prize 1; the ham counts are meeting 2, tomorrow 2, now 1, lunch 1) receives the message "win now". What is the posterior probability that it is spam? Give your answer to two decimal places.
+answer: 0.75
+tol: 0.01
+check: (0.4 * (3 / 13) * (3 / 13)) / (0.4 * (3 / 13) * (3 / 13) + 0.6 * (1 / 13) * (2 / 13))
+hint: Multiply the prior by the smoothed probability of each word in each class, then divide the spam product by the sum of both products.
+solution: Spam: $0.4 \cdot \frac{3}{13}\cdot\frac{3}{13} = 3.6/169$. Ham: $0.6 \cdot \frac{1}{13}\cdot\frac{2}{13} = 1.2/169$. The posterior is $3.6/(3.6 + 1.2) = 0.75$.
+
+@practice mc
+prompt: What is the "naive" assumption of naive Bayes text classification?
+choice*: Given the class, the words of a document are independent of each other.
+choice: All classes are equally likely before seeing the document.
+choice: Word order is the only thing that matters.
+choice: The features must be binary, never counts.
+hint: Look at how $P(d \mid y)$ is turned into a product over words.
+solution: The product $\prod_i P(w_i\mid y)$ is valid only if the words are conditionally independent given the class. The priors can be unequal, the bag-of-words model discards order, and counts are allowed.
+
+@practice code
+prompt: Write `nb_posteriors(docs, text, k)` for a naive Bayes classifier with add-`k` smoothing. `docs` is a list of `(text, label)` pairs, and texts are split on whitespace. The prior of a label is its share of the documents; `P(w | label) = (count + k) / (tokens in label + k * V)`, where `V` is the number of distinct words in all of `docs`. Words of `text` not in the vocabulary are ignored. Return a dict from label to posterior probability. The posteriors must sum to 1 even when the log scores are very negative (for example for a text of 300 words), so subtract the largest score before exponentiating.
+starter:
+```python
+def nb_posteriors(docs, text, k):
+    return {}
+```
+tests:
+```python
+D = [("win money now", "spam"), ("win prize now", "spam"),
+     ("meeting now", "ham"), ("lunch tomorrow", "ham"), ("meeting tomorrow", "ham")]
+p = nb_posteriors(D, "win now", 1)
+assert abs(p["spam"] - 0.75) < 1e-9 and abs(p["ham"] - 0.25) < 1e-9
+p = nb_posteriors(D, "win win win now", 1)
+assert abs(p["spam"] - 27 / 28) < 1e-9
+p = nb_posteriors(D, "zzz", 1)
+assert abs(p["spam"] - 0.4) < 1e-9 and abs(p["ham"] - 0.6) < 1e-9
+p = nb_posteriors(D, "win " * 300, 1)
+assert abs(p["spam"] + p["ham"] - 1) < 1e-9 and p["spam"] > 0.999
+assert set(nb_posteriors(D, "meeting", 0.5)) == {"spam", "ham"}
+```
+model:
+```python
+import math
+from collections import Counter
+
+
+def nb_posteriors(docs, text, k):
+    """Posterior class probabilities of a multinomial naive Bayes model."""
+    n_docs = Counter(label for _, label in docs)
+    counts = {label: Counter() for label in n_docs}
+    for doc, label in docs:
+        counts[label].update(doc.split())
+    vocab = {w for c in counts.values() for w in c}
+    scores = {}
+    for label in n_docs:
+        total = sum(counts[label].values())
+        s = math.log(n_docs[label] / len(docs))
+        for w in text.split():
+            if w in vocab:
+                s += math.log((counts[label][w] + k) / (total + k * len(vocab)))
+        scores[label] = s
+    top = max(scores.values())
+    exps = {label: math.exp(s - top) for label, s in scores.items()}
+    z = sum(exps.values())
+    return {label: e / z for label, e in exps.items()}
+```
+hint: Compute one log score per label, then turn the scores into probabilities with a softmax after subtracting the maximum.
+solution: The scores are log joint probabilities up to a constant, so the posterior is their softmax. Subtracting the largest score keeps the exponentials in a safe range: for the 300-word text, the raw scores are around $-600$, and a naive exponentiation underflows to 0 for both classes.
+
+@practice code
+prompt: Write `fit_logreg(X, y, lr, epochs)` that trains binary logistic regression by full-batch gradient descent. `X` is a list of feature lists and `y` a list of 0/1 labels. Start from zero weights and zero bias. In each epoch compute the gradient of the average cross-entropy loss over all examples with the current parameters, then update the weights and the bias once. Return the tuple `(w, b)`.
+starter:
+```python
+def fit_logreg(X, y, lr, epochs):
+    return [0.0] * len(X[0]), 0.0
+```
+tests:
+```python
+import math
+w, b = fit_logreg([[1, 0], [0, 1]], [1, 0], 1.0, 1)
+assert abs(w[0] - 0.25) < 1e-9 and abs(w[1] + 0.25) < 1e-9 and abs(b) < 1e-9
+w, b = fit_logreg([[1, 0], [0, 1]], [1, 0], 0.0, 5)
+assert w == [0.0, 0.0] and b == 0.0
+X, y = [[0.0], [1.0], [2.0], [3.0]], [0, 0, 1, 1]
+w, b = fit_logreg(X, y, 0.5, 400)
+p = [1 / (1 + math.exp(-(w[0] * x[0] + b))) for x in X]
+assert p[1] < 0.5 < p[2] and p[0] < p[1] < p[2] < p[3]
+w, b = fit_logreg([[1.0], [1.0]], [1, 0], 1.0, 50)
+assert abs(w[0]) < 1e-9 and abs(b) < 1e-9
+```
+model:
+```python
+import math
+
+
+def fit_logreg(X, y, lr, epochs):
+    """Full-batch gradient descent for logistic regression."""
+    n, d = len(X), len(X[0])
+    w, b = [0.0] * d, 0.0
+    for _ in range(epochs):
+        gw, gb = [0.0] * d, 0.0
+        for x, label in zip(X, y):
+            z = sum(wi * xi for wi, xi in zip(w, x)) + b
+            err = 1 / (1 + math.exp(-z)) - label
+            for i in range(d):
+                gw[i] += err * x[i] / n
+            gb += err / n
+        w = [wi - lr * g for wi, g in zip(w, gw)]
+        b -= lr * gb
+    return w, b
+```
+hint: Inside each epoch accumulate the average of $(\hat p - y)\mathbf{x}$ and of $\hat p - y$ over all examples before changing any parameter.
+solution: A full-batch step uses the gradient at the same parameters for every example, then moves once. In the last test the two identical inputs have opposite labels, so the gradients cancel and the parameters stay at zero; a version that updates after each example would not stay there.
+
+@quiz code
+prompt: Write `precision_recall_f1(y_true, y_pred, positive)` that returns the tuple `(precision, recall, f1)` for the class `positive`. A prediction is a true positive when both the true and the predicted label equal `positive`. If a denominator is zero, the corresponding value is `0.0`.
+starter:
+```python
+def precision_recall_f1(y_true, y_pred, positive):
+    return (0.0, 0.0, 0.0)
+```
+tests:
+```python
+p, r, f = precision_recall_f1([1, 1, 0, 0, 1], [1, 0, 0, 1, 1], 1)
+assert abs(p - 2 / 3) < 1e-9 and abs(r - 2 / 3) < 1e-9 and abs(f - 2 / 3) < 1e-9
+p, r, f = precision_recall_f1(["a", "b", "b", "b"], ["a", "a", "a", "b"], "a")
+assert abs(p - 1 / 3) < 1e-9 and abs(r - 1.0) < 1e-9 and abs(f - 0.5) < 1e-9
+assert precision_recall_f1([1, 1], [0, 0], 1) == (0.0, 0.0, 0.0)
+assert precision_recall_f1([0, 0], [0, 0], 1) == (0.0, 0.0, 0.0)
+```
+model:
+```python
+def precision_recall_f1(y_true, y_pred, positive):
+    """Precision, recall and F1 for one class, with 0.0 for empty denominators."""
+    tp = sum(1 for t, p in zip(y_true, y_pred) if t == positive and p == positive)
+    fp = sum(1 for t, p in zip(y_true, y_pred) if t != positive and p == positive)
+    fn = sum(1 for t, p in zip(y_true, y_pred) if t == positive and p != positive)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return precision, recall, f1
+```
+hint: Count TP, FP and FN with three generator expressions, then guard each division.
+solution: The three counts define everything. The all-negative case checks the guards: with no predicted and no true positives, all three values are defined to be 0.0.
+
+@quiz num
+prompt: A classifier finds 30 true positives, 10 false positives and 20 false negatives for the positive class. What is its F1 score? Give your answer to three decimal places.
+answer: 0.667
+tol: 0.001
+check: 2 * (30 / 40) * (30 / 50) / ((30 / 40) + (30 / 50))
+hint: Precision is TP over TP plus FP; recall is TP over TP plus FN. Then take the harmonic mean.
+solution: Precision is $30/40 = 0.75$ and recall is $30/50 = 0.6$, so $F_1 = 2(0.75)(0.6)/(0.75 + 0.6) = 0.9/1.35 = 2/3 \approx 0.667$.
+
+@quiz mc
+prompt: Which statement correctly contrasts naive Bayes with logistic regression?
+choice*: Naive Bayes models $P(\mathbf{x} \mid y)$ and $P(y)$ and applies Bayes' rule, while logistic regression models $P(y \mid \mathbf{x})$ directly.
+choice: Naive Bayes needs gradient descent, while logistic regression is trained by counting.
+choice: Logistic regression assumes the features are independent given the class.
+choice: Naive Bayes can only be used with two classes.
+hint: Ask which of the two is trained by counting, and which one conditions on the features.
+solution: Naive Bayes is generative: it estimates class priors and per-class word probabilities by counting and inverts them with Bayes' rule. Logistic regression is discriminative and fitted by gradient descent. The independence assumption belongs to naive Bayes, and both handle many classes.

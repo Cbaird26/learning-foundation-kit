@@ -1,0 +1,239 @@
+@lesson
+title: Edges, corners and features
+summary: Compute image gradients with Sobel filters, mark edges by thresholding the gradient magnitude, score corners with the Harris response, and match feature descriptors with a ratio test.
+objective: Compute the Sobel gradient, its magnitude and its direction at a pixel by hand.
+objective: Explain why corners are better landmarks than edges or flat patches and compute the Harris response.
+objective: Implement edge maps, a pixel-level Harris response and descriptor matching in plain Python.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the chapter on feature detection and matching, the sections on points and patches and on edges and contours.
+@article
+Hold your finger over a small window of a photo of a brick wall. If the window shows a flat patch of wall, you cannot say where in the photo you are. If it shows a straight edge between two bricks, you know your position across the edge but not along it. If it shows the corner of a brick, you know both. That is the intuition behind **features**: places in an image that can be found again.
+
+### Conventions used in this course
+
+Images are lists of rows, row-major (`img[r][c]`), with row index increasing downward. Filtering is **correlation** (the kernel is not flipped) in **valid** mode: only positions where the whole kernel fits, so a $3 \times 3$ kernel shrinks each side by 2.
+
+### Gradients and edges
+
+An **edge** is a place where intensity changes quickly. The change is measured by the **gradient** $(G_x, G_y)$, the horizontal and vertical rates of change. The **Sobel** kernels estimate it while smoothing across the perpendicular direction:
+
+$$K_x = \begin{bmatrix}-1&0&1\\-2&0&2\\-1&0&1\end{bmatrix}, \qquad K_y = \begin{bmatrix}-1&-2&-1\\0&0&0\\1&2&1\end{bmatrix}.$$
+
+$G_x$ is positive where intensity increases to the right and $G_y$ where it increases downward. The **gradient magnitude** is $\sqrt{G_x^2 + G_y^2}$ and the **direction** is $\operatorname{atan2}(G_y, G_x)$, which points from dark to bright. Dividing each Sobel response by 8 gives the intensity change per pixel.
+
+Take a $5 \times 5$ image in which every row is $[0, 0, 100, 100, 100]$. Each valid $3 \times 3$ window in a row of outputs gives $G_x = 400, 400, 0$: for the first window the kernel sees $[0,0,100]$ in each row, so $G_x = (100)(1 + 2 + 1) = 400$, and the last window sees a constant, so $G_x = 0$. $G_y = 0$ everywhere because rows are identical. Thresholding the magnitude at, say, 300 marks the two columns around the step as edges. The edge is two pixels wide because each window straddles the step; the Canny edge detector (Canny, 1986) adds smoothing, **non-maximum suppression** along the gradient direction to thin edges to one pixel, and hysteresis thresholds to link them.
+
+### Corners
+
+At a corner, the gradient varies in two different directions inside a window. Collect the gradients $(I_x, I_y)$ over a window and form the **structure tensor**
+
+$$\mathbf{M} = \begin{bmatrix} \sum I_x^2 & \sum I_x I_y \\ \sum I_x I_y & \sum I_y^2 \end{bmatrix}.$$
+
+Its two eigenvalues describe the window: both near zero means a flat patch, one large and one near zero means an edge, both large means a corner. The Harris corner detector (Harris and Stephens, 1988) avoids computing eigenvalues with
+
+$$R = \det \mathbf{M} - k\,(\operatorname{trace} \mathbf{M})^2, \qquad k \approx 0.04.$$
+
+$R$ is large and positive at corners, negative along edges (where $\det \mathbf{M} \approx 0$), and near zero in flat regions. For $\mathbf{M} = \begin{bmatrix}10&0\\0&10\end{bmatrix}$, $R = 100 - 0.04 \cdot 400 = 84$; for the edge-like $\begin{bmatrix}16&0\\0&1\end{bmatrix}$, $R = 16 - 0.04 \cdot 289 = 4.44$, much smaller.
+
+### Descriptors and matching
+
+To find the same point in two images, describe the patch around each keypoint with a vector, a **descriptor** (simple ones list normalized pixel values; SIFT, introduced by Lowe, uses histograms of gradient orientations). Match by distance: for each descriptor in image A, find its nearest neighbor in image B. A wrong match often has a second-nearest neighbor almost as close, so the **ratio test** accepts a match only if the nearest distance is less than $\rho$ times the second-nearest, with $\rho$ commonly between 0.7 and 0.8.
+
+### In code
+
+```python
+import math
+
+def sobel_gradients(img):
+    """Valid-mode Sobel: returns (gx, gy), each (H-2) x (W-2)."""
+    kx = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+    ky = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]]
+    gx, gy = [], []
+    for r in range(len(img) - 2):
+        rx, ry = [], []
+        for c in range(len(img[0]) - 2):
+            sx = sy = 0
+            for i in range(3):
+                for j in range(3):
+                    sx += img[r + i][c + j] * kx[i][j]
+                    sy += img[r + i][c + j] * ky[i][j]
+            rx.append(sx)
+            ry.append(sy)
+        gx.append(rx)
+        gy.append(ry)
+    return gx, gy
+
+img = [[0, 0, 100, 100, 100]] * 5
+gx, gy = sobel_gradients(img)
+print(gx[0], [round(math.hypot(a, b)) for a, b in zip(gx[0], gy[0])])
+```
+
+In OpenCV or scikit-image the same filters run as one call on the whole array; the idea is the one above.
+@example
+title: Sobel gradient at one pixel
+problem: A $3 \times 3$ patch is $\begin{bmatrix}20&20&80\\20&20&80\\20&20&80\end{bmatrix}$. Find $G_x$, $G_y$, the magnitude and the direction in degrees.
+step: Apply $K_x$ to each row: every row contributes $(-1)(20) + 0 + (1)(80) = 60$ times its row weight, and the weights are $1, 2, 1$, so $G_x = 60 \cdot (1 + 2 + 1) = 240$.
+step: Apply $K_y$: the top row has weights $-1, -2, -1$ and sums to $-(20 + 40 + 80) = -140$ and the bottom row has the same values with weights $1, 2, 1$ and sums to $+140$, so $G_y = 0$.
+step: The magnitude is $\sqrt{240^2 + 0^2} = 240$, and the direction is $\operatorname{atan2}(0, 240) = 0$ degrees, pointing right, from dark to bright.
+step: Check: dividing by 8 gives 30 gray levels per pixel, and the intensity indeed rises by 60 over the 2 pixels between the outer columns.
+answer: $G_x = 240$, $G_y = 0$, magnitude 240, direction 0 degrees.
+@example
+title: Classifying windows with the Harris response
+problem: Three windows have structure tensors $\mathbf{M}_1 = \begin{bmatrix}1&0\\0&1\end{bmatrix}$, $\mathbf{M}_2 = \begin{bmatrix}50&0\\0&2\end{bmatrix}$ and $\mathbf{M}_3 = \begin{bmatrix}30&5\\5&40\end{bmatrix}$. With $k = 0.04$, compute $R$ for each and say what each window shows.
+step: For $\mathbf{M}_1$: $\det = 1$, trace $= 2$, $R = 1 - 0.04 \cdot 4 = 0.84$, which is tiny: a flat or nearly flat patch.
+step: For $\mathbf{M}_2$: $\det = 100$, trace $= 52$, $R = 100 - 0.04 \cdot 2704 = 100 - 108.16 = -8.16$: negative, an edge.
+step: For $\mathbf{M}_3$: $\det = 1200 - 25 = 1175$, trace $= 70$, $R = 1175 - 0.04 \cdot 4900 = 1175 - 196 = 979$: large and positive, a corner.
+answer: $R = 0.84$ (flat), $-8.16$ (edge), $979$ (corner).
+@mistakes
+- Treating a high gradient magnitude as a good landmark: all pixels along a straight edge have high magnitude but cannot be told apart along the edge.
+- Mixing up the sign convention: with row index increasing downward, a positive $G_y$ means intensity increases downward, not upward.
+- Adding $|G_x| + |G_y|$ and calling it the magnitude: it is a cheaper approximation that overestimates diagonal edges by up to a factor $\sqrt{2}$.
+@practice num
+prompt: A $3 \times 3$ patch is $\begin{bmatrix}10&20&40\\10&30&50\\20&30&60\end{bmatrix}$. Compute the Sobel gradient $(G_x, G_y)$ using the kernels in the article, then give the gradient magnitude to two decimal places.
+answer: 158.11
+tol: 0.01
+check: sqrt((-10 + 40 + 2 * (-10 + 50) + (-20 + 60)) ** 2 + (-(10 + 40 + 40) + (20 + 60 + 60)) ** 2)
+hint: $G_x$ weights the left column by $-1, -2, -1$ and the right column by $1, 2, 1$; $G_y$ does the same with the top and bottom rows.
+solution: $G_x = (40 - 10) + 2(50 - 10) + (60 - 20) = 150$ and $G_y = (20 + 60 + 60) - (10 + 40 + 40) = 50$. The magnitude is $\sqrt{150^2 + 50^2} = \sqrt{25000} \approx 158.11$.
+@practice code
+prompt: Write `edge_map(img, t)` that computes the valid-mode Sobel gradient of `img` (kernels $K_x$ and $K_y$ from the article, correlation, no flip) and returns a map of 0s and 1s with shape `(H - 2, W - 2)`: 1 where the magnitude $\sqrt{G_x^2 + G_y^2}$ is at least `t`, else 0. `img` is a list of rows (row-major) with at least 3 rows and columns. For example, with every row equal to `[0, 0, 100, 100, 100]` (5 rows) and `t = 300`, each output row is `[1, 1, 0]`.
+starter:
+```python
+def edge_map(img, t):
+    pass
+```
+tests:
+```python
+step = [[0, 0, 100, 100, 100]] * 5
+assert edge_map(step, 300) == [[1, 1, 0]] * 3
+assert edge_map(step, 401) == [[0, 0, 0]] * 3
+hstep = [[0] * 5, [0] * 5, [100] * 5, [100] * 5, [100] * 5]
+assert edge_map(hstep, 300) == [[1, 1, 1], [1, 1, 1], [0, 0, 0]]
+diag = [[0, 0, 30], [0, 0, 30], [30, 30, 30]]
+assert edge_map(diag, 127) == [[1]]
+assert edge_map(diag, 128) == [[0]]
+```
+model:
+```python
+import math
+
+def edge_map(img, t):
+    """Threshold the Sobel gradient magnitude."""
+    kx = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+    ky = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]]
+    out = []
+    for r in range(len(img) - 2):
+        row = []
+        for c in range(len(img[0]) - 2):
+            gx = gy = 0
+            for i in range(3):
+                for j in range(3):
+                    gx += img[r + i][c + j] * kx[i][j]
+                    gy += img[r + i][c + j] * ky[i][j]
+            row.append(1 if math.hypot(gx, gy) >= t else 0)
+        out.append(row)
+    return out
+```
+hint: At each window compute both Sobel sums, combine them with the square root of the sum of squares, and compare with `t`.
+solution: The last two tests have gradient $(90, 90)$ with magnitude $127.3$; using $|G_x| + |G_y| = 180$ or the larger component $90$ would give the wrong answer for one of the thresholds, so the magnitude must be the Euclidean one.
+@practice num
+prompt: A window has structure tensor $\mathbf{M} = \begin{bmatrix}9&2\\2&4\end{bmatrix}$. Compute the Harris response $R = \det \mathbf{M} - k(\operatorname{trace}\mathbf{M})^2$ with $k = 0.04$.
+answer: 25.24
+tol: 0.01
+check: (9 * 4 - 2 * 2) - 0.04 * (9 + 4) ** 2
+hint: The determinant is $9 \cdot 4 - 2 \cdot 2$ and the trace is $9 + 4$.
+solution: $\det \mathbf{M} = 36 - 4 = 32$ and $\operatorname{trace} \mathbf{M} = 13$, so $R = 32 - 0.04 \cdot 169 = 32 - 6.76 = 25.24$.
+@practice code
+prompt: Write `harris_at(img, r, c, k)` that returns the Harris response at pixel `(r, c)` of a grayscale image `img` (list of rows, row-major). At each pixel of the $3 \times 3$ window centered at `(r, c)` use central differences $I_x = (I[\text{row}][\text{col}+1] - I[\text{row}][\text{col}-1])/2$ and $I_y = (I[\text{row}+1][\text{col}] - I[\text{row}-1][\text{col}])/2$, sum $I_x^2$, $I_x I_y$ and $I_y^2$ over the window to get $\mathbf{M}$, and return $\det \mathbf{M} - k\,(\operatorname{trace}\mathbf{M})^2$. Assume the window and its neighbors lie inside the image (so $2 \le r \le H-3$ and $2 \le c \le W-3$).
+starter:
+```python
+def harris_at(img, r, c, k):
+    pass
+```
+tests:
+```python
+corner = [[100 if (r >= 3 and c >= 3) else 0 for c in range(6)] for r in range(6)]
+edge = [[100 if c >= 3 else 0 for c in range(6)] for r in range(6)]
+flat = [[50] * 6 for _ in range(6)]
+assert abs(harris_at(corner, 3, 3, 0.04) - 77750000) < 1e-3
+assert abs(harris_at(corner, 3, 3, 0.0) - 93750000) < 1e-3
+assert abs(harris_at(edge, 2, 3, 0.04) - (-9000000)) < 1e-3
+assert abs(harris_at(flat, 2, 2, 0.04)) < 1e-9
+```
+model:
+```python
+def harris_at(img, r, c, k):
+    """Harris corner response from central differences over a 3x3 window."""
+    a = b = d = 0.0
+    for rr in range(r - 1, r + 2):
+        for cc in range(c - 1, c + 2):
+            ix = (img[rr][cc + 1] - img[rr][cc - 1]) / 2
+            iy = (img[rr + 1][cc] - img[rr - 1][cc]) / 2
+            a += ix * ix
+            b += ix * iy
+            d += iy * iy
+    return a * d - b * b - k * (a + d) ** 2
+```
+hint: Loop over the nine window pixels, accumulate the three sums, then use $\det = ad - b^2$ and trace $= a + d$.
+solution: The structure tensor is the window sum of the outer products of the gradient. At the corner, $\mathbf{M}$ has both diagonal entries large, so $R$ is large and positive; along the edge only one entry is large, so $\det = 0$ and $R = -k(\operatorname{trace})^2 < 0$. The test with $k = 0$ catches a determinant that forgets the $b^2$ term.
+@practice code
+prompt: Write `match_ratio(da, db, rho)` where `da` and `db` are lists of descriptors, each a list of numbers of equal length. For each descriptor `i` in `da`, find the two nearest descriptors in `db` by Euclidean distance, with ties broken toward the smaller index. If `db` has at least 2 descriptors and the nearest distance is strictly less than `rho` times the second-nearest distance, include the pair `(i, j)` with `j` the nearest index. Return the list of pairs ordered by `i`. For example, `match_ratio([[0, 0]], [[1, 0], [5, 0]], 0.5)` returns `[(0, 0)]`.
+starter:
+```python
+def match_ratio(da, db, rho):
+    pass
+```
+tests:
+```python
+da = [[0, 0], [5, 5], [10, 0]]
+db = [[0.5, 0], [5, 5.2], [9, 0], [11, 0]]
+assert match_ratio(da, db, 0.8) == [(0, 0), (1, 1)]
+assert match_ratio(da, db, 1.5) == [(0, 0), (1, 1), (2, 2)]
+assert match_ratio([[0, 0]], [[1, 0], [5, 0]], 0.5) == [(0, 0)]
+assert match_ratio([[0, 0]], [[1, 0]], 0.9) == []
+assert match_ratio([], db, 0.8) == []
+```
+model:
+```python
+import math
+
+def match_ratio(da, db, rho):
+    """Nearest-neighbor matching with the ratio test."""
+    pairs = []
+    if len(db) < 2:
+        return pairs
+    for i, a in enumerate(da):
+        ranked = sorted((math.dist(a, b), j) for j, b in enumerate(db))
+        (d1, j1), (d2, _) = ranked[0], ranked[1]
+        if d1 < rho * d2:
+            pairs.append((i, j1))
+    return pairs
+```
+hint: Sort the distances to every descriptor in `db` together with their indices; the first two entries are the nearest and second nearest, and sorting pairs breaks ties toward the smaller index.
+solution: The third descriptor sits halfway between two nearly equidistant descriptors in `db` (distances 1 and 1), so its ratio is 1 and it is rejected for any `rho` below 1: an ambiguous match. With `rho = 1.5` the same match passes, and the tie goes to the smaller index. A single-descriptor `db` has no second neighbor, so nothing is accepted.
+@quiz text
+prompt: What does this program print?
+```python
+import math
+gx, gy = 3, 4
+print(math.hypot(gx, gy), round(math.degrees(math.atan2(gy, gx))))
+```
+answer: 5.0 53
+check: run("import math\ngx, gy = 3, 4\nprint(math.hypot(gx, gy), round(math.degrees(math.atan2(gy, gx))))")
+hint: The magnitude is the hypotenuse of a 3-4-5 triangle, and the angle has tangent $4/3$.
+solution: The magnitude is $\sqrt{9 + 16} = 5.0$ and the direction is $\arctan(4/3) \approx 53.13$ degrees, which rounds to 53.
+@quiz mc
+prompt: A window of a photograph contains a long straight boundary between a dark region and a bright region. Which description of its structure tensor and Harris response is correct?
+choice*: One eigenvalue is large and the other is near zero, so the determinant is near zero and $R$ is negative.
+choice: Both eigenvalues are large, so $R$ is large and positive.
+choice: Both eigenvalues are near zero, so $R$ is near zero.
+choice: The trace is zero, so $R$ equals the determinant.
+hint: Along the boundary the gradient points in one direction only.
+solution: A straight boundary gives gradients that all point across it, so the structure tensor has rank about 1: one large eigenvalue and one near zero. Then $\det \approx 0$ and $R \approx -k(\operatorname{trace})^2 < 0$. Both eigenvalues are large at corners and both near zero in flat regions.
+@quiz ms
+prompt: Which statements about Sobel filtering and matching are true? Select all that apply.
+choice*: On a vertical step from dark (left) to bright (right), $G_y$ is zero and $G_x$ is large and positive.
+choice*: Lowering the ratio-test threshold $\rho$ accepts fewer matches.
+choice*: Sobel kernels both differentiate in one direction and smooth in the other.
+choice: Every pixel on a straight edge is an equally good keypoint, because all have the same large gradient.
+hint: Think of what each statement does to the numbers: the sign of $G_x$ at a step, the inequality $d_1 < \rho d_2$, and the weights $1, 2, 1$.
+solution: At a left-to-right step intensity rises along $x$, so $G_x > 0$ and $G_y = 0$. A smaller $\rho$ makes $d_1 < \rho\,d_2$ harder to satisfy. The weights $1, 2, 1$ smooth across the perpendicular direction. Points along a straight edge cannot be distinguished from each other, so they are poor keypoints.

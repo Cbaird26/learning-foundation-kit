@@ -1,0 +1,253 @@
+@lesson
+title: Evaluating unsupervised learning
+summary: Choose the number of clusters and components with elbow, silhouette, BIC and held-out likelihood, compare clusterings with the adjusted Rand index, and say what no such score can prove.
+objective: Compute the silhouette coefficient and information criteria (AIC and BIC) by hand and in code.
+objective: Compute the Rand index and the adjusted Rand index between two clusterings.
+objective: Explain why unsupervised results need several kinds of evidence and which claims they cannot support.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on evaluating clustering methods (internal and external validation) in the chapter on clustering; look up the silhouette coefficient and the adjusted Rand index.
+
+@article
+In supervised learning a held-out test set tells you how good a model is. Unsupervised learning has no labels, so what does "good" mean? A clustering of customers can look convincing and be meaningless. There are three families of evidence: **internal** criteria that use only the data and the clustering, **external** criteria that compare with known labels or another clustering, and **relative or task-based** evidence such as stability and usefulness for a downstream job.
+
+### Internal criteria for the number of clusters
+
+The k-means objective $J$ always decreases when $k$ increases, reaching 0 at $k = n$, so it cannot choose $k$ alone. For the points $1, 2, 9, 10, 12$ the best objective values are
+
+| $k$ | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| $J$ | 98.8 | 5.17 | 1.0 | 0.5 | 0 |
+
+The **elbow** method looks for the $k$ after which the improvement flattens: here the big drop is from $k = 1$ to $k = 2$, so $k = 2$.
+
+The **silhouette coefficient** (Rousseeuw, 1987) scores each point. For point $i$, let $a(i)$ be its mean distance to the other points of its own cluster and $b(i)$ its smallest mean distance to the points of any other cluster. Then
+$$s(i) = \frac{b(i) - a(i)}{\max\{a(i), b(i)\}} \in [-1, 1],$$
+with $s(i) = 0$ by convention when the point is alone in its cluster. Values near 1 mean the point is much closer to its cluster than to the next one; values near 0 mean it sits on a boundary; negative values suggest a wrong cluster. The mean silhouette over all points scores a clustering. For $1, 2, 9, 10, 12$ with the clusters $\{1, 2\}$ and $\{9, 10, 12\}$: for the point 1, $a = 1$ and $b = (8 + 9 + 11)/3 = 9.33$, so $s = 8.33/9.33 = 0.893$; the five values are $0.893, 0.880, 0.733, 0.824, 0.762$, with mean $0.818$. Splitting 12 off into its own cluster gives mean $0.583$, because the singleton scores 0. Silhouette favors compact, well-separated, roughly convex clusters, so it can undervalue a correct but elongated cluster found by DBSCAN.
+
+### Likelihood-based criteria
+
+For probabilistic models, the log-likelihood $\ln L$ of the training data also always improves with more components. Penalize the number of free parameters $p$:
+$$\mathrm{AIC} = 2p - 2\ln L, \qquad \mathrm{BIC} = p \ln n - 2 \ln L,$$
+and choose the model with the *smallest* value. A one-dimensional Gaussian mixture with $K$ components has $p = 3K - 1$ parameters ($K - 1$ weights, $K$ means and $K$ variances). With $n = 100$, $K = 2$ and $\ln L = -250$ gives $p = 5$, $\mathrm{BIC} = 5 \ln 100 + 500 = 523.0$; $K = 3$ and $\ln L = -245$ gives $p = 8$, $\mathrm{BIC} = 8 \ln 100 + 490 = 526.8$. BIC prefers $K = 2$, while AIC ($510$ against $506$) prefers $K = 3$: BIC penalizes complexity more once $\ln n > 2$, that is for $n \ge 8$. The cleanest alternative is the **held-out log-likelihood** on data not used for fitting, which is the unsupervised analogue of a test set.
+
+### External criteria
+
+If a reference labeling exists, compare two clusterings. The **Rand index** (Rand, 1971) is the fraction of the $\binom{n}{2}$ pairs of points on which the two clusterings agree (both put the pair together, or both put it apart). It ignores the names of the clusters. For $\mathbf{a} = (0,0,0,1,1,1)$ and $\mathbf{b} = (0,0,1,1,1,1)$ there are 15 pairs; the clusterings agree on 10, so the index is $0.667$. Random labelings still score well above 0, so the **adjusted Rand index** (ARI; Hubert and Arabie, 1985) subtracts the expected value under random labelings. With contingency counts $n_{ij}$, row sums $a_i$ and column sums $b_j$,
+$$\mathrm{ARI} = \frac{\sum_{ij}\binom{n_{ij}}{2} - \big[\sum_i \binom{a_i}{2}\sum_j \binom{b_j}{2}\big]/\binom{n}{2}}{\tfrac12\big[\sum_i \binom{a_i}{2} + \sum_j \binom{b_j}{2}\big] - \big[\sum_i \binom{a_i}{2}\sum_j \binom{b_j}{2}\big]/\binom{n}{2}}.$$
+It is 1 for identical partitions (up to renaming), about 0 for random ones and can be negative. For the example, the numerator is $4 - 6 \cdot 7/15 = 1.2$ and the denominator $6.5 - 2.8 = 3.7$, so $\mathrm{ARI} = 0.324$. Other external scores are purity and normalized mutual information.
+
+### Other kinds of evidence
+
+- **Stability.** Cluster bootstrap resamples or different random initializations and compute the ARI between the results. Clusters that appear in only some runs are probably artifacts.
+- **Reconstruction.** For PCA, report the fraction of variance retained and the reconstruction error on held-out data; for embeddings, check whether neighbors in the map are neighbors in the data.
+- **Downstream use.** Do the segments predict something a decision-maker cares about, such as churn or response to an offer?
+- **Interpretability.** Can a domain expert describe each cluster from its feature averages?
+
+### What no score proves
+
+There is no single true number of clusters: the answer depends on the distance, the features, the scale and the purpose. Different valid criteria disagree (AIC and BIC above). A high silhouette shows separation under that distance, not that the groups are real categories. Clusters found in unlabeled data show association, not cause, and an "anomaly" is only unusual. Report which criterion you used, show how the answer changes with the settings and the random seed, and treat the result as a hypothesis to check with domain knowledge.
+
+### In code
+
+```python
+from math import sqrt
+
+def dist(a, b):
+    return sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+def silhouette(points, labels):
+    scores = []
+    for i, p in enumerate(points):
+        groups = {}
+        for j, q in enumerate(points):
+            if j != i:
+                groups.setdefault(labels[j], []).append(dist(p, q))
+        if labels[i] not in groups:
+            scores.append(0.0)
+            continue
+        a = sum(groups[labels[i]]) / len(groups[labels[i]])
+        b = min(sum(d) / len(d) for k, d in groups.items() if k != labels[i])
+        scores.append((b - a) / max(a, b))
+    return sum(scores) / len(scores)
+
+print(silhouette([[1], [2], [9], [10], [12]], [0, 0, 1, 1, 1]))
+```
+
+@example
+title: Choosing between two Gaussian mixtures
+problem: Two Gaussian mixtures are fitted in one dimension to $n = 200$ points. The mixture with $K = 2$ has $\ln L = -480$ and the mixture with $K = 3$ has $\ln L = -470$. Compute AIC and BIC for each and say what each criterion selects.
+step: Parameter counts: $p = 3K - 1$, so $p = 5$ for $K = 2$ and $p = 8$ for $K = 3$.
+step: AIC $= 2p - 2\ln L$: $10 + 960 = 970$ for $K = 2$ and $16 + 940 = 956$ for $K = 3$. AIC selects $K = 3$.
+step: BIC $= p \ln n - 2\ln L$ with $\ln 200 = 5.298$: $5 \times 5.298 + 960 = 986.49$ for $K = 2$ and $8 \times 5.298 + 940 = 982.39$ for $K = 3$. BIC also selects $K = 3$.
+step: Both agree because the extra likelihood (10 nats, worth 20 in the criteria) outweighs the penalty of 3 more parameters. With only 5 nats of improvement the BIC difference would flip.
+answer: AIC: 970 versus 956; BIC: 986.5 versus 982.4. Both select $K = 3$.
+
+@example
+title: Rand index and adjusted Rand index
+problem: Two clusterings of six points are $\mathbf{a} = (0, 0, 1, 1, 2, 2)$ and $\mathbf{b} = (0, 0, 1, 2, 2, 2)$. Compute the Rand index and the adjusted Rand index.
+step: Pairs: $\binom{6}{2} = 15$. Pairs together in $\mathbf{a}$: 3 (one in each cluster of size 2). Pairs together in $\mathbf{b}$: $1 + 0 + 3 = 4$. Pairs together in both: the pairs $(1,2)$, $(5,6)$ are together in $\mathbf{a}$; $(1,2)$ is together in $\mathbf{b}$, and $(5,6)$ is too, so 2 pairs.
+step: Agreements: together in both (2) plus apart in both ($15 - 3 - 4 + 2 = 10$) $= 12$, so the Rand index is $12/15 = 0.8$.
+step: ARI: $\sum\binom{n_{ij}}{2} = 2$; $\sum\binom{a_i}{2} = 3$; $\sum\binom{b_j}{2} = 4$. Expected value $3 \times 4/15 = 0.8$; maximum $\tfrac12(3 + 4) = 3.5$. $\mathrm{ARI} = (2 - 0.8)/(3.5 - 0.8) = 0.444$.
+answer: Rand index $0.8$; adjusted Rand index $0.444$.
+
+@mistakes
+- Choosing $k$ (or $K$) by the training objective or training likelihood: it improves as the model grows.
+- Treating a high silhouette or a clean-looking embedding as proof that the clusters are real groups.
+- Comparing cluster labels directly with reference labels: the cluster numbers are arbitrary, so use a score that ignores naming, such as the adjusted Rand index.
+- Reporting one run: cluster results depend on initialization and on the sample, so check stability.
+
+@practice num
+prompt: A point has mean distance 2 to the other points of its own cluster, and mean distances 6 and 3 to the points of the two other clusters. What is its silhouette value $s$? Give your answer to three decimal places.
+answer: 0.333
+tol: 0.001
+check: (min(6, 3) - 2) / max(2, min(6, 3))
+hint: Use $b = $ the smaller of the two mean distances to other clusters, then $s = (b - a)/\max(a, b)$.
+solution: Here $a = 2$ and $b = \min(6, 3) = 3$, so $s = (3 - 2)/\max(2, 3) = 1/3 \approx 0.333$.
+
+@practice mc
+prompt: A data analyst fits mixtures with $K = 1, \dots, 8$ components and picks the $K$ with the highest log-likelihood on the training data. What is the main problem with this choice?
+choice*: The training log-likelihood almost never decreases as components are added, so it favors the largest model even when it fits noise.
+choice: The log-likelihood is not defined for more than two components.
+choice: A higher likelihood always means worse clusters, so the smallest $K$ is always best.
+choice: Using the log-likelihood is correct because it measures generalization to new data.
+hint: Compare what happens to the training likelihood as the model gains more parameters, and what BIC or held-out likelihood adds.
+solution: A larger mixture can always match or beat a smaller one on the data it was fitted to, so the training likelihood rises with $K$. Penalized criteria such as BIC, or the likelihood of held-out data, correct for this. The likelihood is defined for any $K$, and it does not measure generalization.
+
+@practice code
+prompt: Write `silhouette(points, labels)` that returns the mean silhouette coefficient of a clustering. `points` is a list of lists of floats (Euclidean distance) and `labels` a list of cluster ids of the same length, with at least two different clusters. For each point, $a$ is the mean distance to the other points in its cluster, $b$ is the smallest, over other clusters, of the mean distance to the points of that cluster, and $s = (b - a)/\max(a, b)$; a point alone in its cluster has $s = 0$. For example, `silhouette([[0.0], [1.0], [5.0]], [0, 0, 1])` returns `0.5166666...`.
+starter:
+```python
+def silhouette(points, labels):
+    return 0.0
+```
+tests:
+```python
+assert abs(silhouette([[0.0], [1.0], [5.0]], [0, 0, 1]) - 0.5166666666666667) < 1e-9
+assert abs(silhouette([[1], [2], [9], [10]], [0, 0, 1, 1]) - 0.8745098039215686) < 1e-9
+assert abs(silhouette([[1], [2], [9], [10], [12]], [0, 0, 1, 1, 1]) - 0.8183249299719888) < 1e-9
+assert abs(silhouette([[0, 0], [0, 1], [4, 0], [4, 1]], [0, 0, 1, 1]) - 0.7537887487646789) < 1e-9
+assert abs(silhouette([[0], [1], [2], [3]], [0, 1, 0, 1]) - (-0.25)) < 1e-9
+assert abs(silhouette([[0.0], [2.0], [3.0], [10.0], [11.0], [30.0]], [0, 0, 0, 1, 1, 2]) - 0.681937441643324) < 1e-9
+```
+model:
+```python
+from math import sqrt
+
+
+def silhouette(points, labels):
+    """Mean silhouette coefficient of a clustering."""
+    scores = []
+    for i, p in enumerate(points):
+        groups = {}
+        for j, q in enumerate(points):
+            if j != i:
+                d = sqrt(sum((x - y) ** 2 for x, y in zip(p, q)))
+                groups.setdefault(labels[j], []).append(d)
+        if labels[i] not in groups:
+            scores.append(0.0)
+            continue
+        a = sum(groups[labels[i]]) / len(groups[labels[i]])
+        b = min(sum(d) / len(d) for k, d in groups.items() if k != labels[i])
+        scores.append((b - a) / max(a, b))
+    return sum(scores) / len(scores)
+```
+hint: For each point, collect distances to the other points grouped by label; $a$ is the mean for its own label and $b$ is the smallest mean among the other labels.
+solution: A singleton cluster has no other members, so its label is missing from the group dictionary and its score is 0. The fifth test has a clustering that mixes near and far points, giving a negative mean; the sixth has a singleton in a three-cluster clustering.
+
+@practice code
+prompt: Write `rand_index(a, b)` that returns the Rand index of two clusterings of the same $n \ge 2$ items, given as lists of cluster labels: the fraction of the $n(n-1)/2$ pairs of items `(i, j)` with `i < j` for which "same label in `a`" equals "same label in `b`". For example, `rand_index([0, 0, 1, 1], [1, 1, 0, 0])` returns `1.0`.
+starter:
+```python
+def rand_index(a, b):
+    return 0.0
+```
+tests:
+```python
+assert rand_index([0, 0, 1, 1], [1, 1, 0, 0]) == 1.0
+assert abs(rand_index([0, 0, 1, 1], [0, 1, 0, 1]) - 1 / 3) < 1e-12
+assert abs(rand_index([0, 0, 0, 1, 1, 1], [0, 0, 1, 1, 1, 1]) - 10 / 15) < 1e-12
+assert abs(rand_index([0, 0, 1, 1, 2, 2], [0, 0, 1, 2, 2, 2]) - 0.8) < 1e-12
+assert rand_index([0, 1, 2], [0, 0, 0]) == 0.0
+```
+model:
+```python
+def rand_index(a, b):
+    """Fraction of item pairs on which two clusterings agree."""
+    n = len(a)
+    agree = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            if (a[i] == a[j]) == (b[i] == b[j]):
+                agree += 1
+    return agree / (n * (n - 1) / 2)
+```
+hint: Loop over all pairs `i < j`, count the pairs where the two "same cluster" tests give the same answer, and divide by the number of pairs.
+solution: The index counts pairs that are together in both clusterings and pairs that are apart in both, which is exactly "the two boolean tests are equal". The first test shows that renaming clusters does not change the score.
+
+@practice num
+prompt: A network has the edges $F \to \text{Fever}$ and $F \to \text{Cough}$, with $P(F{=}1) = 0.1$, $P(\text{Fever}{=}1 \mid F{=}1) = 0.9$, $P(\text{Fever}{=}1 \mid F{=}0) = 0.1$, $P(\text{Cough}{=}1 \mid F{=}1) = 0.8$ and $P(\text{Cough}{=}1 \mid F{=}0) = 0.2$. By enumeration, what is $P(F{=}1 \mid \text{Fever}{=}1, \text{Cough}{=}1)$?
+answer: 0.8
+tol: 0.001
+check: (0.1 * 0.9 * 0.8) / (0.1 * 0.9 * 0.8 + 0.9 * 0.1 * 0.2)
+hint: Compute the joint probability of $F$, Fever $= 1$ and Cough $= 1$ for each value of $F$, then normalize.
+solution: For $F = 1$: $0.1 \times 0.9 \times 0.8 = 0.072$. For $F = 0$: $0.9 \times 0.1 \times 0.2 = 0.018$. The posterior is $0.072/(0.072 + 0.018) = 0.8$, up from the prior of 0.1.
+
+@quiz text
+prompt: What does this program print?
+```python
+from math import log
+loglik, k, n = -120.0, 5, 50
+print(round(k * log(n) - 2 * loglik, 2))
+```
+answer: 259.56
+check: run("from math import log\nloglik, k, n = -120.0, 5, 50\nprint(round(k * log(n) - 2 * loglik, 2))")
+hint: This is the formula $p \ln n - 2 \ln L$ with $p = 5$ and $n = 50$; $\ln 50 \approx 3.912$.
+solution: The penalty is $5 \ln 50 = 19.56$ and $-2 \ln L = 240$, so the BIC is $259.56$.
+
+@quiz code
+prompt: Write `adjusted_rand_index(a, b)` for two clusterings given as equal-length lists of labels. Let $n_{ij}$ be the number of items with label $i$ in `a` and label $j$ in `b`, $a_i$ and $b_j$ the row and column totals, and $C(m) = m(m-1)/2$. With $S = \sum_{ij} C(n_{ij})$, $A = \sum_i C(a_i)$, $B = \sum_j C(b_j)$, $E = AB/C(n)$ and $M = (A + B)/2$, the result is $(S - E)/(M - E)$; if $M = E$, return `1.0`. For example, `adjusted_rand_index([0, 0, 1, 1], [1, 1, 0, 0])` returns `1.0`.
+starter:
+```python
+def adjusted_rand_index(a, b):
+    return 0.0
+```
+tests:
+```python
+assert abs(adjusted_rand_index([0, 0, 1, 1], [1, 1, 0, 0]) - 1.0) < 1e-12
+assert abs(adjusted_rand_index([0, 0, 0, 1, 1, 1], [0, 0, 1, 1, 1, 1]) - 0.32432432432432434) < 1e-9
+assert abs(adjusted_rand_index([0, 0, 1, 1], [0, 1, 0, 1]) - (-0.5)) < 1e-9
+assert abs(adjusted_rand_index([0, 0, 1, 1, 2, 2], [0, 0, 1, 2, 2, 2]) - 0.4444444444444444) < 1e-9
+assert abs(adjusted_rand_index([0, 0, 0], [1, 1, 1]) - 1.0) < 1e-12
+assert abs(adjusted_rand_index([0, 1, 2, 3], [0, 1, 2, 3]) - 1.0) < 1e-12
+```
+model:
+```python
+from collections import Counter
+
+
+def adjusted_rand_index(a, b):
+    """Adjusted Rand index of two clusterings."""
+    n = len(a)
+
+    def comb2(m):
+        return m * (m - 1) / 2
+
+    S = sum(comb2(v) for v in Counter(zip(a, b)).values())
+    A = sum(comb2(v) for v in Counter(a).values())
+    B = sum(comb2(v) for v in Counter(b).values())
+    E = A * B / comb2(n)
+    M = (A + B) / 2
+    if M == E:
+        return 1.0
+    return (S - E) / (M - E)
+```
+hint: Count label pairs with `Counter(zip(a, b))`, the row totals with `Counter(a)` and the column totals with `Counter(b)`; then apply the formula.
+solution: The contingency counts come from counting pairs of labels, so renaming clusters changes nothing. The second and fourth tests have unequal cluster sizes, the third gives a negative value (worse than chance), and the last two hit the case $M = E$ where both clusterings are trivial and identical.
+
+@quiz ms
+prompt: Which of these statements about evaluating unsupervised learning are true? Select all that apply.
+choice*: The adjusted Rand index is unchanged when the cluster labels of one clustering are renamed, and it is close to 0 for two unrelated random clusterings.
+choice*: For BIC and AIC, the model with the smallest value is preferred, and BIC penalizes each parameter more than AIC when $n \ge 8$.
+choice*: Clusters that change substantially between bootstrap resamples of the data are weak evidence of real structure.
+choice: A mean silhouette close to 1 proves that the groups found correspond to real categories in the world.
+hint: Recall the definitions of ARI, AIC and BIC, and what stability analysis checks.
+solution: ARI depends only on the partition, not on its labels, and subtracts the chance level. Lower AIC or BIC is better, and the BIC penalty is $\ln n$ per parameter against 2 for AIC, so it is larger for $n \ge 8$. Unstable clusters suggest artifacts. A high silhouette shows separation under the chosen distance and features, which does not prove that the groups are real categories.

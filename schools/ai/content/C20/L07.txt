@@ -1,0 +1,263 @@
+@lesson
+title: Non-maximum suppression and detection metrics
+summary: Remove duplicate detections with greedy non-maximum suppression and score a detector with precision, recall and average precision.
+objective: Run greedy non-maximum suppression by hand and in code, with stated tie-breaking and threshold rules.
+objective: Match detections to ground-truth boxes at an IoU threshold and compute precision, recall and F1.
+objective: Compute average precision from a ranked list of true and false positives and explain mean average precision.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the section on object detection in the recognition chapter, including the discussion of evaluation and non-maximum suppression.
+@article
+A detector with anchors at every position produces a flurry of boxes around each object: the box that fits best, and a dozen neighbors that nearly fit. If you report them all, one person in a photo becomes twelve detections and eleven are counted as false alarms. **Non-maximum suppression** (NMS) keeps the best box in each cluster and discards the rest.
+
+### Conventions used in this course
+
+A detection is a box $(x_1, y_1, x_2, y_2)$ with **exclusive** right and bottom edges (width $x_2 - x_1$), a confidence score and, when classes matter, a label. IoU is as in the last lesson. In **greedy NMS** with threshold $\tau$:
+
+1. Sort detections by score, highest first. **Ties** are broken by the smaller original index.
+2. Keep the first remaining detection and remove every other remaining detection whose IoU with it is **strictly greater** than $\tau$ (an IoU exactly equal to $\tau$ is kept).
+3. Repeat with the next remaining detection until none are left.
+
+NMS is normally run **per class**: a person box and a bicycle box covering the same pixels do not suppress each other. The threshold controls a trade-off. A low $\tau$ (say 0.3) suppresses aggressively, which removes duplicates but also removes real neighbors in a crowd; a high $\tau$ (say 0.7) keeps more overlapping boxes and so more duplicates. Variants such as soft-NMS lower the scores of overlapping boxes instead of deleting them.
+
+### Matching detections to ground truth
+
+To score a detector we must decide which detections are correct. Take the detections of one class, sorted by score from highest to lowest. For each detection find the unmatched ground-truth box with the highest IoU. If that IoU is at least a threshold (commonly 0.5), the detection is a **true positive** (TP) and that ground-truth box is marked matched, so it cannot be matched again; otherwise the detection is a **false positive** (FP). Ground-truth boxes left unmatched are **false negatives** (FN). A second detection of an already matched object is therefore an FP, which is why NMS matters for the metric.
+
+From the counts, **precision** $= \mathrm{TP}/(\mathrm{TP} + \mathrm{FP})$ is the fraction of detections that are right, **recall** $= \mathrm{TP}/(\mathrm{TP} + \mathrm{FN})$ is the fraction of true objects found, and $F_1 = 2PR/(P + R)$ combines them. With 6 TP, 4 FP and 2 FN, $P = 0.6$, $R = 0.75$ and $F_1 = 2 \cdot 0.6 \cdot 0.75/1.35 \approx 0.667$.
+
+### Average precision
+
+Both numbers depend on the score cutoff. Walking down the ranked list and recomputing precision and recall after each detection traces a **precision–recall curve**. **Average precision** (AP) is the area under it, computed with the precision envelope: at each recall level, use the largest precision achieved at that recall or higher. In symbols, with recall values $r_1 \le r_2 \le \dots$ after each detection, $r_0 = 0$ and envelope $\hat p_i = \max_{j \ge i} p_j$,
+
+$$\mathrm{AP} = \sum_i (r_i - r_{i-1})\,\hat p_i.$$
+
+Suppose the ranked outcomes are TP, FP, TP, TP, FP with 4 ground-truth boxes. After each step (precision, recall): $(1, 0.25)$, $(0.5, 0.25)$, $(0.667, 0.5)$, $(0.75, 0.75)$, $(0.6, 0.75)$. The envelope is $1, 0.75, 0.75, 0.75, 0.6$, and the recall increases are $0.25, 0, 0.25, 0.25, 0$, so $\mathrm{AP} = 0.25 \cdot 1 + 0.25 \cdot 0.75 + 0.25 \cdot 0.75 = 0.625$. Recall never reaches 1 here, and the missed objects count as precision 0 beyond 0.75.
+
+**Mean average precision** (mAP) averages AP over classes. The PASCAL VOC benchmark reports it at one IoU threshold, 0.5; the COCO benchmark averages AP over IoU thresholds from 0.5 to 0.95 in steps of 0.05, which also rewards precise localization. mAP numbers from different benchmarks, thresholds and implementations are not comparable, so always check which protocol is meant.
+
+### In code
+
+```python
+def iou(a, b):
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    union = ((a[2] - a[0]) * (a[3] - a[1])
+             + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    return inter / union
+
+def nms(dets, tau):
+    """dets: list of (box, score). Returns kept indices, best first."""
+    order = sorted(range(len(dets)), key=lambda i: (-dets[i][1], i))
+    keep = []
+    while order:
+        best = order.pop(0)
+        keep.append(best)
+        order = [i for i in order
+                 if iou(dets[best][0], dets[i][0]) <= tau]
+    return keep
+
+dets = [((0, 0, 10, 10), 0.9), ((1, 1, 11, 11), 0.8), ((30, 30, 40, 40), 0.7)]
+print(nms(dets, 0.5))
+```
+
+torchvision provides `nms` and `batched_nms` (the per-class version) as fast compiled operators that follow the same logic.
+@example
+title: Greedy NMS on four detections
+problem: Four detections (exclusive edges) are $d_0 = ((0,0,10,10), 0.6)$, $d_1 = ((0,0,10,5), 0.9)$, $d_2 = ((20,0,30,10), 0.8)$ and $d_3 = ((0,5,10,10), 0.7)$. Run NMS with $\tau = 0.5$.
+step: Sorted by score: $d_1$ (0.9), $d_2$ (0.8), $d_3$ (0.7), $d_0$ (0.6). Keep $d_1 = (0,0,10,5)$, area 50.
+step: Against $d_1$: $d_2$ is disjoint, IoU 0, so it stays. $d_3 = (0,5,10,10)$ touches $d_1$ along an edge, IoU 0, so it stays. $d_0$ contains $d_1$ with intersection 50 and union 100, IoU exactly 0.5, which is not strictly greater than $\tau$, so it stays.
+step: Keep $d_2$ next: it is disjoint from $d_3$ and $d_0$, so nothing else is removed.
+step: Keep $d_3$ (0.7). Its IoU with $d_0$ is $50/100 = 0.5$, again not greater than 0.5, so $d_0$ survives and is kept last.
+answer: All four detections are kept, in the order $d_1, d_2, d_3, d_0$.
+@example
+title: Precision, recall and AP at a glance
+problem: A detector has 5 ground-truth boxes. Its ranked detections are TP, TP, FP, TP, FP, FP. Find the final precision and recall and the average precision.
+step: Final counts: TP $= 3$, FP $= 3$, FN $= 5 - 3 = 2$. Precision $= 3/6 = 0.5$, recall $= 3/5 = 0.6$.
+step: After each detection (precision, recall): $(1, 0.2)$, $(1, 0.4)$, $(0.667, 0.4)$, $(0.75, 0.6)$, $(0.6, 0.6)$, $(0.5, 0.6)$.
+step: The envelope (largest precision at that recall or higher) is $1, 1, 0.75, 0.75, 0.6, 0.5$, and the recall increments are $0.2, 0.2, 0, 0.2, 0, 0$.
+step: $\mathrm{AP} = 0.2 \cdot 1 + 0.2 \cdot 1 + 0.2 \cdot 0.75 = 0.55$.
+answer: Precision 0.5, recall 0.6, $\mathrm{AP} = 0.55$.
+@mistakes
+- Running NMS across classes: a person and a bicycle can legitimately overlap, so boxes of different classes should not suppress each other.
+- Counting a second detection of an already matched object as a true positive: each ground-truth box can be matched once, so the extra box is a false positive.
+- Averaging precision values at the ranks of true positives without the envelope or the recall weights, or comparing mAP numbers computed with different IoU thresholds.
+@practice num
+prompt: A detector makes 25 detections at a score cutoff; 18 are true positives. There are 30 ground-truth objects. Give the $F_1$ score to three decimal places.
+answer: 0.655
+tol: 0.001
+check: 2 * (18 / 25) * (18 / 30) / (18 / 25 + 18 / 30)
+hint: Precision is $18/25$ and recall is $18/30$; then use $F_1 = 2PR/(P+R)$.
+solution: $P = 0.72$ and $R = 0.6$, so $F_1 = 2 \cdot 0.72 \cdot 0.6/(0.72 + 0.6) = 0.864/1.32 \approx 0.655$.
+@practice code
+prompt: Write `nms_per_class(dets, tau)` where `dets` is a list of `(box, score, label)` with `box = (x1, y1, x2, y2)` using exclusive right and bottom edges. Run greedy NMS separately for each label: sort by score descending (ties by smaller index), keep a detection, and suppress later detections of the same label whose IoU with it is strictly greater than `tau`. Return the list of kept original indices in the order they were kept (decreasing score across all labels, ties by smaller index). For example, with two identical boxes of different labels, both are kept.
+starter:
+```python
+def nms_per_class(dets, tau):
+    pass
+```
+tests:
+```python
+d = [((0, 0, 10, 10), 0.9, 'a'), ((1, 1, 11, 11), 0.8, 'a'),
+     ((0, 0, 10, 10), 0.7, 'b'), ((20, 20, 30, 30), 0.6, 'a')]
+assert nms_per_class(d, 0.5) == [0, 2, 3]
+assert nms_per_class(d, 0.7) == [0, 1, 2, 3]
+e = [((0, 0, 10, 10), 0.9, 'a'), ((0, 0, 10, 5), 0.8, 'a')]
+assert nms_per_class(e, 0.5) == [0, 1]
+assert nms_per_class(e, 0.49) == [0]
+t = [((0, 0, 10, 10), 0.5, 'a'), ((0, 0, 10, 10), 0.5, 'a')]
+assert nms_per_class(t, 0.5) == [0]
+assert nms_per_class([], 0.5) == []
+```
+model:
+```python
+def nms_per_class(dets, tau):
+    """Greedy NMS applied separately to each label."""
+    def iou(a, b):
+        w = min(a[2], b[2]) - max(a[0], b[0])
+        h = min(a[3], b[3]) - max(a[1], b[1])
+        if w <= 0 or h <= 0:
+            return 0.0
+        inter = w * h
+        area_a = (a[2] - a[0]) * (a[3] - a[1])
+        area_b = (b[2] - b[0]) * (b[3] - b[1])
+        return inter / (area_a + area_b - inter)
+
+    order = sorted(range(len(dets)), key=lambda i: (-dets[i][1], i))
+    keep = []
+    for i in order:
+        suppressed = any(dets[k][2] == dets[i][2]
+                         and iou(dets[k][0], dets[i][0]) > tau
+                         for k in keep)
+        if not suppressed:
+            keep.append(i)
+    return keep
+```
+hint: Process detections in sorted order and keep one unless a previously kept detection with the same label overlaps it by strictly more than `tau`.
+solution: Checking each candidate against the already kept detections of its label is equivalent to the repeat-and-remove loop. The third test has IoU exactly 0.5, which is not strictly greater than 0.5 and so both boxes are kept; the tie test checks that equal scores keep the smaller index.
+@practice num
+prompt: A detector's ranked outcomes for one class are TP, FP, TP, FP, TP with 3 ground-truth boxes. Using the precision envelope (largest precision at that recall or higher) and recall increments, what is the average precision, to three decimal places?
+answer: 0.756
+tol: 0.001
+check: (1 + 2 / 3 + 3 / 5) / 3
+hint: After each detection, precision is TP so far over detections so far and recall is TP so far over 3; recall increases only at the three true positives.
+solution: The true positives are at ranks 1, 3 and 5 with precision $1$, $2/3$ and $3/5$. The envelope at ranks 1, 3, 5 is $1$, $2/3$ and $3/5$ (each is the largest precision at that recall or higher, since later precisions are lower or equal); so $\mathrm{AP} = (1 + 2/3 + 3/5)/3 = 0.756$.
+@practice code
+prompt: Write `average_precision(is_tp, num_gt)` where `is_tp` is the list of booleans for detections ranked by score, highest first, with True for a true positive, and `num_gt` is the number of ground-truth boxes (at least 1). After each detection compute precision (TP so far over detections so far) and recall (TP so far over `num_gt`). Replace each precision by the largest precision at that rank or any later rank (the envelope), and return the sum of (recall increase) times (envelope precision) over all detections, starting from recall 0. For example, `average_precision([True, False, True, True, False], 4)` returns `0.625`.
+starter:
+```python
+def average_precision(is_tp, num_gt):
+    pass
+```
+tests:
+```python
+assert abs(average_precision([True, False, True, True, False], 4) - 0.625) < 1e-9
+assert abs(average_precision([True, True, True], 3) - 1.0) < 1e-9
+assert average_precision([False, False], 2) == 0.0
+assert abs(average_precision([True, True, False, True, False, False], 5) - 0.55) < 1e-9
+assert abs(average_precision([True], 2) - 0.5) < 1e-9
+assert average_precision([], 3) == 0.0
+```
+model:
+```python
+def average_precision(is_tp, num_gt):
+    """All-point average precision with the precision envelope."""
+    tp = 0
+    precision, recall = [], []
+    for n, hit in enumerate(is_tp, start=1):
+        tp += 1 if hit else 0
+        precision.append(tp / n)
+        recall.append(tp / num_gt)
+    for i in range(len(precision) - 2, -1, -1):
+        precision[i] = max(precision[i], precision[i + 1])
+    ap = 0.0
+    prev = 0.0
+    for p, r in zip(precision, recall):
+        ap += (r - prev) * p
+        prev = r
+    return ap
+```
+hint: First build the precision and recall lists; then sweep the precision list from the end, replacing each value by the larger of itself and its right neighbor; finally sum the recall increments times the envelope.
+solution: The backward sweep creates the envelope, so a high precision at a late rank lifts the earlier ones. Recall increases only at true positives, so only those ranks contribute. The `[True]` test shows that missed ground-truth boxes are penalized: recall stops at 0.5, so the AP is 0.5.
+@practice code
+prompt: Write `match_dets(dets, gts, thr)` for one class. `dets` is a list of `(box, score)` and `gts` a list of boxes, all `(x1, y1, x2, y2)` with exclusive edges. Process detections sorted by score descending (ties by smaller index). For each detection, among the ground-truth boxes not yet matched, find the one with the highest IoU (ties toward the smaller index); if that IoU is at least `thr`, the detection is a true positive and that ground-truth box becomes matched; otherwise it is a false positive. Return the list of booleans (True for TP) in the sorted order. For example, with one ground-truth box and two identical detections, the result is `[True, False]`.
+starter:
+```python
+def match_dets(dets, gts, thr):
+    pass
+```
+tests:
+```python
+gts = [(0, 0, 10, 10), (20, 20, 30, 30)]
+dets = [((0, 0, 10, 10), 0.8), ((1, 1, 11, 11), 0.9),
+        ((50, 50, 60, 60), 0.6), ((21, 21, 31, 31), 0.7)]
+assert match_dets(dets, gts, 0.5) == [True, False, True, False]
+g2 = [(0, 0, 10, 10), (5, 0, 15, 10)]
+d2 = [((6, 0, 16, 10), 0.9), ((0, 0, 5, 10), 0.8)]
+assert match_dets(d2, g2, 0.2) == [True, True]
+assert match_dets([((0, 0, 4, 4), 0.5), ((0, 0, 4, 4), 0.4)], [(0, 0, 4, 4)], 0.5) == [True, False]
+assert match_dets([], [(0, 0, 1, 1)], 0.5) == []
+assert match_dets([((0, 0, 4, 4), 0.5)], [], 0.5) == [False]
+```
+model:
+```python
+def match_dets(dets, gts, thr):
+    """Greedy matching of ranked detections to ground-truth boxes."""
+    def iou(a, b):
+        w = min(a[2], b[2]) - max(a[0], b[0])
+        h = min(a[3], b[3]) - max(a[1], b[1])
+        if w <= 0 or h <= 0:
+            return 0.0
+        inter = w * h
+        area_a = (a[2] - a[0]) * (a[3] - a[1])
+        area_b = (b[2] - b[0]) * (b[3] - b[1])
+        return inter / (area_a + area_b - inter)
+
+    order = sorted(range(len(dets)), key=lambda i: (-dets[i][1], i))
+    matched = [False] * len(gts)
+    result = []
+    for i in order:
+        best, best_iou = -1, 0.0
+        for j, g in enumerate(gts):
+            if matched[j]:
+                continue
+            v = iou(dets[i][0], g)
+            if v > best_iou:
+                best, best_iou = j, v
+        if best >= 0 and best_iou >= thr:
+            matched[best] = True
+            result.append(True)
+        else:
+            result.append(False)
+    return result
+```
+hint: For each detection scan the unmatched ground-truth boxes for the highest IoU, then compare it with `thr` and mark that box matched.
+solution: Choosing the best-IoU unmatched box, not the first one above the threshold, matters in the second test: the first detection overlaps both ground-truth boxes at the low threshold 0.2 and must take the better one, or the second detection (which only fits the first ground-truth box) loses its match. In the first test the duplicate of an already matched object is a false positive.
+@quiz text
+prompt: What does this program print?
+```python
+scores = [0.3, 0.9, 0.6, 0.9]
+order = sorted(range(4), key=lambda i: (-scores[i], i))
+print(order)
+```
+answer: [1, 3, 2, 0]
+check: run("scores = [0.3, 0.9, 0.6, 0.9]\norder = sorted(range(4), key=lambda i: (-scores[i], i))\nprint(order)")
+hint: Sorting by negative score puts the highest scores first; equal scores are ordered by index.
+solution: The two scores of 0.9 are at indices 1 and 3, in that order because of the tie-break on the index, then 0.6 at index 2 and 0.3 at index 0.
+@quiz mc
+prompt: A crowd photo contains many people standing shoulder to shoulder, and their true boxes overlap with IoU up to 0.5. Which is the main risk of running NMS with a low IoU threshold such as 0.3?
+choice*: Detections of distinct neighboring people can be suppressed as if they were duplicates.
+choice: More duplicate boxes survive around each person.
+choice: Boxes of different classes suppress each other even when NMS is run per class.
+choice: The ground-truth boxes are changed by NMS.
+hint: Which detections does a threshold of 0.3 remove, given that true neighbors overlap by up to 0.5?
+solution: With $\tau = 0.3$, a box whose IoU with a higher-scoring neighbor exceeds 0.3 is removed, and true neighbors overlap by more than that. Duplicates survive when $\tau$ is high, not low, per-class NMS does not compare classes, and NMS never modifies ground truth.
+@quiz ms
+prompt: Which statements about detection metrics are true? Select all that apply.
+choice*: Raising the confidence cutoff can never increase recall.
+choice*: A second detection of an object that has already been matched counts as a false positive.
+choice*: COCO-style mAP averages average precision over several IoU thresholds, so it rewards tighter boxes.
+choice: Raising the confidence cutoff can never decrease precision.
+hint: Removing low-score detections removes some true positives and some false positives; think about what each change does to TP and FP.
+solution: Fewer detections means TP cannot increase, so recall cannot rise. Each ground-truth box is matched once, so a duplicate is an FP. Averaging over thresholds up to 0.95 rewards localization. Precision can fall when a cutoff removes a true positive but keeps false positives.

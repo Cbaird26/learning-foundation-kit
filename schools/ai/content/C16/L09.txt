@@ -1,0 +1,254 @@
+@lesson
+title: Hidden Markov models and the forward algorithm
+summary: Define a hidden Markov model, compute the probability of an observation sequence with the forward algorithm, and keep the computation stable with scaling.
+objective: Write the joint probability of a state path and an observation sequence in a hidden Markov model.
+objective: Compute the forward variables by hand and in code, and recover the likelihood and the filtering distribution.
+objective: Explain why the forward algorithm costs $O(TK^2)$ instead of $O(K^T)$ and how scaling prevents underflow.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the chapter on state-space models: the section on hidden Markov models and inference with the forward algorithm.
+
+@article
+A pump has two hidden conditions, normal and faulty, which no sensor shows directly. Every hour a monitor reports either "ok" or "alarm". A faulty pump usually triggers alarms, and a normal pump sometimes does too, and a pump that is faulty now is likely to be faulty an hour later. Given a day of reports, how likely is it that the pump behaved as the model says, and how likely is it faulty right now? A **hidden Markov model** (HMM) answers both.
+
+### The model
+
+An HMM has a hidden state sequence $z_1, \dots, z_T$ with $z_t \in \{1, \dots, K\}$, and an observed sequence $o_1, \dots, o_T$. Its parameters are
+
+- the **initial distribution** $\pi_i = P(z_1 = i)$,
+- the **transition matrix** $A_{ij} = P(z_{t+1} = j \mid z_t = i)$, with each row summing to 1,
+- the **emission probabilities** $B_i(o) = P(o_t = o \mid z_t = i)$, with each row summing to 1.
+
+Two assumptions make it tractable: the state is a **first-order Markov chain** (the next state depends only on the current one), and each observation depends only on the current state. Then the joint probability of a state path $\mathbf{z}$ and observations $\mathbf{o}$ factorizes:
+$$P(\mathbf{z}, \mathbf{o}) = \pi_{z_1} B_{z_1}(o_1) \prod_{t=2}^{T} A_{z_{t-1} z_t}\, B_{z_t}(o_t).$$
+
+For the pump, states $0 =$ normal and $1 =$ faulty; observations $0 =$ ok and $1 =$ alarm. Take $\pi = (0.9, 0.1)$, $A = \begin{pmatrix} 0.8 & 0.2 \\ 0.3 & 0.7 \end{pmatrix}$ and $B = \begin{pmatrix} 0.9 & 0.1 \\ 0.2 & 0.8 \end{pmatrix}$. The path normal, faulty, faulty with reports ok, alarm, alarm has probability $0.9 \cdot 0.9 \times 0.2 \cdot 0.8 \times 0.7 \cdot 0.8 = 0.81 \times 0.16 \times 0.56 = 0.0726$.
+
+### Three problems
+
+HMMs pose three standard questions: **evaluation** (the likelihood $P(\mathbf{o})$ of the observations), **decoding** (the most likely state sequence, next lesson) and **learning** (estimating $\pi$, $A$, $B$ from observations alone, done by the Baum–Welch algorithm, which is EM for HMMs, using the forward and backward recursions in its E-step).
+
+### The forward algorithm
+
+The likelihood is a sum over all $K^T$ state paths, $P(\mathbf{o}) = \sum_{\mathbf{z}} P(\mathbf{z}, \mathbf{o})$, far too many to enumerate. The **forward algorithm** uses dynamic programming. Define the **forward variable**
+$$\alpha_t(j) = P(o_1, \dots, o_t,\, z_t = j).$$
+It satisfies
+$$\alpha_1(j) = \pi_j B_j(o_1), \qquad \alpha_{t}(j) = \Big[\sum_{i=1}^{K} \alpha_{t-1}(i)\, A_{ij}\Big] B_j(o_t),$$
+because to reach state $j$ at time $t$ having seen $o_1, \dots, o_t$ we must have been in some state $i$ at time $t - 1$ (sum over $i$, by the law of total probability), moved to $j$, and emitted $o_t$. At the end,
+$$P(\mathbf{o}) = \sum_{j} \alpha_T(j).$$
+Each of the $T$ steps costs $K^2$ operations, so the total is $O(TK^2)$.
+
+For the pump with reports (ok, alarm, alarm):
+
+| $t$ | observation | $\alpha_t(\text{normal})$ | $\alpha_t(\text{faulty})$ |
+|---|---|---|---|
+| 1 | ok | 0.81 | 0.02 |
+| 2 | alarm | 0.0654 | 0.1408 |
+| 3 | alarm | 0.009456 | 0.089312 |
+
+The likelihood is $0.009456 + 0.089312 = 0.098768$. The **filtering distribution** is $P(z_t = j \mid o_1, \dots, o_t) = \alpha_t(j)/\sum_i \alpha_t(i)$. After the third report the probability that the pump is faulty is $0.089312/0.098768 = 0.904$.
+
+### Underflow and scaling
+
+The probability of a long sequence is a product of many numbers below 1, so $\alpha_t$ shrinks exponentially and underflows floating point (a sequence of 1000 reports easily gives values below $10^{-300}$). The fix is **scaling**: after computing each $\alpha_t$, divide it by its sum $c_t$, carry the normalized vector forward, and accumulate $\log P(\mathbf{o}) = \sum_t \log c_t$. Each $c_t$ equals $P(o_t \mid o_1, \dots, o_{t-1})$, and the normalized vectors are exactly the filtering distributions.
+
+### In code
+
+```python
+def forward(pi, A, B, obs):
+    K = len(pi)
+    alphas = [[pi[j] * B[j][obs[0]] for j in range(K)]]
+    for o in obs[1:]:
+        prev = alphas[-1]
+        alphas.append([sum(prev[i] * A[i][j] for i in range(K)) * B[j][o]
+                       for j in range(K)])
+    return alphas
+
+pi = [0.9, 0.1]
+A = [[0.8, 0.2], [0.3, 0.7]]
+B = [[0.9, 0.1], [0.2, 0.8]]
+alphas = forward(pi, A, B, [0, 1, 1])
+print(sum(alphas[-1]))
+```
+
+HMMs have been used for speech recognition, part-of-speech tagging and gene finding. Libraries such as `hmmlearn` implement the same recursions.
+
+@example
+title: The forward algorithm on two reports
+problem: A model has $\pi = (0.5, 0.5)$, $A = \begin{pmatrix} 0.6 & 0.4 \\ 0.2 & 0.8 \end{pmatrix}$ and $B = \begin{pmatrix} 0.7 & 0.3 \\ 0.1 & 0.9 \end{pmatrix}$. Compute the probability of the observations $(0, 1)$.
+step: Initialize with the first observation $0$: $\alpha_1(1) = 0.5 \times 0.7 = 0.35$ and $\alpha_1(2) = 0.5 \times 0.1 = 0.05$.
+step: Predict state 1 at time 2: $\alpha_1(1)A_{11} + \alpha_1(2)A_{21} = 0.35 \times 0.6 + 0.05 \times 0.2 = 0.22$. Multiply by the emission of observation 1 in state 1: $\alpha_2(1) = 0.22 \times 0.3 = 0.066$.
+step: Predict state 2: $0.35 \times 0.4 + 0.05 \times 0.8 = 0.18$; multiply by $B_2(1) = 0.9$: $\alpha_2(2) = 0.162$.
+step: Sum: $P(\mathbf{o}) = 0.066 + 0.162 = 0.228$. The probability that the final state is state 2 given both reports is $0.162/0.228 = 0.7105$.
+answer: $P(\mathbf{o}) = 0.228$.
+
+@example
+title: Why scaling matters
+problem: A two-state model emits a symbol with probability about $0.3$ at every step. Estimate $P(\mathbf{o})$ for $T = 1000$ and decide whether plain floating point can represent it.
+step: A product of 1000 factors of about $0.3$ is $0.3^{1000} = 10^{1000 \log_{10} 0.3} = 10^{-523}$.
+step: The smallest positive double is about $10^{-308}$ (about $5 \times 10^{-324}$ with denormals), so $10^{-523}$ underflows to exactly 0.
+step: In log space the quantity is $1000 \ln 0.3 = -1204$, which is an ordinary number. Scaling keeps $\alpha_t$ normalized and adds $\ln c_t$ at each step, with $c_t \approx 0.3$.
+answer: $10^{-523}$ underflows; work with the sum of $\ln c_t \approx -1204$.
+
+@mistakes
+- Summing over the wrong index in the recursion: the sum is over the previous state $i$ (rows of $A$) and the emission uses the new state $j$.
+- Enumerating all state paths: the cost $K^T$ is hopeless beyond tiny $T$, and the forward algorithm gives the same sum in $O(TK^2)$.
+- Treating $\alpha_t(j)$ as a probability of the state alone: it is the joint probability of the observations so far and the state, so it does not sum to 1 across states.
+- Multiplying probabilities over long sequences without scaling or logarithms, which underflows to 0.
+
+@practice num
+prompt: A two-state HMM has $\pi = (0.6, 0.4)$, $A = \begin{pmatrix} 0.7 & 0.3 \\ 0.4 & 0.6 \end{pmatrix}$ and emission matrix $B = \begin{pmatrix} 0.5 & 0.5 \\ 0.1 & 0.9 \end{pmatrix}$ (rows are states, columns are observations 0 and 1). What is the joint probability of the state path $(0, 1, 1)$ and the observations $(0, 1, 1)$? Give your answer to five decimal places.
+answer: 0.04374
+tol: 0.00001
+check: 0.6 * 0.5 * 0.3 * 0.9 * 0.6 * 0.9
+hint: Multiply $\pi_{z_1} B_{z_1}(o_1)$ and then, for each step, the transition probability times the emission probability.
+solution: The factors are $\pi_0 B_0(0) = 0.6 \times 0.5 = 0.3$, then $A_{01} B_1(1) = 0.3 \times 0.9 = 0.27$, then $A_{11} B_1(1) = 0.6 \times 0.9 = 0.54$. The product is $0.3 \times 0.27 \times 0.54 = 0.04374$.
+
+@practice mc
+prompt: Why is the forward algorithm preferred to summing over all state paths to compute the likelihood of an observation sequence?
+choice*: It reuses the sums over earlier states, taking time proportional to $T K^2$ instead of $K^T$.
+choice: It finds the single most likely state path, which the sum over paths cannot do.
+choice: It needs labeled state sequences, which the sum over paths does not.
+choice: It gives an approximate likelihood that is faster to compute.
+hint: Count the operations in one step of the recursion and multiply by the number of steps.
+solution: The recursion computes exactly the same sum, but shares the work among paths with common prefixes, giving $O(TK^2)$ operations. Finding the most likely path is decoding (the Viterbi algorithm), the forward algorithm needs no state labels, and its answer is exact.
+
+@practice code
+prompt: Write `path_prob(pi, A, B, states, obs)` that returns the joint probability $P(\mathbf{z}, \mathbf{o})$ of a state path `states` and an observation sequence `obs` of the same length in an HMM. `pi` is a list, `A[i][j]` is the transition probability from state `i` to `j`, `B[i][o]` is the probability of observation `o` in state `i`; states and observations are integers. For example, with `pi = [1.0, 0.0]`, `A = [[1.0, 0.0], [0.0, 1.0]]` and `B = [[0.5, 0.5], [1.0, 0.0]]`, `path_prob(pi, A, B, [0, 0], [1, 0])` returns `0.25`.
+starter:
+```python
+def path_prob(pi, A, B, states, obs):
+    return 0.0
+```
+tests:
+```python
+pi, A, B = [1.0, 0.0], [[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [1.0, 0.0]]
+assert abs(path_prob(pi, A, B, [0, 0], [1, 0]) - 0.25) < 1e-12
+pi, A, B = [0.6, 0.4], [[0.7, 0.3], [0.4, 0.6]], [[0.5, 0.5], [0.1, 0.9]]
+assert abs(path_prob(pi, A, B, [0, 1, 1], [0, 1, 1]) - 0.04374) < 1e-12
+assert abs(path_prob(pi, A, B, [1], [1]) - 0.36) < 1e-12
+pi, A, B = [0.9, 0.1], [[0.8, 0.2], [0.3, 0.7]], [[0.9, 0.1], [0.2, 0.8]]
+assert abs(path_prob(pi, A, B, [0, 1, 1], [0, 1, 1]) - 0.072576) < 1e-12
+assert abs(path_prob(pi, A, B, [1, 0, 0], [1, 1, 0]) - 0.001728) < 1e-12
+```
+model:
+```python
+def path_prob(pi, A, B, states, obs):
+    """Joint probability of a state path and an observation sequence."""
+    prob = pi[states[0]] * B[states[0]][obs[0]]
+    for t in range(1, len(obs)):
+        prob *= A[states[t - 1]][states[t]] * B[states[t]][obs[t]]
+    return prob
+```
+hint: Start with the initial probability times the first emission, then multiply in one transition and one emission per later step.
+solution: There are $T$ emission factors, one initial factor and $T - 1$ transition factors. The last test starts in the unlikely state: $0.1 \cdot 0.8 \times 0.3 \cdot 0.1 \times 0.8 \cdot 0.9 = 0.001728$, and a function that forgets $\pi$ gets it wrong.
+
+@practice code
+prompt: Write `forward(pi, A, B, obs)` that returns the table of forward variables as a list of `len(obs)` lists of `K` floats: row `t` holds $\alpha_{t+1}(j) = P(o_1, \dots, o_{t+1}, z_{t+1} = j)$ for each state `j`. `pi` is a list, `A[i][j]` the transition probabilities, `B[i][o]` the emission probabilities, and `obs` a nonempty list of integers. Do not normalize. For example, with `pi = [0.5, 0.5]`, `A = [[1.0, 0.0], [0.0, 1.0]]` and `B = [[1.0, 0.0], [0.5, 0.5]]`, `forward(pi, A, B, [0, 1])` returns `[[0.5, 0.25], [0.0, 0.125]]`.
+starter:
+```python
+def forward(pi, A, B, obs):
+    return [list(pi) for _ in obs]
+```
+tests:
+```python
+got = forward([0.5, 0.5], [[1.0, 0.0], [0.0, 1.0]], [[1.0, 0.0], [0.5, 0.5]], [0, 1])
+assert all(abs(a - b) < 1e-12 for g, w in zip(got, [[0.5, 0.25], [0.0, 0.125]]) for a, b in zip(g, w))
+pi, A, B = [0.9, 0.1], [[0.8, 0.2], [0.3, 0.7]], [[0.9, 0.1], [0.2, 0.8]]
+got = forward(pi, A, B, [0, 1, 1])
+want = [[0.81, 0.02], [0.0654, 0.1408], [0.009456, 0.089312]]
+assert all(abs(a - b) < 1e-9 for g, w in zip(got, want) for a, b in zip(g, w))
+assert abs(sum(got[-1]) - 0.098768) < 1e-9
+pi, A, B = [0.5, 0.5], [[0.9, 0.1], [0.3, 0.7]], [[0.8, 0.2], [0.4, 0.6]]
+got = forward(pi, A, B, [0, 0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got[-1], [0.336, 0.072]))
+pi, A, B = [1 / 3] * 3, [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]], [[0.7, 0.2, 0.1], [0.2, 0.6, 0.2], [0.1, 0.2, 0.7]]
+assert abs(sum(forward(pi, A, B, [0, 2, 1])[-1]) - 0.02256) < 1e-9
+assert len(forward(pi, A, B, [1])) == 1
+```
+model:
+```python
+def forward(pi, A, B, obs):
+    """Unnormalized forward variables alpha[t][j]."""
+    K = len(pi)
+    alphas = [[pi[j] * B[j][obs[0]] for j in range(K)]]
+    for o in obs[1:]:
+        prev = alphas[-1]
+        alphas.append([sum(prev[i] * A[i][j] for i in range(K)) * B[j][o]
+                       for j in range(K)])
+    return alphas
+```
+hint: Row 0 is $\pi_j B_j(o_1)$. For each later observation, sum `prev[i] * A[i][j]` over `i`, then multiply by `B[j][o]`.
+solution: The sum runs over the previous state `i` and the emission uses the new state `j`. The test with three states has a $3 \times 3$ transition matrix, which catches a function that sums over the wrong index.
+
+@practice num
+prompt: A two-state HMM has $\pi = (0.5, 0.5)$, $A = \begin{pmatrix} 0.9 & 0.1 \\ 0.3 & 0.7 \end{pmatrix}$ and $B = \begin{pmatrix} 0.8 & 0.2 \\ 0.4 & 0.6 \end{pmatrix}$. What is the probability of the observation sequence $(0, 0)$?
+answer: 0.408
+tol: 0.0001
+check: (lambda a1: sum(sum(a1[i] * [[0.9, 0.1], [0.3, 0.7]][i][j] for i in range(2)) * [0.8, 0.4][j] for j in range(2)))([0.5 * 0.8, 0.5 * 0.4])
+hint: Compute $\alpha_1 = (0.5 \cdot 0.8,\ 0.5 \cdot 0.4)$, then $\alpha_2(j)$ for each $j$, then add them.
+solution: $\alpha_1 = (0.4, 0.2)$. Then $\alpha_2(1) = (0.4 \cdot 0.9 + 0.2 \cdot 0.3) \cdot 0.8 = 0.336$ and $\alpha_2(2) = (0.4 \cdot 0.1 + 0.2 \cdot 0.7) \cdot 0.4 = 0.072$. Their sum is $0.408$.
+
+@quiz text
+prompt: What does this program print?
+```python
+pi = [0.5, 0.5]
+A = [[0.9, 0.1], [0.2, 0.8]]
+B = [[0.7, 0.3], [0.1, 0.9]]
+alpha = [pi[i] * B[i][0] for i in range(2)]
+alpha = [sum(alpha[i] * A[i][j] for i in range(2)) * B[j][1] for j in range(2)]
+print([round(a, 4) for a in alpha])
+```
+answer: [0.0975, 0.0675]
+check: run("pi = [0.5, 0.5]\nA = [[0.9, 0.1], [0.2, 0.8]]\nB = [[0.7, 0.3], [0.1, 0.9]]\nalpha = [pi[i] * B[i][0] for i in range(2)]\nalpha = [sum(alpha[i] * A[i][j] for i in range(2)) * B[j][1] for j in range(2)]\nprint([round(a, 4) for a in alpha])")
+hint: The first alpha is $(0.35, 0.05)$. Then multiply by the transition probabilities into each state and by the emission of observation 1.
+solution: The first step gives $(0.35, 0.05)$. For state 0: $(0.35 \cdot 0.9 + 0.05 \cdot 0.2) \cdot 0.3 = 0.0975$. For state 1: $(0.35 \cdot 0.1 + 0.05 \cdot 0.8) \cdot 0.9 = 0.0675$. The program prints `[0.0975, 0.0675]`.
+
+@quiz code
+prompt: Write `forward_loglik(pi, A, B, obs)` that returns the natural logarithm of the likelihood $P(\mathbf{o})$ using the scaled forward algorithm: after computing each forward vector, divide it by its sum $c_t$, carry the normalized vector forward, and return $\sum_t \ln c_t$. It must work for sequences of thousands of steps, where unscaled forward variables underflow to 0. The arguments are as in the forward algorithm: `pi`, `A[i][j]`, `B[i][o]` and a nonempty list `obs` of integers. For example, a one-state model with `pi = [1.0]`, `A = [[1.0]]`, `B = [[0.5, 0.5]]` and `obs = [0, 1]` gives `2 * log(0.5)`.
+starter:
+```python
+def forward_loglik(pi, A, B, obs):
+    return 0.0
+```
+tests:
+```python
+from math import log
+assert abs(forward_loglik([1.0], [[1.0]], [[0.5, 0.5]], [0, 1]) - 2 * log(0.5)) < 1e-12
+pi, A, B = [0.9, 0.1], [[0.8, 0.2], [0.3, 0.7]], [[0.9, 0.1], [0.2, 0.8]]
+assert abs(forward_loglik(pi, A, B, [0, 1, 1]) - log(0.098768)) < 1e-9
+assert abs(forward_loglik(pi, A, B, [0, 1] * 500) - (-923.697447491047)) < 1e-6
+pi, A, B = [0.6, 0.4], [[0.7, 0.3], [0.4, 0.6]], [[0.5, 0.5], [0.1, 0.9]]
+assert abs(forward_loglik(pi, A, B, [1] * 50) - (-18.191349183215028)) < 1e-6
+pi, A, B = [1 / 3] * 3, [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]], [[0.7, 0.2, 0.1], [0.2, 0.6, 0.2], [0.1, 0.2, 0.7]]
+assert abs(forward_loglik(pi, A, B, [0, 2, 1]) - log(0.02256)) < 1e-9
+```
+model:
+```python
+from math import log
+
+
+def forward_loglik(pi, A, B, obs):
+    """Log-likelihood of obs by the scaled forward algorithm."""
+    K = len(pi)
+    alpha = [pi[j] * B[j][obs[0]] for j in range(K)]
+    loglik = 0.0
+    for t in range(len(obs)):
+        if t > 0:
+            prev = alpha
+            alpha = [sum(prev[i] * A[i][j] for i in range(K)) * B[j][obs[t]]
+                     for j in range(K)]
+        c = sum(alpha)
+        loglik += log(c)
+        alpha = [a / c for a in alpha]
+    return loglik
+```
+hint: Inside the loop, compute the new alpha as before, then replace it by alpha divided by its sum, adding the logarithm of that sum to a running total.
+solution: Each scale factor $c_t = P(o_t \mid o_{1:t-1})$, so the log-likelihood is the sum of their logarithms. The 1000-step test would give 0 and then an error of `log(0)` without scaling.
+
+@quiz ms
+prompt: Which statements about hidden Markov models and the forward algorithm are true? Select all that apply.
+choice*: The forward variable $\alpha_t(j)$ is the joint probability of the first $t$ observations and of being in state $j$ at time $t$.
+choice*: Dividing each forward vector by its sum and adding the logarithm of that sum gives the log-likelihood without underflow.
+choice*: The model assumes that the next hidden state depends only on the current hidden state and each observation only on the current hidden state.
+choice: The forward variables for a fixed time sum to 1 over the states.
+hint: Recall the definition $\alpha_t(j) = P(o_{1:t}, z_t = j)$ and the two Markov-type assumptions.
+solution: $\alpha_t(j)$ is a joint probability, so across states it sums to $P(o_{1:t})$, not 1; only after normalization does it become the filtering distribution. Scaling is the standard fix for underflow. The first-order Markov assumption and the output-independence assumption define the HMM.

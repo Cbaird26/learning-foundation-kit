@@ -1,0 +1,225 @@
+@lesson
+title: Graph neural networks and message passing
+summary: Run rounds of message passing and graph convolution on small graphs by hand and in code, and explain permutation symmetry, receptive fields and over-smoothing.
+objective: Describe message passing as aggregating messages from neighbors and updating each node's state.
+objective: Compute a round of sum, mean and symmetrically normalized (GCN) aggregation by hand.
+objective: Explain permutation invariance of the aggregator, how receptive fields grow with rounds, and over-smoothing.
+objective: Implement message passing layers from scratch.
+reading: Dive into Deep Learning, the chapter on graph neural networks if available in your edition; otherwise study message passing neural networks and graph convolutional networks from a survey or lecture notes.
+@article
+A molecule is atoms joined by bonds; a social network is people joined by friendships; a road map is intersections joined by streets. None of these is a grid or a sequence. A convolutional layer assumes neighbors sit at fixed offsets and an RNN assumes one chain. A **graph neural network** (GNN) works on a graph $G = (V, E)$ with a feature vector $\mathbf{h}_v$ on each node $v$, and keeps the idea that made convolution work: the same small computation is shared across all places, and it only looks at a local neighborhood.
+
+### Message passing
+In one round of **message passing** (Gilmer and colleagues, 2017 give a general framework), every node collects information from its neighbors $\mathcal{N}(v)$ and updates its own state:
+
+$$\mathbf{m}_v = \operatorname{AGG}\big(\{\mathbf{h}_u : u \in \mathcal{N}(v)\}\big), \qquad \mathbf{h}_v' = \sigma\big(\mathbf{W}_{\text{self}}\,\mathbf{h}_v + \mathbf{W}_{\text{nb}}\,\mathbf{m}_v + \mathbf{b}\big).$$
+
+The aggregator must not depend on the order in which neighbors are listed, because a graph has no natural ordering of neighbors. Sum, mean and max are all **permutation invariant**. Sum keeps degree information, mean normalizes by it, and max picks the strongest signal. The whole layer is **permutation equivariant**: relabeling the nodes just relabels the outputs the same way.
+
+For the graph with edges $0\text{–}1$, $1\text{–}2$, $1\text{–}3$, $2\text{–}3$ and scalar features $\mathbf{h} = (1, 0, 2, -1)$, take sum aggregation with $h_v' = \operatorname{ReLU}(0.5\,h_v + m_v)$. The messages are $m = (0, 2, -1, 2)$, so $\mathbf{h}' = (0.5, 2, 0, 1.5)$: node 2 has $0.5 \cdot 2 - 1 = 0$ and node 3 has $-0.5 + 2 = 1.5$.
+
+### Graph convolutional networks
+The graph convolutional network of Kipf and Welling (2016) uses a symmetrically normalized sum over neighbors *and* the node itself. Let $\hat{\mathbf{A}} = \mathbf{A} + \mathbf{I}$ (adding self-loops) and $\hat d_v = 1 + \deg(v)$. A layer is
+
+$$\mathbf{H}' = \sigma\big(\hat{\mathbf{D}}^{-1/2}\,\hat{\mathbf{A}}\,\hat{\mathbf{D}}^{-1/2}\,\mathbf{H}\,\mathbf{W}\big), \qquad \text{i.e.}\quad \mathbf{h}'_v = \sigma\Big(\sum_{u \in \mathcal{N}(v) \cup \{v\}} \frac{1}{\sqrt{\hat d_v \hat d_u}}\,\mathbf{h}_u \mathbf{W}\Big).$$
+
+Dividing by $\sqrt{\hat d_v \hat d_u}$ keeps the scale of features from growing with a node's degree. An edge between a node of degree 3 and one of degree 1 gets weight $1/\sqrt{4 \cdot 2} = 0.354$. Other designs let the model learn how much to listen to each neighbor with attention over the neighbors (graph attention networks).
+
+### Rounds, reach and limits
+After $k$ rounds, a node's state depends on all nodes within $k$ hops: the receptive field grows by one hop per layer, exactly as stacked convolutions grow a window. To predict a property of a whole graph we add a **readout**, such as the sum or mean of all node states, which is also permutation invariant.
+
+Two limits matter in practice. **Over-smoothing**: repeated averaging makes the states of nearby nodes more and more alike, so deep GNNs can lose the differences that matter. And a message-passing network cannot separate nodes whose neighborhoods look the same: two nodes with identical features in symmetric positions get identical outputs forever. The expressive power of standard message passing is bounded by a classical graph-isomorphism heuristic, the Weisfeiler–Leman color refinement test, so some different graphs look identical to it.
+
+### In code
+```python
+def message_pass(adj, h, w_self, w_nb):
+    """One round of sum aggregation with scalar features and ReLU."""
+    new = []
+    for v in range(len(h)):
+        m = sum(h[u] for u in adj[v])
+        new.append(max(0.0, w_self * h[v] + w_nb * m))
+    return new
+
+adj = {0: [1], 1: [0, 2, 3], 2: [1, 3], 3: [1, 2]}
+print(message_pass(adj, [1.0, 0.0, 2.0, -1.0], 0.5, 1.0))
+```
+
+Libraries such as PyTorch Geometric implement these layers with sparse operations so they scale to large graphs; the idea is the loop above.
+
+@example
+title: Two rounds of mean aggregation
+problem: A path graph has edges $0\text{–}1$ and $1\text{–}2$ and features $\mathbf{h} = (2, -1, 3)$. Each round computes $h_v' = \operatorname{ReLU}(0.5\,h_v + \text{mean of neighbors} - 0.5)$. Run two rounds.
+step: Round 1, node 0: neighbors $\{1\}$ with mean $-1$, so $0.5 \cdot 2 - 1 - 0.5 = -0.5$, and ReLU gives $0$. Node 1: neighbors $\{0, 2\}$ with mean $2.5$, so $-0.5 + 2.5 - 0.5 = 1.5$. Node 2: mean $-1$, so $1.5 - 1 - 0.5 = 0$. After round 1: $(0, 1.5, 0)$.
+step: Round 2, node 0: mean of neighbor $1.5$, so $0 + 1.5 - 0.5 = 1.0$. Node 1: mean of $0$ and $0$ is $0$, so $0.75 + 0 - 0.5 = 0.25$. Node 2: $1.0$.
+step: After round 2 the state is $(1.0, 0.25, 1.0)$. Notice that node 0 now depends on node 2's original value of 3, two hops away, through node 1.
+answer: After two rounds the features are $(1.0, 0.25, 1.0)$.
+
+@example
+title: One GCN layer
+problem: On the path graph $0\text{–}1\text{–}2$ with scalar features $(1, 2, 3)$ and weight $W = 1$, compute one GCN layer $\hat{\mathbf{D}}^{-1/2}\hat{\mathbf{A}}\hat{\mathbf{D}}^{-1/2}\mathbf{H}$ (the ReLU changes nothing since all values are positive).
+step: Degrees are $(1, 2, 1)$, so $\hat d = (2, 3, 2)$.
+step: Node 0 uses itself and node 1: $\frac{1}{2}\cdot 1 + \frac{1}{\sqrt{6}} \cdot 2 = 0.5 + 0.8165 = 1.3165$.
+step: Node 1 uses nodes 0, 1, 2: $\frac{1}{\sqrt 6}\cdot 1 + \frac{1}{3}\cdot 2 + \frac{1}{\sqrt 6}\cdot 3 = 0.4082 + 0.6667 + 1.2247 = 2.2997$.
+step: Node 2 uses nodes 1 and 2: $\frac{1}{\sqrt 6}\cdot 2 + \frac{1}{2}\cdot 3 = 0.8165 + 1.5 = 2.3165$.
+answer: The new features are $(1.3165, 2.2997, 2.3165)$.
+
+@mistakes
+- Treating neighbors as an ordered list. The aggregator must be permutation invariant; concatenating neighbors in list order breaks that.
+- Forgetting the self-loops in a GCN, so a node's own features disappear from its update.
+- Using the degree without self-loops in the normalization: in the GCN formula the degrees come from $\mathbf{A} + \mathbf{I}$.
+- Stacking many layers and expecting more accuracy. Each layer widens the receptive field but repeated averaging can also over-smooth node states.
+
+@practice num
+prompt: A node has feature $h = 2$ and three neighbors with features $1$, $3$ and $-2$. Using sum aggregation and the update $h' = \operatorname{ReLU}(1.0\,h + 0.5 \cdot \text{sum of neighbors})$, what is the new feature?
+answer: 3
+check: max(0, 1.0 * 2 + 0.5 * (1 + 3 - 2))
+hint: The sum of neighbor features is $1 + 3 - 2 = 2$.
+solution: The message is $2$, so $h' = 2 + 0.5 \cdot 2 = 3$, which the ReLU leaves unchanged.
+
+@practice num
+prompt: A two-layer message-passing network has feature sizes $3 \to 4 \to 2$. Each layer has a matrix $\mathbf{W}_{\text{self}}$, a matrix $\mathbf{W}_{\text{nb}}$ and a bias vector, all of the layer's output size. How many parameters does the network have in total?
+answer: 46
+unit: parameters
+check: (3 * 4 * 2 + 4) + (4 * 2 * 2 + 2)
+hint: Layer 1 has two $3 \times 4$ matrices and 4 biases; layer 2 has two $4 \times 2$ matrices and 2 biases.
+solution: Layer 1 has $2 \cdot 12 + 4 = 28$ parameters and layer 2 has $2 \cdot 8 + 2 = 18$, for a total of 46.
+
+@practice text
+prompt: What does this program print?
+```python
+adj = {0: [1, 2], 1: [0], 2: [0]}
+h = [1.0, 2.0, 4.0]
+new = [h[v] + sum(h[u] for u in adj[v]) for v in adj]
+print(new)
+```
+answer: [7.0, 3.0, 5.0]
+check: run("adj = {0: [1, 2], 1: [0], 2: [0]}\nh = [1.0, 2.0, 4.0]\nnew = [h[v] + sum(h[u] for u in adj[v]) for v in adj]\nprint(new)")
+hint: Each node adds the sum of its neighbors' features to its own feature.
+solution: Node 0 gets $1 + 2 + 4 = 7$, node 1 gets $2 + 1 = 3$ and node 2 gets $4 + 1 = 5$, so it prints `[7.0, 3.0, 5.0]`.
+
+@practice code
+prompt: Write `mean_aggregate(adj, H)` where `adj` is a dictionary mapping each node `0..n-1` to a list of neighbor nodes and `H` is a list of `n` feature vectors (lists of floats). Return a list of `n` vectors: for each node, the mean of its neighbors' feature vectors, or a zero vector of the same length if the node has no neighbors.
+starter:
+```python
+def mean_aggregate(adj, H):
+    return [list(h) for h in H]
+```
+tests:
+```python
+adj = {0: [1, 2], 1: [0], 2: [0], 3: []}
+H = [[1, 0], [0, 2], [4, 6], [9, 9]]
+out = mean_aggregate(adj, H)
+assert out == [[2.0, 4.0], [1.0, 0.0], [1.0, 0.0], [0.0, 0.0]]
+assert mean_aggregate({0: [1], 1: [0]}, [[1.0], [3.0]]) == [[3.0], [1.0]]
+perm = {0: [2, 1], 1: [0], 2: [0], 3: []}
+assert mean_aggregate(perm, H) == out
+```
+model:
+```python
+def mean_aggregate(adj, H):
+    """Mean of neighbor feature vectors for every node (zeros if isolated)."""
+    f = len(H[0])
+    out = []
+    for v in range(len(H)):
+        nbrs = adj[v]
+        if not nbrs:
+            out.append([0.0] * f)
+        else:
+            out.append([sum(H[u][j] for u in nbrs) / len(nbrs) for j in range(f)])
+    return out
+```
+hint: For each node, average each feature over the neighbor list, and special-case an empty list to avoid dividing by zero.
+solution: The last test lists a node's neighbors in a different order, and the answer must not change: that is permutation invariance of the mean. The isolated node 3 has no messages, so its aggregate is the zero vector.
+
+@practice code
+prompt: Write `gcn_layer(adj, H, W)` for a graph with nodes `0..n-1` (`adj[v]` lists the neighbors of `v`, without self-loops), feature vectors `H` (list of lists) and a weight matrix `W` (list of rows, shape input size by output size). For each node `v`, let `d[v] = len(adj[v]) + 1`; aggregate `s_v = sum over u in adj[v] plus v itself of H[u] / sqrt(d[v] * d[u])`, then output `ReLU(s_v @ W)`. Return the list of output vectors.
+starter:
+```python
+def gcn_layer(adj, H, W):
+    return [list(h) for h in H]
+```
+tests:
+```python
+def close(A, B):
+    return all(abs(a - b) < 1e-6 for r, s in zip(A, B) for a, b in zip(r, s))
+star = {0: [1, 2, 3], 1: [0], 2: [0], 3: [0]}
+H = [[1, 0], [0, 2], [4, -6], [1, 1]]
+out = gcn_layer(star, H, [[1, 0], [0, 1]])
+assert close(out, [[2.0177670, 0], [0.3535534, 1.0], [2.3535534, 0], [0.8535534, 0.5]])
+tri = {0: [1, 2], 1: [0, 2], 2: [0, 1]}
+out = gcn_layer(tri, [[1, 0], [0, 1], [2, 2]], [[1, -1], [0.5, 1]])
+assert close(out, [[1.5, 0], [1.5, 0], [1.5, 0]])
+assert close(gcn_layer({0: []}, [[2.0, -1.0]], [[1.0], [3.0]]), [[0.0]])
+assert close(gcn_layer({0: []}, [[2.0, 1.0]], [[1.0], [3.0]]), [[5.0]])
+```
+model:
+```python
+from math import sqrt
+
+
+def gcn_layer(adj, H, W):
+    """One graph convolution layer with symmetric normalization and ReLU."""
+    n, f_in, f_out = len(H), len(H[0]), len(W[0])
+    deg = [len(adj[v]) + 1 for v in range(n)]
+    out = []
+    for v in range(n):
+        s = [0.0] * f_in
+        for u in list(adj[v]) + [v]:
+            c = 1 / sqrt(deg[v] * deg[u])
+            s = [a + c * b for a, b in zip(s, H[u])]
+        out.append([max(0.0, sum(s[i] * W[i][j] for i in range(f_in)))
+                    for j in range(f_out)])
+    return out
+```
+hint: Compute the degrees with the self-loop first, then for every node sum the normalized features of its neighbors and itself, multiply by `W` and apply ReLU.
+solution: The self-loop adds one to every degree and puts the node itself in its own sum. The isolated-node tests have degree 1, so the aggregate is the node's own feature vector and the output is just ReLU of that vector times `W`.
+
+@quiz mc
+prompt: Which property must the aggregation function of a message-passing layer have, and why?
+choice*: It must be permutation invariant, because a node's neighbors have no canonical order.
+choice: It must be injective in the order of the neighbors, so that neighbor order is preserved.
+choice: It must ignore the neighbors' features, so that the layer depends only on the graph structure.
+choice: It must return a vector whose length equals the number of neighbors.
+hint: Would relabeling the nodes change the graph being described?
+solution: Relabeling nodes or listing neighbors in a different order describes the same graph, so the aggregate must not depend on the order; sum, mean and max satisfy this. Preserving the order would break that symmetry, ignoring features would discard the data, and the output size is fixed by the layer, not by the number of neighbors.
+
+@quiz num
+prompt: In a GCN layer with self-loops, node $v$ has 3 neighbors and node $u$ has 1 neighbor, and they are adjacent. What is the weight $1/\sqrt{\hat d_v \hat d_u}$ applied to $u$'s features in $v$'s update? Give your answer to three decimal places.
+answer: 0.354
+tol: 0.001
+check: 1 / sqrt((3 + 1) * (1 + 1))
+hint: The degrees including self-loops are $\hat d_v = 4$ and $\hat d_u = 2$.
+solution: The weight is $1/\sqrt{4 \cdot 2} = 1/\sqrt 8 = 0.354$.
+
+@quiz code
+prompt: Write `k_hop(adj, v, k)` that returns the sorted list of all nodes within `k` hops of node `v` (including `v` itself) in an undirected graph given as a dictionary of adjacency lists. This is the set of nodes that can influence `v` after `k` rounds of message passing. For example, on the path `{0: [1], 1: [0, 2], 2: [1]}`, `k_hop(adj, 0, 1)` returns `[0, 1]`.
+starter:
+```python
+def k_hop(adj, v, k):
+    return [v]
+```
+tests:
+```python
+path = {0: [1], 1: [0, 2], 2: [1, 3], 3: [2, 4], 4: [3]}
+assert k_hop(path, 0, 0) == [0]
+assert k_hop(path, 0, 1) == [0, 1]
+assert k_hop(path, 0, 2) == [0, 1, 2]
+assert k_hop(path, 2, 2) == [0, 1, 2, 3, 4]
+star = {0: [1, 2, 3], 1: [0], 2: [0], 3: [0]}
+assert k_hop(star, 1, 1) == [0, 1]
+assert k_hop(star, 1, 2) == [0, 1, 2, 3]
+assert k_hop({0: [], 1: []}, 0, 5) == [0]
+```
+model:
+```python
+def k_hop(adj, v, k):
+    """Sorted nodes within k hops of v, by breadth-first expansion."""
+    reached = {v}
+    frontier = {v}
+    for _ in range(k):
+        frontier = {u for x in frontier for u in adj[x]} - reached
+        reached |= frontier
+    return sorted(reached)
+```
+hint: Expand a frontier of newly reached nodes one hop at a time, `k` times, remembering what has already been reached.
+solution: Each round of message passing extends influence by one hop, so after $k$ rounds the nodes that matter are those within graph distance $k$. The star shows that a leaf reaches the other leaves in exactly two hops, through the center.

@@ -1,0 +1,266 @@
+@lesson
+title: Word embeddings: co-occurrence, PMI and word2vec
+summary: Build word vectors from co-occurrence counts, weight them with pointwise mutual information, compare them by cosine similarity, and take one gradient step of skip-gram with negative sampling.
+objective: Build a co-occurrence matrix with a context window and compute cosine similarities between rows.
+objective: Compute pointwise mutual information and positive PMI from counts.
+objective: Derive and apply the skip-gram negative-sampling update for one training pair.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapter on vector semantics and embeddings: the sections on cosine similarity, pointwise mutual information and word2vec.
+@article
+The words "cat" and "dog" are not similar as strings, yet a program that understands text should treat them as closer than "cat" and "mortgage". The **distributional hypothesis** says that words that occur in similar contexts have similar meanings. So we represent each word by the company it keeps: a vector built from counts of the words around it.
+
+### Co-occurrence vectors
+
+Take four invented sentences: "cat drinks milk", "dog drinks water", "cat chases mouse", "dog chases cat". Count, for each word, the words within a window of $\pm 1$ position in the same sentence. The nonzero entries are:
+
+| word | chases | drinks |
+|---|---|---|
+| cat | 2 | 1 |
+| dog | 1 | 1 |
+| milk | 0 | 1 |
+| water | 0 | 1 |
+| mouse | 1 | 0 |
+
+All other entries in these rows are 0 (the full matrix has one column for each of the seven words, and it is symmetric: "chases" has the counts cat 2, dog 1 and mouse 1). The vectors for "cat" and "dog" overlap on "chases" and "drinks". **Cosine similarity** measures the angle between two vectors:
+$$\cos(\mathbf{u},\mathbf{v}) = \frac{\mathbf{u}^\top \mathbf{v}}{\lVert \mathbf{u} \rVert_2 \lVert \mathbf{v} \rVert_2}.$$
+For cat and dog: $(2\cdot 1 + 1\cdot 1)/(\sqrt5\sqrt2) = 3/\sqrt{10} \approx 0.949$. For milk and water, the vectors are identical and the cosine is 1. For cat and milk it is $1/\sqrt5 \approx 0.447$. Cosine ignores vector length, so a frequent word and a rare word with the same contexts are still similar; the raw dot product would favor frequent words.
+
+### Pointwise mutual information
+
+Raw counts are dominated by frequent words ("the" co-occurs with everything). **Pointwise mutual information** asks whether two words co-occur more often than chance:
+$$\mathrm{PMI}(w, c) = \log_2 \frac{P(w, c)}{P(w)\,P(c)}.$$
+Estimate $P(w,c) = n(w,c)/T$ where $T$ is the sum of all counts, and $P(w)$, $P(c)$ by the row and column sums divided by $T$. In our corpus $T = 16$, $n(\text{cat}, \text{chases}) = 2$, and the row sums are 3 for cat and 4 for chases. Then
+$$\mathrm{PMI}(\text{cat},\text{chases}) = \log_2 \frac{2 \cdot 16}{3 \cdot 4} = \log_2 2.667 \approx 1.415.$$
+A value above 0 means more co-occurrence than independence predicts. Pairs never seen have $\mathrm{PMI} = -\infty$, and negative values are unreliable from small counts, so one uses **positive PMI**, $\mathrm{PPMI} = \max(0, \mathrm{PMI})$.
+
+```python
+import math
+from collections import Counter
+
+def cooccurrence(sentences, window=1):
+    counts = Counter()
+    for sent in sentences:
+        for i, w in enumerate(sent):
+            lo, hi = max(0, i - window), min(len(sent), i + window + 1)
+            for j in range(lo, hi):
+                if j != i:
+                    counts[(w, sent[j])] += 1
+    return counts
+
+def cosine(u, v):
+    dot = sum(a * b for a, b in zip(u, v))
+    return dot / (math.sqrt(sum(a * a for a in u)) * math.sqrt(sum(b * b for b in v)))
+
+sents = [["cat", "drinks", "milk"], ["dog", "drinks", "water"],
+         ["cat", "chases", "mouse"], ["dog", "chases", "cat"]]
+counts = cooccurrence(sents)
+vocab = sorted({w for s in sents for w in s})
+vec = lambda w: [counts[(w, c)] for c in vocab]
+print(round(cosine(vec("cat"), vec("dog")), 3))
+```
+
+This prints `0.949`. Real systems use windows of 2 to 10 words and corpora of billions of words, and often reduce the dimension with a matrix factorization such as the singular value decomposition.
+
+### Word2vec: skip-gram with negative sampling
+
+Instead of counting, **word2vec** (Mikolov and colleagues, 2013) trains dense vectors, typically 100 to 300 dimensions, by prediction. The **skip-gram** model predicts a context word $o$ from a center word $c$. Each word has two vectors: $\mathbf{v}_c$ as a center word and $\mathbf{u}_o$ as a context word. Normalizing over the whole vocabulary is expensive, so **negative sampling** turns the task into classification: for each real pair $(c, o)$ draw $K$ random words $k_1, \dots, k_K$ as "fake" contexts, and minimize
+$$\ell = -\log \sigma(\mathbf{u}_o^\top \mathbf{v}_c) - \sum_{j=1}^{K} \log \sigma(-\mathbf{u}_{k_j}^\top \mathbf{v}_c),$$
+where $\sigma(s) = 1/(1+e^{-s})$. Because $\frac{d}{ds}\big(-\log\sigma(s)\big) = \sigma(s) - 1$ and $\frac{d}{ds}\big(-\log\sigma(-s)\big) = \sigma(s)$, the gradients are
+$$\nabla_{\mathbf{u}_o}\ell = (\sigma(s_o) - 1)\mathbf{v}_c,\quad \nabla_{\mathbf{u}_{k}}\ell = \sigma(s_k)\mathbf{v}_c,\quad \nabla_{\mathbf{v}_c}\ell = (\sigma(s_o)-1)\mathbf{u}_o + \sum_j \sigma(s_{k_j})\mathbf{u}_{k_j},$$
+with $s = \mathbf{u}^\top\mathbf{v}_c$ for each word. Stochastic gradient descent moves each vector against its gradient. Levy and Goldberg (2014) showed that skip-gram with negative sampling implicitly factorizes a matrix of PMI values shifted by $\log K$, which connects the two halves of this lesson.
+
+```python
+import math
+
+def sigmoid(s):
+    return 1 / (1 + math.exp(-s))
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def sgns_step(v, u_pos, u_negs, lr):
+    g_pos = sigmoid(dot(v, u_pos)) - 1
+    g_negs = [sigmoid(dot(v, u)) for u in u_negs]
+    grad_v = [g_pos * u_pos[i] + sum(g * u[i] for g, u in zip(g_negs, u_negs))
+              for i in range(len(v))]
+    new_v = [v[i] - lr * grad_v[i] for i in range(len(v))]
+    new_pos = [u_pos[i] - lr * g_pos * v[i] for i in range(len(v))]
+    new_negs = [[u[i] - lr * g * v[i] for i in range(len(v))]
+                for g, u in zip(g_negs, u_negs)]
+    return new_v, new_pos, new_negs
+```
+
+@example
+title: One skip-gram update
+problem: A center word has $\mathbf{v} = (1, 0.5)$, its true context word has $\mathbf{u}_o = (0.5, 1)$, and one negative sample has $\mathbf{u}_k = (1, -1)$. Compute the loss, then one step with learning rate $\eta = 0.1$.
+step: Scores: $s_o = 0.5 + 0.5 = 1$ and $s_k = 1 - 0.5 = 0.5$. Then $\sigma(1) = 0.7311$ and $\sigma(0.5) = 0.6225$.
+step: Loss: $-\log 0.7311 - \log \sigma(-0.5) = 0.3133 + 0.9741 = 1.2873$.
+step: Gradients: $\nabla_{\mathbf{u}_o} = (0.7311 - 1)\mathbf{v} = (-0.2689,\,-0.1345)$, $\nabla_{\mathbf{u}_k} = 0.6225\,\mathbf{v} = (0.6225,\,0.3112)$, $\nabla_{\mathbf{v}} = -0.2689(0.5, 1) + 0.6225(1, -1) = (0.4880,\,-0.8914)$.
+step: Update: $\mathbf{u}_o \leftarrow (0.5269,\,1.0134)$, $\mathbf{u}_k \leftarrow (0.9377,\,-1.0311)$, $\mathbf{v} \leftarrow (0.9512,\,0.5891)$. The new loss is $1.1333$, lower than before.
+answer: Loss $1.2873$ before the step and $1.1333$ after it; $\mathbf{v}$ becomes $(0.9512, 0.5891)$.
+
+@example
+title: PMI from counts
+problem: In a corpus with $T = 40$ co-occurrence counts, the pair (coffee, cup) occurs 6 times, "coffee" has row sum 10 and "cup" has column sum 12. Compute PMI and PPMI.
+step: Probabilities: $P(w,c) = 6/40 = 0.15$, $P(w) = 10/40 = 0.25$, $P(c) = 12/40 = 0.3$.
+step: Ratio: $0.15 / (0.25 \times 0.3) = 2$, so $\mathrm{PMI} = \log_2 2 = 1$ bit. It is positive, so PPMI is also 1.
+answer: $\mathrm{PMI} = \mathrm{PPMI} = 1$.
+
+@mistakes
+- Using raw counts as vectors and measuring the dot product: frequent words dominate. Use cosine, PMI or both.
+- Treating a negative PMI as meaningful when it comes from a count of 0 or 1.
+- Updating $\mathbf{v}_c$ with the already updated context vectors: compute all gradients from the old values, then update.
+- Reading cosine similarity as "synonymy": co-occurrence also puts together antonyms and related words such as "doctor" and "nurse".
+
+@practice num
+prompt: Two word vectors are $(1, 2, 0)$ and $(2, 0, 1)$. What is their cosine similarity?
+answer: 0.4
+tol: 0.001
+check: (1 * 2 + 2 * 0 + 0 * 1) / (sqrt(1 + 4 + 0) * sqrt(4 + 0 + 1))
+hint: Compute the dot product, then divide by the product of the two lengths.
+solution: The dot product is $2$, and each vector has length $\sqrt{5}$, so the cosine is $2/5 = 0.4$.
+
+@practice num
+prompt: A co-occurrence table has $T = 40$ counts in total. The pair (coffee, tea) occurs 3 times, the row sum of "coffee" is 20 and the column sum of "tea" is 10. What is the pointwise mutual information in bits? Give your answer to three decimal places.
+answer: -0.737
+tol: 0.001
+check: log2((3 / 40) / ((20 / 40) * (10 / 40)))
+hint: Form the ratio $P(w,c)/(P(w)P(c))$ with $P(w,c) = 3/40$, then take $\log_2$.
+solution: $P(w,c) = 0.075$, $P(w) = 0.5$ and $P(c) = 0.25$, so the ratio is $0.075/0.125 = 0.6$ and $\mathrm{PMI} = \log_2 0.6 \approx -0.737$. It is negative: the two words co-occur less than chance, and PPMI would be 0.
+
+@practice mc
+prompt: Why are cosine similarities usually preferred to dot products when comparing co-occurrence vectors of words?
+choice*: The dot product grows with vector length, which grows with word frequency, so frequent words look similar to everything.
+choice: Cosine similarity is always between 0 and 1 for any real vectors.
+choice: The dot product cannot be computed for sparse vectors.
+choice: Cosine similarity gives a different answer when a vector is rescaled, so it measures magnitude.
+hint: What happens to the dot product if you double one of the vectors, and what happens to the cosine?
+solution: Doubling a vector doubles its dot products but leaves its cosines unchanged. Cosine therefore compares directions, which reflect the pattern of contexts, rather than frequency. Cosine lies in $[-1, 1]$ in general, and the dot product works for sparse vectors.
+
+@practice code
+prompt: Write `weighted_cooc(sentences, window)` that returns a dict mapping `(word, context)` to a float. For each sentence and each position `i`, every other position `j` with `abs(i - j) <= window` in the same sentence adds `1 / abs(i - j)` to the entry for `(sent[i], sent[j])`. Entries that never occur are absent. For example, with `window = 2`, the sentence `["a", "b", "c"]` gives `("a", "b")` the value `1.0` and `("a", "c")` the value `0.5`.
+starter:
+```python
+def weighted_cooc(sentences, window):
+    return {}
+```
+tests:
+```python
+g = weighted_cooc([["a", "b", "c"]], 2)
+assert abs(g[("a", "b")] - 1.0) < 1e-9 and abs(g[("a", "c")] - 0.5) < 1e-9
+assert abs(g[("c", "a")] - 0.5) < 1e-9 and ("a", "a") not in g
+h = weighted_cooc([["a", "b", "c"]], 1)
+assert ("a", "c") not in h and abs(h[("b", "c")] - 1.0) < 1e-9
+k = weighted_cooc([["a", "a"], ["a", "b"]], 3)
+assert abs(k[("a", "a")] - 2.0) < 1e-9 and abs(k[("a", "b")] - 1.0) < 1e-9
+assert weighted_cooc([["solo"]], 2) == {}
+```
+model:
+```python
+def weighted_cooc(sentences, window):
+    """Co-occurrence counts that decay as 1 / distance inside a window."""
+    counts = {}
+    for sent in sentences:
+        for i, w in enumerate(sent):
+            for j, c in enumerate(sent):
+                d = abs(i - j)
+                if i != j and d <= window:
+                    counts[(w, c)] = counts.get((w, c), 0.0) + 1 / d
+    return counts
+```
+hint: For every ordered pair of different positions in a sentence, check the distance and add `1 / distance`.
+solution: The distance-weighted window gives nearer words more weight. Because the loop visits ordered pairs of positions, a repeated word pair `("a", "a")` collects a contribution from both directions, which the third test checks.
+
+@practice code
+prompt: Write `sgns_loss(v, u_pos, u_negs)` that returns the skip-gram negative-sampling loss $-\log\sigma(\mathbf{u}_o^\top\mathbf{v}) - \sum_k \log\sigma(-\mathbf{u}_k^\top\mathbf{v})$ for the center vector `v`, the positive context vector `u_pos` and a list of negative vectors `u_negs` (possibly empty). Vectors are lists of floats. The function must not overflow for scores such as 800 or -800.
+starter:
+```python
+def sgns_loss(v, u_pos, u_negs):
+    return 0.0
+```
+tests:
+```python
+assert abs(sgns_loss([1, 0.5], [0.5, 1], [[1, -1]]) - 1.2873386716983295) < 1e-9
+assert abs(sgns_loss([0, 0], [0, 0], [[0, 0], [0, 0]]) - 3 * 0.6931471805599453) < 1e-9
+assert abs(sgns_loss([1, 2], [2, -1], [[1, 1]]) - 3.7417345321336875) < 1e-9
+assert abs(sgns_loss([800.0], [-1.0], []) - 800.0) < 1e-6
+assert abs(sgns_loss([800.0], [1.0], [[1.0]]) - 800.0) < 1e-6
+```
+model:
+```python
+import math
+
+
+def softplus(x):
+    """log(1 + exp(x)) without overflow."""
+    return max(x, 0.0) + math.log1p(math.exp(-abs(x)))
+
+
+def sgns_loss(v, u_pos, u_negs):
+    """Negative-sampling loss for one (center, context) pair."""
+    def score(u):
+        return sum(a * b for a, b in zip(u, v))
+    loss = softplus(-score(u_pos))
+    for u in u_negs:
+        loss += softplus(score(u))
+    return loss
+```
+hint: Use $-\log\sigma(s) = \log(1 + e^{-s})$ and $-\log\sigma(-s) = \log(1 + e^{s})$, computed in a way that never exponentiates a large positive number.
+solution: Both terms are softplus functions: the positive pair contributes $\mathrm{softplus}(-s_o)$ and each negative sample contributes $\mathrm{softplus}(s_k)$. Writing softplus as $\max(x, 0) + \log(1 + e^{-|x|})$ avoids overflow, which the tests with score 800 or -800 would trigger in a direct implementation.
+
+@quiz code
+prompt: Write `analogy(a, b, c, vectors)` for `vectors`, a dict from word to a list of floats. Compute the target `vectors[b] - vectors[a] + vectors[c]` and return the word whose vector has the largest cosine similarity with the target, excluding the three words `a`, `b` and `c` themselves. If cosines tie, return the alphabetically smallest word. For example, with suitable vectors `analogy("man", "woman", "king", vectors)` can return `"queen"`.
+starter:
+```python
+def analogy(a, b, c, vectors):
+    return None
+```
+tests:
+```python
+V = {"man": [1, 0], "woman": [1, 1], "king": [3, 0], "queen": [3, 1],
+     "prince": [2.5, 0.2], "apple": [0, 3]}
+assert analogy("man", "woman", "king", V) == "queen"
+assert analogy("king", "queen", "man", V) == "woman"
+assert analogy("man", "man", "king", V) == "prince"
+assert analogy("man", "woman", "apple", V) == "queen"
+```
+model:
+```python
+import math
+
+
+def analogy(a, b, c, vectors):
+    """Word closest in cosine to vec(b) - vec(a) + vec(c), excluding a, b, c."""
+    target = [y - x + z for x, y, z in zip(vectors[a], vectors[b], vectors[c])]
+
+    def cos(u):
+        dot = sum(p * q for p, q in zip(u, target))
+        return dot / (math.sqrt(sum(p * p for p in u)) * math.sqrt(sum(q * q for q in target)))
+
+    candidates = [w for w in vectors if w not in (a, b, c)]
+    return min(candidates, key=lambda w: (-cos(vectors[w]), w))
+```
+hint: Build the target vector, then take the best of the candidate words with `min` and a key that negates the cosine and breaks ties by the word.
+solution: Excluding the three query words matters: in the third test the target equals the vector of `king`, which would otherwise win. In the last test the target is $(0, 4)$, and among the allowed words `queen` has the direction closest to it, since `apple` is excluded.
+
+@quiz num
+prompt: In a skip-gram negative-sampling step the center vector is $\mathbf{v} = (1, 2)$, the true context vector is $\mathbf{u}_o = (2, -1)$ and the learning rate is $0.2$. What is the first component of $\mathbf{u}_o$ after the update of $\mathbf{u}_o$ alone (ignoring the other vectors)? Give your answer to three decimal places.
+answer: 2.1
+tol: 0.001
+check: 2 - 0.2 * (1 / (1 + exp(-(1 * 2 + 2 * (-1)))) - 1) * 1
+hint: Compute the score $s_o = \mathbf{u}_o^\top\mathbf{v}$ first; then $\mathbf{u}_o \leftarrow \mathbf{u}_o - \eta(\sigma(s_o) - 1)\mathbf{v}$.
+solution: The score is $2 - 2 = 0$, so $\sigma(0) = 0.5$ and the gradient is $-0.5\,\mathbf{v} = (-0.5, -1)$. Then $\mathbf{u}_o \leftarrow (2, -1) + 0.2(0.5, 1) = (2.1, -0.8)$, and the first component is $2.1$.
+
+@quiz text
+prompt: What does this program print?
+```python
+from collections import Counter
+c = Counter()
+words = "a b a c".split()
+for i in range(len(words) - 1):
+    c[(words[i], words[i + 1])] += 1
+print(c[("a", "b")], len(c))
+```
+answer: 1 3
+check: run("from collections import Counter\nc = Counter()\nwords = \"a b a c\".split()\nfor i in range(len(words) - 1):\n    c[(words[i], words[i + 1])] += 1\nprint(c[(\"a\", \"b\")], len(c))")
+hint: The loop counts each adjacent pair once, in the forward direction only.
+solution: The pairs are (a, b), (b, a) and (a, c), each once, so `c[("a", "b")]` is 1 and there are 3 distinct pairs: `1 3`.

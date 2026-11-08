@@ -1,0 +1,232 @@
+@lesson
+title: Transfer learning and fine-tuning
+summary: Reuse a pretrained network by freezing it, fine-tuning it, or adding low-rank updates, and compute the parameters, gradients and learning rates involved.
+objective: Distinguish feature extraction (a frozen backbone with a new head) from full and partial fine-tuning, and say when each fits.
+objective: Compute a fine-tuning step with separate learning rates for backbone and head.
+objective: Explain and compute a low-rank adaptation (LoRA) update and its parameter savings.
+objective: Implement a linear probe, a two-learning-rate step and a LoRA forward pass from scratch.
+reading: Dive into Deep Learning, the chapter on computer vision: fine-tuning; and the chapters on pretraining and adapting pretrained models for natural language processing.
+@article
+You have 200 labeled photos of leaf diseases. Training a convolutional network from random weights on 200 images will overfit badly. But a network already trained on a million everyday images has learned edges, textures and shapes that are useful for leaves too. **Transfer learning** reuses what a model learned on a large source task to help a small target task.
+
+### Two ways to reuse a backbone
+Split a pretrained model into a **backbone** (the layers that compute features) and a **head** (the final layers that map features to the task's outputs). The target task usually needs a new head, because its labels differ.
+
+**Feature extraction** (also called a **linear probe** when the head is linear) freezes the backbone and trains only the new head. It is cheap, has few trainable parameters, and cannot damage the pretrained features. For fixed features $\mathbf{f}(\mathbf{x})$ and a linear head $\mathbf{w}$ with squared error, the gradient for one example is $2(\mathbf{w}^\top\mathbf{f} - y)\,\mathbf{f}$. With features $\mathbf{f} = (1, 2)$, label $y = 1$, $\mathbf{w} = \mathbf{0}$ and step size $0.1$, the gradient is $(-2, -4)$ and the new head is $(0.2, 0.4)$.
+
+**Fine-tuning** continues training some or all backbone layers on the target data, starting from the pretrained weights. It can adapt the features themselves, which helps when the target data differ from the source or when there is more labeled data, but it risks overfitting a small data set and **catastrophic forgetting**, where the model loses source-task behavior. Common safeguards are a small learning rate for the backbone, a larger one for the new head (**discriminative learning rates**), training the head first, freezing early layers, and stopping early on a validation set. Which strategy is best depends on how much target data you have and how close the target task is to the source; there is no universal rule, so compare options on a validation set.
+
+### A two-learning-rate step
+Take a tiny model $\hat y = \mathbf{v}^\top \operatorname{ReLU}(\mathbf{W}\mathbf{x})$ with backbone $\mathbf{W}$ and head $\mathbf{v}$, and loss $(\hat y - y)^2$. Let $\mathbf{z} = \mathbf{W}\mathbf{x}$, $\mathbf{h} = \operatorname{ReLU}(\mathbf{z})$ and $\epsilon = \hat y - y$. Then
+
+$$\nabla_{\mathbf{v}} L = 2\epsilon\,\mathbf{h}, \qquad \nabla_{\mathbf{W}} L = \big(2\epsilon\,\mathbf{v} \odot \mathbb{1}[\mathbf{z} > 0]\big)\,\mathbf{x}^\top.$$
+
+Updating $\mathbf{W}$ with learning rate $\eta_{\text{body}}$ and $\mathbf{v}$ with $\eta_{\text{head}}$ gives discriminative learning rates; setting $\eta_{\text{body}} = 0$ freezes the backbone and recovers feature extraction.
+
+### Low-rank adaptation
+Large pretrained models have enormous weight matrices. **Low-rank adaptation** (LoRA; Hu and colleagues, 2021) freezes the pretrained matrix $\mathbf{W}_0 \in \mathbb{R}^{d_{out}\times d_{in}}$ and learns a low-rank update:
+
+$$\mathbf{W} = \mathbf{W}_0 + \frac{\alpha}{r}\,\mathbf{B}\mathbf{A}, \qquad \mathbf{B} \in \mathbb{R}^{d_{out}\times r},\ \mathbf{A} \in \mathbb{R}^{r \times d_{in}},\ r \ll \min(d_{in}, d_{out}).$$
+
+Only $\mathbf{A}$ and $\mathbf{B}$ are trained, so the trainable parameters number $r(d_{in} + d_{out})$ instead of $d_{in} d_{out}$. For a $768 \times 3072$ matrix and rank $r = 4$ that is $4(768 + 3072) = 15{,}360$ against $2{,}359{,}296$, about $0.65\%$. In the forward pass, $\mathbf{W}\mathbf{x} = \mathbf{W}_0\mathbf{x} + \frac{\alpha}{r}\mathbf{B}(\mathbf{A}\mathbf{x})$, and after training the update can be merged into $\mathbf{W}_0$ at no extra inference cost. The update has rank at most $r$, which limits how much the layer can change: this is a modeling assumption, not a guarantee. Other **adapter** methods insert small trainable layers between frozen ones.
+
+### Pitfalls
+The source data may differ from the target data (distribution shift), and in the worst case pretraining hurts (**negative transfer**). Pretraining data can also overlap with a benchmark's test set, which inflates scores; check for leakage before trusting a result, and tune choices on validation data, not the test set.
+
+### In code
+```python
+def features(x, W):
+    """Frozen backbone: one ReLU layer."""
+    return [max(0.0, sum(w * a for w, a in zip(row, x))) for row in W]
+
+def train_head(F, ys, lr, steps):
+    """Fit a linear head on fixed features F by gradient descent on MSE."""
+    n, k = len(F), len(F[0])
+    w = [0.0] * k
+    for _ in range(steps):
+        g = [0.0] * k
+        for f, y in zip(F, ys):
+            e = sum(a * b for a, b in zip(w, f)) - y
+            for i in range(k):
+                g[i] += 2 * e * f[i] / n
+        w = [a - lr * b for a, b in zip(w, g)]
+    return w
+
+W = [[1, 0], [0, 1], [1, -1]]
+X = [[1, 0], [0, 1], [2, 1], [1, 2]]
+F = [features(x, W) for x in X]
+print([round(a, 3) for a in train_head(F, [1, 0, 1, 0], 0.1, 200)])
+```
+
+Libraries make freezing a one-line change (`requires_grad = False` in PyTorch), and LoRA is available in common fine-tuning toolkits.
+
+@example
+title: A LoRA update by hand
+problem: A frozen matrix is $\mathbf{W}_0$ with rows $(1, 2)$ and $(0, 1)$. A rank-1 adapter has $\mathbf{B} = \begin{pmatrix} 2 \\ 1 \end{pmatrix}$, $\mathbf{A} = (1, -1)$ and scale $\alpha/r = 0.5$. Compute the adapted matrix and the output for $\mathbf{x} = (3, 1)$.
+step: The product $\mathbf{B}\mathbf{A}$ is the outer product with rows $(2, -2)$ and $(1, -1)$. Scaled by $0.5$ it is $\Delta\mathbf{W}$ with rows $(1, -1)$ and $(0.5, -0.5)$.
+step: The adapted matrix is $\mathbf{W}_0 + \Delta\mathbf{W}$ with rows $(2, 1)$ and $(0.5, 0.5)$.
+step: The output is $\mathbf{W}\mathbf{x} = (2\cdot 3 + 1\cdot 1,\ 0.5 \cdot 3 + 0.5 \cdot 1) = (7, 2)$.
+step: Check by the factored form: $\mathbf{W}_0\mathbf{x} = (5, 1)$ and $\mathbf{A}\mathbf{x} = 3 - 1 = 2$, so the update adds $0.5 \cdot 2 \cdot (2, 1) = (2, 1)$, giving $(7, 2)$.
+answer: $\mathbf{W}$ has rows $(2, 1)$ and $(0.5, 0.5)$, and $\mathbf{W}\mathbf{x} = (7, 2)$.
+
+@example
+title: One fine-tuning step with two learning rates
+problem: The model is $\hat y = \mathbf{v}^\top \operatorname{ReLU}(\mathbf{W}\mathbf{x})$ with $\mathbf{W}$ having rows $(1, -1)$ and $(0.5, 2)$, $\mathbf{v} = (1, -1)$, input $\mathbf{x} = (2, 1)$ and target $y = 1$. Take one gradient step on $(\hat y - y)^2$ with $\eta_{\text{body}} = 0.01$ and $\eta_{\text{head}} = 0.1$.
+step: Forward: $\mathbf{z} = \mathbf{W}\mathbf{x} = (1, 3)$, $\mathbf{h} = (1, 3)$ (both positive), $\hat y = 1 - 3 = -2$ and $\epsilon = \hat y - y = -3$.
+step: Head gradient: $2\epsilon\,\mathbf{h} = -6\,(1, 3) = (-6, -18)$. New head: $\mathbf{v} = (1 + 0.6,\ -1 + 1.8) = (1.6, 0.8)$.
+step: Backbone gradient: $2\epsilon\,\mathbf{v} = (-6, 6)$, and both ReLU gates are open, so $\nabla_{\mathbf{W}} L = (-6, 6)^\top (2, 1)$ has rows $(-12, -6)$ and $(12, 6)$.
+step: New backbone (using the old $\mathbf{v}$ in the gradient): rows $(1 + 0.12,\ -1 + 0.06) = (1.12, -0.94)$ and $(0.5 - 0.12,\ 2 - 0.06) = (0.38, 1.94)$.
+answer: $\mathbf{v} = (1.6, 0.8)$ and $\mathbf{W}$ has rows $(1.12, -0.94)$ and $(0.38, 1.94)$.
+
+@mistakes
+- Using the same large learning rate for a pretrained backbone and a freshly initialized head; the large updates can destroy the pretrained features.
+- Updating the backbone with the new head's weights after the head has already changed. Compute both gradients from the same forward pass before updating.
+- Assuming LoRA adds $d_{in} d_{out}$ parameters; it adds only $r(d_{in} + d_{out})$, and the frozen $\mathbf{W}_0$ is not trained.
+- Evaluating a fine-tuned model on data that may have appeared in pretraining, or choosing the number of fine-tuning epochs on the test set.
+
+@practice num
+prompt: A weight matrix of size $768 \times 3072$ is adapted with LoRA of rank $r = 4$. How many trainable parameters does the adapter ($\mathbf{A}$ and $\mathbf{B}$) have?
+answer: 15360
+unit: parameters
+check: 4 * (768 + 3072)
+hint: $\mathbf{B}$ is $768 \times 4$ and $\mathbf{A}$ is $4 \times 3072$.
+solution: $\mathbf{B}$ has $768 \cdot 4 = 3072$ entries and $\mathbf{A}$ has $4 \cdot 3072 = 12288$ entries, for a total of 15360.
+
+@practice num
+prompt: A pretrained backbone has 1,000,000 parameters and a new head has 10,000. If the backbone is frozen and only the head is trained, what percent of all the parameters is trainable? Give your answer to two decimal places.
+answer: 0.99
+tol: 0.01
+unit: %
+check: 100 * 10000 / 1010000
+hint: Divide the trainable count by the total of 1,010,000.
+solution: The head has $10000$ of $1010000$ parameters, which is $0.990\%$, or $0.99\%$ to two places.
+
+@practice text
+prompt: What does this program print?
+```python
+W0 = [[1, 0], [0, 1]]
+A = [[1, 2]]
+B = [[1], [3]]
+W = [[W0[i][j] + B[i][0] * A[0][j] for j in range(2)] for i in range(2)]
+print(W)
+```
+answer: [[2, 2], [3, 7]]
+check: run("W0 = [[1, 0], [0, 1]]\nA = [[1, 2]]\nB = [[1], [3]]\nW = [[W0[i][j] + B[i][0] * A[0][j] for j in range(2)] for i in range(2)]\nprint(W)")
+hint: $\mathbf{B}\mathbf{A}$ is the outer product of $(1, 3)$ and $(1, 2)$, which is added to the identity.
+solution: The outer product has rows $(1, 2)$ and $(3, 6)$. Adding the identity gives rows $(2, 2)$ and $(3, 7)$.
+
+@practice code
+prompt: Write `lora_forward(W0, A, B, x, scale)` that returns `W0 @ x + scale * (B @ (A @ x))` as a list of floats, where `W0` is a `d_out` by `d_in` list of rows, `A` is `r` by `d_in`, `B` is `d_out` by `r`, `x` is a list of length `d_in` and `scale = alpha / r`. Do not build the full matrix `B @ A`.
+starter:
+```python
+def lora_forward(W0, A, B, x, scale):
+    return [sum(w * a for w, a in zip(row, x)) for row in W0]
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(a - b) < 1e-9 for a, b in zip(u, v))
+W0 = [[1, 2], [0, 1]]
+assert close(lora_forward(W0, [[1, -1]], [[2], [1]], [3, 1], 0.5), [7.0, 2.0])
+assert close(lora_forward(W0, [[1, -1]], [[2], [1]], [3, 1], 0.0), [5.0, 1.0])
+W1 = [[1, 0, 0], [0, 1, 0]]
+A = [[1, 1, 1], [0, 1, 0]]
+B = [[1, 2], [0, -1]]
+assert close(lora_forward(W1, A, B, [1, 2, 3], 2.0), [1 + 2 * (6 + 4), 2 + 2 * (-2)])
+assert close(lora_forward(W1, [[0, 0, 0]], [[5], [5]], [1, 1, 1], 1.0), [1.0, 1.0])
+```
+model:
+```python
+def lora_forward(W0, A, B, x, scale):
+    """W0 x plus the scaled low-rank correction B (A x)."""
+    base = [sum(w * a for w, a in zip(row, x)) for row in W0]
+    low = [sum(w * a for w, a in zip(row, x)) for row in A]
+    delta = [sum(w * a for w, a in zip(row, low)) for row in B]
+    return [b + scale * d for b, d in zip(base, delta)]
+```
+hint: First compute `A @ x` (a vector of length `r`), then `B` times that vector, scale it, and add it to `W0 @ x`.
+solution: Multiplying `A` into `x` first keeps the intermediate vector of size `r`, so the cost is $O(r(d_{in} + d_{out}))$ instead of forming the full update. With `scale = 0` the adapter has no effect, and the starter, which returns only $\mathbf{W}_0\mathbf{x}$, passes that test but fails the others.
+
+@practice code
+prompt: Write `finetune_step(W, v, x, y, lr_body, lr_head)` for the model `y_hat = v . relu(W x)` with loss `(y_hat - y) ** 2`. `W` is a list of rows, `v` and `x` are lists. Compute both gradients from the same forward pass, then return the pair `(new_W, new_v)` where `W` is updated with `lr_body` and `v` with `lr_head`. The gradient with respect to `v` is `2 * err * h`; the gradient with respect to row `i` of `W` is `2 * err * v[i] * (z[i] > 0) * x`, where `err = y_hat - y`, `z = W x` and `h = relu(z)`.
+starter:
+```python
+def finetune_step(W, v, x, y, lr_body, lr_head):
+    return W, v
+```
+tests:
+```python
+def close(A, B):
+    return all(abs(a - b) < 1e-9 for r, s in zip(A, B) for a, b in zip(r, s))
+W, v = [[1, -1], [0.5, 2]], [1, -1]
+nW, nv = finetune_step(W, v, [2, 1], 1, 0.01, 0.1)
+assert close(nW, [[1.12, -0.94], [0.38, 1.94]])
+assert close([nv], [[1.6, 0.8]])
+nW, nv = finetune_step(W, v, [2, 1], 1, 0.0, 0.1)
+assert close(nW, W) and close([nv], [[1.6, 0.8]])
+W2, v2 = [[-1, 0], [0, 1]], [1, 1]
+nW, nv = finetune_step(W2, v2, [1, 2], 0, 0.1, 0.1)
+assert close(nW, [[-1, 0], [-0.4, 0.2]])
+assert close([nv], [[1, 0.2]])
+assert W == [[1, -1], [0.5, 2]] and v == [1, -1]
+```
+model:
+```python
+def finetune_step(W, v, x, y, lr_body, lr_head):
+    """One SGD step on a ReLU backbone and a linear head with two rates."""
+    z = [sum(w * a for w, a in zip(row, x)) for row in W]
+    h = [max(0.0, a) for a in z]
+    y_hat = sum(a * b for a, b in zip(v, h))
+    err = y_hat - y
+    new_v = [v[i] - lr_head * 2 * err * h[i] for i in range(len(v))]
+    new_W = []
+    for i, row in enumerate(W):
+        gate = 1.0 if z[i] > 0 else 0.0
+        new_W.append([row[j] - lr_body * 2 * err * v[i] * gate * x[j]
+                      for j in range(len(row))])
+    return new_W, new_v
+```
+hint: Do the forward pass once, then compute the update for `v` and for each row of `W` from those same values, using the old `v` in the backbone gradient.
+solution: The ReLU gate is 0 for units whose pre-activation is not positive, so their row of `W` does not change (see the second test, where the first unit is inactive). Setting `lr_body = 0` freezes the backbone, which the third test checks, and the last assertion checks that the inputs are not modified in place.
+
+@quiz mc
+prompt: In LoRA, which parameters are updated by gradient descent during fine-tuning?
+choice*: Only the low-rank factors $\mathbf{A}$ and $\mathbf{B}$; the pretrained matrix $\mathbf{W}_0$ stays frozen.
+choice: Only the pretrained matrix $\mathbf{W}_0$; the low-rank factors are fixed random matrices.
+choice: Every parameter of the model, with the low-rank factors used only to initialize $\mathbf{W}_0$.
+choice: Only the bias terms of the model.
+hint: Look at the formula $\mathbf{W} = \mathbf{W}_0 + \frac{\alpha}{r}\mathbf{B}\mathbf{A}$ and ask which matrices are learned.
+solution: LoRA freezes $\mathbf{W}_0$ and trains the factors $\mathbf{A}$ and $\mathbf{B}$, whose product forms the low-rank update. Training only $\mathbf{W}_0$, all parameters, or only biases describes other methods.
+
+@quiz num
+prompt: A LoRA adapter has $\mathbf{B} = \begin{pmatrix} 1 \\ 0 \end{pmatrix}$, $\mathbf{A} = (3, 4)$ and scale $\alpha/r = 2$. For the input $\mathbf{x} = (1, 1)$, what is the first component of the correction $\frac{\alpha}{r}\mathbf{B}(\mathbf{A}\mathbf{x})$?
+answer: 14
+check: 2 * 1 * (3 * 1 + 4 * 1)
+hint: First compute the scalar $\mathbf{A}\mathbf{x}$.
+solution: $\mathbf{A}\mathbf{x} = 3 + 4 = 7$, then $\mathbf{B}\cdot 7 = (7, 0)$, and scaling by 2 gives $(14, 0)$; the first component is 14.
+
+@quiz code
+prompt: Write `layer_lrs(n_layers, base_lr, decay)` for discriminative fine-tuning. It returns a list of `n_layers` learning rates, one per layer from the first (closest to the input) to the last (closest to the output). The last layer gets `base_lr` and each earlier layer's rate is the next layer's rate multiplied by `decay`. For example, `layer_lrs(3, 0.1, 0.5)` returns `[0.025, 0.05, 0.1]`.
+starter:
+```python
+def layer_lrs(n_layers, base_lr, decay):
+    return [base_lr] * n_layers
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(a - b) < 1e-12 for a, b in zip(u, v))
+assert close(layer_lrs(3, 0.1, 0.5), [0.025, 0.05, 0.1])
+assert close(layer_lrs(1, 0.3, 0.5), [0.3])
+assert close(layer_lrs(4, 1.0, 0.1), [0.001, 0.01, 0.1, 1.0])
+assert layer_lrs(0, 0.1, 0.5) == []
+assert close(layer_lrs(3, 0.1, 1.0), [0.1, 0.1, 0.1])
+```
+model:
+```python
+def layer_lrs(n_layers, base_lr, decay):
+    """Learning rates that shrink geometrically towards the input layers."""
+    return [base_lr * decay ** (n_layers - 1 - i) for i in range(n_layers)]
+```
+hint: Layer `i` is `n_layers - 1 - i` steps below the last layer, so multiply `base_lr` by `decay` that many times.
+solution: The exponent counts how far a layer is from the output, so the first layer gets the smallest rate and the last gets `base_lr`. With `decay = 1.0` all layers share one rate, which the last test checks.

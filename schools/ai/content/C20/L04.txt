@@ -1,0 +1,248 @@
+@lesson
+title: Image classification with convolutional networks
+summary: Compute the shapes, parameter counts and outputs of convolutional layers, ReLU, pooling and a softmax classifier, and run a tiny convolutional network forward in plain Python.
+objective: Compute output shapes, parameter counts and receptive fields for stacked convolution and pooling layers.
+objective: Explain weight sharing, translation equivariance and why convolutional networks need far fewer parameters than fully connected ones.
+objective: Implement a multi-channel convolution layer, pooling and the forward pass of a tiny classifier from scratch.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the chapter on deep learning, the section on convolutional neural networks, and the section on image classification in the recognition chapter.
+@article
+A digit recognizer receives a $28 \times 28$ image, 784 numbers. A fully connected hidden layer of 100 units has $784 \cdot 100 + 100 = 78{,}500$ parameters, and it treats pixel (3, 4) and pixel (3, 5) as unrelated inputs. Two things are wrong: the count explodes for larger images, and a stroke shifted by one pixel looks to the layer like a completely different input. A **convolutional neural network** (CNN) fixes both by reusing the same small filter at every position.
+
+### Conventions used in this course
+
+A feature map with $C$ channels, height $H$ and width $W$ is a list of $C$ images, each a list of rows (row-major). A convolution layer has $C_{\text{out}}$ **filters**; each filter is a list of $C_{\text{in}}$ kernels of size $k_h \times k_w$, and has one bias. As in most libraries, "convolution" means **correlation** (no flip). We use **valid** mode and stride 1 unless said otherwise: the output has $C_{\text{out}}$ channels and shape $(H - k_h + 1) \times (W - k_w + 1)$. Filter $f$ computes
+
+$$y_f(r, c) = b_f + \sum_{ch=0}^{C_{\text{in}}-1} \sum_{i,j} x_{ch}(r + i, c + j)\, K_{f,ch}(i, j).$$
+
+### Why it works
+
+A layer with $C_{\text{out}}$ filters has $C_{\text{out}}(C_{\text{in}} k_h k_w + 1)$ parameters whatever the image size. Eight $3 \times 3$ filters on a gray image have $8 \cdot (9 + 1) = 80$. This **weight sharing** also gives **translation equivariance**: shifting the input shifts the feature map by the same amount (apart from borders). Early layers learn small oriented edge and color detectors, and the hand-designed Sobel kernels of the last lesson are exactly the kind of filter such a layer can hold.
+
+A **nonlinearity** is needed between layers; the standard is $\operatorname{ReLU}(z) = \max(0, z)$ applied to every entry. **Max pooling** with window $s$ and stride $s$ replaces each $s \times s$ block by its maximum, shrinking the map to $\lfloor H/s \rfloor \times \lfloor W/s \rfloor$ and making the output insensitive to small shifts. Finally the feature maps are flattened into a vector, passed through a linear layer to class scores $\mathbf{z}$, and turned into probabilities by the softmax,
+
+$$p_k = \frac{e^{z_k - \max_j z_j}}{\sum_{m} e^{z_m - \max_j z_j}}.$$
+
+Subtracting the maximum changes nothing mathematically and avoids overflow. Training minimizes the cross-entropy $-\log p_y$ of the true class $y$ by backpropagation.
+
+### Receptive fields
+
+The **receptive field** of a unit is the patch of the input that can affect it. For layer $l$ with kernel size $k_l$ and cumulative stride (jump) $j_{l-1}$ in front of it, $r_l = r_{l-1} + (k_l - 1)\,j_{l-1}$, and the jump becomes $j_l = j_{l-1} s_l$. Two stacked $3 \times 3$ convolutions see $3 + 2 = 5$ pixels across, three see 7. Stacking small kernels reaches the same field as one large kernel with fewer parameters: for $C$ channels in and out, two $3 \times 3$ layers use $18C^2$ weights against $25C^2$ for one $5 \times 5$.
+
+### A short history
+
+LeCun and colleagues trained convolutional networks with backpropagation to read handwritten digits (1989), and the LeNet family (1998) became the standard recipe of convolution, subsampling and a classifier. After the ImageNet classification challenge (Deng and colleagues, 2009), AlexNet (Krizhevsky, Sutskever and Hinton, 2012) won it by a wide margin with a deep CNN trained on GPUs. Residual networks (He and colleagues, 2015) added skip connections, $\mathbf{y} = \mathbf{x} + F(\mathbf{x})$, which let networks hundreds of layers deep train.
+
+### In code
+
+```python
+def relu_map(x):
+    """ReLU on a feature map: list of channels of list of rows."""
+    return [[[max(0, v) for v in row] for row in ch] for ch in x]
+
+def max_pool2(img):
+    """2x2 max pooling, stride 2, on one channel; drops odd edges."""
+    return [[max(img[r][c], img[r][c + 1], img[r + 1][c], img[r + 1][c + 1])
+             for c in range(0, len(img[0]) - 1, 2)]
+            for r in range(0, len(img) - 1, 2)]
+
+print(max_pool2([[1, 3, 2, 0], [4, 2, 1, 1], [0, 0, 5, 6], [1, 2, 7, 8]]))
+```
+
+PyTorch writes the layers as `nn.Conv2d(in_channels, out_channels, kernel_size)`, `nn.ReLU()` and `nn.MaxPool2d(2)`, and computes gradients automatically; the arithmetic is what you will code below.
+@example
+title: Shapes and parameters of a small network
+problem: A network takes a $1 \times 8 \times 8$ image, applies 4 filters of size $3 \times 3$ (valid, stride 1), ReLU, $2 \times 2$ max pooling, flattening, and a linear layer to 10 classes. Find the shape after each step and the number of parameters.
+step: Convolution: the output is $4 \times (8-3+1) \times (8-3+1) = 4 \times 6 \times 6$, with $4(1 \cdot 9 + 1) = 40$ parameters.
+step: ReLU keeps the shape $4 \times 6 \times 6$ and has no parameters. Max pooling gives $4 \times 3 \times 3$.
+step: Flattening gives a vector of $4 \cdot 3 \cdot 3 = 36$ numbers. The linear layer has $36 \cdot 10 + 10 = 370$ parameters.
+step: The total is $40 + 370 = 410$ parameters, against $64 \cdot 10 + 10 = 650$ for a single linear layer on the raw pixels.
+answer: Shapes $4\times6\times6$, $4\times6\times6$, $4\times3\times3$, 36, 10; 410 parameters.
+@example
+title: Convolution, ReLU and max pooling by hand
+problem: Apply the kernel $\begin{bmatrix}1&0&-1\\1&0&-1\\1&0&-1\end{bmatrix}$ (valid, no flip) to $\begin{bmatrix}1&2&0&1\\3&0&1&2\\1&1&0&0\\2&3&1&1\end{bmatrix}$, then ReLU, then $2 \times 2$ max pooling.
+step: The output of the valid convolution is $2 \times 2$. At the top left, the left column sums to $1+3+1 = 5$ and the right column to $0+1+0 = 1$, so the response is $5 - 1 = 4$.
+step: The other three positions give $0$, $4$ and $1$: the map is $\begin{bmatrix}4&0\\4&1\end{bmatrix}$.
+step: ReLU leaves it unchanged because no entry is negative. Max pooling over the single $2 \times 2$ block gives 4.
+answer: The convolution map is $\begin{bmatrix}4&0\\4&1\end{bmatrix}$ and the pooled output is $4$.
+@mistakes
+- Counting parameters as if each position had its own weights: a filter's weights are shared across all positions, so the count depends on kernel size and channels, not image size.
+- Forgetting the input channels: a filter over a 3-channel image has $3 \times k_h \times k_w$ weights plus one bias, not $k_h \times k_w$.
+- Stacking linear layers without a nonlinearity: two convolutions in a row with no ReLU between them equal a single convolution with a larger kernel.
+@practice num
+prompt: A convolution layer takes an RGB image (3 channels) and has 16 filters of size $5 \times 5$, each with one bias. How many parameters does the layer have?
+answer: 1216
+unit: parameters
+check: 16 * (3 * 5 * 5 + 1)
+hint: Each filter has one $5 \times 5$ kernel per input channel, plus one bias.
+solution: Each filter has $3 \cdot 25 = 75$ weights and 1 bias, so 76 parameters; 16 filters give $16 \cdot 76 = 1216$.
+@practice code
+prompt: Write `conv_layer(x, filters, biases)` for a feature map `x` that is a list of channels, each a list of rows (row-major), a list `filters` of filters, each a list with one kernel (list of rows) per input channel, and a list `biases` with one number per filter. Use valid mode, stride 1, correlation (no kernel flip). Return a list with one output image per filter: bias plus the sum over channels of the correlation of that channel with its kernel. For example, one input channel `[[1, 2], [3, 4]]` with the single kernel `[[1]]` and bias 0.5 gives `[[[1.5, 2.5], [3.5, 4.5]]]`.
+starter:
+```python
+def conv_layer(x, filters, biases):
+    pass
+```
+tests:
+```python
+def close(a, b):
+    return all(abs(p - q) < 1e-9 for ra, rb in zip(a, b) for p, q in zip(ra, rb))
+
+out = conv_layer([[[1, 2], [3, 4]]], [[[[1]]]], [0.5])
+assert len(out) == 1 and close(out[0], [[1.5, 2.5], [3.5, 4.5]])
+sob = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+edge = [[0, 0, 100, 100, 100]] * 5
+out = conv_layer([edge], [[sob]], [0])
+assert close(out[0], [[400, 400, 0]] * 3)
+x = [[[1, 2, 3], [4, 5, 6], [7, 8, 9]], [[1, 0, 1], [0, 1, 0], [1, 0, 1]]]
+f = [[[[1, 0], [0, 1]], [[1, 1], [1, 1]]], [[[0, 1], [1, 0]], [[-1, 0], [0, -1]]]]
+out = conv_layer(x, f, [0.5, -1])
+assert len(out) == 2
+assert close(out[0], [[8.5, 10.5], [14.5, 16.5]])
+assert close(out[1], [[3, 7], [11, 11]])
+```
+model:
+```python
+def conv_layer(x, filters, biases):
+    """Multi-channel valid correlation with one bias per filter."""
+    out = []
+    for kernels, bias in zip(filters, biases):
+        kh, kw = len(kernels[0]), len(kernels[0][0])
+        h, w = len(x[0]), len(x[0][0])
+        fmap = []
+        for r in range(h - kh + 1):
+            row = []
+            for c in range(w - kw + 1):
+                total = bias
+                for ch, ker in zip(x, kernels):
+                    for i in range(kh):
+                        for j in range(kw):
+                            total += ch[r + i][c + j] * ker[i][j]
+                row.append(total)
+            fmap.append(row)
+        out.append(fmap)
+    return out
+```
+hint: For every filter and every output position, start from the bias and add the window-times-kernel products from each input channel.
+solution: The sum runs over channels as well as over the kernel window, which is why a filter holds one kernel per input channel. The second test uses the Sobel kernel as a first-layer filter and finds the vertical edge; the last test fails if only the first channel is used or the bias is added once per channel.
+@practice num
+prompt: A network applies a $3 \times 3$ convolution (stride 1), then $2 \times 2$ max pooling (stride 2), then another $3 \times 3$ convolution (stride 1). Using $r_l = r_{l-1} + (k_l - 1)\,j_{l-1}$ with $j_l = j_{l-1} s_l$, how many input pixels wide is the receptive field of a unit after the last convolution?
+answer: 8
+check: 3 + (2 - 1) * 1 + (3 - 1) * 2
+hint: Track the receptive field $r$ and the jump $j$ after each layer, starting from $r = 1$, $j = 1$.
+solution: After the first convolution $r = 3$, $j = 1$. Pooling has $k = 2$, $s = 2$, so $r = 3 + 1 \cdot 1 = 4$ and $j = 2$. The last convolution gives $r = 4 + 2 \cdot 2 = 8$.
+@practice code
+prompt: Write `pool(img, size, mode)` that pools one channel `img` (list of rows, row-major) with non-overlapping `size` by `size` windows (stride equal to `size`). Windows that would extend past the bottom or right edge are dropped. `mode` is `'max'` for the maximum of each window or `'avg'` for its mean. Return the pooled image as a list of rows. For example, `pool([[1, 3], [4, 2]], 2, 'avg')` returns `[[2.5]]`.
+starter:
+```python
+def pool(img, size, mode):
+    pass
+```
+tests:
+```python
+im = [[1, 3, 2, 0], [4, 2, 1, 1], [0, 0, 5, 6], [1, 2, 7, 8]]
+assert pool(im, 2, 'max') == [[4, 2], [2, 8]]
+got = pool(im, 2, 'avg')
+want = [[2.5, 1.0], [0.75, 6.5]]
+assert all(abs(a - b) < 1e-9 for ra, rb in zip(got, want) for a, b in zip(ra, rb))
+assert pool([[1, 2, 3], [4, 5, 6], [7, 8, 9]], 2, 'max') == [[5]]
+assert pool([[1, 2, 3], [4, 5, 6], [7, 8, 9]], 3, 'max') == [[9]]
+assert pool([[1, 2]], 2, 'max') == []
+```
+model:
+```python
+def pool(img, size, mode):
+    """Non-overlapping max or average pooling; incomplete windows dropped."""
+    out = []
+    for r in range(0, len(img) - size + 1, size):
+        row = []
+        for c in range(0, len(img[0]) - size + 1, size):
+            window = [img[r + i][c + j]
+                      for i in range(size) for j in range(size)]
+            if mode == 'max':
+                row.append(max(window))
+            else:
+                row.append(sum(window) / len(window))
+        out.append(row)
+    return out
+```
+hint: Step the top-left corner of each window by `size` while the whole window still fits; collect its values and take `max` or the mean.
+solution: Stopping at `len(img) - size + 1` drops incomplete windows, which gives $\lfloor H/s \rfloor$ rows. The last test has one row, which cannot hold a $2 \times 2$ window, so the output is empty.
+@practice code
+prompt: Write `cnn_probs(img, kernel, w, b)` for a tiny classifier. `img` is one channel (list of rows, row-major) and `kernel` is a list of rows. Do: valid-mode correlation (no flip, no bias), then ReLU, then flatten row by row into a list of features, then class scores `z[k] = sum(w[k][i] * feature[i]) + b[k]`, then softmax with the maximum subtracted. Return the list of class probabilities. For example, for an all-zero image the scores equal `b`, so with `b = [0, 0]` it returns `[0.5, 0.5]`.
+starter:
+```python
+def cnn_probs(img, kernel, w, b):
+    pass
+```
+tests:
+```python
+import math
+im = [[0, 0, 2, 2]] * 4
+k = [[-1, 0, 1]] * 3
+w = [[0.1, 0.1, 0.1, 0.1], [0.0, 0.0, 0.0, 0.0]]
+p = cnn_probs(im, k, w, [0.0, 0.5])
+e0, e1 = math.exp(2.4), math.exp(0.5)
+assert abs(p[0] - e0 / (e0 + e1)) < 1e-9 and abs(sum(p) - 1) < 1e-9
+p = cnn_probs(im, [[1, 0, -1]] * 3, w, [0.0, 0.5])
+q0, q1 = math.exp(0.0), math.exp(0.5)
+assert abs(p[0] - q0 / (q0 + q1)) < 1e-9
+p = cnn_probs([[0] * 4] * 4, k, w, [0.0, 0.0])
+assert abs(p[0] - 0.5) < 1e-9 and abs(p[1] - 0.5) < 1e-9
+p = cnn_probs(im, k, [[100] * 4, [0] * 4], [0.0, 0.0])
+assert abs(p[0] - 1.0) < 1e-9
+```
+model:
+```python
+import math
+
+def cnn_probs(img, kernel, w, b):
+    """Valid conv, ReLU, flatten, linear layer, stable softmax."""
+    kh, kw = len(kernel), len(kernel[0])
+    feats = []
+    for r in range(len(img) - kh + 1):
+        for c in range(len(img[0]) - kw + 1):
+            total = 0
+            for i in range(kh):
+                for j in range(kw):
+                    total += img[r + i][c + j] * kernel[i][j]
+            feats.append(max(0, total))
+    z = [sum(wi * f for wi, f in zip(row, feats)) + bk
+         for row, bk in zip(w, b)]
+    m = max(z)
+    exps = [math.exp(v - m) for v in z]
+    s = sum(exps)
+    return [v / s for v in exps]
+```
+hint: Compute the four features first (convolution then ReLU), then the scores, then subtract the largest score before exponentiating.
+solution: With the right-brightening kernel each of the four features is 6, so the scores are $0.1 \cdot 24 = 2.4$ and $0.5$. The opposite kernel gives negative responses, which ReLU turns into zeros, leaving only the biases. The last test has a score near 2400 and overflows without subtracting the maximum.
+@quiz text
+prompt: What does this program print?
+```python
+x = [[1, 5, 2], [0, 3, 4], [6, 1, 1]]
+best = -1
+for r in range(2):
+    for c in range(2):
+        s = x[r][c] + x[r + 1][c + 1] - x[r][c + 1]
+        best = max(best, s)
+print(best)
+```
+answer: 7
+check: run("x = [[1, 5, 2], [0, 3, 4], [6, 1, 1]]\nbest = -1\nfor r in range(2):\n    for c in range(2):\n        s = x[r][c] + x[r + 1][c + 1] - x[r][c + 1]\n        best = max(best, s)\nprint(best)")
+hint: Compute `s` at the four positions and keep the largest.
+solution: The four values of `s` are $1 + 3 - 5 = -1$ at (0, 0), $5 + 4 - 2 = 7$ at (0, 1), $0 + 1 - 3 = -2$ at (1, 0) and $3 + 1 - 4 = 0$ at (1, 1), so the largest is 7.
+@quiz mc
+prompt: Which property of a convolution layer explains why shifting an object one pixel to the right in the input shifts the feature map one pixel to the right (away from the borders)?
+choice*: The same filter weights are applied at every position, which makes the layer translation equivariant.
+choice: Max pooling always makes the output exactly invariant to any shift.
+choice: Each position has its own weights, tuned to the objects seen there.
+choice: The ReLU nonlinearity restores the original position.
+hint: The filter at position $(r, c)$ and at position $(r, c+1)$ uses the same numbers.
+solution: Weight sharing means the response depends only on the local patch, not its position, so a shifted input gives a shifted map. Pooling gives only approximate invariance to small shifts, per-position weights would break equivariance, and ReLU acts on each entry separately.
+@quiz ms
+prompt: Which statements about convolutional layers are true? Select all that apply.
+choice*: A layer with 32 filters of size $3 \times 3$ on a 3-channel input has $32 \cdot (27 + 1) = 896$ parameters.
+choice*: Two stacked $3 \times 3$ convolutions (stride 1) have a $5 \times 5$ receptive field.
+choice*: Without a nonlinearity between them, two stacked convolution layers compute a single convolution.
+choice: The number of parameters in a convolution layer grows with the height and width of the input image.
+hint: Count weights per filter, track the receptive field, and recall that composing linear maps gives a linear map.
+solution: The count is $32(3 \cdot 9 + 1) = 896$. Two stride-1 $3\times3$ layers see $3 + 2 = 5$ pixels. Composing two linear maps is linear, so a nonlinearity is needed. Parameters depend on kernel size and channels, not on the input size.

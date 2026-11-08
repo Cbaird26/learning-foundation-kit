@@ -1,0 +1,264 @@
+@lesson
+title: The transformer: self-attention, multiple heads and feed-forward blocks
+summary: Trace multi-head self-attention, residual connections, layer normalization and a feed-forward block through one transformer layer on a tiny input.
+objective: Compute self-attention for a short sequence, with queries, keys and values taken from the same inputs.
+objective: Explain multiple heads, the position-wise feed-forward network, residual connections and layer normalization.
+objective: Count the parameters of a transformer layer and describe how its cost grows with sequence length.
+objective: Implement multi-head self-attention and a full transformer block from scratch.
+reading: Dive into Deep Learning, the chapters on the transformer architecture and on multi-head attention; the original paper is "Attention Is All You Need" (Vaswani and colleagues, 2017).
+@article
+Recurrent networks read one token at a time, so step $t$ cannot start until step $t - 1$ finishes, and distant tokens interact only through a long chain of states. Vaswani and colleagues (2017) asked: what if every token could look at every other token directly, in one step, with attention alone? The result is the **transformer**.
+
+### Self-attention
+In **self-attention** the queries, keys and values all come from the same sequence. Stack $n$ token vectors of size $d$ (the model dimension) as the rows of $\mathbf{X}$. Learned projections give $\mathbf{Q} = \mathbf{X}\mathbf{W}_Q$, $\mathbf{K} = \mathbf{X}\mathbf{W}_K$ and $\mathbf{V} = \mathbf{X}\mathbf{W}_V$, and the output is $\operatorname{softmax}(\mathbf{Q}\mathbf{K}^\top/\sqrt{d_k})\mathbf{V}$, as in the last lesson. Row $i$ of the weight matrix says how much token $i$ reads from each token $j$. The score matrix is $n \times n$, so time and memory grow as $n^2$ with sequence length, in exchange for a path of length 1 between any two tokens.
+
+### Multiple heads
+One attention pattern is a limited way to relate tokens. **Multi-head attention** runs $h$ attentions in parallel on lower-dimensional projections, with head size $d_k = d/h$, concatenates their outputs and mixes them with a final matrix $\mathbf{W}_O$:
+
+$$\operatorname{head}_m = \operatorname{Attention}(\mathbf{X}\mathbf{W}_Q^{(m)}, \mathbf{X}\mathbf{W}_K^{(m)}, \mathbf{X}\mathbf{W}_V^{(m)}), \quad \operatorname{MHA}(\mathbf{X}) = [\operatorname{head}_1; \dots; \operatorname{head}_h]\,\mathbf{W}_O.$$
+
+Different heads can specialize in different relations. With $\mathbf{W}_Q, \mathbf{W}_K, \mathbf{W}_V, \mathbf{W}_O$ each of size $d \times d$ and no biases, the layer has $4d^2$ parameters, whatever $h$ is.
+
+### The rest of the block
+Attention mixes information *across* positions. The **position-wise feed-forward network** transforms each position independently, with the same weights at every position:
+
+$$\operatorname{FFN}(\mathbf{x}) = \mathbf{W}_2 \operatorname{ReLU}(\mathbf{W}_1 \mathbf{x} + \mathbf{b}_1) + \mathbf{b}_2,$$
+
+where $\mathbf{W}_1$ expands from $d$ to $d_{ff}$ (often $4d$) and $\mathbf{W}_2$ contracts back. Each sublayer is wrapped in a **residual connection** (the shortcut of lesson 2) and **layer normalization** (Ba, Kiros and Hinton, 2016). Layer normalization standardizes the features of *one* token:
+
+$$\operatorname{LN}(\mathbf{x}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x} - \mu}{\sqrt{\sigma^2 + \epsilon}} + \boldsymbol{\beta}, \quad \mu = \tfrac{1}{d}\sum_i x_i, \quad \sigma^2 = \tfrac{1}{d}\sum_i (x_i - \mu)^2.$$
+
+Unlike batch normalization it does not use other examples in the batch, so it behaves the same for any batch size and sequence length. The original transformer uses the "post-norm" order:
+
+$$\mathbf{Y} = \operatorname{LN}(\mathbf{X} + \operatorname{MHA}(\mathbf{X})), \qquad \mathbf{Z} = \operatorname{LN}(\mathbf{Y} + \operatorname{FFN}(\mathbf{Y})).$$
+
+Many later models apply the normalization *before* each sublayer ("pre-norm"), which tends to train more stably in deep stacks. The output $\mathbf{Z}$ has the same shape as $\mathbf{X}$, so blocks stack. For example, with $d = 8$ and $d_{ff} = 32$, the FFN has $8\cdot 32 + 32 + 32 \cdot 8 + 8 = 552$ parameters, more than the $4 \cdot 64 = 256$ in attention.
+
+For the vector $(1, 2, 3, 6)$, $\mu = 3$ and $\sigma^2 = 3.5$, so layer normalization (with $\boldsymbol\gamma = 1$, $\boldsymbol\beta = 0$, $\epsilon \approx 0$) gives $(-1.069, -0.535, 0, 1.604)$.
+
+### In code
+```python
+from math import sqrt
+
+def layer_norm(x, eps=1e-5):
+    """Standardize one vector (gamma = 1, beta = 0)."""
+    mu = sum(x) / len(x)
+    var = sum((a - mu) ** 2 for a in x) / len(x)
+    return [(a - mu) / sqrt(var + eps) for a in x]
+
+print([round(a, 3) for a in layer_norm([1, 2, 3, 6], eps=0.0)])
+```
+
+Note that self-attention alone ignores token order: shuffling the rows of $\mathbf{X}$ just shuffles the rows of the output. Lesson 8 adds positional information. In PyTorch, `nn.MultiheadAttention` and `nn.TransformerEncoderLayer` package these pieces.
+
+@example
+title: Two heads by hand
+problem: Two tokens $\mathbf{x}_1 = (1, 0)$ and $\mathbf{x}_2 = (0, 2)$ pass through multi-head self-attention with $h = 2$ heads, identity projections and $\mathbf{W}_O = \mathbf{I}$. Head 1 uses the first coordinate and head 2 the second, so each head has size 1 and $\sqrt{d_k} = 1$. Compute the output.
+step: Head 1 uses the first coordinates $(1, 0)$ for queries, keys and values. The scores are $q_i k_j$: row 1 is $(1, 0)$ and row 2 is $(0, 0)$. Row 1 weights are $(0.7311, 0.2689)$ and row 2 weights are $(0.5, 0.5)$.
+step: Head 1 outputs: token 1 gets $0.7311 \cdot 1 + 0.2689 \cdot 0 = 0.7311$; token 2 gets $0.5 \cdot 1 + 0.5 \cdot 0 = 0.5$.
+step: Head 2 uses the second coordinates $(0, 2)$. The scores are row 1: $(0, 0)$ and row 2: $(0, 4)$. Row 1 weights are $(0.5, 0.5)$ and row 2 weights are $(0.0180, 0.9820)$.
+step: Head 2 outputs: token 1 gets $0.5 \cdot 0 + 0.5 \cdot 2 = 1$; token 2 gets $0.0180 \cdot 0 + 0.9820 \cdot 2 = 1.964$.
+step: Concatenate the heads and multiply by $\mathbf{I}$: token 1 is $(0.7311, 1)$ and token 2 is $(0.5, 1.964)$.
+answer: The output rows are $(0.7311, 1.0)$ and $(0.5, 1.964)$.
+
+@example
+title: Feed-forward block and residual
+problem: One token is $\mathbf{x} = (2, 1)$. The FFN has $\mathbf{W}_1$ with rows $(1, 0)$, $(0, 1)$, $(1, 1)$, $\mathbf{b}_1 = (-1, 0, -4)$, $\mathbf{W}_2$ with rows $(1, 0, 1)$ and $(0, 2, 0)$, and $\mathbf{b}_2 = (0.5, 0)$. Compute $\mathbf{x} + \operatorname{FFN}(\mathbf{x})$.
+step: Hidden pre-activation: $(2 - 1,\ 1 + 0,\ 3 - 4) = (1, 1, -1)$.
+step: ReLU gives $(1, 1, 0)$.
+step: Output layer: first component $1 + 0 + 0 + 0.5 = 1.5$, second component $2 \cdot 1 = 2$. So $\operatorname{FFN}(\mathbf{x}) = (1.5, 2)$.
+step: Add the residual: $(2, 1) + (1.5, 2) = (3.5, 3)$. A layer normalization would follow (in post-norm).
+answer: $\mathbf{x} + \operatorname{FFN}(\mathbf{x}) = (3.5, 3)$.
+
+@mistakes
+- Normalizing over the batch instead of over the features of each token; layer normalization uses the $d$ features of one token only.
+- Thinking more heads means more parameters. With head size $d/h$ the parameter count stays $4d^2$ for the attention weights.
+- Forgetting that the FFN is applied to each position separately, with shared weights; it never mixes positions, only attention does.
+- Treating self-attention as order-aware. Without positional information, permuting the input tokens permutes the output in the same way.
+
+@practice num
+prompt: Layer normalization (no scale or shift, $\epsilon = 0$) is applied to the vector $(2, 4, 6, 8)$. What is the first component of the result? Give your answer to three decimal places.
+answer: -1.342
+tol: 0.001
+check: (2 - 5) / sqrt(5)
+hint: The mean is 5 and the variance (dividing by $d$) is 5.
+solution: The deviations are $-3, -1, 1, 3$, so the variance is $(9 + 1 + 1 + 9)/4 = 5$ and the first component is $-3/\sqrt 5 = -1.342$.
+
+@practice num
+prompt: A multi-head attention layer has model dimension 8 and 2 heads. It has projection matrices $\mathbf{W}_Q$, $\mathbf{W}_K$, $\mathbf{W}_V$ and $\mathbf{W}_O$, each of size $8 \times 8$, and no biases. How many parameters does it have?
+answer: 256
+unit: parameters
+check: 4 * 8 * 8
+hint: Count four square matrices; the number of heads does not change the total.
+solution: Each matrix has 64 entries and there are four, so the layer has 256 parameters; splitting into 2 heads divides each matrix's columns among heads but does not change the total.
+
+@practice text
+prompt: What does this program print?
+```python
+from math import exp
+x = [1, 2]
+scores = [x[1] * k for k in x]
+e = [exp(s) for s in scores]
+print([round(a / sum(e), 3) for a in e])
+```
+answer: [0.119, 0.881]
+check: run("from math import exp\nx = [1, 2]\nscores = [x[1] * k for k in x]\ne = [exp(s) for s in scores]\nprint([round(a / sum(e), 3) for a in e])")
+hint: The query is the second token, 2, and the keys are 1 and 2, so the scores are 2 and 4.
+solution: The weights are $\mathrm{softmax}(2, 4) = (1/(1 + e^2),\ e^2/(1 + e^2)) = (0.119, 0.881)$.
+
+@practice code
+prompt: Write `multi_head_self_attention(X, h)` for a list `X` of token vectors of length `d`, where `d` is divisible by `h`. Use identity projections: head `m` uses coordinates `m*(d//h)` to `(m+1)*(d//h) - 1` of every token as its queries, keys and values, with scores divided by `sqrt(d // h)`. Concatenate the head outputs in order (no output matrix) and return the list of output vectors of length `d`.
+starter:
+```python
+def multi_head_self_attention(X, h):
+    return [list(x) for x in X]
+```
+tests:
+```python
+def close(A, B):
+    return all(abs(a - b) < 1e-6 for r, s in zip(A, B) for a, b in zip(r, s))
+X = [[1, 0, 2, 1], [0, 1, 1, 3], [2, 1, 0, 0]]
+out2 = multi_head_self_attention(X, 2)
+assert close(out2, [[1.4359461, 0.7160046, 1.4784565, 1.9712754],
+                    [1.0, 0.8022242, 1.0274700, 2.9409371],
+                    [1.7980585, 0.8983245, 1.0, 1.3333333]])
+out1 = multi_head_self_attention(X, 1)
+assert close(out1[:1], [[0.7294882, 0.4259030, 1.4964014, 1.6187193]])
+assert close(multi_head_self_attention([[1, 0], [0, 2]], 2), [[0.7310586, 1.0], [0.5, 1.9640276]])
+assert len(out2) == 3 and len(out2[0]) == 4
+```
+model:
+```python
+from math import exp, sqrt
+
+
+def multi_head_self_attention(X, h):
+    """Multi-head self-attention with identity projections."""
+    d = len(X[0])
+    dh = d // h
+    out = [[] for _ in X]
+    for m in range(h):
+        part = [x[m * dh:(m + 1) * dh] for x in X]
+        for i, q in enumerate(part):
+            scores = [sum(a * b for a, b in zip(q, k)) / sqrt(dh) for k in part]
+            top = max(scores)
+            e = [exp(s - top) for s in scores]
+            w = [v / sum(e) for v in e]
+            out[i] += [sum(w[j] * part[j][c] for j in range(len(X)))
+                       for c in range(dh)]
+    return out
+```
+hint: For each head, slice out its coordinates of every token, run ordinary scaled dot-product attention among those slices, and append the result to each token's output.
+solution: Each head attends within its own slice of the coordinates, with scale $\sqrt{d/h}$ rather than $\sqrt d$. The test with a single head ($h = 1$) differs from the two-head output because the heads see different coordinates and use a different scale.
+
+@practice code
+prompt: Write `transformer_block(X, h, W1, b1, W2, b2)` for a list `X` of token vectors (length `d`). Apply the post-norm block with these steps: `A` is multi-head self-attention with `h` heads and identity projections (head `m` takes the `m`-th slice of `d // h` coordinates, scores divided by `sqrt(d // h)`, outputs concatenated); `Y = LN(X + A)` per token; `F` is the feed-forward network `W2 @ relu(W1 @ y + b1) + b2` per token; return `LN(Y + F)` per token. Layer normalization uses `gamma = 1`, `beta = 0`, `eps = 1e-5` and the population variance (divide by `d`).
+starter:
+```python
+def transformer_block(X, h, W1, b1, W2, b2):
+    return [list(x) for x in X]
+```
+tests:
+```python
+X = [[1, 0, 2, 1], [0, 1, 1, 3], [2, 1, 0, 0]]
+W1 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -1]]
+b1 = [0, 0.5, 0]
+W2 = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]]
+b2 = [0, 0, 0, 0.1]
+Z = transformer_block(X, 2, W1, b1, W2, b2)
+want = [[-0.0830418, -1.5480251, 1.1805696, 0.4504972],
+        [-0.8799355, -0.4489703, -0.3702229, 1.6991287],
+        [1.4403157, -0.4807735, -1.2652552, 0.3057131]]
+assert len(Z) == 3 and len(Z[0]) == 4
+assert all(abs(a - b) < 1e-4 for r, s in zip(Z, want) for a, b in zip(r, s))
+assert all(abs(sum(row)) < 1e-6 for row in Z)
+assert all(abs(sum(a * a for a in row) / 4 - 1) < 1e-3 for row in Z)
+```
+model:
+```python
+from math import exp, sqrt
+
+
+def transformer_block(X, h, W1, b1, W2, b2):
+    """Post-norm transformer block with identity attention projections."""
+    d = len(X[0])
+    dh = d // h
+
+    def ln(v):
+        mu = sum(v) / len(v)
+        var = sum((a - mu) ** 2 for a in v) / len(v)
+        return [(a - mu) / sqrt(var + 1e-5) for a in v]
+
+    attn = [[] for _ in X]
+    for m in range(h):
+        part = [x[m * dh:(m + 1) * dh] for x in X]
+        for i, q in enumerate(part):
+            s = [sum(a * b for a, b in zip(q, k)) / sqrt(dh) for k in part]
+            top = max(s)
+            e = [exp(t - top) for t in s]
+            w = [t / sum(e) for t in e]
+            attn[i] += [sum(w[j] * part[j][c] for j in range(len(X)))
+                        for c in range(dh)]
+    Y = [ln([a + b for a, b in zip(x, y)]) for x, y in zip(X, attn)]
+    out = []
+    for y in Y:
+        hid = [max(0.0, sum(w * a for w, a in zip(row, y)) + b)
+               for row, b in zip(W1, b1)]
+        f = [sum(w * a for w, a in zip(row, hid)) + b for row, b in zip(W2, b2)]
+        out.append(ln([a + b for a, b in zip(y, f)]))
+    return out
+```
+hint: Build the attention output first, then do residual plus layer norm, then the feed-forward network per token, and a second residual plus layer norm.
+solution: The block is two sublayers, each as `LN(input + sublayer(input))`. The last two tests check a property of any correct output: each normalized row has mean 0 and (up to $\epsilon$) variance 1, which a missing final normalization violates.
+
+@quiz mc
+prompt: How does layer normalization differ from batch normalization?
+choice*: It computes the mean and variance over the features of each individual example (token), so it does not depend on the other examples in the batch.
+choice: It computes the mean and variance over all examples in the batch for each feature.
+choice: It has no scale or shift parameters, while batch normalization has two.
+choice: It can only be used with convolutional layers.
+hint: Ask which axis the mean and variance are taken over.
+solution: Layer normalization standardizes each token's own $d$ features, so a token's output is the same whatever else is in the batch; batch normalization averages over the batch. Layer normalization usually has a learned scale and shift, and it is the standard choice for transformers rather than convolutional networks.
+
+@quiz num
+prompt: A feed-forward sublayer maps a model dimension of 8 to a hidden dimension of 32 and back to 8, with a bias in each of the two linear layers. How many parameters does it have?
+answer: 552
+unit: parameters
+check: 8 * 32 + 32 + 32 * 8 + 8
+hint: Add the two weight matrices and the two bias vectors.
+solution: The first layer has $8 \cdot 32 = 256$ weights and 32 biases; the second has $32 \cdot 8 = 256$ weights and 8 biases. The total is $256 + 32 + 256 + 8 = 552$.
+
+@quiz code
+prompt: Write `feed_forward(X, W1, b1, W2, b2)` that applies the position-wise network `W2 @ relu(W1 @ x + b1) + b2` to every vector `x` in the list `X` and returns the list of results (each a list of floats). The matrices are lists of rows.
+starter:
+```python
+def feed_forward(X, W1, b1, W2, b2):
+    return [list(x) for x in X]
+```
+tests:
+```python
+X = [[2, 1], [-1, 0]]
+W1 = [[1, 0], [0, 1], [1, 1]]
+b1 = [-1, 0, -4]
+W2 = [[1, 0, 1], [0, 2, 0]]
+b2 = [0.5, 0]
+out = feed_forward(X, W1, b1, W2, b2)
+assert out == [[1.5, 2.0], [0.5, 0.0]]
+assert feed_forward([], W1, b1, W2, b2) == []
+assert feed_forward([[0, 0]], [[1, 1]], [3], [[2]], [1]) == [[7.0]]
+assert feed_forward([[0, 0]], [[1, 1]], [-3], [[2]], [1]) == [[1.0]]
+```
+model:
+```python
+def feed_forward(X, W1, b1, W2, b2):
+    """Position-wise two-layer ReLU network applied to each vector in X."""
+    out = []
+    for x in X:
+        hidden = [max(0.0, sum(w * a for w, a in zip(row, x)) + b)
+                  for row, b in zip(W1, b1)]
+        out.append([sum(w * a for w, a in zip(row, hidden)) + b
+                    for row, b in zip(W2, b2)])
+    return out
+```
+hint: Handle each vector on its own: first layer, ReLU, second layer; no information flows between positions.
+solution: The same two weight matrices are applied to each position independently. The last test has a negative hidden pre-activation, which the ReLU zeroes, leaving only the output bias.

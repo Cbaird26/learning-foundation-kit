@@ -1,0 +1,292 @@
+@lesson
+title: Decoding with the Viterbi algorithm
+summary: Find the most likely hidden state sequence of an HMM with the Viterbi algorithm, keeping backpointers and working in log space for long sequences.
+objective: Replace the sum of the forward algorithm by a maximum and record backpointers.
+objective: Decode the most likely state sequence of a small HMM by hand and in code.
+objective: Distinguish the most likely path from the sequence of individually most likely states, and use log probabilities to avoid underflow.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on the Viterbi algorithm in the chapter on hidden Markov models.
+
+@article
+The pump monitor reported ok, alarm, alarm. Was the pump normal, faulty, faulty? Or normal, normal, faulty? **Decoding** asks for the hidden state sequence $\mathbf{z}^\star = \arg\max_{\mathbf{z}} P(\mathbf{z} \mid \mathbf{o})$. Since $P(\mathbf{z} \mid \mathbf{o}) = P(\mathbf{z}, \mathbf{o}) / P(\mathbf{o})$ and the denominator does not depend on $\mathbf{z}$, this is the same as maximizing the joint probability $P(\mathbf{z}, \mathbf{o})$ from last lesson. There are $K^T$ candidate paths, but dynamic programming finds the best one in $O(TK^2)$ steps.
+
+### The Viterbi algorithm
+
+The **Viterbi algorithm** (Viterbi, 1967) is the forward algorithm with a maximum in place of the sum. Define
+$$\delta_t(j) = \max_{z_1, \dots, z_{t-1}} P(z_1, \dots, z_{t-1},\, z_t = j,\, o_1, \dots, o_t),$$
+the probability of the best path that ends in state $j$ at time $t$. It satisfies
+$$\delta_1(j) = \pi_j B_j(o_1), \qquad \delta_t(j) = \Big[\max_{i} \delta_{t-1}(i)\, A_{ij}\Big] B_j(o_t).$$
+The reason is the same optimal-substructure argument as before: the best path into $j$ at time $t$ must pass through some state $i$ at time $t - 1$, and given that state, the earlier part of the path must itself be the best path into $i$. Alongside the values we store a **backpointer**
+$$\psi_t(j) = \arg\max_{i}\ \delta_{t-1}(i)\, A_{ij}.$$
+At the end, the best final state is $z_T^\star = \arg\max_j \delta_T(j)$ with the path probability $\max_j \delta_T(j)$; the rest of the path is recovered by **backtracking**, $z_{t}^\star = \psi_{t+1}(z_{t+1}^\star)$ for $t = T-1, \dots, 1$. Ties are broken by a fixed rule, here by the lowest state index.
+
+### The pump, decoded
+
+With $\pi = (0.9, 0.1)$, $A = \begin{pmatrix} 0.8 & 0.2 \\ 0.3 & 0.7 \end{pmatrix}$, $B = \begin{pmatrix} 0.9 & 0.1 \\ 0.2 & 0.8 \end{pmatrix}$ (state 0 normal, state 1 faulty; observation 0 ok, observation 1 alarm) and the reports (ok, alarm, alarm):
+
+| $t$ | $\delta_t(\text{normal})$ | back | $\delta_t(\text{faulty})$ | back |
+|---|---|---|---|---|
+| 1 | 0.81 | none | 0.02 | none |
+| 2 | 0.0648 | normal | 0.1296 | normal |
+| 3 | 0.005184 | normal | 0.072576 | faulty |
+
+For example $\delta_2(\text{faulty}) = \max(0.81 \times 0.2,\ 0.02 \times 0.7) \times 0.8 = 0.162 \times 0.8 = 0.1296$, coming from normal. At $t = 3$ the best final state is faulty with probability $0.072576$; backtracking gives faulty at time 3, then $\psi_3(\text{faulty}) = $ faulty at time 2, then $\psi_2(\text{faulty}) = $ normal at time 1. The decoded path is **normal, faulty, faulty**, with joint probability $0.072576$. This is one path out of eight, and it carries $0.0726/0.0988 \approx 73\%$ of the total likelihood $P(\mathbf{o}) = 0.0988$.
+
+### Two kinds of "most likely"
+
+Viterbi returns the single most probable **sequence**. A different decoder, **posterior decoding**, picks at each time the state with the largest posterior $P(z_t = j \mid \mathbf{o})$ (computed with the forward and backward recursions). The two can disagree, and the posterior-decoded sequence can even be impossible (it can contain a transition with probability 0), because it ignores how the choices at different times fit together. Viterbi respects the transition structure and is the usual choice when you need a coherent sequence, such as a tagged sentence; posterior decoding minimizes the expected number of wrong individual states.
+
+### Log space
+
+As with the forward algorithm, products of many probabilities underflow. Because the logarithm is increasing, maximizing a product is the same as maximizing a sum of logs, so the recursion becomes
+$$\log\delta_t(j) = \max_i \big[\log\delta_{t-1}(i) + \log A_{ij}\big] + \log B_j(o_t),$$
+with $\log 0 = -\infty$ for impossible events. There is no sum of probabilities, so no log-sum-exp is needed. Unlike the forward algorithm, Viterbi in log space is exact and simple.
+
+### In code
+
+```python
+def viterbi(pi, A, B, obs):
+    K = len(pi)
+    delta = [pi[j] * B[j][obs[0]] for j in range(K)]
+    back = []
+    for o in obs[1:]:
+        new, ptr = [], []
+        for j in range(K):
+            cands = [delta[i] * A[i][j] for i in range(K)]
+            best = cands.index(max(cands))          # lowest index on ties
+            new.append(cands[best] * B[j][o])
+            ptr.append(best)
+        delta = new
+        back.append(ptr)
+    state = delta.index(max(delta))
+    path = [state]
+    for ptr in reversed(back):
+        state = ptr[state]
+        path.append(state)
+    return path[::-1], max(delta)
+
+pi = [0.9, 0.1]
+A = [[0.8, 0.2], [0.3, 0.7]]
+B = [[0.9, 0.1], [0.2, 0.8]]
+print(viterbi(pi, A, B, [0, 1, 1]))
+```
+
+Viterbi decoding is used wherever a hidden sequence must be reconstructed from noisy observations, such as speech recognition, part-of-speech tagging and error-correcting codes.
+
+@example
+title: Decoding a two-step sequence
+problem: A model has $\pi = (0.7, 0.3)$, $A = \begin{pmatrix} 0.6 & 0.4 \\ 0.5 & 0.5 \end{pmatrix}$ and $B = \begin{pmatrix} 0.2 & 0.8 \\ 0.7 & 0.3 \end{pmatrix}$. Find the most likely state sequence for the observations $(1, 0)$ and its probability.
+step: Initialize with observation 1: $\delta_1(0) = 0.7 \times 0.8 = 0.56$ and $\delta_1(1) = 0.3 \times 0.3 = 0.09$.
+step: For state 0 at time 2: candidates $0.56 \times 0.6 = 0.336$ (from state 0) and $0.09 \times 0.5 = 0.045$ (from state 1); the maximum is $0.336$ from state 0, and times $B_0(0) = 0.2$ gives $\delta_2(0) = 0.0672$.
+step: For state 1 at time 2: candidates $0.56 \times 0.4 = 0.224$ (from state 0) and $0.09 \times 0.5 = 0.045$; the maximum is $0.224$ from state 0, and times $B_1(0) = 0.7$ gives $\delta_2(1) = 0.1568$.
+step: The best final state is 1 with $\delta_2(1) = 0.1568$. Backtrack: $\psi_2(1) = 0$, so the path is $(0, 1)$.
+step: Check by enumeration: the four paths have probabilities $(0,0)$: $0.56 \times 0.6 \times 0.2 = 0.0672$, $(0,1)$: $0.1568$, $(1,0)$: $0.09 \times 0.5 \times 0.2 = 0.009$ and $(1,1)$: $0.09 \times 0.5 \times 0.7 = 0.0315$. The best is $(0, 1)$.
+answer: The most likely sequence is $(0, 1)$ with probability $0.1568$.
+
+@example
+title: Backtracking through backpointers
+problem: A Viterbi run over three observations stored the backpointers $\psi_2 = (0, 0)$ and $\psi_3 = (1, 1)$ (the entry $j$ is the best previous state for state $j$) and ended with the best final state $z_3 = 1$. Recover the path.
+step: The final state is $z_3^\star = 1$.
+step: $z_2^\star = \psi_3(z_3^\star) = \psi_3(1) = 1$.
+step: $z_1^\star = \psi_2(z_2^\star) = \psi_2(1) = 0$.
+answer: The path is $(0, 1, 1)$.
+
+@mistakes
+- Keeping only the values $\delta$ and forgetting the backpointers: without them you know the best probability but not the path.
+- Backtracking from the wrong end: start from the best final state at time $T$ and walk backward through $\psi$.
+- Confusing Viterbi with posterior decoding: the best sequence need not be made of the individually most probable states.
+- Taking the logarithm of 0 without handling it: use $-\infty$ for impossible transitions and emissions.
+
+@practice num
+prompt: A two-state HMM has $\pi = (0.7, 0.3)$, $A = \begin{pmatrix} 0.6 & 0.4 \\ 0.5 & 0.5 \end{pmatrix}$ and emission matrix $B = \begin{pmatrix} 0.2 & 0.8 \\ 0.7 & 0.3 \end{pmatrix}$ (rows are states, columns are observations 0 and 1). Using the Viterbi recursion, what is $\delta_2(1)$ for the observations $(1, 0)$, the probability of the best path that ends in state 1 at time 2? Give your answer to four decimal places.
+answer: 0.1568
+tol: 0.0001
+check: max(0.7 * 0.8 * 0.4, 0.3 * 0.3 * 0.5) * 0.7
+hint: Compute $\delta_1 = (0.7 \cdot 0.8,\ 0.3 \cdot 0.3)$, then take the larger of the two ways into state 1 and multiply by $B_1(0)$.
+solution: $\delta_1 = (0.56, 0.09)$. The ways into state 1 are $0.56 \times 0.4 = 0.224$ and $0.09 \times 0.5 = 0.045$; the larger is $0.224$, and $0.224 \times 0.7 = 0.1568$.
+
+@practice mc
+prompt: What is the difference between the forward algorithm and the Viterbi algorithm?
+choice*: The forward algorithm sums over the previous states to get the probability of the observations; Viterbi takes the maximum and keeps backpointers to recover the best state sequence.
+choice: The forward algorithm finds the best state sequence, and Viterbi computes the likelihood of the observations.
+choice: Viterbi needs the observations to be labeled with states, and the forward algorithm does not.
+choice: Viterbi costs $K^T$ operations because it must compare all paths, while the forward algorithm costs $TK^2$.
+hint: Compare the two recursions: one has a sum over $i$, the other a maximum over $i$.
+solution: Replacing the sum over the previous state by a maximum, and recording which state achieved it, turns the forward recursion into Viterbi. Both cost $O(TK^2)$, and neither needs state labels.
+
+@practice code
+prompt: Write `viterbi_step(prev, A, emit)` that performs one step of the Viterbi recursion. `prev[i]` is $\delta_{t-1}(i)$, `A[i][j]` is the transition probability from `i` to `j`, and `emit[j]` is $B_j(o_t)$ for the new observation. Return `(delta, back)`: `delta[j]` is `max_i prev[i] * A[i][j] * emit[j]` and `back[j]` is the previous state `i` achieving the maximum (the lowest `i` on ties). For example, `viterbi_step([0.5, 0.5], [[0.5, 0.5], [0.5, 0.5]], [1.0, 1.0])` returns `([0.25, 0.25], [0, 0])`.
+starter:
+```python
+def viterbi_step(prev, A, emit):
+    K = len(prev)
+    return [0.0] * K, [0] * K
+```
+tests:
+```python
+d, b = viterbi_step([0.5, 0.5], [[0.5, 0.5], [0.5, 0.5]], [1.0, 1.0])
+assert d == [0.25, 0.25] and b == [0, 0]
+d, b = viterbi_step([0.81, 0.02], [[0.8, 0.2], [0.3, 0.7]], [0.1, 0.8])
+assert all(abs(x - y) < 1e-12 for x, y in zip(d, [0.0648, 0.1296])) and b == [0, 0]
+d, b = viterbi_step([0.0648, 0.1296], [[0.8, 0.2], [0.3, 0.7]], [0.1, 0.8])
+assert all(abs(x - y) < 1e-12 for x, y in zip(d, [0.005184, 0.072576])) and b == [0, 1]
+d, b = viterbi_step([0.56, 0.09], [[0.6, 0.4], [0.5, 0.5]], [0.2, 0.7])
+assert all(abs(x - y) < 1e-12 for x, y in zip(d, [0.0672, 0.1568])) and b == [0, 0]
+d, b = viterbi_step([0.1, 0.4, 0.2], [[1, 0, 0], [0, 0, 1], [0, 1, 0]], [1.0, 1.0, 1.0])
+assert all(abs(x - y) < 1e-12 for x, y in zip(d, [0.1, 0.2, 0.4])) and b == [0, 2, 1]
+```
+model:
+```python
+def viterbi_step(prev, A, emit):
+    """One Viterbi step: new best-path probabilities and backpointers."""
+    K = len(prev)
+    delta, back = [], []
+    for j in range(K):
+        cands = [prev[i] * A[i][j] for i in range(K)]
+        best = cands.index(max(cands))
+        delta.append(cands[best] * emit[j])
+        back.append(best)
+    return delta, back
+```
+hint: For each new state `j`, compute the list of `prev[i] * A[i][j]` over `i`, take its maximum and its index, and multiply the maximum by `emit[j]`.
+solution: `cands.index(max(cands))` gives the lowest index among ties. The first test is an all-ties case that checks the tie rule; the last test has a permutation-like transition matrix whose backpointers are not all 0.
+
+@practice code
+prompt: Write `viterbi(pi, A, B, obs)` that returns `(path, prob)`: the most likely hidden state sequence for the observations `obs` as a list of state indices, and its joint probability $P(\mathbf{z}, \mathbf{o})$. `pi` is a list, `A[i][j]` the transition probabilities, `B[i][o]` the emission probabilities, and `obs` a nonempty list of integers. Break ties by the lowest state index, both in the recursion and for the final state. For example, with `pi = [0.5, 0.5]`, all entries of `A` and `B` equal to `0.5` and `obs = [0, 1, 0]`, the result is `([0, 0, 0], 0.015625)`.
+starter:
+```python
+def viterbi(pi, A, B, obs):
+    return [0] * len(obs), 0.0
+```
+tests:
+```python
+p, pr = viterbi([0.5, 0.5], [[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [0.5, 0.5]], [0, 1, 0])
+assert p == [0, 0, 0] and abs(pr - 0.015625) < 1e-12
+pi, A, B = [0.9, 0.1], [[0.8, 0.2], [0.3, 0.7]], [[0.9, 0.1], [0.2, 0.8]]
+p, pr = viterbi(pi, A, B, [0, 1, 1])
+assert p == [0, 1, 1] and abs(pr - 0.072576) < 1e-12
+p, pr = viterbi(pi, A, B, [0, 1, 0, 0])
+assert p == [0, 0, 0, 0] and abs(pr - 0.03359232) < 1e-12
+p, pr = viterbi(pi, A, B, [1, 1, 1, 0, 0])
+assert p == [1, 1, 1, 0, 0] and abs(pr - 0.0048771072) < 1e-12
+pi, A, B = [1 / 3] * 3, [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]], [[0.7, 0.2, 0.1], [0.2, 0.6, 0.2], [0.1, 0.2, 0.7]]
+p, pr = viterbi(pi, A, B, [0, 0, 2, 2, 2])
+assert p == [0, 0, 2, 2, 2] and abs(pr - 0.002868394666666666) < 1e-12
+p, pr = viterbi(pi, A, B, [1])
+assert p == [1] and abs(pr - 0.2) < 1e-12
+```
+model:
+```python
+def viterbi(pi, A, B, obs):
+    """Most likely state path and its joint probability."""
+    K = len(pi)
+    delta = [pi[j] * B[j][obs[0]] for j in range(K)]
+    back = []
+    for o in obs[1:]:
+        new, ptr = [], []
+        for j in range(K):
+            cands = [delta[i] * A[i][j] for i in range(K)]
+            best = cands.index(max(cands))
+            new.append(cands[best] * B[j][o])
+            ptr.append(best)
+        delta = new
+        back.append(ptr)
+    state = delta.index(max(delta))
+    prob = delta[state]
+    path = [state]
+    for ptr in reversed(back):
+        state = ptr[state]
+        path.append(state)
+    return path[::-1], prob
+```
+hint: Keep `delta` and a list of backpointer lists; at the end take the best final state and walk backward through the stored lists.
+solution: The recursion is the forward algorithm with a maximum, and the backpointers are stored per time step. The sequence $(0, 1, 0, 0)$ test decodes to all zeros even though the second observation is an alarm, because a one-step alarm is not enough evidence to leave the normal state.
+
+@practice num
+prompt: A two-state HMM has $\pi = (0.5, 0.5)$, $A = \begin{pmatrix} 0.9 & 0.1 \\ 0.2 & 0.8 \end{pmatrix}$ and emission matrix $B = \begin{pmatrix} 0.6 & 0.4 \\ 0.1 & 0.9 \end{pmatrix}$. What is the joint probability of the most likely state sequence for the observations $(0, 0, 1, 1)$? Give your answer to four decimal places.
+answer: 0.021
+tol: 0.0001
+check: float(run("import itertools\npi = [0.5, 0.5]\nA = [[0.9, 0.1], [0.2, 0.8]]\nB = [[0.6, 0.4], [0.1, 0.9]]\nobs = [0, 0, 1, 1]\nbest = 0\nfor z in itertools.product(range(2), repeat=4):\n    p = pi[z[0]] * B[z[0]][obs[0]]\n    for t in range(1, 4):\n        p *= A[z[t - 1]][z[t]] * B[z[t]][obs[t]]\n    best = max(best, p)\nprint(best)"))
+hint: Run the Viterbi recursion, or compare the few plausible paths such as $(0,0,0,0)$ and $(0,0,1,1)$ directly.
+solution: $\delta_1 = (0.3, 0.05)$. Following the best backpointers, the winning path is $(0, 0, 0, 0)$, with probability $0.5 \cdot 0.6 \times 0.9 \cdot 0.6 \times 0.9 \cdot 0.4 \times 0.9 \cdot 0.4 = 0.0209952 \approx 0.0210$. The switching path $(0,0,1,1)$ is penalized by the unlikely transition $0.1$ and loses.
+
+@quiz text
+prompt: What does this program print?
+```python
+back = [[0, 0], [1, 1], [0, 1]]
+state = 1
+path = [state]
+for b in reversed(back):
+    state = b[state]
+    path.append(state)
+print(path[::-1])
+```
+answer: [0, 1, 1, 1]
+check: run("back = [[0, 0], [1, 1], [0, 1]]\nstate = 1\npath = [state]\nfor b in reversed(back):\n    state = b[state]\n    path.append(state)\nprint(path[::-1])")
+hint: Walk through `back` from the last list to the first, replacing `state` by `b[state]` each time, then reverse the collected path.
+solution: Starting at state 1, the last list `[0, 1]` gives `b[1] = 1`; the middle list `[1, 1]` gives 1; the first list `[0, 0]` gives 0. The collected path is `[1, 1, 1, 0]`, and reversed it is `[0, 1, 1, 1]`.
+
+@quiz code
+prompt: Write `viterbi_log(pi, A, B, obs)` that returns `(path, logprob)`: the most likely hidden state sequence and the natural logarithm of its joint probability, computed with sums of logarithms so that it works for sequences of thousands of steps. Treat the logarithm of a zero probability as `float("-inf")` (`math.log(0)` raises an error). Break ties by the lowest state index. The arguments are as in the Viterbi algorithm. For example, with `pi = [1.0, 0.0]`, `A = [[1.0, 0.0], [0.0, 1.0]]`, `B = [[0.5, 0.5], [1.0, 0.0]]` and `obs = [1, 0]`, the result is `([0, 0], log(0.25))`.
+starter:
+```python
+def viterbi_log(pi, A, B, obs):
+    return [0] * len(obs), 0.0
+```
+tests:
+```python
+from math import log
+p, lp = viterbi_log([1.0, 0.0], [[1.0, 0.0], [0.0, 1.0]], [[0.5, 0.5], [1.0, 0.0]], [1, 0])
+assert p == [0, 0] and abs(lp - log(0.25)) < 1e-12
+pi, A, B = [0.9, 0.1], [[0.8, 0.2], [0.3, 0.7]], [[0.9, 0.1], [0.2, 0.8]]
+p, lp = viterbi_log(pi, A, B, [0, 1, 1])
+assert p == [0, 1, 1] and abs(lp - log(0.072576)) < 1e-9
+obs = [0] * 300 + [1] * 300 + [0] * 300
+p, lp = viterbi_log(pi, A, B, obs)
+assert p == [0] * 300 + [1] * 300 + [0] * 300
+assert abs(lp - (-373.1637979449531)) < 1e-6
+p, lp = viterbi_log([0.5, 0.5], [[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [0.5, 0.5]], [0, 1, 0])
+assert p == [0, 0, 0] and abs(lp - 6 * log(0.5)) < 1e-9
+```
+model:
+```python
+from math import log
+
+
+def viterbi_log(pi, A, B, obs):
+    """Viterbi decoding in log space; returns (path, log joint probability)."""
+    neg_inf = float("-inf")
+
+    def lg(x):
+        return log(x) if x > 0 else neg_inf
+
+    K = len(pi)
+    delta = [lg(pi[j]) + lg(B[j][obs[0]]) for j in range(K)]
+    back = []
+    for o in obs[1:]:
+        new, ptr = [], []
+        for j in range(K):
+            cands = [delta[i] + lg(A[i][j]) for i in range(K)]
+            best = cands.index(max(cands))
+            new.append(cands[best] + lg(B[j][o]))
+            ptr.append(best)
+        delta = new
+        back.append(ptr)
+    state = delta.index(max(delta))
+    logprob = delta[state]
+    path = [state]
+    for ptr in reversed(back):
+        state = ptr[state]
+        path.append(state)
+    return path[::-1], logprob
+```
+hint: Use the same recursion as Viterbi, with `+` in place of `*`, a helper that returns `-inf` for zero, and the same backpointers.
+solution: Adding logarithms replaces multiplying probabilities, and the maximum of the sums picks the same path as the maximum of the products because the logarithm is increasing. The 900-step test has 300 observations in each regime, and the correct path switches state exactly where the observations switch; the all-ties test checks the lowest-index rule.
+
+@quiz ms
+prompt: Which statements about decoding in a hidden Markov model are true? Select all that apply.
+choice*: Maximizing $P(\mathbf{z} \mid \mathbf{o})$ over state sequences is equivalent to maximizing the joint probability $P(\mathbf{z}, \mathbf{o})$, because $P(\mathbf{o})$ does not depend on $\mathbf{z}$.
+choice*: Choosing at each time the individually most probable state can give a sequence that is less probable than the Viterbi sequence, and even one with a zero-probability transition.
+choice*: The Viterbi algorithm takes $O(TK^2)$ time for $T$ observations and $K$ states.
+choice: The Viterbi path is guaranteed to have the largest probability of the true hidden path, because the model is correct.
+hint: Recall how Bayes' rule relates the posterior to the joint, and how posterior decoding treats each time separately.
+solution: The posterior differs from the joint only by the constant $1/P(\mathbf{o})$. Posterior decoding optimizes each time separately and ignores the compatibility of consecutive states. The recursion visits $K^2$ transitions per step. The Viterbi path is the most probable sequence under the model, which says nothing about whether it equals the true hidden path.

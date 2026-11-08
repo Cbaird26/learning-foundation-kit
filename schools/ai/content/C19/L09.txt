@@ -1,0 +1,229 @@
+@lesson
+title: Pretraining objectives: masked and causal language modeling
+summary: Build training examples and losses for causal and masked language modeling, and explain how pretraining on unlabeled text transfers to other tasks.
+objective: Turn a text into next-token training pairs and compute the causal language-modeling loss.
+objective: Corrupt a text with the masked-language-model recipe and compute the loss on the masked positions only.
+objective: Compare encoder-style and decoder-style pretraining and state what scaling-law studies measured.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapters on transformers and large language models and on masked language models; look up the topics pretraining and transfer learning.
+@article
+Labeled data is scarce and costly, but unlabeled text is plentiful. **Pretraining** exploits this: train a large model on a task that needs no labels, because the labels are in the text itself, and then reuse the model for tasks with few labels. The choice of the pretraining task is the **objective**. Two have dominated language models.
+
+### Causal language modeling
+
+Given tokens $x_1,\dots,x_n$, the **causal** (or autoregressive) objective is the chain-rule factorization of week 3, now with a neural network for each factor:
+$$L(\boldsymbol{\theta}) = -\frac{1}{n-1}\sum_{t=2}^{n} \log p_{\boldsymbol{\theta}}(x_t \mid x_1,\dots,x_{t-1}).$$
+Every position supplies a training example: the text "a b c" gives the pairs (prefix "a", target "b") and (prefix "a b", target "c"). In training, the model is always given the **true** prefix, a practice called **teacher forcing**. With the causal mask of week 8, all positions of a sequence are processed in one pass. This is the objective of GPT-style models (the GPT-3 paper is Brown and colleagues, 2020), and it matches generation exactly: sampling from the model one token at a time is the same factorization. Its perplexity is the exponential of the loss.
+
+### Masked language modeling
+
+BERT (Devlin and colleagues, 2018) used a different objective with a model that sees the whole sentence in both directions. About 15% of the token positions are selected. For each selected position the input is changed as follows: with probability 0.8 the token is replaced by a special `[MASK]` token, with probability 0.1 by a random token, and with probability 0.1 it is left unchanged. The model must predict the original token at every selected position, and the loss is the average cross-entropy **over the selected positions only**:
+$$L(\boldsymbol{\theta}) = -\frac{1}{|M|}\sum_{t \in M} \log p_{\boldsymbol{\theta}}(x_t \mid \tilde{\mathbf{x}}),$$
+where $\tilde{\mathbf x}$ is the corrupted text and $M$ the set of selected positions. The random and unchanged cases exist because `[MASK]` never appears in later tasks; they keep the model from learning only to look at that symbol. A sentence "the cat sat on the mat" with positions 2 and 5 (counting from 0) selected and masked reads "the cat [MASK] on the [MASK]". If the model gives probability $0.4$ to "sat" and $0.1$ to "mat", the loss is $\frac12(-\log 0.4 - \log 0.1) = 1.609$ nats, which equals $\log 5$.
+
+Because every position sees both its left and right context, a masked model builds better representations of a sentence for classification and tagging, but it cannot generate text left to right without extra machinery, and only about 15% of the positions teach it something in each pass. A causal model learns from every position and generates naturally, but each representation uses only the left context.
+
+```python
+import math
+
+def causal_pairs(tokens):
+    """(prefix, target) pairs for every position after the first."""
+    return [(tuple(tokens[:i]), tokens[i]) for i in range(1, len(tokens))]
+
+def mask_input(tokens, positions, mask="[MASK]"):
+    corrupted = list(tokens)
+    for p in positions:
+        corrupted[p] = mask
+    return corrupted
+
+def masked_loss(probs, tokens, positions):
+    """probs[p] maps each word to the model's probability at position p."""
+    return -sum(math.log(probs[p][tokens[p]]) for p in positions) / len(positions)
+
+tokens = ["the", "cat", "sat", "on", "the", "mat"]
+print(mask_input(tokens, [2, 5]))
+print(causal_pairs(tokens)[1])
+```
+
+This prints `['the', 'cat', '[MASK]', 'on', 'the', '[MASK]']` and `(('the', 'cat'), 'sat')`.
+
+### Using a pretrained model
+
+After pretraining, a model can be **fine-tuned**: its weights are trained further on a small labeled data set for a task, usually with a small learning rate, often with a new output layer on top. A pretrained decoder can also be used by **prompting**: the task is written as text to be continued, with or without a few examples in the prompt, and no weights change. Which route works best depends on the task, the model and the amount of labeled data; the tradeoffs are active research.
+
+### Scaling
+
+Kaplan and colleagues (2020) measured how the test loss of causal language models changes as model size $N$ (parameters), data $D$ (tokens) and compute $C$ grow, and found smooth power-law trends over many orders of magnitude. Hoffmann and colleagues (2022) re-examined how to split a fixed compute budget between parameters and tokens and found that, for the models they trained, parameters and tokens should grow in about equal proportion, roughly 20 training tokens per parameter. A common approximation for the training compute of a transformer is $C \approx 6ND$ floating-point operations. These are empirical results for particular model families and data; they describe the loss, not abilities, and how well they extrapolate is debated.
+
+@example
+title: Training pairs and loss
+problem: A causal model gives, for the text "a b b a", the probabilities $P(b \mid a) = 0.5$, $P(b \mid a\,b) = 0.75$ and $P(a \mid a\,b\,b) = 0.25$. List the training pairs and compute the average loss and the perplexity.
+step: The pairs are (prefix $a$, target $b$), (prefix $a\,b$, target $b$) and (prefix $a\,b\,b$, target $a$).
+step: The losses are $-\log 0.5 = 0.6931$, $-\log 0.75 = 0.2877$ and $-\log 0.25 = 1.3863$.
+step: The average is $(0.6931 + 0.2877 + 1.3863)/3 = 0.7890$ nats.
+step: The perplexity is $e^{0.7890} = 2.20$.
+answer: Loss $0.789$ nats, perplexity $2.20$.
+
+@example
+title: Masking with the 80/10/10 rule
+problem: Six positions $0,\dots,5$ of a text are selected for masking, in this order, with uniform random draws $0.55, 0.85, 0.95, 0.10, 0.79, 0.81$. Which rule applies to each?
+step: A draw below $0.8$ means `[MASK]`: the draws $0.55$, $0.10$ and $0.79$ (positions 0, 3 and 4).
+step: A draw from $0.8$ up to $0.9$ means a random replacement: $0.85$ and $0.81$ (positions 1 and 5).
+step: A draw of $0.9$ or more leaves the token unchanged: $0.95$ (position 2).
+answer: Mask at 0, 3, 4; random replacement at 1 and 5; unchanged at 2. All six are still prediction targets.
+
+@mistakes
+- Averaging the masked-language-model loss over all positions instead of over the selected ones.
+- Letting a causal model see the true next token when it predicts it: the prefix for position $t$ ends at $t-1$.
+- Treating the left-to-right and masked perplexities as comparable: they predict different tokens given different context.
+- Reading scaling-law fits as guarantees of future behavior: they are fits to the models and data studied.
+
+@practice num
+prompt: A masked language model is trained on 2,000 sequences of 128 tokens each, with 15% of the positions selected in every sequence. How many positions are selected in total (that is, how many positions contribute to the loss)?
+answer: 38400
+check: 2000 * 128 * 0.15
+hint: Multiply the number of sequences, the length and the fraction selected.
+solution: There are $2000 \times 128 = 256{,}000$ positions, and 15% of them is $38{,}400$.
+
+@practice num
+prompt: A masked language model gives the true tokens at three masked positions the probabilities $0.5$, $0.25$ and $0.125$. What is the average cross-entropy loss over the masked positions, in nats? Give your answer to three decimal places.
+answer: 1.386
+tol: 0.001
+check: (-log(0.5) - log(0.25) - log(0.125)) / 3
+hint: Take the negative natural logarithm of each probability and average the three values.
+solution: The losses are $\ln 2$, $2\ln 2$ and $3\ln 2$, whose mean is $2\ln 2 \approx 1.386$.
+
+@practice mc
+prompt: Which statement about masked and causal language modeling is correct?
+choice*: A masked model uses both the left and the right context of a masked position, whereas a causal model uses only the left context.
+choice: A causal model is trained to predict only 15% of the tokens in each sequence.
+choice: A masked model samples text one token at a time exactly as its training objective is written.
+choice: A causal model needs a special mask token in its input.
+hint: Recall which tokens each model may look at when it predicts a given token.
+solution: The masked objective gives every prediction both neighbors' context. The causal objective predicts every token from the tokens before it, with no mask token, and its factorization is exactly the one used to generate text left to right.
+
+@practice code
+prompt: Write `masked_lm_loss(probs, tokens, positions)`. `tokens` is a list of words, `probs` is a list with one dict per position (a distribution over words, as `{word: probability}`) and `positions` is a list of the masked positions. Return the average of `-log(probs[p][tokens[p]])` over the masked positions, using the natural logarithm. If `positions` is empty return `0.0`.
+starter:
+```python
+def masked_lm_loss(probs, tokens, positions):
+    return None
+```
+tests:
+```python
+import math
+toks = ["the", "cat", "sat"]
+pr = [{"the": 1.0}, {"cat": 0.5, "dog": 0.5}, {"sat": 0.25, "ran": 0.75}]
+assert abs(masked_lm_loss(pr, toks, [1, 2]) - (math.log(2) + math.log(4)) / 2) < 1e-9
+assert abs(masked_lm_loss(pr, toks, [2]) - math.log(4)) < 1e-9
+assert abs(masked_lm_loss(pr, toks, [0])) < 1e-9
+assert masked_lm_loss(pr, toks, []) == 0.0
+assert abs(masked_lm_loss(pr, toks, [0, 1, 2]) - (math.log(2) + math.log(4)) / 3) < 1e-9
+```
+model:
+```python
+import math
+
+
+def masked_lm_loss(probs, tokens, positions):
+    """Mean negative log-likelihood of the true tokens at masked positions."""
+    if not positions:
+        return 0.0
+    total = sum(-math.log(probs[p][tokens[p]]) for p in positions)
+    return total / len(positions)
+```
+hint: Sum the negative log probabilities of the true tokens at the masked positions, then divide by the number of masked positions.
+solution: Only masked positions contribute, and the average divides by their count `len(positions)`, not by the length of the text. The last test divides by 3 and the second by 1, which catches an average over the wrong set; the empty case needs its own return value to avoid dividing by zero.
+
+@practice code
+prompt: Write `apply_80_10_10(tokens, positions, draws, randoms, mask)` returning a new list (the input is not modified). For the `k`-th selected position `p = positions[k]`: if `draws[k] < 0.8` put `mask` there; else if `draws[k] < 0.9` put `randoms[k]`; otherwise keep the original token. Positions not selected are unchanged.
+starter:
+```python
+def apply_80_10_10(tokens, positions, draws, randoms, mask):
+    return list(tokens)
+```
+tests:
+```python
+t = ["a", "b", "c", "d", "e", "f"]
+out = apply_80_10_10(t, [0, 1, 2, 3, 4, 5], [0.55, 0.85, 0.95, 0.10, 0.79, 0.81],
+                     ["x0", "x1", "x2", "x3", "x4", "x5"], "[M]")
+assert out == ["[M]", "x1", "c", "[M]", "[M]", "x5"]
+assert t == ["a", "b", "c", "d", "e", "f"]
+assert apply_80_10_10(t, [], [], [], "[M]") == t
+assert apply_80_10_10(t, [4], [0.8], ["z"], "[M]") == ["a", "b", "c", "d", "z", "f"]
+assert apply_80_10_10(t, [2], [0.9], ["z"], "[M]") == t
+```
+model:
+```python
+def apply_80_10_10(tokens, positions, draws, randoms, mask):
+    """Corrupt the selected positions with the 80/10/10 masking recipe."""
+    out = list(tokens)
+    for k, p in enumerate(positions):
+        if draws[k] < 0.8:
+            out[p] = mask
+        elif draws[k] < 0.9:
+            out[p] = randoms[k]
+    return out
+```
+hint: Copy the list first, then loop over the selected positions with `enumerate` and compare each draw with the two thresholds.
+solution: The thresholds are half-open: a draw of exactly 0.8 is a random replacement and exactly 0.9 leaves the token unchanged, which the last two tests check. Copying the list keeps the caller's tokens intact.
+
+@quiz code
+prompt: Write `causal_lm_loss(prob_fn, tokens)`. For each position `i` from 1 to `len(tokens) - 1`, call `prob_fn(tuple(tokens[:i]))`, which returns a dict `{word: probability}` for the next word given that true prefix, and take `-log` of the probability of `tokens[i]`. Return the average over those positions (natural logarithm). If the text has fewer than 2 tokens, return `0.0`.
+starter:
+```python
+def causal_lm_loss(prob_fn, tokens):
+    return None
+```
+tests:
+```python
+import math
+def toy(prefix):
+    if prefix[-1] == "a":
+        return {"a": 0.5, "b": 0.5}
+    return {"a": 0.25, "b": 0.75}
+assert abs(causal_lm_loss(toy, ["a", "b", "b", "a"]) - 0.789041204710539) < 1e-9
+uniform = lambda prefix: {"a": 0.25, "b": 0.25, "c": 0.25, "d": 0.25}
+assert abs(causal_lm_loss(uniform, ["a", "c", "b"]) - math.log(4)) < 1e-9
+assert causal_lm_loss(toy, ["a"]) == 0.0
+assert causal_lm_loss(toy, []) == 0.0
+seen = []
+causal_lm_loss(lambda p: seen.append(p) or {"x": 1.0, "y": 0.0}, ["x", "x", "x"])
+assert seen == [("x",), ("x", "x")]
+```
+model:
+```python
+import math
+
+
+def causal_lm_loss(prob_fn, tokens):
+    """Average next-token loss with teacher forcing."""
+    if len(tokens) < 2:
+        return 0.0
+    total = 0.0
+    for i in range(1, len(tokens)):
+        dist = prob_fn(tuple(tokens[:i]))
+        total += -math.log(dist[tokens[i]])
+    return total / (len(tokens) - 1)
+```
+hint: Loop over `i` from 1, pass the true prefix `tuple(tokens[:i])` to `prob_fn`, and average the negative log probabilities.
+solution: The first token is never predicted, so a text of $n$ tokens has $n-1$ terms. The prefix is always made of true tokens (teacher forcing). The last test confirms that the function is called once for each prefix, in order.
+
+@quiz num
+prompt: A team plans to train a causal language model with $N = 5 \times 10^{8}$ parameters on $D = 20N$ tokens. Using the approximation $C \approx 6ND$, how many floating-point operations is that? Give the answer in scientific notation, for example `3e19`.
+answer: 3e19
+tol: 1%
+check: 6 * 5e8 * (20 * 5e8)
+hint: First find $D = 20N$, then multiply $6 \times N \times D$.
+solution: $D = 20 \times 5\times10^8 = 10^{10}$ tokens, and $C \approx 6 \times 5\times10^{8} \times 10^{10} = 3\times 10^{19}$ FLOPs. The ratio of 20 tokens per parameter is an approximate empirical finding for particular models, not a law.
+
+@quiz text
+prompt: What does this program print?
+```python
+tokens = ["x", "y", "z"]
+pairs = [(tuple(tokens[:i]), tokens[i]) for i in range(1, len(tokens))]
+print(len(pairs), pairs[-1][1])
+```
+answer: 2 z
+check: run("tokens = [\"x\", \"y\", \"z\"]\npairs = [(tuple(tokens[:i]), tokens[i]) for i in range(1, len(tokens))]\nprint(len(pairs), pairs[-1][1])")
+hint: The loop runs for `i = 1` and `i = 2`; the last pair predicts the last token.
+solution: There is one pair for every position after the first, so two pairs. The last pair is `(("x", "y"), "z")`, whose target is `z`: the program prints `2 z`.

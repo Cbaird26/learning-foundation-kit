@@ -1,0 +1,272 @@
+@lesson
+title: Filtering: blurring, sharpening and convolution
+summary: Apply small kernels to images by hand and in plain Python, choosing borders and distinguishing correlation from convolution.
+objective: Compute a filter response at one pixel by hand and the output size for a given padding and stride.
+objective: State the difference between correlation and convolution and between valid, zero-padded and replicated borders.
+objective: Implement blurring, sharpening and median filtering from scratch.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the chapter on image processing, the section on linear filtering, and the part on non-linear filtering and the median filter.
+@article
+Take a photo with grain, or in our case a single noisy number in a row of equal ones. How do you clean it up without wrecking the real structure? The oldest answer in vision is to replace each pixel by a weighted average of its neighbors. That is a **filter**, and it is the building block of everything from blurring to convolutional networks.
+
+### Conventions used in this course
+
+An image is a list of rows of numbers, row-major: `img[r][c]` is row `r`, column `c`. A **kernel** is a small list of rows `k` of size $k_h \times k_w$, usually odd. The **correlation** of image $I$ with kernel $K$ at output position $(r, c)$ is
+
+$$(I \star K)(r, c) = \sum_{i=0}^{k_h-1} \sum_{j=0}^{k_w-1} I(r+i,\, c+j)\, K(i, j).$$
+
+**Convolution** is the same operation with the kernel flipped in both directions (rows reversed and columns reversed), $(I * K)(r,c) = \sum_{i,j} I(r+i, c+j)\,K(k_h-1-i,\, k_w-1-j)$. For symmetric kernels such as a box or Gaussian blur the two agree. Most deep learning libraries compute correlation and call it convolution; since a network learns its kernels, the flip makes no difference to what it can represent. In this course we say correlation when we do not flip and convolution when we do.
+
+A one-dimensional picture shows the difference. The signal $[0,0,1,0,0]$ has a single spike. Correlating with $K = [1,2,3]$ gives $[3,2,1]$: the kernel appears reversed. Convolving (flipping $K$ to $[3,2,1]$) gives $[1,2,3]$: the **impulse response** of a convolution is the kernel itself.
+
+### Borders
+
+A $k_h \times k_w$ kernel does not fit at the edge. Three common choices:
+
+- **valid**: only positions where the kernel fully fits; the output is $(H - k_h + 1) \times (W - k_w + 1)$;
+- **zero padding** ("same"): add zeros around the image so the output has the input's shape;
+- **replicate padding**: copy the nearest edge pixel outward.
+
+With padding $p$ on each side and stride $s$ the output height is $\lfloor (H + 2p - k_h)/s \rfloor + 1$, and likewise for the width.
+
+### Blurring and sharpening
+
+The **box blur** uses $K = \frac{1}{9}\begin{bmatrix}1&1&1\\1&1&1\\1&1&1\end{bmatrix}$. On the $4 \times 4$ image with rows $[10,10,10,10]$, $[10,10,80,80]$, $[10,10,80,80]$, $[10,10,10,10]$, the valid output is the $2 \times 2$ image $\begin{bmatrix}25.56 & 41.11\\25.56 & 41.11\end{bmatrix}$; for example the first value is $(10+10+10+10+10+80+10+10+80)/9 = 230/9$. The sharp bright block has been smeared. A **Gaussian blur** weights the center more, for example the separable kernel $\frac{1}{16}\begin{bmatrix}1&2&1\\2&4&2\\1&2&1\end{bmatrix} = \mathbf{g}\mathbf{g}^\top$ with $\mathbf{g} = \frac14 [1, 2, 1]^\top$. A kernel that factors as an outer product is **separable**: filtering rows with $\mathbf{g}$ and then columns with $\mathbf{g}$ costs $2k$ multiplications per pixel instead of $k^2$.
+
+To sharpen, subtract blur to isolate detail and add it back: **unsharp masking** gives $I + a\,(I - \text{blur}(I))$, with amount $a \ge 0$. Pixels in flat regions are unchanged, and pixels at edges are pushed apart, which increases local contrast.
+
+### Non-linear filters
+
+The **median filter** replaces a pixel by the median of its window. It is not a correlation: the output is not a weighted sum. Its strength is robustness: one extreme pixel (salt-and-pepper noise) does not move the median, while it shifts a mean.
+
+### In code
+
+```python
+def correlate_valid(img, k):
+    """Valid-mode correlation: no flip, output (H-kh+1) x (W-kw+1)."""
+    kh, kw = len(k), len(k[0])
+    out = []
+    for r in range(len(img) - kh + 1):
+        row = []
+        for c in range(len(img[0]) - kw + 1):
+            total = 0
+            for i in range(kh):
+                for j in range(kw):
+                    total += img[r + i][c + j] * k[i][j]
+            row.append(total)
+        out.append(row)
+    return out
+
+def flip(k):
+    return [row[::-1] for row in k[::-1]]
+
+def convolve_valid(img, k):
+    return correlate_valid(img, flip(k))
+
+box = [[1 / 9] * 3 for _ in range(3)]
+img = [[10, 10, 10, 10], [10, 10, 80, 80], [10, 10, 80, 80], [10, 10, 10, 10]]
+print(correlate_valid(img, box))
+```
+
+In NumPy and PyTorch the same sliding sums run on whole arrays in optimized code, and an image batch has shape (batch, channels, height, width). The loops show what those libraries compute.
+@example
+title: One filter response by hand
+problem: A $3 \times 3$ patch of an image is $\begin{bmatrix}10&20&30\\40&100&60\\70&80&90\end{bmatrix}$. Find the correlation output at its center with the Gaussian kernel $\frac{1}{16}\begin{bmatrix}1&2&1\\2&4&2\\1&2&1\end{bmatrix}$, and the result of convolution with the same kernel.
+step: Multiply entry by entry and add: $10 + 40 + 30 + 80 + 400 + 120 + 70 + 160 + 90 = 1000$.
+step: Divide by 16 to normalize: $1000/16 = 62.5$.
+step: The kernel is unchanged by flipping in both directions, so the convolution output is the same, $62.5$.
+step: Check: the weights sum to 1 (their sum is 16, divided by 16), so the result stays between the patch's minimum 10 and maximum 100, and it is close to the weighted center value.
+answer: Both give $62.5$.
+@example
+title: Output size with padding and stride
+problem: A $32 \times 32$ image is filtered with a $3 \times 3$ kernel, padding 1 on each side and stride 2. What is the output size?
+step: Use $\lfloor (H + 2p - k)/s \rfloor + 1$ with $H = 32$, $p = 1$, $k = 3$, $s = 2$.
+step: The numerator is $32 + 2 - 3 = 31$, and $31/2 = 15.5$, whose floor is 15.
+step: Add 1 to get 16, so the output is $16 \times 16$.
+answer: $16 \times 16$.
+@mistakes
+- Assuming correlation and convolution always agree: they differ whenever the kernel is not symmetric under a 180 degree rotation, and the output is then reversed.
+- Forgetting to normalize a blur kernel: a box of nine 1s multiplies overall brightness by 9 and clips almost every pixel.
+- Using the output size formula without the padding term: with padding $p$ on each side the image grows by $2p$, not $p$.
+@practice num
+prompt: A $3 \times 3$ patch is $\begin{bmatrix}3&8&1\\6&4&7\\2&5&9\end{bmatrix}$. Compute its correlation at the center with the Laplacian kernel $\begin{bmatrix}0&1&0\\1&-4&1\\0&1&0\end{bmatrix}$.
+answer: 10
+check: 8 + 6 + 7 + 5 - 4 * 4
+hint: Only the four edge neighbors (up, left, right, down) and the center have nonzero weights.
+solution: The neighbors above, left, right and below are 8, 6, 7 and 5, which sum to 26. The center 4 has weight $-4$, giving $-16$. The total is $26 - 16 = 10$.
+@practice code
+prompt: Write `correlate_same(img, k)` that returns the correlation (no kernel flip) of `img` with `k` using zero padding so the output has the same shape as `img`. `img` is a list of rows (row-major, `img[r][c]`); `k` is a list of rows with odd height and odd width; pad with zeros `kh // 2` rows and `kw // 2` columns on each side. For example, with `k = [[1, 0, -1]]`, `correlate_same([[1, 2, 3, 4]], k)` returns `[[-2, -2, -2, 3]]`.
+starter:
+```python
+def correlate_same(img, k):
+    pass
+```
+tests:
+```python
+assert correlate_same([[1, 2, 3, 4]], [[1, 0, -1]]) == [[-2, -2, -2, 3]]
+lap = [[0, 1, 0], [1, -4, 1], [0, 1, 0]]
+im = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+assert correlate_same(im, lap) == [[2, 1, -4], [-3, 0, -7], [-16, -11, -22]]
+shift = [[1, 0, 0], [0, 0, 0], [0, 0, 0]]
+assert correlate_same(im, shift) == [[0, 0, 0], [0, 1, 2], [0, 4, 5]]
+assert correlate_same([[5]], [[2]]) == [[10]]
+```
+model:
+```python
+def correlate_same(img, k):
+    """Zero-padded 'same' correlation with an odd-sized kernel."""
+    h, w = len(img), len(img[0])
+    kh, kw = len(k), len(k[0])
+    ph, pw = kh // 2, kw // 2
+    out = []
+    for r in range(h):
+        row = []
+        for c in range(w):
+            total = 0
+            for i in range(kh):
+                for j in range(kw):
+                    rr, cc = r + i - ph, c + j - pw
+                    if 0 <= rr < h and 0 <= cc < w:
+                        total += img[rr][cc] * k[i][j]
+            row.append(total)
+        out.append(row)
+    return out
+```
+hint: For output position `(r, c)` and kernel entry `(i, j)`, the image pixel read is `(r + i - kh // 2, c + j - kw // 2)`; skip it when it falls outside the image, which is the same as reading a zero.
+solution: Reading a zero outside the image is the same as skipping that term. The offsets `kh // 2` and `kw // 2` center the kernel on the output pixel. The shift-kernel test catches code that centers the kernel wrongly or flips it, since the result moves the image down and right.
+@practice num
+prompt: A $28 \times 28$ image is filtered with a $5 \times 5$ kernel using padding 2 on each side and stride 2. What is the height of the output?
+answer: 14
+check: (28 + 2 * 2 - 5) // 2 + 1
+hint: Use $\lfloor (H + 2p - k)/s \rfloor + 1$.
+solution: The numerator is $28 + 4 - 5 = 27$, and $\lfloor 27/2 \rfloor = 13$. Adding 1 gives 14.
+@practice code
+prompt: Write `unsharp(img, amount)` that sharpens a grayscale image: blur it with a $3 \times 3$ box filter (each weight $1/9$) using replicate padding (outside pixels equal the nearest edge pixel) so the blur has the same shape as the image, then return `p + amount * (p - b)` for each pixel `p` with blurred value `b`, clipped to the range 0 to 255. `img` is a list of rows (row-major). Return floats or ints in rows. For example, `unsharp([[10, 10, 10], [10, 100, 10], [10, 10, 10]], 1)` has a center value of 180.
+starter:
+```python
+def unsharp(img, amount):
+    pass
+```
+tests:
+```python
+a = unsharp([[10, 10, 10], [10, 100, 10], [10, 10, 10]], 1)
+want = [[0, 0, 0], [0, 180, 0], [0, 0, 0]]
+assert all(abs(x - y) < 1e-6 for r1, r2 in zip(a, want) for x, y in zip(r1, r2))
+b = unsharp([[100, 100, 200, 200]] * 3, 0.5)
+want = [100, 250 / 3, 650 / 3, 200]
+assert all(abs(x - y) < 1e-6 for row in b for x, y in zip(row, want))
+c = unsharp([[0, 0, 0], [0, 250, 0], [0, 0, 0]], 2)
+assert abs(c[1][1] - 255) < 1e-6 and abs(c[0][0]) < 1e-6
+d = unsharp([[40, 40], [40, 40]], 3)
+assert all(abs(x - 40) < 1e-6 for row in d for x in row)
+```
+model:
+```python
+def unsharp(img, amount):
+    """Unsharp masking with a 3x3 box blur and replicate padding."""
+    h, w = len(img), len(img[0])
+
+    def at(r, c):
+        return img[min(max(r, 0), h - 1)][min(max(c, 0), w - 1)]
+
+    out = []
+    for r in range(h):
+        row = []
+        for c in range(w):
+            blur = sum(at(r + i, c + j)
+                       for i in (-1, 0, 1) for j in (-1, 0, 1)) / 9
+            p = img[r][c]
+            row.append(min(255.0, max(0.0, p + amount * (p - blur))))
+        out.append(row)
+    return out
+```
+hint: Clamp the row and column indices into the valid range to get replicate padding, average the nine neighbors, then apply the unsharp formula and clip.
+solution: Clamping indices implements replicate padding. The sharpened value adds `amount` times the detail `p - blur`; in the flat image the detail is zero so nothing changes, and in the bright-center image the clip to 255 matters. The corner of the second test checks the replicate border.
+@practice code
+prompt: Write `separable_valid(img, w)` that filters `img` with the one-dimensional kernel `w` (a list of numbers) along every row using valid-mode correlation (no flip), and then filters the result along every column with the same `w`, also valid-mode. The output has shape `(H - len(w) + 1, W - len(w) + 1)`. `img` is a list of rows (row-major). For example, `separable_valid([[1, 2, 3], [4, 5, 6], [7, 8, 9]], [1, 2, 1])` returns `[[80]]`.
+starter:
+```python
+def separable_valid(img, w):
+    pass
+```
+tests:
+```python
+im = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+assert separable_valid(im, [1, 2, 1]) == [[80]]
+assert separable_valid(im, [1, -1]) == [[0, 0], [0, 0]]
+assert separable_valid(im, [1]) == im
+big = [[(3 * r + 5 * c) % 7 for c in range(6)] for r in range(5)]
+w = [1, 0, 2]
+k = [[a * b for b in w] for a in w]
+want = [[sum(big[r + i][c + j] * k[i][j] for i in range(3) for j in range(3))
+         for c in range(4)] for r in range(3)]
+assert separable_valid(big, w) == want
+```
+model:
+```python
+def separable_valid(img, w):
+    """Valid correlation with w along rows, then along columns."""
+    n = len(w)
+
+    def along_rows(rows):
+        return [[sum(row[c + j] * w[j] for j in range(n))
+                 for c in range(len(row) - n + 1)] for row in rows]
+
+    tmp = along_rows(img)
+    cols = [list(col) for col in zip(*tmp)]
+    cols = along_rows(cols)
+    return [list(row) for row in zip(*cols)]
+```
+hint: Write a 1-D valid correlation helper for one row; apply it to every row, then transpose, apply it again, and transpose back.
+solution: Filtering rows and then columns with the same 1-D kernel equals one 2-D correlation with the outer-product kernel, which the last test verifies by brute force. Transposing lets one helper do both passes.
+@quiz code
+prompt: Write `median3(img)` that applies a $3 \times 3$ median filter in valid mode: the output has shape `(H - 2, W - 2)`, and each value is the median (middle value of the 9 sorted numbers) of the corresponding $3 \times 3$ window of `img`. `img` is a list of rows (row-major) with at least 3 rows and 3 columns. For example, `median3([[1, 9, 2], [8, 3, 7], [4, 6, 5]])` returns `[[5]]`.
+starter:
+```python
+def median3(img):
+    pass
+```
+tests:
+```python
+assert median3([[1, 9, 2], [8, 3, 7], [4, 6, 5]]) == [[5]]
+spike = [[10, 10, 10, 10], [10, 255, 10, 10], [10, 10, 10, 10]]
+assert median3(spike) == [[10, 10]]
+assert median3([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]) == [[6, 7]]
+assert median3([[0] * 5] * 4) == [[0, 0, 0], [0, 0, 0]]
+```
+model:
+```python
+def median3(img):
+    """3x3 median filter, valid mode."""
+    out = []
+    for r in range(len(img) - 2):
+        row = []
+        for c in range(len(img[0]) - 2):
+            window = [img[r + i][c + j] for i in range(3) for j in range(3)]
+            row.append(sorted(window)[4])
+        out.append(row)
+    return out
+```
+hint: Collect the nine values of each window into a list, sort it, and take the element at index 4.
+solution: The median of nine values is the fifth smallest, at index 4 of the sorted list. In the spike test the extreme value 255 is the largest of its window and never becomes the median, so it is removed, which a box blur would not do.
+@quiz text
+prompt: What does this program print?
+```python
+x = [0, 0, 5, 0, 0, 0]
+k = [1, 2, 4]
+out = []
+for i in range(len(x) - 2):
+    out.append(sum(x[i + j] * k[j] for j in range(3)))
+print(out)
+```
+answer: [20, 10, 5, 0]
+check: run("x = [0, 0, 5, 0, 0, 0]\nk = [1, 2, 4]\nout = []\nfor i in range(len(x) - 2):\n    out.append(sum(x[i + j] * k[j] for j in range(3)))\nprint(out)")
+hint: The loop is a valid-mode correlation, so the spike 5 meets the kernel entries in reverse order as the window slides.
+solution: Windows are $[0,0,5]$, $[0,5,0]$, $[5,0,0]$ and $[0,0,0]$, with sums $5\cdot4 = 20$, $5\cdot2 = 10$, $5\cdot1 = 5$ and $0$. The output is the kernel reversed and scaled by 5.
+@quiz mc
+prompt: A filter kernel is not symmetric. Which statement about convolution and correlation of an image with it is correct?
+choice*: Convolution equals correlation with the kernel rotated by 180 degrees (flipped in both rows and columns).
+choice: Convolution equals correlation with the kernel transposed.
+choice: They are identical for every kernel, since both multiply and add the same numbers.
+choice: Convolution requires the kernel's entries to sum to 1.
+hint: Recall the one-dimensional spike example: the impulse response of a convolution is the kernel itself.
+solution: Convolution reverses the kernel along both axes before sliding it, which is a rotation by 180 degrees. Transposing swaps rows and columns and is a different operation. The two agree only for kernels unchanged by the rotation, and normalizing to sum 1 is a property of blur kernels, not of convolution.

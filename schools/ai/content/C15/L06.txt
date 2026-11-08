@@ -138,39 +138,51 @@ hint: A Gram matrix must be positive semidefinite, so its determinant (and every
 solution: The first matrix has determinant $1 - 4 = -3 < 0$ (eigenvalues $3$ and $-1$), so it is not positive semidefinite. The others have determinants $3$, $1$ and $0$ with nonnegative diagonals, so they are positive semidefinite.
 
 @practice code
-prompt: Write `gram_matrix(X, kernel)` that returns the Gram matrix of the list of points `X` under the function `kernel(a, b)`, as a list of rows with `K[i][j] = kernel(X[i], X[j])`. For example, with the linear kernel `lambda a, b: sum(u * v for u, v in zip(a, b))` and `X = [[1, 2], [3, 0]]` the result is `[[5, 3], [3, 9]]`.
+prompt: Write `gram_symmetric(X, kernel)` that returns the Gram matrix of the list of points `X` as a list of rows with `K[i][j] = kernel(X[i], X[j])`, but calls `kernel` exactly once for each unordered pair `i <= j` (so `n(n+1)/2` calls for `n` points) and copies the value into both `K[i][j]` and `K[j][i]`. The kernel is symmetric. For example, with the linear kernel `lambda a, b: sum(u * v for u, v in zip(a, b))` and `X = [[1, 2], [3, 0]]` the result is `[[5, 3], [3, 9]]`.
 starter:
 ```python
-def gram_matrix(X, kernel):
-    pass
+def gram_symmetric(X, kernel):
+    return [[kernel(a, b) for b in X] for a in X]
 ```
 tests:
 ```python
 import math
 lin = lambda a, b: sum(u * v for u, v in zip(a, b))
-assert gram_matrix([[1, 2], [3, 0]], lin) == [[5, 3], [3, 9]]
-assert gram_matrix([], lin) == []
+assert gram_symmetric([[1, 2], [3, 0]], lin) == [[5, 3], [3, 9]]
+assert gram_symmetric([], lin) == []
 rbf = lambda a, b: math.exp(-0.5 * sum((u - v) ** 2 for u, v in zip(a, b)))
-K = gram_matrix([[0.0], [1.0], [3.0]], rbf)
+K = gram_symmetric([[0.0], [1.0], [3.0]], rbf)
 assert len(K) == 3 and all(len(r) == 3 for r in K)
 assert all(abs(K[i][i] - 1.0) < 1e-9 for i in range(3))
-assert abs(K[0][2] - math.exp(-4.5)) < 1e-9 and abs(K[2][0] - K[0][2]) < 1e-12
+assert abs(K[0][2] - math.exp(-4.5)) < 1e-9 and K[2][0] == K[0][2]
 assert abs(K[0][1] - math.exp(-0.5)) < 1e-9
+calls = []
+def counting(a, b):
+    calls.append(1)
+    return lin(a, b)
+K = gram_symmetric([[1], [2], [3], [4]], counting)
+assert len(calls) == 10
+assert K == [[1, 2, 3, 4], [2, 4, 6, 8], [3, 6, 9, 12], [4, 8, 12, 16]]
 ```
 model:
 ```python
-def gram_matrix(X, kernel):
-    """Matrix of kernel values between every pair of points."""
-    return [[kernel(a, b) for b in X] for a in X]
+def gram_symmetric(X, kernel):
+    """Gram matrix using one kernel call per unordered pair of points."""
+    n = len(X)
+    K = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i, n):
+            K[i][j] = K[j][i] = kernel(X[i], X[j])
+    return K
 ```
-hint: A nested list comprehension over the points gives the rows and the columns.
-solution: Entry $(i, j)$ is the kernel of point $i$ and point $j$, so both loops run over all points. The test on the empty list checks that no row is invented, and the RBF tests check symmetry and a unit diagonal.
+hint: Loop over `i` and over `j` from `i` to `n - 1`; assign the single kernel value to both `K[i][j]` and `K[j][i]`.
+solution: A kernel is symmetric, so the lower triangle is a copy of the upper one and only $n(n+1)/2$ evaluations are needed, which halves the cost for expensive kernels. The counting test fails for the full double loop, which makes $n^2$ calls, and the first test checks that the integer values are returned unchanged.
 
 @practice code
-prompt: Write `kernel_perceptron(K, y, epochs)` for a precomputed Gram matrix `K` (a list of rows) and labels `y` in $\{-1, +1\}$. Start with `alpha = [0] * n`. In each epoch visit the examples in index order; for example $i$ compute $f = \sum_j \alpha_j y_j K_{ji}$ using the current counts, and if $y_i f \le 0$ add 1 to `alpha[i]`. Stop early after an epoch with no mistakes; run at most `epochs` epochs. Return `alpha`.
+prompt: Write `margin_kernel_perceptron(K, y, margin, epochs)` for a precomputed Gram matrix `K` (a list of rows) and labels `y` in $\{-1, +1\}$. It is the kernel perceptron with a margin: start with `alpha = [0] * n`; in each epoch visit the examples in index order; for example $i$ compute $f = \sum_j \alpha_j y_j K_{ji}$ using the current counts, and if $y_i f \le$ `margin`, add 1 to `alpha[i]`. Stop early after an epoch with no updates; run at most `epochs` epochs. Return `alpha`. With `margin = 0` this is the ordinary kernel perceptron.
 starter:
 ```python
-def kernel_perceptron(K, y, epochs):
+def margin_kernel_perceptron(K, y, margin, epochs):
     alpha = [0] * len(y)
     return alpha
 ```
@@ -179,34 +191,35 @@ tests:
 X = [-2, -1, 1, 2]
 y = [1, -1, -1, 1]
 K = [[(a * b + 1) ** 2 for b in X] for a in X]
-assert kernel_perceptron(K, y, 0) == [0, 0, 0, 0]
-assert kernel_perceptron(K, y, 1) == [1, 1, 1, 1]
-assert kernel_perceptron(K, y, 2) == [1, 2, 2, 1]
-assert kernel_perceptron(K, y, 50) == [1, 3, 3, 1]
-alpha = kernel_perceptron(K, y, 50)
+assert margin_kernel_perceptron(K, y, 0, 0) == [0, 0, 0, 0]
+assert margin_kernel_perceptron(K, y, 0, 2) == [1, 2, 2, 1]
+assert margin_kernel_perceptron(K, y, 0, 50) == [1, 3, 3, 1]
+assert margin_kernel_perceptron(K, y, 20, 2) == [1, 2, 2, 2]
+alpha = margin_kernel_perceptron(K, y, 20, 1000)
+assert alpha == [9, 28, 28, 9]
 for i in range(4):
     f = sum(alpha[j] * y[j] * K[j][i] for j in range(4))
-    assert y[i] * f > 0
+    assert y[i] * f > 20
 ```
 model:
 ```python
-def kernel_perceptron(K, y, epochs):
-    """Kernel perceptron on a precomputed Gram matrix; returns the counts."""
+def margin_kernel_perceptron(K, y, margin, epochs):
+    """Kernel perceptron that also updates on points inside the margin."""
     n = len(y)
     alpha = [0] * n
     for _ in range(epochs):
-        mistakes = 0
+        updates = 0
         for i in range(n):
             f = sum(alpha[j] * y[j] * K[j][i] for j in range(n))
-            if y[i] * f <= 0:
+            if y[i] * f <= margin:
                 alpha[i] += 1
-                mistakes += 1
-        if mistakes == 0:
+                updates += 1
+        if updates == 0:
             break
     return alpha
 ```
-hint: The score for example $i$ uses the counts as they are at that moment, including updates made earlier in the same epoch; a point with score exactly 0 counts as a mistake.
-solution: Updating `alpha` immediately, within the epoch, is part of the algorithm: the second test only matches if example 2's mistake is seen by example 3. The score of exactly 0 at the start is why every first visit is a mistake. After four epochs every training point has $y f > 0$, which the final loop confirms.
+hint: The score for example $i$ uses the counts as they are at that moment, including updates made earlier in the same epoch; compare $y_i f$ with `margin` instead of 0.
+solution: Updating `alpha` immediately, within the epoch, is part of the algorithm: the two-epoch tests only match if each mistake is seen by the later examples. Raising the margin makes the algorithm keep going until every point has $y f$ above it, so it trains longer and its final scores all exceed 20, which the last loop confirms; with `margin = 0` the stopping point is the ordinary perceptron's.
 
 @quiz code
 prompt: Write `kernel_predict(X, y, alpha, kernel, x)` that returns the decision value $f(\mathbf{x}) = \sum_i\alpha_i y_i\,k(\mathbf{x}_i, \mathbf{x})$ (no bias term) for training points `X`, labels `y`, multipliers `alpha`, a function `kernel(a, b)` and a new point `x`. Skip terms with `alpha[i] == 0` without evaluating the kernel.

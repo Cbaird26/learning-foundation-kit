@@ -1,0 +1,226 @@
+@lesson
+title: Choosing an architecture for a problem
+summary: Match a problem's data structure, symmetries, costs and constraints to convolutional, recurrent, attention-based or graph architectures, and justify the choice in a design memo.
+objective: Name the inductive bias of convolutional, recurrent, attention-based and graph layers and the data each suits.
+objective: Estimate the multiply-add cost, memory and path length of a layer as a function of sequence length and width.
+objective: Reason about the receptive field of stacked convolutions versus attention.
+objective: Write a short design memo that chooses an architecture for a task, with a baseline and a way to test the choice.
+reading: Dive into Deep Learning, the chapters comparing convolutional, recurrent and attention-based models (the sections on self-attention versus convolution and recurrence); also revisit the chapters on modern recurrent and convolutional networks.
+@article
+A new problem arrives: predict a defect from a microscope image, forecast tomorrow's energy use, or estimate whether a molecule dissolves in water. There is no single best network. Each architecture builds in assumptions about the data, called its **inductive bias**: the preferences, beyond the training data, that help it generalize. Picking an architecture means matching those assumptions to the structure of your problem, then checking the choice on validation data.
+
+### The four biases
+- **Convolution** assumes *locality* and *translation equivariance*: nearby values matter together and the same pattern means the same thing anywhere. It suits grids: images, audio spectrograms, short signals.
+- **Recurrence** assumes data arrive in order and that a fixed-size state can summarize the past. It processes a stream with constant memory per step, which suits online settings, but it computes steps one after another.
+- **Self-attention** assumes little about which positions matter: every position may look at every other, and content decides where. Order must be added (lesson 8). It suits sets and sequences with long-range dependencies.
+- **Message passing** assumes the data are a graph and that results should not depend on how nodes are numbered. It suits molecules, networks and meshes.
+
+A **multilayer perceptron** on flattened inputs assumes nothing and needs more data to learn what the others get for free. A pretrained model (lesson 11) carries the biases and the knowledge of its training; when a suitable one exists, adapting it is often the strongest baseline.
+
+### Costs of one layer
+Let $n$ be the number of positions, $d$ the width and $k$ the kernel size. Counting multiply-adds roughly:
+
+| layer | multiply-adds | sequential steps | path between two positions |
+|---|---|---|---|
+| 1D convolution ($d \to d$ channels) | $n k d^2$ | 1 | about $n/(k-1)$ stacked layers |
+| simple RNN | $2 n d^2$ | $n$ | $n - 1$ steps |
+| self-attention (with $\mathbf{W}_Q, \mathbf{W}_K, \mathbf{W}_V, \mathbf{W}_O$) | $4 n d^2 + 2 n^2 d$ | 1 | 1 layer |
+| message passing on a graph | about $|E| d + n d^2$ | 1 per round | graph distance in rounds |
+
+For attention the first term comes from the four projections and the second from the score matrix $\mathbf{Q}\mathbf{K}^\top$ and the weighted sum, each costing $n^2 d$. The score matrix has $n^2$ entries per head, so memory also grows quadratically: for $n = 4096$ one head in 32-bit floats needs $4096^2 \cdot 4 = 67{,}108{,}864$ bytes. The quadratic term overtakes the projections when $2n^2 d > 4nd^2$, that is for $n > 2d$. For $n = 128$ and $d = 64$ the two terms are equal, and the attention layer costs $4{,}194{,}304$ multiply-adds against $1{,}572{,}864$ for the convolution ($k = 3$) and $1{,}048{,}576$ for the RNN.
+
+Cost is not the whole story. An RNN's steps cannot be parallelized across time, so on parallel hardware its wall-clock time for training can be much worse than its operation count suggests. Convolutions and attention parallelize across positions.
+
+### Long-range dependence
+To let one output depend on inputs $n$ positions away, a stack of stride-1 convolutions with kernel $k$ needs $L$ layers with $1 + L(k-1) \ge n$, so $L = \lceil (n-1)/(k-1) \rceil$. For $n = 33$ and $k = 3$ that is 16 layers; self-attention reaches every position in one layer. Dilated convolutions and pooling shorten this, at some loss of detail; recurrence must carry the information through $n - 1$ state updates, which is why gradients vanish.
+
+### Deciding, and checking
+1. Identify the data's structure: grid, ordered sequence, set, graph, or tabular features.
+2. Identify symmetries: translation, ordering, relabeling.
+3. Note constraints: amount of labeled data, sequence length, latency, memory, whether predictions must be streamed.
+4. Start with a simple baseline (a linear model or a small MLP, or a pretrained model) and beat it with evidence on validation data.
+5. Test the assumption you made: compare the architecture against a variant that lacks the bias.
+
+The boundaries are not fixed. Convolutional networks on images have been challenged by attention-based vision models (for example the Vision Transformer of Dosovitskiy and colleagues, 2020), and which is better depends on the amount of data, pretraining and compute, so researchers do not agree on a single answer. Treat the table above as a starting point for a hypothesis, not a verdict.
+
+### In code
+```python
+def attention_macs(n, d):
+    """Rough multiply-adds of one self-attention layer."""
+    return 4 * n * d * d + 2 * n * n * d
+
+def conv_layers_needed(n, k):
+    """Stride-1 conv layers with kernel k whose receptive field reaches n."""
+    r, layers = 1, 0
+    while r < n:
+        r += k - 1
+        layers += 1
+    return layers
+
+print(attention_macs(128, 64), conv_layers_needed(33, 3))
+```
+
+@example
+title: Cost and reach for a 200-step sequence
+problem: A sequence has $n = 200$ positions and width $d = 32$. Compare the multiply-adds of a $k = 5$ convolution layer, an RNN layer and a self-attention layer, and say how many stacked $k = 5$ convolution layers are needed for the last position to depend on the first.
+step: Convolution: $n k d^2 = 200 \cdot 5 \cdot 1024 = 1{,}024{,}000$.
+step: RNN: $2 n d^2 = 2 \cdot 200 \cdot 1024 = 409{,}600$.
+step: Attention: $4 n d^2 + 2 n^2 d = 819{,}200 + 2 \cdot 40000 \cdot 32 = 819{,}200 + 2{,}560{,}000 = 3{,}379{,}200$. Since $n = 200 > 2d = 64$, the quadratic term dominates.
+step: Reach: $L = \lceil (200 - 1)/(5 - 1) \rceil = \lceil 49.75 \rceil = 50$ layers, while attention needs 1 layer and the RNN needs 199 state updates.
+answer: The costs are 1,024,000 (convolution), 409,600 (RNN) and 3,379,200 (attention); 50 convolution layers are needed.
+
+@example
+title: Matching tasks to architectures
+problem: For each task, name an architecture family and the structural reason: (a) classify $64 \times 64$ images of cells; (b) predict a molecule's solubility from its atoms and bonds; (c) label each word in a 300-word paragraph, where a pronoun may refer to a word 100 words earlier.
+step: (a) The data are a grid and a cell looks the same wherever it sits in the image, so a convolutional network (ideally from a pretrained backbone) fits locality and translation equivariance.
+step: (b) The data are a graph whose atom numbering is arbitrary, so a message-passing network with a permutation-invariant readout fits, with the number of rounds chosen for the size of the substructures that matter.
+step: (c) The data are an ordered sequence with long-range dependence. Self-attention connects distant words in one layer, with positional encodings; a pretrained attention model is a natural baseline.
+answer: (a) convolutional network, (b) graph neural network, (c) attention-based sequence model; each choice should be checked against a simple baseline on validation data.
+
+@mistakes
+- Choosing an architecture by its popularity instead of by the structure of the data and the constraints of the deployment.
+- Counting only the multiply-adds. Sequential dependence (RNNs) and memory (the $n^2$ attention matrix) can dominate in practice.
+- Forgetting that attention needs positional information, while convolutions and recurrences get order from their structure.
+- Skipping a simple baseline. Without one you cannot tell whether a complex architecture is earning its cost.
+
+@practice num
+prompt: A self-attention layer has $n = 100$ positions and width $d = 16$. Using the cost $4nd^2 + 2n^2d$, how many multiply-adds does it need?
+answer: 422400
+unit: multiply-adds
+check: 4 * 100 * 16 ** 2 + 2 * 100 ** 2 * 16
+hint: The projections cost $4 \cdot 100 \cdot 256$; the score matrix and weighted sum cost $2 \cdot 10000 \cdot 16$.
+solution: The projections cost $4 \cdot 100 \cdot 256 = 102400$ and the attention part costs $2 \cdot 10^4 \cdot 16 = 320000$, for a total of 422400.
+
+@practice text
+prompt: What does this program print?
+```python
+def macs(n, d):
+    return 4 * n * d * d, 2 * n * n * d
+
+print(macs(50, 16))
+```
+answer: (51200, 80000)
+check: run("def macs(n, d):\n    return 4 * n * d * d, 2 * n * n * d\n\nprint(macs(50, 16))")
+hint: Compute the projection term first: $4 \cdot 50 \cdot 256$.
+solution: The projection term is $4 \cdot 50 \cdot 256 = 51200$ and the score term is $2 \cdot 2500 \cdot 16 = 80000$, and Python prints the pair as a tuple. Here $n = 50 > 2d = 32$, so the score term is larger.
+
+@practice code
+prompt: Write `layers_to_cover(n, k)` that returns the smallest number of stacked stride-1 convolution layers with kernel size `k` (`k >= 2`) such that one output unit's receptive field covers at least `n` input positions. Each layer adds `k - 1` to the receptive field, which starts at 1. For example, `layers_to_cover(5, 3)` returns 2.
+starter:
+```python
+def layers_to_cover(n, k):
+    return 1
+```
+tests:
+```python
+assert layers_to_cover(1, 3) == 0
+assert layers_to_cover(2, 3) == 1
+assert layers_to_cover(5, 3) == 2
+assert layers_to_cover(6, 3) == 3
+assert layers_to_cover(33, 3) == 16
+assert layers_to_cover(10, 2) == 9
+assert layers_to_cover(100, 5) == 25
+```
+model:
+```python
+def layers_to_cover(n, k):
+    """Smallest L with 1 + L * (k - 1) >= n."""
+    layers, reach = 0, 1
+    while reach < n:
+        reach += k - 1
+        layers += 1
+    return layers
+```
+hint: Keep a running receptive field starting at 1, and add `k - 1` per layer until it reaches `n`.
+solution: The receptive field after $L$ layers is $1 + L(k - 1)$, so the answer is the smallest $L$ for which this is at least $n$; the loop finds it. The case $n = 6$, $k = 3$ needs a third layer because two layers reach only 5.
+
+@practice code
+prompt: Write `suggest(task)` that returns the family of architecture chosen by this fixed toy rule list, using the first rule that applies. `task` is a dictionary; a missing key counts as `False`. Rule 1: if `task['graph']` is true, return `'gnn'`. Rule 2: otherwise, if `task['grid']` is true, return `'cnn'`. Rule 3: otherwise, if `task['sequence']` and `task['long_range']` are both true, return `'transformer'`. Rule 4: otherwise, if `task['sequence']` is true, return `'rnn'`. Otherwise return `'mlp'`.
+starter:
+```python
+def suggest(task):
+    return 'mlp'
+```
+tests:
+```python
+assert suggest({'graph': True, 'sequence': True}) == 'gnn'
+assert suggest({'grid': True}) == 'cnn'
+assert suggest({'grid': True, 'sequence': True, 'long_range': True}) == 'cnn'
+assert suggest({'sequence': True, 'long_range': True}) == 'transformer'
+assert suggest({'sequence': True}) == 'rnn'
+assert suggest({'long_range': True}) == 'mlp'
+assert suggest({}) == 'mlp'
+```
+model:
+```python
+def suggest(task):
+    """Toy architecture chooser: the first matching rule wins."""
+    if task.get('graph', False):
+        return 'gnn'
+    if task.get('grid', False):
+        return 'cnn'
+    if task.get('sequence', False) and task.get('long_range', False):
+        return 'transformer'
+    if task.get('sequence', False):
+        return 'rnn'
+    return 'mlp'
+```
+hint: Check the rules in order with `task.get(key, False)` so that missing keys do not raise errors.
+solution: The order of the rules decides ties: a graph that is also a sequence goes to the first rule, and `long_range` alone does not trigger the transformer rule because it also requires a sequence. The rules are a toy for practice, not a recommendation for real problems.
+
+@practice self
+prompt: Write a design memo of one short paragraph per task (about 80 words each) choosing an architecture for these three tasks: (a) classify 32 by 32 images of handwritten symbols, with 5,000 labeled examples; (b) predict whether a molecule is toxic from its atoms and bonds; (c) forecast the next hour of electricity demand from the last 168 hourly readings, on a device with a tight memory budget. For each, name the architecture, give the structural reason, name a baseline, and say how you would test the choice.
+hint: For each task, state the data structure, the symmetry or constraint, and what a simpler baseline would be.
+solution: (a) Use a small convolutional network, for example a LeNet-style stack with pooling, perhaps from a pretrained backbone. The data are a grid and a symbol keeps its identity when shifted, so locality and translation equivariance help with only 5,000 examples. Baseline: logistic regression or an MLP on flattened pixels. Test by comparing validation accuracy and checking a version without weight sharing. (b) Use a message-passing network with a sum or mean readout, since a molecule is a graph with arbitrary atom numbering. Choose 3 to 5 rounds so that atoms influence neighbors at bond distances that matter. Baseline: a model on fingerprint-style counts of substructures. Test with a split by molecular scaffold, so that validation molecules are structurally new. (c) Use a small GRU or a 1D convolution over the 168 hours, which uses constant memory at inference. Baseline: repeat the value from 24 hours ago and a linear model on lagged values. Test with a time-ordered split, never a random split, and compare against the baselines.
+rubric: Each architecture matches the data structure (grid, graph, ordered series) and gives a structural reason, not only popularity.
+rubric: Each task names a concrete simple baseline.
+rubric: Each task describes a validation test that fits the data, such as a scaffold split or a time-ordered split.
+rubric: The memo uses the constraints given (5,000 examples, memory budget) in its reasoning.
+
+@quiz mc
+prompt: Which statement about self-attention compared with a recurrent layer is correct?
+choice*: Attention connects any two positions in one layer and parallelizes across positions, but its time and memory for the score matrix grow quadratically with sequence length.
+choice: Attention needs fewer multiply-adds than a recurrent layer for every sequence length and width.
+choice: Attention processes the sequence one step at a time, so it cannot use parallel hardware across positions.
+choice: Attention's cost does not depend on the number of positions.
+hint: Think about the $n \times n$ score matrix, and about whether step $t$ must wait for step $t-1$.
+solution: Every position can attend to every other in one layer, and positions can be computed in parallel, at a cost of $n^2$ scores. A recurrent layer needs $n$ sequential steps. Attention has the extra $2n^2d$ term, so it does not always cost less, and it clearly depends on $n$.
+
+@quiz num
+prompt: One attention head over a sequence of $n = 4096$ positions stores its $n \times n$ score matrix in 32-bit floats (4 bytes each). How many bytes does the matrix take?
+answer: 67108864
+unit: bytes
+check: 4096 * 4096 * 4
+hint: The matrix has $n^2$ entries.
+solution: $4096^2 = 16{,}777{,}216$ entries, and at 4 bytes each that is $67{,}108{,}864$ bytes (64 MiB).
+
+@quiz code
+prompt: Write `layer_macs(kind, n, d, k=3)` returning the approximate multiply-adds of one layer: `'conv'` gives `n * k * d * d`, `'rnn'` gives `2 * n * d * d`, `'attention'` gives `4 * n * d * d + 2 * n * n * d`. Any other `kind` raises `ValueError`.
+starter:
+```python
+def layer_macs(kind, n, d, k=3):
+    return 0
+```
+tests:
+```python
+assert layer_macs('conv', 10, 4) == 480
+assert layer_macs('conv', 10, 4, k=5) == 800
+assert layer_macs('rnn', 10, 4) == 320
+assert layer_macs('attention', 10, 4) == 1440
+assert layer_macs('attention', 128, 64) == 4194304
+assert raises(ValueError, layer_macs, 'lstm', 10, 4)
+```
+model:
+```python
+def layer_macs(kind, n, d, k=3):
+    """Approximate multiply-adds of a conv, rnn or attention layer."""
+    if kind == 'conv':
+        return n * k * d * d
+    if kind == 'rnn':
+        return 2 * n * d * d
+    if kind == 'attention':
+        return 4 * n * d * d + 2 * n * n * d
+    raise ValueError(kind)
+```
+hint: Use one branch per kind of layer and raise `ValueError` at the end for anything else.
+solution: Each branch evaluates the formula of the table in the article. The `k` argument matters only for convolution, as the test with `k=5` checks, and the last test checks the error for an unknown kind.

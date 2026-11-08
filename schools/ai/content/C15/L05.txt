@@ -155,42 +155,45 @@ hint: For each example compute $f = \mathbf{w}^\top\mathbf{x} + b$, then add $\m
 solution: Correctly classified points beyond the margin contribute zero, which the `max` handles. The third test has a margin of at least 1 at every point, so the total is zero; the last test uses a classifier that is wrong on the first three points and exactly on the boundary for the fourth, and pays $3 + 2 + 2 + 1$.
 
 @practice code
-prompt: Write `subgradient(X, y, w, b, C)` returning a pair `(gw, gb)`: the subgradient of $J = \tfrac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum_i\max(0, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b))$. `gw` is a list. An example contributes only if $y_i f(\mathbf{x}_i) < 1$ strictly (use 0 at exactly 1). The bias is not regularized. Do not modify `w`.
+prompt: Some SVM variants use the squared hinge loss, which is differentiable. Write `sq_hinge_gradient(X, y, w, b, C)` returning a pair `(gw, gb)`: the gradient of $J = \tfrac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum_i\max(0, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b))^2$ with respect to `w` (a list) and `b`. An example contributes only if $y_i f(\mathbf{x}_i) < 1$. The bias is not regularized. Do not modify `w`. For example, with `X = [[1.0]]`, `y = [1]`, `w = [0.5]`, `b = 0.0`, `C = 1.0` the result is `([-0.5], -1.0)`.
 starter:
 ```python
-def subgradient(X, y, w, b, C):
+def sq_hinge_gradient(X, y, w, b, C):
     pass
 ```
 tests:
 ```python
+gw, gb = sq_hinge_gradient([[1.0]], [1], [0.5], 0.0, 1.0)
+assert abs(gw[0] + 0.5) < 1e-9 and abs(gb + 1.0) < 1e-9
 X = [[2, 1], [1, 3], [-1, 0], [0, -2]]
 y = [1, 1, -1, -1]
 w = [0.25, 0.25]
-gw, gb = subgradient(X, y, w, 0.0, 2.0)
-assert all(abs(a - c) < 1e-9 for a, c in zip(gw, [-5.75, -5.75]))
-assert abs(gb - 2.0) < 1e-9
-gw, gb = subgradient(X, y, [0.5, 0.5], -0.5, 2.0)
+gw, gb = sq_hinge_gradient(X, y, w, 0.0, 2.0)
+assert all(abs(a - c) < 1e-9 for a, c in zip(gw, [-4.75, -4.75]))
+assert abs(gb - 4.0) < 1e-9
+gw, gb = sq_hinge_gradient(X, y, [0.5, 0.5], -0.5, 2.0)
 assert all(abs(a - c) < 1e-9 for a, c in zip(gw, [0.5, 0.5])) and abs(gb) < 1e-9
-gw, gb = subgradient([[1.0]], [-1], [0.0], 0.0, 3.0)
-assert abs(gw[0] - 3.0) < 1e-9 and abs(gb - 3.0) < 1e-9
+gw, gb = sq_hinge_gradient([[1.0]], [-1], [0.0], 0.0, 3.0)
+assert abs(gw[0] - 6.0) < 1e-9 and abs(gb - 6.0) < 1e-9
 assert w == [0.25, 0.25]
 ```
 model:
 ```python
-def subgradient(X, y, w, b, C):
-    """Subgradient of the soft-margin SVM objective at (w, b)."""
+def sq_hinge_gradient(X, y, w, b, C):
+    """Gradient of the squared-hinge SVM objective at (w, b)."""
     gw = list(w)
     gb = 0.0
     for row, t in zip(X, y):
         f = sum(wj * xj for wj, xj in zip(w, row)) + b
-        if t * f < 1:
+        slack = 1 - t * f
+        if slack > 0:
             for j in range(len(w)):
-                gw[j] -= C * t * row[j]
-            gb -= C * t
+                gw[j] -= 2 * C * slack * t * row[j]
+            gb -= 2 * C * slack * t
     return gw, gb
 ```
-hint: Start `gw` as a copy of `w` (the regularizer's gradient); then for every example with $y f < 1$ subtract $C y\mathbf{x}$ from `gw` and $C y$ from `gb`.
-solution: The regularizer gives $\mathbf{w}$, and only violators add a term. In the first test the second example sits exactly on the margin ($y f = 1$) and must not contribute; using `<=` gives a different answer. The third test checks the sign for a negative label.
+hint: The regularizer contributes `w`. For a violator with slack $s = 1 - y f > 0$, the derivative of $s^2$ with respect to $f$ is $-2 s y$, so subtract $2 C s\,y\,\mathbf{x}$ from `gw` and $2 C s\,y$ from `gb`.
+solution: The squared hinge $\max(0, s)^2$ has derivative $2s$ times $\partial s/\partial \mathbf{w} = -y\mathbf{x}$ when $s > 0$ and 0 otherwise, so each violator's term is weighted by its slack, unlike the plain hinge where every violator counts the same. In the second test one example sits exactly on the margin and contributes nothing; a version that drops the factor of slack or the factor 2 gives a different answer.
 
 @quiz code
 prompt: Write `train_svm(X, y, C, lr, steps)` that starts from `w = [0.0, ..., 0.0]` and `b = 0.0` and runs exactly `steps` steps of subgradient descent with a constant step size `lr` on the soft-margin objective $\tfrac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum_i\max(0, 1 - y_i(\mathbf{w}^\top\mathbf{x}_i + b))$, then returns `(w, b)`. The violating set is $\{i : y_i f(\mathbf{x}_i) < 1\}$; the bias is not regularized.
@@ -234,7 +237,7 @@ def train_svm(X, y, C, lr, steps):
     return w, b
 ```
 hint: In each step compute the subgradient at the current `(w, b)` first, and only then update both `w` and `b`.
-solution: Each step is the subgradient from the previous exercise followed by $\mathbf{w} \leftarrow \mathbf{w} - \eta\mathbf{g}_{\mathbf{w}}$ and $b \leftarrow b - \eta g_b$. After two steps the weights are $0.38$ each, as a hand calculation shows; at step four the margins exceed 1, so only the shrinking term acts and the weights fall to $0.4878$.
+solution: Each step computes the subgradient $\mathbf{g}_{\mathbf{w}} = \mathbf{w} - C\sum_{i\in V} y_i\mathbf{x}_i$, $g_b = -C\sum_{i\in V} y_i$ at the current weights, followed by $\mathbf{w} \leftarrow \mathbf{w} - \eta\mathbf{g}_{\mathbf{w}}$ and $b \leftarrow b - \eta g_b$. After two steps the weights are $0.38$ each, as a hand calculation shows; at step four the margins exceed 1, so only the shrinking term acts and the weights fall to $0.4878$.
 
 @quiz text
 prompt: What does this program print?
