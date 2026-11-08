@@ -1,0 +1,212 @@
+@lesson
+title: Correlations between neurons
+summary: Measure how two neurons' spikes co-vary with spike-count correlations and cross-correlograms, using explicit lag and binning conventions, and judge what the result does and does not show.
+objective: Compute the spike-count (noise) correlation of two neurons from trial counts of the same stimulus.
+objective: Compute a cross-correlogram from two spike trains with a stated lag convention and half-open lag bins.
+objective: Estimate the count expected by chance and interpret peaks, troughs and asymmetry in a correlogram.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case study on the relationship between two spike trains or on correlation; for pairs of neurons, the chapter on spike trains in Theoretical Neuroscience (Dayan and Abbott).
+
+@article
+Two neurons next to each other on an electrode both respond to the same stimulus. Are they independent, each following the stimulus on its own, or do they share inputs or connections that make them fire together? The raw rasters cannot answer this by eye. We need a measure of whether the two neurons' spikes are related beyond what the stimulus explains.
+
+### Spike-count correlation
+
+Present the **same** stimulus on $N$ trials and count spikes of neuron A and neuron B in a fixed window, giving $x_1, \dots, x_N$ and $y_1, \dots, y_N$. The **spike-count correlation** (also called noise correlation) is the Pearson correlation coefficient,
+
+$$r_{xy} = \frac{\sum_i (x_i - \bar x)(y_i - \bar y)}{\sqrt{\sum_i (x_i - \bar x)^2}\ \sqrt{\sum_i (y_i - \bar y)^2}} \in [-1, 1].$$
+
+Both numerator and denominator have the same factor $N - 1$ if you write them as covariance over standard deviations, so it cancels. It must be computed for a single stimulus, or after subtracting each stimulus's mean count: pooling stimuli would add the **signal correlation** (two neurons with similar tuning rise and fall with the stimulus together) to the trial-to-trial co-variation that remains when the stimulus is fixed. In sensory cortex, noise correlations for nearby pairs are typically small and positive, but their size depends on the area, the neurons, the window and the state of the animal, so measure them. If either neuron has zero variance across trials, $r$ is undefined.
+
+### The cross-correlogram
+
+Count correlation uses one number per trial. A **cross-correlogram** keeps fine timing. Spike times here are in **milliseconds**. For every pair of one spike $t_A$ from neuron A and one spike $t_B$ from neuron B, compute the **lag**
+
+$$d = t_B - t_A \quad \text{(ms)},$$
+
+so a **positive lag means B fires after A**. Choose a maximum lag $L$ and a bin width $w$ that divides $2L$. The lag axis is divided into $2L/w$ half-open bins $[-L + kw,\ -L + (k+1)w)$ for $k = 0, \dots, 2L/w - 1$; a pair with $d$ exactly equal to $-L$ goes into the first bin and a pair with $d = L$ is dropped. The correlogram entry is the number of pairs whose lag falls in the bin.
+
+```python
+def ccg(a, b, max_lag, bin_ms):
+    """Counts of lags d = t_b - t_a in half-open bins over [-max_lag, max_lag)."""
+    n_bins = 2 * max_lag // bin_ms
+    counts = [0] * n_bins
+    for ta in a:
+        for tb in b:
+            d = tb - ta
+            if -max_lag <= d < max_lag:
+                counts[(d + max_lag) // bin_ms] += 1
+    return counts
+```
+
+For $A = (10, 40, 80, 120)$ and $B = (13, 42, 79, 125, 200)$ with $L = 10$ and $w = 5$, the nearby pairs have lags $3, 2, -1, 5$ ms, and the correlogram over bins $[-10,-5), [-5,0), [0,5), [5,10)$ is $(0, 1, 2, 1)$. The cost is the number of spike pairs, which is fine for short recordings and is done in practice by sorting and sweeping.
+
+### What to expect by chance
+
+If the two trains were independent with constant rates, each bin would hold about $n_A\, n_B\, w / T$ pairs, where $n_A$ and $n_B$ are the spike counts and $T$ is the recording length in the same unit as $w$. With $n_A = 200$, $n_B = 150$, $T = 100\,000$ ms and $w = 2$ ms, this is $0.6$ pairs per bin. Counts well above this near zero lag indicate **synchrony**; counts well below it indicate inhibition or a refractory effect. Because firing rates change with the stimulus, a stimulus-locked pair of rates also makes a peak. A **shift predictor** recomputes the correlogram after shifting one train by a fixed lag larger than the correlation time (or by a whole number of trials, using the other trial's spikes): any peak that survives is due to the common stimulus drive, not to interaction between the neurons.
+
+### Reading a correlogram
+
+A narrow peak within about 1 to 5 ms at a positive lag is the classic signature consistent with a direct excitatory connection from A to B; a narrow peak centered near zero lag is consistent with a shared input. Neither proves it: correlation is not causation, and a trough can come from inhibition or from both neurons' refractory periods. The **autocorrelogram** is the same computation of a train with itself, leaving out each spike's pairing with itself; its lags come in $\pm$ pairs (so it is symmetric apart from bin edges) and it shows bursts (a peak at short lags) and refractoriness (an empty bin near zero).
+
+@example
+title: A noise correlation by hand
+problem: Over five repetitions of one stimulus, neuron A fires $4, 7, 3, 6, 5$ spikes and neuron B fires $3, 2, 5, 4, 6$ spikes in a 500 ms window. Compute the spike-count correlation.
+step: The means are $\bar x = 25/5 = 5$ and $\bar y = 20/5 = 4$. The deviations are $x - \bar x = -1, 2, -2, 1, 0$ and $y - \bar y = -1, -2, 1, 0, 2$.
+step: The products of deviations are $1, -4, -2, 0, 0$, with sum $-5$. The squared deviations sum to $1 + 4 + 4 + 1 + 0 = 10$ for A and $1 + 4 + 1 + 0 + 4 = 10$ for B.
+step: Then $r = -5/\sqrt{10 \times 10} = -0.5$.
+step: With only five trials this is a very uncertain estimate; a correlation of $-0.5$ from $N = 5$ is compatible with no correlation at all, so it should not be reported as a finding without more trials.
+answer: $r = -0.5$.
+
+@example
+title: A tiny cross-correlogram
+problem: Neuron A spikes at $10, 20, 30$ ms and neuron B at $11, 19, 32, 31$ ms. With $L = 6$ ms and $w = 2$ ms, compute the cross-correlogram with lag $d = t_B - t_A$ in half-open bins.
+step: The bins are $[-6,-4), [-4,-2), [-2,0), [0,2), [2,4), [4,6)$.
+step: Pairs with $A = 10$: lags are $1, 9, 22, 21$, so only $1$ lies in range, in $[0, 2)$.
+step: Pairs with $A = 20$: lags are $-9, -1, 12, 11$, so only $-1$, in $[-2, 0)$. Pairs with $A = 30$: lags $-19, -11, 2, 1$, so $2$ falls in $[2, 4)$ and $1$ in $[0, 2)$.
+step: Count per bin: $(0, 0, 1, 2, 1, 0)$.
+answer: $(0, 0, 1, 2, 1, 0)$.
+
+@mistakes
+- Pooling trials from different stimuli before correlating counts, which adds the signal correlation to the noise correlation.
+- Flipping the lag sign: with $d = t_B - t_A$ a peak at a positive lag means B follows A; say which train is the reference.
+- Counting a pair at the maximum lag in the last bin of the correlogram when the bins are half-open, or leaving out the pair at exactly $-L$.
+- Concluding that a peak shows a synaptic connection without checking the stimulus-locked rates and a shift predictor.
+
+@practice num
+prompt: Neuron A fires $2, 4, 6$ spikes and neuron B fires $1, 5, 3$ spikes on three trials of the same stimulus. What is the spike-count correlation?
+answer: 0.5
+check: sum((x - 4) * (y - 3) for x, y in zip([2, 4, 6], [1, 5, 3])) / (sum((x - 4) ** 2 for x in [2, 4, 6]) * sum((y - 3) ** 2 for y in [1, 5, 3])) ** 0.5
+hint: The means are 4 and 3; list the deviations and compute the sum of products and the two sums of squares.
+solution: The deviations are $-2, 0, 2$ and $-2, 2, 0$, with products $4, 0, 0$. The sums of squares are $8$ and $8$, so $r = 4/\sqrt{64} = 0.5$.
+
+@practice mc
+prompt: In a cross-correlogram computed with lag $d = t_B - t_A$, a narrow peak appears at lags between $+2$ and $+4$ ms and the correlogram is near the chance level elsewhere. Which statement is best supported?
+choice*: B tends to fire a few milliseconds after A, which is consistent with a direct excitatory influence of A on B but does not prove it.
+choice: A fires a few milliseconds after B, because the lag is positive.
+choice: A and B must be the same neuron recorded twice.
+choice: A causes B to fire, because a correlation proves a causal connection.
+hint: Positive lag means the B spike comes later; ask what else could produce the same pattern.
+solution: With $d = t_B - t_A$, positive lags are B after A. A peak at short positive lag fits a monosynaptic excitatory connection, but common input with different delays or stimulus-locked rates could produce similar peaks, so more controls (a shift predictor, a perturbation) are needed to claim causation.
+
+@practice code
+prompt: Write `count_correlation(x, y)` that returns the Pearson correlation of two equal-length lists of spike counts, computed from the sums of products of deviations. If either list has zero variance (all values equal), return `None`. For example, `count_correlation([1, 2, 3], [6, 4, 2])` returns `-1.0`.
+starter:
+```python
+def count_correlation(x, y):
+    pass
+```
+tests:
+```python
+assert abs(count_correlation([1, 2, 3], [6, 4, 2]) + 1.0) < 1e-9
+assert abs(count_correlation([5, 1, 4, 2, 8, 0], [3, 3, 4, 1, 6, 2]) - 0.8151546) < 1e-6
+assert abs(count_correlation([4, 7, 3, 6, 5], [3, 2, 5, 4, 6]) + 0.5) < 1e-9
+assert count_correlation([3, 3, 3], [1, 2, 3]) is None
+assert count_correlation([1, 2, 3], [7, 7, 7]) is None
+```
+model:
+```python
+import math
+
+
+def count_correlation(x, y):
+    """Pearson correlation of two count lists; None if a list is constant."""
+    n = len(x)
+    mx = sum(x) / n
+    my = sum(y) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    sxx = sum((a - mx) ** 2 for a in x)
+    syy = sum((b - my) ** 2 for b in y)
+    if sxx == 0 or syy == 0:
+        return None
+    return sxy / math.sqrt(sxx * syy)
+```
+hint: Center both lists, form the three sums, and guard against a zero denominator before dividing.
+solution: The correlation is the sum of products of deviations over the square root of the product of the sums of squares. A constant list has no variance, so the correlation is undefined; returning `None` avoids a division by zero. Because integer counts are exact, comparing a sum of squares with 0 is safe here.
+
+@practice code
+prompt: Write `synchrony_count(a, b, window)` that returns how many spikes of train `a` have at least one spike of train `b` within `window` milliseconds, counting a spike of `b` at a distance of exactly `window` as within. Both trains are lists of spike times in ms. Each spike of `a` counts at most once. For example, `synchrony_count([10, 50, 90], [12, 60, 95], 5)` returns `2`.
+starter:
+```python
+def synchrony_count(a, b, window):
+    pass
+```
+tests:
+```python
+assert synchrony_count([10, 50, 90], [12, 60, 95], 5) == 2
+assert synchrony_count([10, 50, 90], [15, 45, 100], 5) == 2
+assert synchrony_count([10, 50, 90], [12, 13, 14, 51], 5) == 2
+assert synchrony_count([], [1, 2], 3) == 0
+assert synchrony_count([10], [], 3) == 0
+assert synchrony_count([10, 20], [16, 24], 5) == 0
+```
+model:
+```python
+def synchrony_count(a, b, window):
+    """Number of spikes in a with a spike of b within +/- window ms."""
+    return sum(1 for ta in a if any(abs(tb - ta) <= window for tb in b))
+```
+hint: For each spike of `a`, ask whether any spike of `b` lies within the window, using `<=` for the boundary.
+solution: Using `any` makes each spike of `a` count once even if several spikes of `b` are close (the third test has three nearby `b` spikes for the first `a` spike). The comparison includes a distance of exactly `window`, the edge case in the first two tests.
+
+@practice text
+prompt: What does this program print?
+```python
+a = [10, 40]
+b = [12, 35, 47]
+d = [tb - ta for ta in a for tb in b]
+print(sorted(d))
+```
+answer: [-28, -5, 2, 7, 25, 37]
+check: run("a = [10, 40]\nb = [12, 35, 47]\nd = [tb - ta for ta in a for tb in b]\nprint(sorted(d))")
+hint: Compute all six differences $t_B - t_A$, pairing each spike of a with every spike of b, then sort them.
+solution: The pairs with $t_A = 10$ give $2, 25, 37$ and those with $t_A = 40$ give $-28, -5, 7$. Sorted, they are $[-28, -5, 2, 7, 25, 37]$.
+
+@quiz code
+prompt: Write `autocorrelogram(spikes, max_lag, bin_ms)` for one spike train in milliseconds. For every ordered pair of **different** spikes $i \ne j$, take the lag $d = t_j - t_i$; count the lags in the half-open bins over $[-\text{max\_lag}, \text{max\_lag})$ of width `bin_ms`, as for a cross-correlogram. Return the list of counts. For example, `autocorrelogram([0, 4, 8, 20], 8, 4)` returns `[1, 2, 0, 2]`.
+starter:
+```python
+def autocorrelogram(spikes, max_lag, bin_ms):
+    pass
+```
+tests:
+```python
+assert autocorrelogram([0, 4, 8, 20], 8, 4) == [1, 2, 0, 2]
+assert autocorrelogram([5], 10, 5) == [0, 0, 0, 0]
+assert autocorrelogram([0, 5, 10], 10, 5) == [1, 2, 0, 2]
+c = autocorrelogram([3, 9, 10, 25, 31], 12, 3)
+assert c == [0, 1, 2, 1, 1, 0, 3, 0]
+assert sum(c) == 8
+assert autocorrelogram([], 6, 2) == [0, 0, 0]
+```
+model:
+```python
+def autocorrelogram(spikes, max_lag, bin_ms):
+    """Counts of lags between different spikes of one train."""
+    n_bins = 2 * max_lag // bin_ms
+    counts = [0] * n_bins
+    for i, ti in enumerate(spikes):
+        for j, tj in enumerate(spikes):
+            if i != j:
+                d = tj - ti
+                if -max_lag <= d < max_lag:
+                    counts[(d + max_lag) // bin_ms] += 1
+    return counts
+```
+hint: Use the cross-correlogram loop with the same train twice, but skip the pair where both indices are equal.
+solution: Skipping $i = j$ removes the trivial zero lag of each spike with itself, so the bin holding 0 is not inflated. Each unordered pair is counted in both directions, so the lags come in $\pm$ pairs, but half-open bins are not mirror images: a lag of $-6$ falls in $[-6, -3)$ while $+6$ falls in $[6, 9)$, so the counts are not symmetric. In the fourth test four pairs of spikes lie within 12 ms, giving 8 ordered pairs.
+
+@quiz num
+prompt: Neuron A fires $200$ spikes and neuron B fires $150$ spikes in a recording of $100\,000$ ms. If they are independent with constant rates, how many pairs do you expect per correlogram bin of width $2$ ms, using $n_A n_B w / T$?
+answer: 0.6
+check: 200 * 150 * 2 / 100000
+hint: Multiply the two spike counts by the bin width and divide by the recording length, all in milliseconds.
+solution: $200 \times 150 \times 2 / 100\,000 = 60\,000/100\,000 = 0.6$ pairs per bin. Counts of several pairs near lag 0 would then be far above chance.
+
+@quiz mc
+prompt: Two neurons have very similar orientation tuning curves. When counts are pooled across all stimulus orientations, their correlation is $r = 0.8$. Which conclusion is justified?
+choice*: The pooled correlation mixes signal correlation (shared tuning) with noise correlation, so it says little about shared variability on repeated identical stimuli.
+choice: The two neurons must be directly connected.
+choice: The noise correlation must also be 0.8.
+choice: The two neurons cannot be tuned to the same orientation.
+hint: Ask what would happen to the pooled correlation if each neuron simply followed the stimulus and nothing else.
+solution: Two neurons that each follow the stimulus independently still rise and fall together across orientations, giving a high pooled correlation with no shared noise. The noise correlation requires repeated presentations of one stimulus (or subtracting each stimulus's mean count).

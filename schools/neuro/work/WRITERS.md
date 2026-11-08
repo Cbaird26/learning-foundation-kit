@@ -38,3 +38,6 @@ Log:
 - C12 done (0 errors, 96 + 3 exam, 2-3 code items per lesson; Hodgkin-Huxley in the Dayan-Abbott convention; illustrative constants labeled); review started C12
 - C15 reviewed (18 fixes: participant count, effect sizes and p-values corrected, Bonferroni count, a Holm stopping assert, items off article data, previous-function reference restated); follow-up by me: L08 pseudoreplication item now correct whether or not effects vary across people (and its pairing distractor replaced); started C24
 - C12 reviewed (25 fixes: trace and strength-duration values, items off article and example data, previous-problem reference restated, pufferfish toxin wording, HH block thresholds, project reference value); follow-ups by me: cable comparison quantified (within about 10%), unconfirmed safety-factor figure removed, project exam data no longer reuses the L08 example
+- started C25
+- C18 done (0 errors, 97 + 3 exam, 6 code items; sleep constants, de Vivo 2017, glymphatic caveat, Berendzen 2023, Wu 2014, Marlin 2015, Joel 2015 and the mental-rotation range passed to the reviewer); review started C18
+- C20 done (0 errors, 96 + 3 exam, no code items; classic study figures described qualitatively; invented data labeled); review started C20; started C26
