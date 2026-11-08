@@ -19,6 +19,7 @@ readings), auto-graded practice, quizzes, a project, a cumulative exam, mastery 
 | Law | https://cbaird26.github.io/law-school-learning-foundation/ | `law-school-learning-foundation` | 67 | `lsl` |
 | Medicine | https://cbaird26.github.io/med-school-learning-foundation/ | `med-school-learning-foundation` | 74 | `msl` |
 | Metaphysics | https://cbaird26.github.io/metaphysics-learning-foundation/ | `metaphysics-learning-foundation` | 63 | `mlf` |
+| Neuroscience and cognitive science | https://cbaird26.github.io/neuroscience-learning-foundation/ | `neuroscience-learning-foundation` | 70 | `nlf` |
 | Theoretical physics | https://cbaird26.github.io/toe-learning-foundation/ | `toe-learning-foundation` | 39 | `toe` |
 
 All repos are under the GitHub account `Cbaird26`. This repo (`learning-foundation-kit`) holds the **sources** for every

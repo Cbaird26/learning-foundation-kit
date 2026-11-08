@@ -4,9 +4,9 @@ Last updated: 2026-11-08
 
 ## Live
 
-Seven schools and the hub are live (see the table in HANDOFF.md). Their sources in `schools/` match the live pages.
-The newest is the AI Learning Foundation, live at https://cbaird26.github.io/ai-learning-foundation/ (repo
-`ai-learning-foundation`) and listed on the hub.
+Eight schools and the hub are live (see the table in HANDOFF.md). Their sources in `schools/` match the live pages.
+The newest is the Neuroscience Learning Foundation, live at https://cbaird26.github.io/neuroscience-learning-foundation/
+(repo `neuroscience-learning-foundation`) and listed on the hub.
 
 ## Done: AI Learning Foundation (`schools/ai`)
 
@@ -56,7 +56,7 @@ Decisions so far:
 | P5 | Research methods in machine learning | 13/13 | yes | yes |
 | P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 
-## In progress: Neuroscience Learning Foundation (`schools/neuro`)
+## Done: Neuroscience Learning Foundation (`schools/neuro`)
 
 Neuroscience and cognitive science, from kindergarten to graduate research and qualifying exams, with Python in the
 page for data analysis and modeling (owner's choices, Nov 7: "Neuro + cog sci to PhD prep" and "Yes, for data and
@@ -74,8 +74,8 @@ from the AI school (C8–C10, C22, C23), philosophy of mind from the Metaphysics
 | 4. Independent review of each course | done (21 of 21 in `work/review_log.txt`, follow-ups in `work/WRITERS.md`) |
 | 5. Integrate and build | done (70 courses validate with 0 errors; 16.7 MB page, 289 runnable blocks) |
 | 6. Test the page | done (292 routes, 0 math errors, 0 page errors; Python, grading, exam and error log checked) |
-| 7. Publish as `neuroscience-learning-foundation` (owner's yes first) | waiting for the owner's yes |
-| 8. Add to the hub | not started |
+| 7. Publish as `neuroscience-learning-foundation` (owner's yes first) | done (owner said yes on Nov 8; live at https://cbaird26.github.io/neuroscience-learning-foundation/) |
+| 8. Add to the hub | done (olive `--c-neuro`, `neuron` glyph, key `nlf`, 70 courses) |
 
 How to continue step 3: for each course without 13 files, write it exactly as `schools/neuro/toolkit/BRIEF.md` says,
 using `schools/neuro/toolkit/courses/<CODE>.json` and the example `schools/neuro/toolkit/example_neuro_lesson.txt`,
@@ -91,7 +91,6 @@ contested questions (consciousness, free will, nature and nurture, animal resear
 no group-difference claims; drugs and stimulation only at the textbook level; projects with people use only low-risk
 tasks with volunteers who agree, and no project involves animals.
 
-<!-- course-table -->
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
 | C11 | Introduction to neuroscience: brain and behavior | 13/13 | yes | yes |
@@ -115,13 +114,12 @@ tasks with volunteers who agree, and no project involves animals.
 | P4 | Brains and machines: neural networks as models of the brain | 13/13 | yes | yes |
 | P5 | Research methods and reproducibility in the brain and behavioral sciences | 13/13 | yes | yes |
 | P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
-<!-- /course-table -->
 
 ## Queue of future schools (one at a time, in this order)
 
 1. AI and machine learning (done, live)
-2. Neuroscience and cognitive science (to neuroscience PhD prep) (in progress)
-3. Mathematics (to math PhD qualifying exams)
+2. Neuroscience and cognitive science (to neuroscience PhD prep) (done, live)
+3. Mathematics (to math PhD qualifying exams) (next)
 4. Economics (to economics PhD prep)
 5. Electrical and computer engineering (to the FE and PE exams)
 6. Nursing (to the NCLEX-RN)
@@ -187,3 +185,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: all 21 new courses written and independently reviewed (P4 6 fixes, P5 6, P6 8, with follow-ups); spelling audit clean; final validation and build next, then the owner is asked before publishing
 - 2026-11-08: Neuro: steps 2–4 done; step 5 (integrate and build) in progress
 - 2026-11-08: Neuro: all 70 courses validate; page built (16.7 MB) and tested (292 routes, no math or page errors); publish/index.html ready; waiting for the owner's yes
+- 2026-11-08: Neuro: published (owner's yes, Nov 8) at https://cbaird26.github.io/neuroscience-learning-foundation/ (70 courses; checked live: title, 70 courses, Python runs); added to the hub; next school in the queue: Mathematics
