@@ -165,3 +165,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-07: All 66 courses written and reviewed; full validation, final build and browser tests next, then publish (approved)
 - 2026-11-07: AI Learning Foundation published at https://cbaird26.github.io/ai-learning-foundation/ (66 courses, 0 errors, browser tests pass) and added to the hub; next school in the queue: Neuroscience and cognitive science
 - 2026-11-07: Neuroscience Learning Foundation set up: 70 courses (49 reused, 21 new), brief, review template, validated example lesson, rebranded app, trial build passes; next: write the 21 new courses
+- 2026-11-07: Writers started for C11-C15
