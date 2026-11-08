@@ -4,24 +4,26 @@ Last updated: 2026-11-07
 
 ## Live
 
-Six schools and the hub are live (see the table in HANDOFF.md). Their sources in `schools/` match the live pages.
+Seven schools and the hub are live (see the table in HANDOFF.md). Their sources in `schools/` match the live pages.
+The newest is the AI Learning Foundation, live at https://cbaird26.github.io/ai-learning-foundation/ (repo
+`ai-learning-foundation`) and listed on the hub.
 
-## In progress: AI Learning Foundation (`schools/ai`)
+## Done: AI Learning Foundation (`schools/ai`)
 
 A school of artificial intelligence and machine learning: 66 courses from kindergarten to machine-learning research.
 46 courses are reused from the Coding school (its K–12 courses, and its CS core renumbered C1–C10); 20 are new
-(C11–C24 and P1–P6). Storage prefix `alf`; site file `ai-learning-foundation.html`; repo to be `ai-learning-foundation`.
+(C11–C24 and P1–P6). Storage prefix `alf`; site file `ai-learning-foundation.html`; repo `ai-learning-foundation`.
 
 | Step | State |
 | --- | --- |
 | 1. Design (curriculum.py, catalog, BRIEF, REVIEW, example lesson) | done |
 | 2. Rebrand the app (storage prefix `alf`, texts, tutor, method and path pages) | done |
-| 3. Write the 20 new courses | in progress (see table) |
-| 4. Independent review of each course | in progress (see table) |
-| 5. Integrate and build | not started |
-| 6. Test the page | not started |
-| 7. Publish as `ai-learning-foundation` (owner's yes first) | not started |
-| 8. Add to the hub | not started |
+| 3. Write the 20 new courses | done (see table) |
+| 4. Independent review of each course | done (see table) |
+| 5. Integrate and build | done (66 courses validate with 0 errors; 16.8 MB page) |
+| 6. Test the page | done (279 routes, in-page Python, grading, final exam, error log, phone and dark views) |
+| 7. Publish as `ai-learning-foundation` (owner's yes first) | done (approved; live on GitHub Pages) |
+| 8. Add to the hub | done |
 
 How to continue step 3: for each course without 13 files, write it exactly as `schools/ai/toolkit/BRIEF.md` says, using
 `schools/ai/toolkit/courses/<CODE>.json` and the example `schools/ai/toolkit/example_ml_lesson.txt`, then run
@@ -62,8 +64,8 @@ Decisions so far:
 
 ## Queue of future schools (one at a time, in this order)
 
-1. AI and machine learning (in progress)
-2. Neuroscience and cognitive science (to neuroscience PhD prep)
+1. AI and machine learning (done, live)
+2. Neuroscience and cognitive science (to neuroscience PhD prep) (next)
 3. Mathematics (to math PhD qualifying exams)
 4. Economics (to economics PhD prep)
 5. Electrical and computer engineering (to the FE and PE exams)
@@ -106,3 +108,4 @@ Decisions so far:
 - 2026-11-07: All 66 courses written; P4 and P6 in review (the last two); then final build, browser tests and the publish question
 - 2026-11-07: P6 reviewed; 65 of 66 courses reviewed, P4 in review; owner approved publishing when the final build and tests pass
 - 2026-11-07: All 66 courses written and reviewed; full validation, final build and browser tests next, then publish (approved)
+- 2026-11-07: AI Learning Foundation published at https://cbaird26.github.io/ai-learning-foundation/ (66 courses, 0 errors, browser tests pass) and added to the hub; next school in the queue: Neuroscience and cognitive science

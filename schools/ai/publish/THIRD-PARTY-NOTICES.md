@@ -1,6 +1,6 @@
 # Third-party notices
 
-The page in this folder bundles the following software. Each is used under its licence, reproduced below.
+The page in this folder bundles the following software. Each is used under its license, reproduced below.
 
 ## KaTeX 0.16.47 (math rendering)
 

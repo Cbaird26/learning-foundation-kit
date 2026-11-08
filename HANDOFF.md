@@ -13,6 +13,7 @@ readings), auto-graded practice, quizzes, a project, a cumulative exam, mastery 
 | School | Live page | Repo | Courses | Storage prefix |
 | --- | --- | --- | --- | --- |
 | Hub | https://cbaird26.github.io/learning-foundation/ | `learning-foundation` | | reads all below |
+| AI and machine learning | https://cbaird26.github.io/ai-learning-foundation/ | `ai-learning-foundation` | 66 | `alf` |
 | Coding | https://cbaird26.github.io/coding-learning-foundation/ | `coding-learning-foundation` | 63 | `clf` |
 | Finance | https://cbaird26.github.io/finance-learning-foundation/ | `finance-learning-foundation` | 63 | `flf` |
 | Law | https://cbaird26.github.io/law-school-learning-foundation/ | `law-school-learning-foundation` | 67 | `lsl` |
