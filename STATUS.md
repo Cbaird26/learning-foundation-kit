@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-07
+Last updated: 2026-11-08
 
 ## Live
 
@@ -94,13 +94,13 @@ tasks with volunteers who agree, and no project involves animals.
 <!-- course-table -->
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
-| C11 | Introduction to neuroscience: brain and behavior | 13/13 | yes |  |
-| C12 | Cellular and molecular neuroscience | 7/13 |  |  |
-| C13 | Neuroanatomy and functional systems | 13/13 | yes |  |
-| C14 | Cognitive psychology | 10/13 |  |  |
-| C15 | Statistics and experimental design for brain and behavioral science | 10/13 |  |  |
-| C16 | Sensation, perception and psychophysics | 0/13 |  |  |
-| C17 | Learning, memory and plasticity | 0/13 |  |  |
+| C11 | Introduction to neuroscience: brain and behavior | 13/13 | yes | yes |
+| C12 | Cellular and molecular neuroscience | 9/13 |  |  |
+| C13 | Neuroanatomy and functional systems | 13/13 | yes | yes |
+| C14 | Cognitive psychology | 13/13 | yes |  |
+| C15 | Statistics and experimental design for brain and behavioral science | 13/13 | yes |  |
+| C16 | Sensation, perception and psychophysics | 2/13 |  |  |
+| C17 | Learning, memory and plasticity | 2/13 |  |  |
 | C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 0/13 |  |  |
 | C19 | Cognitive neuroscience | 0/13 |  |  |
 | C20 | Language and cognitive development | 0/13 |  |  |
@@ -167,3 +167,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-07: Neuroscience Learning Foundation set up: 70 courses (49 reused, 21 new), brief, review template, validated example lesson, rebranded app, trial build passes; next: write the 21 new courses
 - 2026-11-07: Writers started for C11-C15
 - 2026-11-07: C11 and C13 written and in review; C12, C14, C15, C16 and C17 being written
+- 2026-11-08: C11 and C13 reviewed with follow-ups; C14 written and in review; C12, C15, C16, C17 and C18 being written

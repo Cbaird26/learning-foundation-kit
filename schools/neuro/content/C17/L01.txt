@@ -1,0 +1,233 @@
+@lesson
+title: Classical conditioning and the Rescorla–Wagner model
+summary: Simulate associative learning trial by trial with the Rescorla–Wagner rule and use it to predict acquisition, extinction, overshadowing and blocking.
+objective: State the Rescorla–Wagner update with a learning rate and an asymptote and apply it by hand to a sequence of trials.
+objective: Explain blocking and overshadowing as consequences of a shared prediction error.
+objective: Write a from-scratch Python simulation of compound-cue conditioning and read its learning curves.
+reading: Neuroscience Online (McGovern Medical School): look up the topic of classical conditioning and associative learning in the learning and memory material.
+@article
+A dog hears a bell and then gets food. After enough pairings the bell alone makes the dog salivate. Pavlov's finding is the template for **classical conditioning**: a neutral **conditioned stimulus** (CS, the bell) comes to predict a biologically significant **unconditioned stimulus** (US, the food), and the animal develops a **conditioned response** (CR) to the CS. Two puzzles show that pairing alone is not the whole story. First, in **blocking** (Kamin, 1969) an animal first learns that a light predicts a shock, then experiences light and tone together followed by the shock; later the tone alone evokes almost no fear, although it was paired with shock many times. Second, learning curves are negatively accelerated: early trials change behavior a lot, later ones very little. Both follow if learning is driven by **surprise**, not by pairing.
+
+### The Rescorla–Wagner rule
+
+Rescorla and Wagner (1972) proposed that on each trial, every cue $X$ that is present changes its **associative strength** $V_X$ in proportion to the shared prediction error:
+
+$$\Delta V_X = \alpha\,(\lambda - V_{\text{total}}), \qquad V_{\text{total}} = \sum_{Y \text{ present}} V_Y .$$
+
+Here $\alpha$ is the learning rate ($0 < \alpha \le 1$; in the full model it is a product $\alpha_X\beta$ of a cue salience and a US-dependent rate), and $\lambda$ is the **asymptote**, the largest strength the US can support: $\lambda = 1$ on a reinforced trial and $\lambda = 0$ on a trial where the US is omitted. Cues that are absent do not change. Strengths start at 0 unless stated.
+
+For one cue with $\lambda = 1$ the error shrinks by a factor $1-\alpha$ each trial, so $V_n = 1 - (1-\alpha)^n$. With $\alpha = 0.3$:
+
+| trial | error before | $V$ after |
+|---|---|---|
+| 1 | 1.000 | 0.300 |
+| 2 | 0.700 | 0.510 |
+| 3 | 0.490 | 0.657 |
+| 4 | 0.343 | 0.760 |
+
+That is the negatively accelerated curve. If the US is then withheld ($\lambda = 0$), the error is $-V$ and $V$ shrinks by $1-\alpha$ per trial: **extinction**. The rule says extinction reduces the strength; later evidence (spontaneous recovery, reinstatement) shows the original learning is not simply erased, a limit of the model.
+
+### Compounds: overshadowing and blocking
+
+When tone and light are presented together, they share one error term. Two equal cues starting from zero split the asymptote: each approaches $\lambda/2$, so each is weaker than if trained alone (**overshadowing**). With unequal salience, the more salient cue wins a larger share. In blocking, cue A is first trained alone until $V_A \approx 1$. On the compound trials AB+, the error $\lambda - V_A - V_B$ is already near zero, so B gains almost nothing. Simulating 10 trials of A+ followed by 10 trials of AB+ with $\alpha = 0.3$ gives $V_A = 0.986$ and $V_B = 0.014$, while a control group trained with AB+ for 10 trials ends at $V_A = V_B = 0.500$.
+
+Blocking supports the idea that learning depends on the prediction error, not on contiguity. Limits matter: the model has no time (no difference between a CS that precedes the US by 1 s or 10 s), it predicts the CR from $V$ directly, and some effects (latent inhibition, the effect of CS-alone preexposure) need changes in $\alpha$ that the basic rule lacks. Temporal-difference models (week 3) add time.
+
+### In code
+
+```python
+def rw_train(trials, alpha, lam=1.0):
+    """Rescorla-Wagner. trials: list of (set_of_cues, reinforced 0/1).
+
+    Returns (V, errors): final strengths and the error on each trial.
+    """
+    V, errors = {}, []
+    for cues, reinforced in trials:
+        total = 0.0
+        for c in cues:
+            total += V.get(c, 0.0)
+        error = (lam if reinforced else 0.0) - total
+        for c in cues:
+            V[c] = V.get(c, 0.0) + alpha * error
+        errors.append(error)
+    return V, errors
+
+blocking = [({"A"}, 1)] * 10 + [({"A", "B"}, 1)] * 10
+V, errors = rw_train(blocking, 0.3)
+print(round(V["A"], 3), round(V["B"], 3))
+```
+
+This prints `0.986 0.014`. The key line is that the error is computed once from the total prediction and then applied to every present cue.
+
+@example
+title: Overshadowing by hand
+problem: Cues A and B are always presented together and always followed by the US. Use $\alpha = 0.2$ and $\lambda = 1$, starting from $V_A = V_B = 0$. Find the strengths after two trials and the strength both approach in the long run.
+step: Trial 1: the total prediction is $0$, so the error is $1 - 0 = 1$ and each cue changes by $0.2 \times 1 = 0.2$. Now $V_A = V_B = 0.2$.
+step: Trial 2: the total is $0.2 + 0.2 = 0.4$, so the error is $0.6$ and each cue gains $0.2 \times 0.6 = 0.12$. Now $V_A = V_B = 0.32$.
+step: In the long run the error goes to zero, so $V_A + V_B = \lambda = 1$. By symmetry the cues share equally: $V_A = V_B = 0.5$.
+step: Compare with training A alone: its strength would approach $1$, so presenting B alongside A overshadowed A by half.
+answer: After two trials $V_A = V_B = 0.32$; both approach $0.5$.
+
+@example
+title: A single extinction trial after blocking-style pretraining
+problem: Cue A has $V_A = 0.9$ and is presented in compound with a new cue B, followed by the US ($\lambda = 1$), with $\alpha = 0.2$. How much does B learn on this trial?
+step: The total prediction is $0.9 + 0 = 0.9$, so the error is $1 - 0.9 = 0.1$.
+step: B changes by $\alpha \times 0.1 = 0.02$, and A also rises by $0.02$ to $0.92$.
+step: B has gained only $0.02$ of the possible $1$: the US was already predicted, so there was little surprise to learn from.
+answer: B gains $0.02$.
+
+@mistakes
+- Updating each cue from its own error ($\lambda - V_X$) instead of the shared error ($\lambda - V_{\text{total}}$); that version cannot produce blocking or overshadowing.
+- Changing the strengths of cues that were not presented on the trial; in the Rescorla–Wagner rule absent cues keep their value.
+- Treating $\lambda = 0$ on an extinction trial as "reset to zero": the error is $-V_{\text{total}}$, so strength shrinks by a factor $1-\alpha$ per trial and never jumps to zero.
+- Reading blocking as proof that the animal did not notice the tone; the model explains it with a small prediction error, and a cue can still be perceived.
+
+@practice num
+prompt: A single cue is paired with the US on every trial. Using the Rescorla–Wagner rule with $\alpha = 0.25$ and $\lambda = 1$, starting from $V = 0$, what is $V$ after 4 trials? Give your answer to three decimal places.
+answer: 0.684
+tol: 0.001
+check: 1 - (1 - 0.25) ** 4
+hint: Each trial multiplies the remaining gap $1 - V$ by $1-\alpha$.
+solution: $V_4 = 1 - 0.75^4 = 1 - 0.3164 = 0.6836$, about $0.684$.
+
+@practice num
+prompt: A cue with $V = 0.8$ is presented alone for two extinction trials (no US, $\lambda = 0$) with $\alpha = 0.4$. What is $V$ afterward?
+answer: 0.288
+tol: 0.001
+check: 0.8 * (1 - 0.4) ** 2
+hint: The error on an extinction trial is $-V$, so $V \leftarrow V(1-\alpha)$.
+solution: After trial 1, $V = 0.8 \times 0.6 = 0.48$; after trial 2, $V = 0.48 \times 0.6 = 0.288$.
+
+@practice mc
+prompt: In a blocking experiment, group 1 receives A+ trials and then AB+ trials; group 2 receives only the same number of AB+ trials. According to the Rescorla–Wagner rule, why does cue B end up weaker in group 1?
+choice*: When AB+ trials begin, A already predicts the US, so the shared prediction error is small and B gains little.
+choice: B was paired with the US fewer times in group 1, so it had less chance to be associated with it.
+choice: Group 1 animals lose attention to B, which lowers B's learning rate $\alpha$ to zero.
+choice: The asymptote $\lambda$ is smaller in group 1 because the US has already been experienced.
+hint: Compute the error $\lambda - V_A - V_B$ on the first AB+ trial in each group.
+solution: Both groups see B paired with the US the same number of times, and the model keeps $\alpha$ and $\lambda$ fixed. What differs is the total prediction: in group 1 it is already near $\lambda$, so the error, and hence B's change, is near zero.
+
+@practice code
+prompt: Write `trials_to_criterion(alpha, lam, criterion)` for one cue trained with the US on every trial under the Rescorla–Wagner rule, starting at $V = 0$. Return the number of trials needed until $V \ge$ `criterion` (the check happens after each update). Return `0` if `criterion <= 0`, and `None` if `criterion >= lam`, because $V$ never reaches the asymptote. For example, `trials_to_criterion(0.5, 1.0, 0.9)` returns `4`.
+starter:
+```python
+def trials_to_criterion(alpha, lam, criterion):
+    pass
+```
+tests:
+```python
+assert trials_to_criterion(0.5, 1.0, 0.9) == 4
+assert trials_to_criterion(0.3, 1.0, 0.5) == 2
+assert trials_to_criterion(0.5, 2.0, 1.5) == 2
+assert trials_to_criterion(0.5, 1.0, 0.875) == 3
+assert trials_to_criterion(0.5, 1.0, 0.0) == 0
+assert trials_to_criterion(0.5, 1.0, 1.0) is None
+```
+model:
+```python
+def trials_to_criterion(alpha, lam, criterion):
+    """Trials of reinforced training until V reaches the criterion."""
+    if criterion <= 0:
+        return 0
+    if criterion >= lam:
+        return None
+    V, n = 0.0, 0
+    while V < criterion:
+        V += alpha * (lam - V)
+        n += 1
+    return n
+```
+hint: Loop: apply $V \leftarrow V + \alpha(\lambda - V)$, count the trial, and stop when $V$ is at least the criterion. Handle the two special cases before the loop.
+solution: The loop is the single-cue rule applied until the criterion is reached. The test with criterion $0.875$ is exactly reached on trial 3 (values 0.5, 0.75, 0.875 are exact in binary), so the comparison must be `>=`, not `>`; the test with $\lambda = 2$ catches code that hard-codes $\lambda = 1$.
+
+@practice code
+prompt: Write `rw_salience(trials, alphas, lam=1.0)` where `trials` is a list of `(cues, reinforced)` pairs (`cues` a set of names, `reinforced` 0 or 1) and `alphas` is a dictionary giving each cue's own learning rate $\alpha_X$. On each trial compute the shared error $\lambda\cdot\text{reinforced} - \sum V$ over the cues present, then change each present cue by $\alpha_X\times$ error. Return the dictionary of final strengths for the cues that appeared (all start at 0). For example, three `({"A", "B"}, 1)` trials with `alphas = {"A": 0.4, "B": 0.1}` give $V_A = 0.7$ and $V_B = 0.175$.
+starter:
+```python
+def rw_salience(trials, alphas, lam=1.0):
+    return {}
+```
+tests:
+```python
+V = rw_salience([({"A", "B"}, 1)] * 3, {"A": 0.4, "B": 0.1})
+assert abs(V["A"] - 0.7) < 1e-9 and abs(V["B"] - 0.175) < 1e-9
+V = rw_salience([({"A"}, 1)] * 2, {"A": 0.5, "B": 0.3})
+assert set(V) == {"A"} and abs(V["A"] - 0.75) < 1e-9
+V = rw_salience([({"A"}, 1)], {"A": 0.5}, lam=2.0)
+assert abs(V["A"] - 1.0) < 1e-9
+V = rw_salience([({"A"}, 1), ({"A", "B"}, 0)], {"A": 0.5, "B": 0.5})
+assert abs(V["A"] - 0.25) < 1e-9 and abs(V["B"] + 0.25) < 1e-9
+V = rw_salience([({"A", "B"}, 1)] * 60, {"A": 0.4, "B": 0.1})
+assert abs(V["A"] - 0.8) < 1e-6 and abs(V["B"] - 0.2) < 1e-6
+```
+model:
+```python
+def rw_salience(trials, alphas, lam=1.0):
+    """Rescorla-Wagner with a separate learning rate for each cue."""
+    V = {}
+    for cues, reinforced in trials:
+        total = 0.0
+        for c in cues:
+            total += V.get(c, 0.0)
+        error = (lam if reinforced else 0.0) - total
+        for c in cues:
+            V[c] = V.get(c, 0.0) + alphas[c] * error
+    return V
+```
+hint: Compute the error once from the total, then update each cue with its own rate; do not recompute the total inside the update loop.
+solution: With unequal rates the cues share the asymptote in proportion to their rates ($0.8$ and $0.2$ for rates $0.4$ and $0.1$), so the salient cue overshadows the weak one. In the fourth test the first trial gives $V_A = 0.5$; the compound extinction trial has error $-0.5$, so $A$ falls to $0.25$ and the new cue $B$ becomes $-0.25$ (a conditioned inhibitor). Recomputing the total mid-update would give different values.
+
+@quiz text
+prompt: What does this program print? Use the Rescorla–Wagner rule with a shared error.
+```python
+V = {"A": 0.0, "B": 0.0}
+for cues, us in [("A", 1), ("AB", 1), ("AB", 0)]:
+    err = us - sum(V[c] for c in cues)
+    for c in cues:
+        V[c] += 0.5 * err
+print(V["A"], V["B"])
+```
+answer: 0.25 -0.25
+check: run("V = {'A': 0.0, 'B': 0.0}\nfor cues, us in [('A', 1), ('AB', 1), ('AB', 0)]:\n    err = us - sum(V[c] for c in cues)\n    for c in cues:\n        V[c] += 0.5 * err\nprint(V['A'], V['B'])")
+hint: Track the error on each trial: the first is $1$, the second $0.5$, the third is the omission with the total at $1$.
+solution: Trial 1: error 1, so $V_A = 0.5$. Trial 2: total 0.5, error 0.5, so $V_A = 0.75$, $V_B = 0.25$. Trial 3: total 1.0, target 0, error $-1$, so both drop by 0.5: $V_A = 0.25$, $V_B = -0.25$.
+
+@quiz code
+prompt: Write `inhibition_strengths(n_blocks, alpha)` for a conditioned-inhibition design. Each block has two trials in this order: cue A alone followed by the US ($\lambda = 1$), then A and X together with no US ($\lambda = 0$). Apply the Rescorla–Wagner rule with learning rate `alpha`, starting from zero, and return the tuple `(V_A, V_X)` after `n_blocks` blocks. For example, `inhibition_strengths(1, 0.5)` returns `(0.25, -0.25)`.
+starter:
+```python
+def inhibition_strengths(n_blocks, alpha):
+    return (0.0, 0.0)
+```
+tests:
+```python
+a, x = inhibition_strengths(1, 0.5)
+assert abs(a - 0.25) < 1e-9 and abs(x + 0.25) < 1e-9
+a, x = inhibition_strengths(2, 0.5)
+assert abs(a - 0.4375) < 1e-9 and abs(x + 0.4375) < 1e-9
+a, x = inhibition_strengths(40, 0.5)
+assert abs(a - 1.0) < 1e-6 and abs(x + 1.0) < 1e-6
+assert inhibition_strengths(0, 0.5) == (0.0, 0.0)
+```
+model:
+```python
+def inhibition_strengths(n_blocks, alpha):
+    """Final (V_A, V_X) after A+ / AX- training blocks."""
+    V_A, V_X = 0.0, 0.0
+    for _ in range(n_blocks):
+        V_A += alpha * (1.0 - V_A)
+        error = 0.0 - (V_A + V_X)
+        V_A += alpha * error
+        V_X += alpha * error
+    return (V_A, V_X)
+```
+hint: On the A trial only A changes; on the AX trial compute one error from $V_A + V_X$ and add it, times alpha, to both.
+solution: The compound trial makes the total prediction too high, so the negative error pushes X below zero. In the long run $V_A \to 1$ and $V_X \to -1$, so that $V_A + V_X = 0$ on the compound trials and A alone still predicts the US; a negative $V_X$ is a conditioned inhibitor.
+
+@quiz self
+prompt: A classmate says that blocking shows animals ignore redundant information because they are too busy to learn it. Give the Rescorla–Wagner account of blocking, then describe one result or modification that a pure prediction-error account does not handle, and say what a researcher would do to address it.
+hint: Say what the error is on the compound trials, then think of effects that depend on a cue's history of being unreinforced.
+solution: In the model, A has already reached $V_A \approx \lambda$, so on AB+ trials the error $\lambda - V_A - V_B$ is near zero and B's change $\alpha \times$ error is near zero; no attentional process is needed. A pure error account does not handle latent inhibition: repeated CS-alone preexposure slows later conditioning to that CS, yet its $V$ is 0 and its error is unchanged, so the rule predicts no effect. Attentional extensions let $\alpha$ for each cue change with its predictive history, and extinction effects such as spontaneous recovery suggest that unlearning is incomplete; researchers add cue-specific learning rates or separate memories, and test them with designs that vary preexposure and the delay before testing.
+rubric: Explains blocking through the small shared prediction error on compound trials.
+rubric: Names a result the basic rule misses, such as latent inhibition, spontaneous recovery or the role of timing.
+rubric: Suggests a model change or an experiment that addresses it.

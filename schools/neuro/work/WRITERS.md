@@ -30,3 +30,6 @@ Log:
 - batch 1 (Nov 8): C11 C12 C13 C14 C15
 - C13 done (0 errors, 96 + 3 exam, one code item; neuron counts, decussation percentages, language dominance, hair-cell counts, CAG thresholds and SSEP peaks passed to the reviewer as verified); review started C13; started C16
 - C11 done (0 errors, 97 + 3 exam, 6 code items; two-process constants as illustrative, 24.2 h period, debated points marked); review started C11; started C17
+- C13 reviewed (16 fixes: items off example data, a unit-conversion assert, position references, cerebellar wording, pallidotomy anomaly stated correctly, lateral medullary side corrected, ITD assumptions); follow-ups by me: cranial-nerve rule stated by nucleus location, cerebellar double crossing explained exactly, project vignette V1 asks for the most likely site and one alternative
+- C11 reviewed (5 fixes: reflex delay comparison, pump sentence, items off example data, example title); follow-ups by me: Schultz recordings versus the 1997 TD paper, brainstem pathway sentence, L04 quiz no longer reuses the article's numbers
+- C14 done (0 errors, 96 + 3 exam, 6 code items; classic figures passed to the reviewer, Roediger-Karpicke to be corrected to 56% versus 42%); review started C14; started C18
