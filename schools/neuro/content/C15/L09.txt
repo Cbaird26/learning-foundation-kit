@@ -1,0 +1,225 @@
+@lesson
+title: Nonparametric tests, permutation tests and the bootstrap
+summary: Test a difference by enumerating every reassignment of the data, compute a rank-based statistic, and build a bootstrap interval, all in plain Python.
+objective: Carry out an exact permutation test for two groups and a sign-flip test for paired data by enumeration, and explain what it assumes.
+objective: Compute the Mann-Whitney U statistic and say what hypothesis a rank test addresses.
+objective: Build a percentile bootstrap confidence interval from resamples and describe its limits for small samples.
+reading: OpenIntro Statistics, the sections on randomization tests and on bootstrapping in the chapters on foundations for inference; also look up the Wilcoxon rank-sum (Mann-Whitney) test.
+
+@article
+Two small groups of four participants each have mean RTs (ms): 420, 455, 438, 470 in one group and 395, 410, 402, 430 in the other. The first group is slower by 36.5 ms on average. A $t$ test needs the sampling distribution of the difference to be nearly normal, which is shaky with four values per group. Is there a way to get a p-value that asks only what the experiment's own randomization justifies?
+
+### The permutation test
+
+Suppose participants were assigned to groups at random. If $H_0$ is true (the group label has no effect on anyone's RT), then every way of splitting the eight observed values into two groups of four was equally likely to have been the actual assignment. The **permutation test** computes the test statistic, here the difference in means, for every one of these splits and finds how often a split is at least as extreme as the one observed. With 8 values in groups of 4, there are $\binom{8}{4} = 70$ splits. The two-sided p-value is
+
+$$p = \frac{\#\{\text{splits with } |D| \ge |D_{\text{obs}}|\}}{\#\text{splits}}.$$
+
+The observed split is counted among them, so $p$ can never be zero; with 70 splits the smallest two-sided p-value is $2/70 = 0.029$. With larger groups the number of splits explodes (20 and 20 gives about $1.4 \times 10^{11}$), and a researcher instead samples several thousand random splits and reports $(\text{count} + 1)/(B + 1)$. The test makes no normality assumption; it needs exchangeability under $H_0$, which random assignment guarantees. For a **paired** design, $H_0$ says the sign of each within-person difference is arbitrary, so the test flips signs: there are $2^n$ equally likely sign patterns, and the statistic is the sum (or mean) of the signed differences.
+
+```python
+from itertools import combinations
+
+
+def perm_test(a, b):
+    """Exact two-sided permutation p-value for a difference in means."""
+    pooled = a + b
+    n_a = len(a)
+    obs = abs(sum(a) / len(a) - sum(b) / len(b))
+    count = total = 0
+    for idx in combinations(range(len(pooled)), n_a):
+        chosen = set(idx)
+        ga = [pooled[i] for i in idx]
+        gb = [pooled[i] for i in range(len(pooled)) if i not in chosen]
+        d = abs(sum(ga) / len(ga) - sum(gb) / len(gb))
+        total += 1
+        if d >= obs - 1e-9:
+            count += 1
+    return count / total
+
+
+a = [420, 455, 438, 470]
+b = [395, 410, 402, 430]
+print(round(perm_test(a, b), 4))
+```
+
+It prints `0.0571`: 4 of the 70 splits (the observed one, a split that swaps the 420 and 430 ms values for a difference of 41.5 ms, and the mirror image of each) have a difference at least as large as 36.5 ms. A Welch test on the same data gives $p = 0.032$; the two methods answer slightly different questions, and with such small groups they can fall on opposite sides of 0.05. The `1e-9` tolerance in the comparison guards against floating-point error making an equal value look smaller.
+
+### Rank tests
+
+The **Mann-Whitney U** test (also called the Wilcoxon rank-sum test) replaces values by their ranks, so one extreme RT counts only as the largest rank. The statistic $U_a$ counts, over all pairs with one value from each group, the pairs in which the value from group A is larger (a tie counts one half). Here $U_a = 15$ out of $4 \times 4 = 16$ pairs. Under $H_0$ it has a known distribution that can be enumerated like the one above, and here it gives the same $p = 0.0571$ as the permutation test, since the ranks split in the same way. Equivalently, $U_a = R_a - n_a(n_a+1)/2$, where $R_a$ is the sum of A's ranks in the pooled data. Rank tests are robust to outliers and skew, but they address a different hypothesis: that a random value from A tends to exceed a random value from B, not that the means differ. The paired analogue is the Wilcoxon signed-rank test. Using rank tests is a defensible plan when data are clearly non-normal, but the choice should be made before seeing which test is significant.
+
+### The bootstrap
+
+The **bootstrap** estimates a sampling distribution by treating the sample as if it were the population: draw many **resamples** of size $n$ with replacement from the data, compute the statistic on each, and look at the spread. The **percentile interval** takes the middle part of the sorted bootstrap statistics: with $B$ resamples and $k = \lfloor (\alpha/2)\,B \rfloor$, the interval for confidence level $1 - \alpha$ runs from the sorted value at position $k$ to the one at position $B - 1 - k$ (counting from 0). In practice $B$ is 5000 or more. To keep results exactly reproducible in this course, the tests supply the resamples as lists of indices into the data.
+
+```python
+def bootstrap_means(x, resamples):
+    """Mean of each resample; a resample is a list of indices into x."""
+    return [sum(x[i] for i in r) / len(r) for r in resamples]
+
+
+print(bootstrap_means([10, 20, 30, 40], [[0, 0, 3, 3], [1, 2, 2, 2]]))
+```
+
+This prints `[25.0, 27.5]`. The bootstrap needs a sample that represents the population: with fewer than about 15 observations, the percentile interval tends to be too narrow, and it cannot see beyond the data (the largest bootstrap mean can never exceed the sample maximum). It shines for statistics with no simple formula, such as a median or a ratio.
+
+@example
+title: An exact sign-flip test
+problem: Four participants' RT changes between two conditions (ms) are $3, -1, 4, 2$. Test $H_0$ that the sign of each change is arbitrary, using the sum of the differences as the statistic and a two-sided exact p-value.
+step: The observed sum is $3 - 1 + 4 + 2 = 8$. There are $2^4 = 16$ equally likely sign patterns, because each of the four differences could carry either sign under $H_0$.
+step: List the patterns whose sum has $|S| \ge 8$. The largest possible sum is $3 + 1 + 4 + 2 = 10$ (all positive). Flipping only the value 1 to negative gives $8$ (the observed pattern). Flipping any other value lowers the sum to $4$ or less.
+step: So two patterns reach $|S| \ge 8$ on the positive side, and by symmetry two more on the negative side ($-10$ and $-8$): 4 patterns of 16.
+step: The p-value is $4/16 = 0.25$. With only four participants, the smallest possible two-sided p-value is $2/16 = 0.125$, so this design could never reach $p < 0.05$ however large the effect.
+answer: $p = 4/16 = 0.25$.
+
+@mistakes
+- Believing a permutation test needs no assumptions: it needs exchangeability under $H_0$, which holds for random assignment but not, for example, for groups that differ in variance when the question is about means.
+- Reporting a Monte Carlo p-value of exactly 0: use $(\text{count} + 1)/(B + 1)$, because the observed arrangement is itself one of the permutations.
+- Reading a Mann-Whitney result as a test of means: it addresses whether values in one group tend to be larger.
+- Bootstrapping a tiny sample and trusting the interval: the resamples can never contain values the sample lacks.
+
+@practice num
+prompt: A permutation test compares two groups of 5 participants each, using every possible way to split the 10 pooled values into two groups of 5. How many distinct splits are there?
+answer: 252
+check: comb(10, 5)
+hint: Choose which 5 of the 10 values form the first group.
+solution: $\binom{10}{5} = 252$. If the two groups had different sizes the count would be $\binom{n}{n_1}$ for the pooled $n$.
+
+@practice num
+prompt: In an exact permutation test with 6 participants per group (924 equally likely splits), 37 of the splits, counting the observed one, give a difference in means with absolute value at least as large as the observed one. What is the two-sided p-value? Give four decimal places.
+answer: 0.0400
+tol: 0.0001
+check: 37 / comb(12, 6)
+hint: Divide the number of splits at least as extreme by the total number of splits, $\binom{12}{6}$.
+solution: $\binom{12}{6} = 924$ and $37/924 = 0.0400$.
+
+@practice mc
+prompt: A randomized experiment compares RTs of 5 participants in each of two conditions. The data are strongly right-skewed with one very slow trial, and the lab wants a p-value that does not rely on normality. Which test fits best?
+choice*: An exact permutation test on the difference in means, which relies on random assignment rather than a normal sampling distribution.
+choice: A pooled $t$ test, because equal group sizes guarantee valid p-values for any distribution.
+choice: A bootstrap p-value computed by resampling each group separately, because resampling adds information that the 10 observations lack.
+choice: No test is possible with fewer than 30 observations per group.
+hint: Ask which test uses only the randomization that the experimenter actually performed.
+solution: Under random assignment every split of the pooled data is equally likely when $H_0$ is true, so enumerating the splits gives an exact p-value that needs no normality. Equal group sizes do not repair the shaky normality of the sampling distribution of $t$ with such skewed data, and resampling cannot create information the sample lacks.
+
+@practice code
+prompt: Write `mann_whitney_u(a, b)` that returns $U_a$, the number of pairs `(x, y)` with `x` from list `a` and `y` from list `b` in which `x > y`, counting each pair with `x == y` as one half. For example, `mann_whitney_u([34, 41, 38, 52, 45], [30, 38, 29, 36])` returns `17.5` (the tie between the two 38s counts one half).
+starter:
+```python
+def mann_whitney_u(a, b):
+    pass
+```
+tests:
+```python
+assert mann_whitney_u([34, 41, 38, 52, 45], [30, 38, 29, 36]) == 17.5
+assert mann_whitney_u([1, 2, 3], [2, 3, 4]) == 2.0
+assert mann_whitney_u([5, 6], [1, 2, 3]) == 6
+assert mann_whitney_u([1, 2, 3], [7, 8]) == 0
+u1 = mann_whitney_u([3, 9, 4], [5, 1, 8, 2])
+u2 = mann_whitney_u([5, 1, 8, 2], [3, 9, 4])
+assert u1 + u2 == 12
+```
+model:
+```python
+def mann_whitney_u(a, b):
+    """U statistic for group a: pairs won by a, with ties counted as half."""
+    u = 0.0
+    for x in a:
+        for y in b:
+            if x > y:
+                u += 1
+            elif x == y:
+                u += 0.5
+    return u
+```
+hint: Loop over every pair; add 1 if the value from `a` is larger and 0.5 if the two values are equal.
+solution: The two groups' U values always add up to $n_a n_b$, which the last test checks, and a group that exceeds the other in every pair gets the maximum $n_a n_b$. The tie rule matters whenever data are recorded coarsely, as RTs rounded to a few milliseconds often are.
+
+@practice code
+prompt: Write `sign_flip_p(diffs)` that returns the exact two-sided p-value of a sign-flip (paired permutation) test on a list of paired differences. Enumerate all $2^n$ sign patterns with `itertools.product([1, -1], repeat=n)`; for each, compute the sum of `sign * difference`; count patterns whose absolute sum is at least the absolute value of the observed sum (minus `1e-9` to guard floating-point error), and return `count / 2**n`. For example, `sign_flip_p([12, 5, 9, -3, 8, 15])` returns `0.0625`.
+starter:
+```python
+def sign_flip_p(diffs):
+    pass
+```
+tests:
+```python
+assert abs(sign_flip_p([12, 5, 9, -3, 8, 15]) - 0.0625) < 1e-12
+assert abs(sign_flip_p([2, -1, 3]) - 0.5) < 1e-12
+assert abs(sign_flip_p([4, -2, 6, 1, -3]) - 0.5625) < 1e-12
+assert abs(sign_flip_p([1, 1, 1, 1, 1]) - 2 / 32) < 1e-12
+assert abs(sign_flip_p([-1, -1, -1, -1, -1]) - 2 / 32) < 1e-12
+```
+model:
+```python
+from itertools import product
+
+
+def sign_flip_p(diffs):
+    """Exact two-sided p-value of a paired sign-flip test on the sum."""
+    n = len(diffs)
+    obs = abs(sum(diffs))
+    count = 0
+    for signs in product([1, -1], repeat=n):
+        s = sum(g * d for g, d in zip(signs, diffs))
+        if abs(s) >= obs - 1e-9:
+            count += 1
+    return count / 2 ** n
+```
+hint: For each sign pattern compute the signed sum, and count it when its absolute value is at least the observed absolute sum.
+solution: Under $H_0$ each difference is equally likely to carry either sign, so the $2^n$ patterns are equally likely. When all differences have the same sign only the all-positive and all-negative patterns reach the observed sum, so the p-value is $2/2^n$, the smallest this design can give.
+
+@quiz code
+prompt: Write `bootstrap_ci(x, resamples, alpha)` that returns the percentile interval `(low, high)`. Each element of `resamples` is a list of indices into `x`. Compute the mean of each resample, sort the means, let `B = len(resamples)` and `k = int(alpha / 2 * B)`, and return `(means[k], means[B - 1 - k])`. For example, with `x = [12, 18, 15, 22, 30, 17, 20, 14]`, ten fixed resamples and `alpha = 0.2`, the interval is `(15.0, 21.25)`.
+starter:
+```python
+def bootstrap_ci(x, resamples, alpha):
+    pass
+```
+tests:
+```python
+x = [12, 18, 15, 22, 30, 17, 20, 14]
+res = [[0, 1, 2, 3, 4, 5, 6, 7], [7, 7, 6, 6, 5, 5, 4, 4],
+       [0, 0, 0, 1, 1, 1, 2, 2], [3, 4, 5, 6, 7, 0, 1, 2],
+       [4, 4, 4, 4, 5, 5, 5, 5], [0, 2, 4, 6, 1, 3, 5, 7],
+       [1, 1, 2, 2, 3, 3, 4, 4], [6, 6, 6, 7, 7, 7, 5, 5],
+       [2, 3, 2, 3, 2, 3, 2, 3], [0, 1, 0, 1, 0, 1, 0, 1]]
+lo, hi = bootstrap_ci(x, res, 0.2)
+assert abs(lo - 15.0) < 1e-9 and abs(hi - 21.25) < 1e-9
+lo, hi = bootstrap_ci(x, res, 0.4)
+assert abs(lo - 17.0) < 1e-9 and abs(hi - 20.25) < 1e-9
+lo, hi = bootstrap_ci(x, res, 0.05)
+assert abs(lo - 15.0) < 1e-9 and abs(hi - 23.5) < 1e-9
+assert res[0] == [0, 1, 2, 3, 4, 5, 6, 7]
+```
+model:
+```python
+def bootstrap_ci(x, resamples, alpha):
+    """Percentile bootstrap interval for the mean from supplied resamples."""
+    means = sorted(sum(x[i] for i in r) / len(r) for r in resamples)
+    B = len(means)
+    k = int(alpha / 2 * B)
+    return means[k], means[B - 1 - k]
+```
+hint: Compute and sort the resample means first; the lower limit is at position `k` and the upper at position `B - 1 - k`.
+solution: The sorted resample means are 15.0, 15.0, 17.0, 18.5 (four times), 20.25, 21.25 and 23.5. With $B = 10$ and $\alpha = 0.2$, $k = 1$, so the limits are the second smallest and second largest. With $\alpha = 0.05$ nothing is trimmed ($k = 0$) and the interval runs from the minimum to the maximum. Sorting is essential: unsorted means would give meaningless limits.
+
+@quiz num
+prompt: In a Mann-Whitney test, group A has $n_A = 8$ observations whose ranks in the pooled data sum to $R_A = 62$. What is $U_A = R_A - n_A(n_A + 1)/2$?
+answer: 26
+check: 62 - 8 * 9 / 2
+hint: The smallest possible rank sum for 8 observations is $1 + 2 + \dots + 8 = n_A(n_A+1)/2$.
+solution: $n_A(n_A+1)/2 = 36$, so $U_A = 62 - 36 = 26$: group A wins 26 of the pairs.
+
+@quiz text
+prompt: What does this program print?
+```python
+x = [10, 20, 30]
+res = [[0, 0, 1], [2, 2, 2], [1, 2, 0]]
+print([round(sum(x[i] for i in r) / 3, 2) for r in res])
+```
+answer: [13.33, 30.0, 20.0]
+check: run("x = [10, 20, 30]\nres = [[0, 0, 1], [2, 2, 2], [1, 2, 0]]\nprint([round(sum(x[i] for i in r) / 3, 2) for r in res])")
+hint: The first resample is the values 10, 10 and 20.
+solution: The resamples are $(10, 10, 20)$ with mean $13.33$, $(30, 30, 30)$ with mean $30.0$ and $(20, 30, 10)$ with mean $20.0$.

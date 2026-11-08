@@ -1,0 +1,227 @@
+@lesson
+title: Multiple regression and its pitfalls
+summary: Fit a regression with several predictors by solving the normal equations in plain Python, interpret partial slopes, and detect collinearity and overfitting.
+objective: Fit $\hat{y} = b_0 + b_1 x_1 + b_2 x_2$ by solving the normal equations, and interpret each slope as the effect of its predictor with the others held fixed.
+objective: Compute $R^2$ and adjusted $R^2$, and explain why $R^2$ alone cannot compare models of different sizes.
+objective: Diagnose collinearity with the variance inflation factor, and explain how confounds, collinearity and omitted variables can change or reverse a coefficient.
+reading: OpenIntro Statistics, the chapter on multiple and logistic regression: multiple regression models, adjusted R-squared, collinearity and model selection.
+
+@article
+Eight adults do a reaction-time task. The more hours per week they play video games, the faster they are: the simple regression slope of RT on gaming hours is $-8.1$ ms per hour, with $r = -0.91$. Tempting headline: gaming speeds you up. But the more they game, the younger they are, and young adults are quick anyway. **Multiple regression** puts both predictors in one model so each coefficient measures a predictor's association with the outcome while the others are held fixed.
+
+| age (years) | 20 | 25 | 30 | 35 | 40 | 45 | 50 | 55 |
+|---|---|---|---|---|---|---|---|---|
+| gaming (h/week) | 14 | 12 | 13 | 8 | 9 | 5 | 6 | 2 |
+| RT (ms) | 352 | 371 | 390 | 396 | 419 | 431 | 452 | 455 |
+
+### The model and its fit
+
+The model is $y = \beta_0 + \beta_1 x_1 + \dots + \beta_k x_k + \varepsilon$. With the data matrix $\mathbf{X}$ (a first column of ones for the intercept, then one column per predictor) and the response vector $\mathbf{y}$, the least-squares coefficients $\mathbf{b}$ minimize $\|\mathbf{y} - \mathbf{X}\mathbf{b}\|^2$ and satisfy the **normal equations**
+
+$$(\mathbf{X}^\top \mathbf{X})\,\mathbf{b} = \mathbf{X}^\top \mathbf{y}.$$
+
+This is a small linear system, solvable by Gaussian elimination: no library is needed.
+
+```python
+def solve(A, b):
+    """Solve A x = b by Gaussian elimination with partial pivoting."""
+    n = len(b)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        for r in range(c + 1, n):
+            f = M[r][c] / M[c][c]
+            M[r] = [a - f * b2 for a, b2 in zip(M[r], M[c])]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        x[r] = (M[r][n] - sum(M[r][j] * x[j] for j in range(r + 1, n))) / M[r][r]
+    return x
+
+
+def ols(rows, y):
+    """Least-squares coefficients [b0, b1, ...]; rows hold the predictors."""
+    X = [[1.0] + list(r) for r in rows]
+    k = len(X[0])
+    XtX = [[sum(r[i] * r[j] for r in X) for j in range(k)] for i in range(k)]
+    Xty = [sum(r[i] * yy for r, yy in zip(X, y)) for i in range(k)]
+    return solve(XtX, Xty)
+
+
+age = [20, 25, 30, 35, 40, 45, 50, 55]
+gaming = [14, 12, 13, 8, 9, 5, 6, 2]
+rt = [352, 371, 390, 396, 419, 431, 452, 455]
+b = ols(list(zip(gaming, age)), rt)
+print([round(v, 2) for v in b])
+```
+
+The output is `[236.27, 2.8, 3.94]`: with age fixed, each additional gaming hour per week goes with $+2.8$ ms, and each extra year of age with $+3.94$ ms. The gaming slope **changed sign** once age entered the model. A coefficient's value depends on which other variables are in the model.
+
+### Interpreting and judging the model
+
+A partial slope $b_j$ is the predicted change in $y$ for a one-unit change in $x_j$ **among people who have the same values of the other predictors**. Equivalently (the Frisch–Waugh result), $b_j$ is the simple slope of $y$ on the part of $x_j$ left over after regressing it on the other predictors. It supports a causal reading only if no important variable is left out and the direction is known; unmeasured confounds still bias it.
+
+$R^2 = 1 - SS_{\text{res}}/SS_{\text{total}}$ never decreases when a predictor is added, even a useless one, so it rewards overfitting. **Adjusted $R^2$** charges for each predictor:
+
+$$R^2_{\text{adj}} = 1 - (1 - R^2)\,\frac{n - 1}{n - k - 1},$$
+
+with $n$ observations and $k$ predictors. Here $R^2 = 0.9958$ and $R^2_{\text{adj}} = 0.9941$. A model with many predictors and few observations fits the noise: it predicts the sample well and new data badly, so predictors should be chosen by theory or checked on held-out data, never selected after looking at which ones reach $p < 0.05$.
+
+### Collinearity
+
+When predictors are strongly correlated, the data cannot separate their effects. The **variance inflation factor** for predictor $j$ is $\text{VIF}_j = 1/(1 - R_j^2)$, where $R_j^2$ is the $R^2$ from regressing $x_j$ on the other predictors; with two predictors $R_j^2 = r_{12}^2$. The standard error of $b_j$ is multiplied by $\sqrt{\text{VIF}_j}$. Here $r_{12} = -0.95$ between age and gaming, so $\text{VIF} = 10.2$, and the standard errors are about three times as large as they would be with uncorrelated predictors: the sign flip of the gaming slope should not be over-read either. Collinearity does not bias the coefficients or the predictions; it makes individual coefficients unstable. Remedies are more data that vary the predictors independently, dropping or combining redundant predictors, or an experiment that sets them independently.
+
+@example
+title: Two predictors from sums of squares
+problem: Five trials have predictors $x_1 = 1, 2, 3, 4, 5$ and $x_2 = 2, 1, 4, 3, 5$ and outcome $y = 5, 6, 11, 10, 16$. Fit $\hat{y} = b_0 + b_1 x_1 + b_2 x_2$ using centered sums.
+step: Center each variable (means 3, 3 and 9.6), then compute $S_{11} = \sum (x_1 - \bar{x}_1)^2 = 10$, $S_{22} = 10$, $S_{12} = \sum (x_1 - \bar{x}_1)(x_2 - \bar{x}_2) = 8$, $S_{1y} = 26$ and $S_{2y} = 26$.
+step: For two predictors the normal equations reduce to $S_{11}b_1 + S_{12}b_2 = S_{1y}$ and $S_{12}b_1 + S_{22}b_2 = S_{2y}$, so $b_1 = \dfrac{S_{1y}S_{22} - S_{2y}S_{12}}{S_{11}S_{22} - S_{12}^2} = \dfrac{260 - 208}{100 - 64} = \dfrac{52}{36} = 1.444$.
+step: By the symmetry of these numbers, $b_2 = (S_{2y}S_{11} - S_{1y}S_{12})/36 = 52/36 = 1.444$ as well.
+step: The intercept makes the plane pass through the means: $b_0 = 9.6 - 1.444 \times 3 - 1.444 \times 3 = 0.933$.
+step: Compare with the simple regression of $y$ on $x_1$ alone: its slope is $S_{1y}/S_{11} = 2.6$, larger than the partial slope $1.444$, because $x_2$ is correlated with $x_1$ ($r_{12} = 0.8$) and carries part of the effect.
+answer: $\hat{y} = 0.933 + 1.444\,x_1 + 1.444\,x_2$; the simple slope of $x_1$ (2.6) overstates its partial effect.
+
+@mistakes
+- Reading a partial slope as the simple slope: the two answer different questions and can even differ in sign.
+- Judging a model by $R^2$ alone: it cannot fall when predictors are added, so use adjusted $R^2$, held-out data or theory.
+- Dropping predictors one at a time until everything is significant: the surviving p-values are no longer valid.
+- Claiming that a coefficient is "the effect of $x_j$" when important confounds were not measured.
+
+@practice num
+prompt: A regression with $k = 3$ predictors fitted to $n = 20$ participants has $R^2 = 0.60$. What is the adjusted $R^2$? Give three decimal places.
+answer: 0.525
+tol: 0.001
+check: 1 - (1 - 0.60) * (20 - 1) / (20 - 3 - 1)
+hint: Use $R^2_{\text{adj}} = 1 - (1 - R^2)(n-1)/(n-k-1)$.
+solution: $(n-1)/(n-k-1) = 19/16 = 1.1875$, so $R^2_{\text{adj}} = 1 - 0.40 \times 1.1875 = 0.525$.
+
+@practice num
+prompt: Two predictors in a regression are correlated at $r = 0.9$. What is the variance inflation factor of each? Give two decimal places.
+answer: 5.26
+tol: 0.01
+check: 1 / (1 - 0.9 ** 2)
+hint: With two predictors, $R_j^2 = r^2$; then $\text{VIF} = 1/(1 - R_j^2)$.
+solution: $r^2 = 0.81$, so $\text{VIF} = 1/0.19 = 5.26$: the standard error of each slope is about $\sqrt{5.26} = 2.3$ times what it would be with uncorrelated predictors.
+
+@practice mc
+prompt: You add a predictor that is pure noise (unrelated to the outcome) to a fitted regression with $n = 25$. What happens to $R^2$ and to adjusted $R^2$?
+choice*: $R^2$ cannot decrease (it usually rises slightly), while adjusted $R^2$ will typically fall.
+choice: Both always rise, because more predictors give more information.
+choice: Both stay exactly the same, because the new coefficient is zero.
+choice: $R^2$ falls and adjusted $R^2$ rises, because the model is penalized for noise.
+hint: The fitted noise coefficient is almost never exactly zero in a finite sample.
+solution: Least squares can always use the extra column to reduce the residual sum of squares at least a little, so $R^2$ does not fall. Adjusted $R^2$ subtracts a penalty for the extra parameter, so a useless predictor usually lowers it.
+
+@practice code
+prompt: Write `r_squared(y, yhat)` that returns $R^2 = 1 - SS_{\text{res}}/SS_{\text{total}}$ for lists of observed values `y` and fitted values `yhat`, where $SS_{\text{res}} = \sum (y_i - \hat{y}_i)^2$ and $SS_{\text{total}} = \sum (y_i - \bar{y})^2$. For example, `r_squared([3, 5, 7, 9], [3.5, 4.5, 7.5, 8.5])` returns `0.95`.
+starter:
+```python
+def r_squared(y, yhat):
+    pass
+```
+tests:
+```python
+assert abs(r_squared([3, 5, 7, 9], [3.5, 4.5, 7.5, 8.5]) - 0.95) < 1e-9
+assert abs(r_squared([1, 2, 3], [1, 2, 3]) - 1.0) < 1e-12
+assert abs(r_squared([1, 2, 3], [2, 2, 2])) < 1e-12
+assert r_squared([1, 2, 3], [3, 2, 1]) < 0
+```
+model:
+```python
+def r_squared(y, yhat):
+    """Proportion of the variance of y accounted for by the fitted values."""
+    my = sum(y) / len(y)
+    ss_res = sum((a - b) ** 2 for a, b in zip(y, yhat))
+    ss_tot = sum((a - my) ** 2 for a in y)
+    return 1 - ss_res / ss_tot
+```
+hint: Compare the squared errors of the model with the squared errors of simply predicting the mean of `y`.
+solution: Predicting the mean gives $R^2 = 0$, and perfect predictions give 1. For fitted values that are not from a least-squares fit with an intercept, $R^2$ can be negative, as in the last test, where the predictions are worse than the mean.
+
+@practice code
+prompt: Write `residualize(x, z)` that returns the list of residuals of `x` after a simple least-squares regression of `x` on `z` (with intercept), in the original order. These residuals are the part of `x` not explained by `z`. For example, `residualize([3, 5, 4, 8, 7], [1, 2, 3, 4, 5])` returns about `[-0.2, 0.7, -1.4, 1.5, -0.6]`. Then the slope of `y` on these residuals is the partial slope of `x` in a regression of `y` on `x` and `z`.
+starter:
+```python
+def residualize(x, z):
+    pass
+```
+tests:
+```python
+x, z, y = [3, 5, 4, 8, 7], [1, 2, 3, 4, 5], [10, 14, 11, 19, 20]
+r = residualize(x, z)
+want = [-0.2, 0.7, -1.4, 1.5, -0.6]
+assert all(abs(a - b) < 1e-9 for a, b in zip(r, want))
+assert abs(sum(r)) < 1e-9
+assert abs(sum(a * b for a, b in zip(r, z)) - sum(r) * sum(z) / 5) < 1e-9
+my = sum(y) / 5
+partial = sum(a * (b - my) for a, b in zip(r, y)) / sum(a * a for a in r)
+assert abs(partial - 1.745098) < 1e-5
+```
+model:
+```python
+def residualize(x, z):
+    """Residuals of x after regressing x on z."""
+    n = len(x)
+    mx, mz = sum(x) / n, sum(z) / n
+    szz = sum((b - mz) ** 2 for b in z)
+    sxz = sum((a - mx) * (b - mz) for a, b in zip(x, z))
+    slope = sxz / szz
+    intercept = mx - slope * mz
+    return [a - (intercept + slope * b) for a, b in zip(x, z)]
+```
+hint: Regress `x` on `z` as in simple regression, then subtract each fitted value from the observed `x`.
+solution: The residuals have mean zero and are uncorrelated with `z`, so they contain only the variation in `x` that `z` cannot account for. The slope of `y` on them, $1.745$ here, equals the coefficient of `x` from the full two-predictor regression (the Frisch–Waugh result), which is why a partial slope means "with `z` held fixed".
+
+@quiz code
+prompt: Write `vif_two(x1, x2)` that returns the variance inflation factor $1/(1 - r^2)$ for two predictors, where $r$ is the Pearson correlation of the lists `x1` and `x2`. For example, `vif_two([20, 25, 30, 35, 40, 45, 50, 55], [14, 12, 13, 8, 9, 5, 6, 2])` returns about `10.19`.
+starter:
+```python
+def vif_two(x1, x2):
+    pass
+```
+tests:
+```python
+age = [20, 25, 30, 35, 40, 45, 50, 55]
+gaming = [14, 12, 13, 8, 9, 5, 6, 2]
+assert abs(vif_two(age, gaming) - 10.19148) < 1e-4
+assert abs(vif_two([2, 4, 6, 8], [3, 1, 4, 2]) - 1.0) < 1e-9
+assert abs(vif_two(age, [-v for v in gaming]) - vif_two(age, gaming)) < 1e-9
+assert vif_two([1, 2, 3, 4], [1, 2, 3, 5]) > 10
+```
+model:
+```python
+import math
+
+
+def vif_two(x1, x2):
+    """Variance inflation factor for a two-predictor model."""
+    n = len(x1)
+    m1, m2 = sum(x1) / n, sum(x2) / n
+    s12 = sum((a - m1) * (b - m2) for a, b in zip(x1, x2))
+    s11 = sum((a - m1) ** 2 for a in x1)
+    s22 = sum((b - m2) ** 2 for b in x2)
+    r2 = s12 ** 2 / (s11 * s22)
+    return 1 / (1 - r2)
+```
+hint: Compute $r^2 = S_{12}^2/(S_{11}S_{22})$ from the centered sums, then invert $1 - r^2$.
+solution: The VIF depends only on the squared correlation between the predictors, so a negative correlation inflates variance as much as a positive one. Uncorrelated predictors give 1, and the value grows without bound as $|r| \to 1$ (it is undefined for perfectly collinear predictors).
+
+@quiz num
+prompt: A fitted model is $\widehat{RT} = 236.3 + 2.8\,g + 3.94\,a$, where $g$ is gaming hours per week and $a$ is age in years. What RT does it predict for a person who games 10 hours per week and is 30 years old? Give the answer to the nearest millisecond.
+answer: 383
+tol: 1
+unit: ms
+check: 236.3 + 2.8 * 10 + 3.94 * 30
+hint: Substitute $g = 10$ and $a = 30$ into the equation.
+solution: $236.3 + 2.8 \times 10 + 3.94 \times 30 = 236.3 + 28 + 118.2 = 382.5$, which is about 383 ms (within 1 ms either way).
+
+@quiz text
+prompt: What does this program print?
+```python
+n, k, r2 = 10, 2, 0.5
+print(round(1 - (1 - r2) * (n - 1) / (n - k - 1), 3))
+```
+answer: 0.357
+check: run("n, k, r2 = 10, 2, 0.5\nprint(round(1 - (1 - r2) * (n - 1) / (n - k - 1), 3))")
+hint: $(n-1)/(n-k-1) = 9/7$.
+solution: $1 - 0.5 \times 9/7 = 1 - 0.642857 = 0.357143$, printed as `0.357`: with only 10 observations, two predictors cost a large share of the apparent $R^2 = 0.5$.

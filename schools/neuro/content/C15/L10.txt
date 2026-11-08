@@ -1,0 +1,210 @@
+@lesson
+title: Multiple comparisons: Bonferroni and false discovery rate
+summary: Compute the familywise error rate of many tests and correct a family of p-values with Bonferroni, Holm and Benjamini-Hochberg procedures written in plain Python.
+objective: Compute the probability of at least one false positive among $m$ independent tests and explain why uncorrected testing misleads.
+objective: Apply the Bonferroni, Holm and Benjamini-Hochberg procedures to a list of p-values and compare their rejections.
+objective: Distinguish familywise error control from false discovery rate control and choose between them for a stated goal.
+reading: OpenIntro Statistics, the discussion of multiple comparisons in the ANOVA section (the Bonferroni correction); then look up false discovery rate and the Benjamini-Hochberg procedure in the free resources of the course.
+
+@article
+A lab records 10 electrodes and tests each for a difference between conditions at $\alpha = 0.05$. Even if nothing at all is going on, each test has a 5% chance of a false alarm. How likely is at least one "significant" electrode? For $m$ independent tests of true null hypotheses,
+
+$$P(\text{at least one false positive}) = 1 - (1 - \alpha)^m = 1 - 0.95^{10} = 0.401.$$
+
+A 40% chance of a spurious finding is the **familywise error rate** (FWER) of uncorrected testing. With thousands of voxels in a brain scan or thousands of genes in an expression study, the problem is far worse, and a few "active" voxels are guaranteed by chance. The cure is to decide in advance which tests form the **family**, and to correct for the whole family.
+
+### Controlling the familywise error rate
+
+The **Bonferroni correction** tests each of $m$ hypotheses at level $\alpha/m$ (equivalently, multiplies each p-value by $m$, capping at 1). By the union bound, $P(\text{any false positive}) \le m\cdot\alpha/m = \alpha$, whatever the dependence between the tests. For 10 tests the per-test threshold is $0.005$. A close relative, the **Šidák correction**, uses $1 - (1-\alpha)^{1/m} = 0.00512$, exact for independent tests.
+
+The **Holm** procedure (1979) is never less powerful and keeps the same guarantee. Sort the p-values $p_{(1)} \le \dots \le p_{(m)}$. Compare $p_{(1)}$ with $\alpha/m$, $p_{(2)}$ with $\alpha/(m-1)$, and so on, comparing $p_{(i)}$ with $\alpha/(m - i + 1)$. Reject each hypothesis in turn until the first comparison that fails, then stop: that hypothesis and all with larger p-values are retained.
+
+### Controlling the false discovery rate
+
+When thousands of tests are run to find candidates for follow-up, requiring zero false positives is too strict. The **false discovery rate** (FDR) is the expected proportion of false positives among the hypotheses you declare significant ("discoveries"). Benjamini and Hochberg (1995) showed how to control it at a level $q$. Sort the p-values, find the largest rank $i$ with
+
+$$p_{(i)} \le \frac{i}{m}\,q,$$
+
+and reject the hypotheses with the $i$ smallest p-values, even if some of those p-values individually exceed their own threshold. The guarantee holds for independent tests and for many kinds of positive dependence. FWER control answers "How likely is any false claim in my list?" FDR control answers "What fraction of my list do I expect to be false?" A confirmatory test of a few planned hypotheses calls for FWER; an exploratory screen of thousands of features can reasonably use FDR, if the results are then described as candidates.
+
+```python
+def bonferroni(ps, alpha=0.05):
+    """True for each hypothesis rejected by the Bonferroni correction."""
+    return [p <= alpha / len(ps) for p in ps]
+
+
+def benjamini_hochberg(ps, q=0.05):
+    """True for each hypothesis rejected at false discovery rate q."""
+    m = len(ps)
+    order = sorted(range(m), key=lambda i: ps[i])
+    cutoff = 0
+    for rank, i in enumerate(order, start=1):
+        if ps[i] <= rank / m * q:
+            cutoff = rank
+    rejected = set(order[:cutoff])
+    return [i in rejected for i in range(m)]
+
+
+ps = [0.0004, 0.004, 0.0056, 0.012, 0.021, 0.038, 0.12, 0.35, 0.64, 0.9]
+print(sum(bonferroni(ps)), sum(benjamini_hochberg(ps)))
+```
+
+It prints `2 5`. Bonferroni (threshold $0.005$) keeps the first two p-values; Holm compares the third against $0.05/8 = 0.00625$ and keeps $0.0056$ too, rejecting 3; Benjamini-Hochberg finds $p_{(5)} = 0.021 \le 0.025$ and rejects the five smallest. The more liberal procedures buy power at the price of a weaker guarantee. Note that BH looks for the *largest* passing rank, not the first failure: a later p-value can rescue earlier ones.
+
+### What counts as a family
+
+No formula decides this. Declare the family before looking at the data: all electrodes, all pairwise group comparisons, all regions in an atlas. Trying many analyses and reporting the one that worked is a multiplicity problem even if each analysis looks like a single test (Week 11). In neuroimaging, correction is typically over voxels or clusters; Eklund, Nichols and Knutsson (2016) showed that some common cluster-based methods had false-positive rates well above the nominal 5%, which is why the exact corrected procedure and its assumptions must be named in a report. Corrections cost power, so plan the number of tests: fewer, theory-driven hypotheses give a smaller family.
+
+@example
+title: Bonferroni versus Benjamini-Hochberg
+problem: Six comparisons give p-values $0.002, 0.011, 0.017, 0.040, 0.10, 0.45$ (already sorted). Which are rejected by the Bonferroni correction at $\alpha = 0.05$ and by Benjamini-Hochberg at $q = 0.05$?
+step: Bonferroni's per-test threshold is $0.05/6 = 0.00833$. Only $0.002$ is below it, so one hypothesis is rejected.
+step: For Benjamini-Hochberg, the thresholds $\frac{i}{6}(0.05)$ for ranks 1 to 6 are $0.00833, 0.01667, 0.025, 0.03333, 0.04167, 0.05$.
+step: Compare each sorted p-value with its threshold: $0.002 \le 0.00833$ yes; $0.011 \le 0.01667$ yes; $0.017 \le 0.025$ yes; $0.040 \le 0.03333$ no; $0.10 \le 0.04167$ no; $0.45 \le 0.05$ no.
+step: The largest passing rank is 3, so the three smallest p-values are rejected, including $0.011$ and $0.017$, which fail the Bonferroni threshold.
+step: Interpret: Bonferroni keeps the chance of any false claim among the six at or below 5%. BH accepts that, on average, about 5% of the claims it makes may be false, and in return it finds three effects rather than one.
+answer: Bonferroni rejects 1 hypothesis (p = 0.002); Benjamini-Hochberg rejects 3 (p = 0.002, 0.011, 0.017).
+
+@mistakes
+- Correcting only the tests that look interesting after the fact: the family is every test that could have been reported.
+- Applying Benjamini-Hochberg but stopping at the first p-value that fails its threshold: the rule uses the largest rank that passes.
+- Describing FDR control as "5% chance that any result is false": it is the expected proportion of false results among those declared significant.
+- Using Bonferroni's $\alpha/m$ for the number of tests actually reported rather than the number run.
+
+@practice num
+prompt: A lab runs 20 independent tests of true null hypotheses, each at $\alpha = 0.05$. What is the probability of at least one false positive? Give three decimal places.
+answer: 0.642
+tol: 0.001
+check: 1 - 0.95 ** 20
+hint: The chance that all 20 tests avoid a false positive is $0.95^{20}$.
+solution: $1 - 0.95^{20} = 1 - 0.3585 = 0.6415$, about 0.642.
+
+@practice num
+prompt: Twenty p-values are tested with Benjamini-Hochberg at $q = 0.10$. What is the threshold $(i/m)\,q$ that the p-value of rank $i = 4$ must not exceed?
+answer: 0.02
+tol: 0.0001
+check: 4 / 20 * 0.10
+hint: Multiply the fraction $i/m$ by $q$.
+solution: $(4/20) \times 0.10 = 0.02$; the fourth smallest p-value passes its own test if it is at most 0.02.
+
+@practice mc
+prompt: A screen of 5000 genes (or channels, or voxels) is run to choose candidates for a follow-up experiment. Which statement about the choice of error rate is correct?
+choice*: Controlling the false discovery rate is reasonable for a screening step, because the follow-up will weed out false candidates and Bonferroni would find few true ones.
+choice: Controlling the false discovery rate guarantees that no declared discovery is false.
+choice: Bonferroni is always preferable, because it controls the false discovery rate more tightly than FDR procedures.
+choice: No correction is needed, since each test has only a 5% error rate.
+hint: Ask what a false positive costs in a screen that is followed by confirmation.
+solution: An FDR procedure bounds the expected fraction of false discoveries, not each one, which suits a screen whose candidates are then re-tested. Bonferroni guards against any false claim and has little power with thousands of tests. Without correction, hundreds of false positives are expected.
+
+@practice code
+prompt: Write `holm_reject(ps, alpha=0.05)` that returns a list of booleans, in the original order, saying which hypotheses the Holm procedure rejects. Sort the p-values from smallest to largest; for the $i$-th smallest (counting from 0) compare it with `alpha / (m - i)`, reject while it is at most that threshold, and stop at the first failure (everything from there on is retained). For example, `holm_reject([0.030, 0.001, 0.012, 0.250, 0.008])` returns `[False, True, True, False, True]`.
+starter:
+```python
+def holm_reject(ps, alpha=0.05):
+    pass
+```
+tests:
+```python
+assert holm_reject([0.030, 0.001, 0.012, 0.250, 0.008]) == [False, True, True, False, True]
+assert holm_reject([0.0004, 0.004, 0.0056, 0.03, 0.2]) == [True, True, True, False, False]
+assert holm_reject([0.2, 0.3]) == [False, False]
+assert holm_reject([0.02]) == [True]
+assert holm_reject([0.011, 0.06, 0.0004], alpha=0.05) == [True, False, True]
+assert holm_reject([0.001, 0.2, 0.004]) == [True, False, True]
+```
+model:
+```python
+def holm_reject(ps, alpha=0.05):
+    """Holm step-down procedure; rejections in the original order."""
+    m = len(ps)
+    order = sorted(range(m), key=lambda i: ps[i])
+    rejected = [False] * m
+    for step, i in enumerate(order):
+        if ps[i] <= alpha / (m - step):
+            rejected[i] = True
+        else:
+            break
+    return rejected
+```
+hint: Remember the original index of each p-value while sorting, and use `break` at the first comparison that fails.
+solution: Holm compares the smallest p-value with $\alpha/m$ (Bonferroni's threshold), then relaxes the threshold to $\alpha/(m-1)$, and so on, so it rejects everything Bonferroni does and sometimes more. In the first test the third p-value 0.012 is rejected because its threshold is $0.05/3 = 0.0167$, though Bonferroni's 0.01 would have kept it. In the test `[0.011, 0.06, 0.0004]`, the two smaller p-values pass at $0.05/3$ and $0.05/2$, but 0.06 exceeds the final threshold $0.05/1$, so it is retained.
+
+@practice code
+prompt: Write `bh_adjusted(ps)` that returns the Benjamini-Hochberg adjusted p-values (q-values), in the original order. For the $i$-th smallest p-value (rank $r = i + 1$, counting from 1) the raw adjustment is `p * m / r`; the adjusted value is the minimum of the raw adjustments over that rank and all larger ranks, capped at 1. A hypothesis is rejected at false discovery rate $q$ when its adjusted value is at most $q$. For example, `bh_adjusted([0.030, 0.001, 0.012, 0.250, 0.008])` returns `[0.0375, 0.005, 0.02, 0.25, 0.02]`.
+starter:
+```python
+def bh_adjusted(ps):
+    pass
+```
+tests:
+```python
+want = [0.0375, 0.005, 0.02, 0.25, 0.02]
+got = bh_adjusted([0.030, 0.001, 0.012, 0.250, 0.008])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+got = bh_adjusted([0.04, 0.01, 0.03, 0.005, 0.2, 0.002])
+want = [0.048, 0.02, 0.045, 0.015, 0.2, 0.012]
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+assert bh_adjusted([0.9]) == [0.9]
+assert all(abs(a - 0.6) < 1e-9 for a in bh_adjusted([0.5, 0.6, 0.6]))
+assert max(bh_adjusted([0.9, 0.95, 0.99])) <= 1.0
+```
+model:
+```python
+def bh_adjusted(ps):
+    """Benjamini-Hochberg adjusted p-values in the original order."""
+    m = len(ps)
+    order = sorted(range(m), key=lambda i: ps[i])
+    adjusted = [0.0] * m
+    running = 1.0
+    for rank in range(m, 0, -1):
+        i = order[rank - 1]
+        running = min(running, ps[i] * m / rank)
+        adjusted[i] = running
+    return adjusted
+```
+hint: Walk through the sorted p-values from the largest rank down to 1, keeping a running minimum of `p * m / rank`.
+solution: The running minimum, computed from the largest p-value downward, makes the adjusted values monotone in the p-values, which is why a later p-value can rescue earlier ones (the first test shows 0.012 and 0.008 both adjusted to 0.02). The cap at 1 is the starting value of the running minimum.
+
+@quiz code
+prompt: Write `sidak_threshold(m, alpha)` that returns the per-test significance level $1 - (1 - \alpha)^{1/m}$ that keeps the familywise error rate of $m$ independent tests at exactly `alpha`. For example, `sidak_threshold(10, 0.05)` returns about `0.0051162`.
+starter:
+```python
+def sidak_threshold(m, alpha):
+    pass
+```
+tests:
+```python
+assert abs(sidak_threshold(10, 0.05) - 0.0051162) < 1e-7
+assert abs(sidak_threshold(4, 0.01) - 0.0025094) < 1e-7
+assert abs(sidak_threshold(1, 0.05) - 0.05) < 1e-12
+for m in (2, 5, 30):
+    t = sidak_threshold(m, 0.05)
+    assert abs(1 - (1 - t) ** m - 0.05) < 1e-12
+    assert t > 0.05 / m
+```
+model:
+```python
+def sidak_threshold(m, alpha):
+    """Per-test level giving familywise error rate alpha for m independent tests."""
+    return 1 - (1 - alpha) ** (1 / m)
+```
+hint: Solve $1 - (1 - t)^m = \alpha$ for $t$.
+solution: Rearranging gives $(1 - t)^m = 1 - \alpha$, so $t = 1 - (1-\alpha)^{1/m}$. It is always slightly larger than Bonferroni's $\alpha/m$, which the loop checks, but the two are almost identical for small $\alpha$; the Šidák level is exact only for independent tests.
+
+@quiz num
+prompt: Eight p-values, already sorted, are $0.003, 0.009, 0.021, 0.040, 0.052, 0.11, 0.30, 0.55$. Using Benjamini-Hochberg at $q = 0.10$, how many hypotheses are rejected?
+answer: 5
+check: max([i for i, p in enumerate([0.003, 0.009, 0.021, 0.040, 0.052, 0.11, 0.30, 0.55], start=1) if p <= i / 8 * 0.10] + [0])
+hint: Compare the $i$-th p-value with $(i/8)(0.10)$ and take the largest rank that passes.
+solution: The thresholds for ranks 1 to 8 are $0.0125, 0.025, 0.0375, 0.05, 0.0625, 0.075, 0.0875, 0.10$. The p-values pass through rank 5 ($0.052 \le 0.0625$) and fail from rank 6 ($0.11 > 0.075$), so five hypotheses are rejected (Bonferroni, with threshold $0.05/8 = 0.00625$, would reject only two).
+
+@quiz text
+prompt: What does this program print?
+```python
+ps = [0.01, 0.04, 0.2]
+print([round(min(1, p * len(ps)), 3) for p in ps])
+```
+answer: [0.03, 0.12, 0.6]
+check: run("ps = [0.01, 0.04, 0.2]\nprint([round(min(1, p * len(ps)), 3) for p in ps])")
+hint: Bonferroni multiplies each p-value by the number of tests, here 3, and caps the result at 1.
+solution: The adjusted values are $0.03$, $0.12$ and $0.6$. At $\alpha = 0.05$ only the first would be called significant.

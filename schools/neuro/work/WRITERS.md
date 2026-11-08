@@ -28,3 +28,5 @@ Runner: Brython 3.14.3 (BSD) in a Web Worker; same build as the AI school.
 Log:
 - Setup (Nov 7–8): owner chose "Neuro + cog sci to PhD prep" and "Python in the page for data and modeling"; pipeline copied from the AI school; curriculum in work/curriculum.py; storage prefix nlf; example lesson toolkit/example_neuro_lesson.txt (the leaky integrate-and-fire neuron, validated, P-style with 2 code items); BRIEF with neuroscience notation and units, standard attributions and verified current facts (UNESCO neurotechnology recommendation 12 Nov 2025, Chile 2021 and 2023, four US state neural data laws and the MIND Act bill, Declaration of Helsinki 19 Oct 2024, the Common Rule, DSM-5-TR and ICD-11); REVIEW template adapted; app rebranded.
 - batch 1 (Nov 8): C11 C12 C13 C14 C15
+- C13 done (0 errors, 96 + 3 exam, one code item; neuron counts, decussation percentages, language dominance, hair-cell counts, CAG thresholds and SSEP peaks passed to the reviewer as verified); review started C13; started C16
+- C11 done (0 errors, 97 + 3 exam, 6 code items; two-process constants as illustrative, 24.2 h period, debated points marked); review started C11; started C17

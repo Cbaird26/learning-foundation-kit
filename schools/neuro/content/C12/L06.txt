@@ -1,0 +1,303 @@
+@lesson
+title: Action potentials: threshold, refractoriness and propagation
+summary: Simulate a Hodgkin–Huxley spike with Euler steps, find its threshold and refractory period, and measure how fast it travels.
+objective: Simulate the Hodgkin–Huxley model with Euler steps and read off the peak, the upstroke and the undershoot of the spike.
+objective: Explain threshold as a balance of inward and outward currents, and measure it by bisection on the stimulus amplitude.
+objective: Explain absolute and relative refractoriness through Na+ inactivation and K+ activation, and estimate conduction velocity from arrival times.
+reading: Neuronal Dynamics, the chapter on biophysical models of neurons: the Hodgkin–Huxley model's response to current pulses, threshold and refractoriness.
+
+@article
+Last week gave us the equations. This week we run them. A short current pulse of the right size triggers a spike; a pulse a little smaller triggers only a small bump; a second pulse right after the first fails to trigger anything. These three facts, all-or-none firing, a threshold and refractoriness, fall out of the same four differential equations.
+
+### Simulating with Euler steps
+
+With the conventions of week 5 ($V$ in mV, time in ms, current in µA/cm²), the **Euler method** advances every variable from its old values: $V \leftarrow V + \Delta t\,(I_\text{ext} - I_\text{ion})/C$ with $C = 1$, and $x \leftarrow x + \Delta t\,[\alpha_x(1 - x) - \beta_x x]$ for $x = m, h, n$. All new values must be computed from the old state, and the simulation starts at the resting state, where each gate is at its steady state at $-65$ mV.
+
+```python
+import math
+
+
+def rates(V):
+    x, y = V + 55.0, V + 40.0
+    a_n = 0.1 if abs(x) < 1e-7 else 0.01 * x / (1.0 - math.exp(-x / 10.0))
+    a_m = 1.0 if abs(y) < 1e-7 else 0.1 * y / (1.0 - math.exp(-y / 10.0))
+    return (a_n, 0.125 * math.exp(-(V + 65.0) / 80.0),
+            a_m, 4.0 * math.exp(-(V + 65.0) / 18.0),
+            0.07 * math.exp(-(V + 65.0) / 20.0),
+            1.0 / (1.0 + math.exp(-(V + 35.0) / 10.0)))
+
+
+def hh_simulate(amp, t_on, t_off, t_end, dt=0.01):
+    """Voltage trace (mV): the start value plus one value per Euler step."""
+    V = -65.0
+    a_n, b_n, a_m, b_m, a_h, b_h = rates(V)
+    n, m, h = a_n / (a_n + b_n), a_m / (a_m + b_m), a_h / (a_h + b_h)
+    trace = [V]
+    for k in range(int(round(t_end / dt))):
+        I = amp if t_on <= k * dt < t_off else 0.0
+        a_n, b_n, a_m, b_m, a_h, b_h = rates(V)
+        i_ion = (120.0 * m ** 3 * h * (V - 50.0) + 36.0 * n ** 4 * (V + 77.0)
+                 + 0.3 * (V + 54.387))
+        dV = I - i_ion
+        dn = a_n * (1 - n) - b_n * n
+        dm = a_m * (1 - m) - b_m * m
+        dh = a_h * (1 - h) - b_h * h
+        V, n, m, h = V + dt * dV, n + dt * dn, m + dt * dm, h + dt * dh
+        trace.append(V)
+    return trace
+
+trace = hh_simulate(10.0, 0.0, 1.0, 6.0)
+peak = max(trace)
+print(round(peak, 2), round(trace.index(peak) * 0.01, 2))
+```
+
+This prints `39.34 2.53`: a 1 ms pulse of 10 µA/cm² produces a spike peaking at $+39$ mV, 2.5 ms after the pulse starts. The voltage trace, sampled at a few times (step 0.01 ms):
+
+| time (ms) | 0 | 0.5 | 1 | 1.5 | 2 | 2.5 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| $V$ (mV) | −65.0 | −60.5 | −56.0 | −53.4 | −41.6 | 39.0 | 22.1 | −27.0 | −75.4 | −76.0 |
+
+After the pulse ends the voltage keeps rising on its own: the Na+ current has taken over. The spike then falls below rest to about $-76$ mV (the **undershoot**, near $E_\text{K} = -77$ mV) because $g_\text{K}$ is still elevated. The Euler step must be small relative to the fastest time constant (about 0.2 ms); halving $\Delta t$ from 0.01 to 0.005 ms changes the peak by well under 1 mV.
+
+### Threshold
+
+A pulse of 7 µA/cm² for 1 ms is only just enough: with much less the voltage rises a few millivolts and decays back, with a bit more the spike is full size. The response is **all-or-none**: above threshold the spike is nearly the same whatever the stimulus, because its energy comes from the Na+ gradient, not from the stimulus. Threshold is the point where the inward Na+ current, which grows regeneratively with depolarization, first exceeds the outward K+ and leak currents. It is not a fixed voltage: it depends on the stimulus duration (a **strength–duration relation**). Minimum amplitudes found by bisection in this model, for a pulse starting at 0 ms:
+
+| pulse duration (ms) | 0.5 | 1 | 2 |
+|---|---|---|---|
+| minimum amplitude (µA/cm²) | 13.3 | 7.0 | 3.9 |
+
+Longer pulses need less current, but the product amplitude × duration (the charge) is lowest for brief pulses: charge is lost through the leak while the capacitor charges slowly.
+
+### Refractoriness
+
+Right after a spike, Na+ channels are inactivated ($h$ is small) and K+ channels are still open ($n$ is large). During the **absolute refractory period** no stimulus can trigger a second spike; afterwards, in the **relative refractory period**, a stronger-than-normal stimulus is needed. With the 1 ms pulse of the example as the first stimulus, the minimum amplitude of a second 1 ms pulse that evokes a second spike was about 63 µA/cm² when it started 8 ms after the first, about 31 at 10 ms and about 9 at 15 ms, while nothing up to 200 µA/cm² worked at 4 to 6 ms. The refractory period limits the maximum firing rate to roughly $1000/(\text{refractory period in ms})$ Hz.
+
+### Propagation
+
+A spike at one point of an axon depolarizes the neighboring membrane by local-circuit current (the passive spread of week 4); when that membrane reaches threshold, it fires, and so on. The spike is regenerated at every point, so it does not decay. It travels in one direction because the membrane just behind it is refractory. Two spikes colliding head-on annihilate each other for the same reason. The **conduction velocity** is the slope of position against spike arrival time; the length of the spike along the axon is velocity × spike duration (for 20 m/s and a 1 ms spike, 20 mm).
+
+@example
+title: Conduction velocity from three electrodes
+problem: Three electrodes on an axon at positions 0, 12 and 30 mm record spike peaks at 2.0, 3.1 and 4.5 ms. Estimate the conduction velocity by the slope of a least-squares line of position against arrival time.
+step: Compute the means: positions $\bar x = 14$ mm, times $\bar t = 3.2$ ms.
+step: Compute the deviations: times $-1.2, -0.1, +1.3$; positions $-14, -2, +16$. The sum of products is $16.8 + 0.2 + 20.8 = 37.8$; the sum of squared time deviations is $1.44 + 0.01 + 1.69 = 3.14$.
+step: The slope is $37.8/3.14 = 12.04$ mm/ms, and 1 mm/ms is 1 m/s.
+answer: About $12.0$ m/s.
+
+@example
+title: Spike time from a sampled trace
+problem: A voltage trace is sampled every 1 ms: $-65, -20, 30, 10, -40$ mV at $t = 0, 1, 2, 3, 4$ ms. When does the spike cross $0$ mV?
+step: Find the sample pair where $V$ goes from below 0 to at or above 0: between $t = 1$ ms ($-20$) and $t = 2$ ms ($30$).
+step: Interpolate linearly: the fraction of the interval is $(0 - (-20))/(30 - (-20)) = 0.4$.
+step: The crossing time is $1 + 0.4 \times 1 = 1.4$ ms. The later fall from 10 to $-40$ is a downward crossing and is not counted.
+answer: The upward crossing is at $1.4$ ms.
+
+@mistakes
+- Updating the variables one after another within a step: $V$ must be advanced with the old $m$, $h$, $n$, and the gates with the old $V$; otherwise the scheme is not Euler's.
+- Calling a subthreshold bump a spike: spikes are counted as upward crossings of a fixed level (here 0 mV), and a trace that stays below it contains none.
+- Reading refractoriness as a property of the stimulus: it is a property of the membrane state, set by Na+ inactivation and elevated K+ conductance.
+- Using $1$ mm/ms $= 1$ mm/s: the units give $1$ m/s, since mm/ms equals m/s.
+
+@practice num
+prompt: Two electrodes on a nerve are 30 mm apart. A spike peaks at the first electrode at 2.1 ms and at the second at 3.6 ms. What is the conduction velocity, in meters per second?
+answer: 20
+unit: m/s
+check: 30 / (3.6 - 2.1)
+hint: Velocity is distance over delay; 1 mm/ms equals 1 m/s.
+solution: The delay is $3.6 - 2.1 = 1.5$ ms, so the velocity is $30/1.5 = 20$ mm/ms $= 20$ m/s.
+
+@practice num
+prompt: A neuron has an absolute refractory period of 2.5 ms and a spike that is otherwise unconstrained. What is the upper limit on its firing rate, in hertz?
+answer: 400
+unit: Hz
+check: 1000 / 2.5
+hint: Spikes cannot be closer than the refractory period; an interval in ms gives a rate of $1000/T$ Hz.
+solution: The shortest interval is 2.5 ms, so the maximal rate is $1000/2.5 = 400$ Hz.
+
+@practice mc
+prompt: Why does an action potential on an axon travel away from the place where it started, and not back toward it?
+choice*: The membrane just behind the spike is refractory (Na+ channels inactivated, K+ channels open), so it cannot fire again, while the membrane ahead is at rest.
+choice: Current from the spike can flow only forward, because the cytoplasm has a preferred direction.
+choice: The Na+/K+ pump pushes the spike forward using ATP.
+choice: The spike grows as it travels, so the front is always larger than the back.
+hint: Think of the state of the membrane on each side of the spike a moment after it has passed.
+solution: Local-circuit current spreads in both directions, but only the resting membrane ahead can reach threshold; the membrane behind is in its refractory period. The spike does not grow (it keeps the same size), and the pump restores gradients over seconds, not on the time scale of one spike.
+
+@practice code
+prompt: Write `detect_spikes(times, V, thresh=0.0)` that returns the list of upward threshold-crossing times of a sampled voltage trace. `times` are in ms (increasing) and `V` in mV, lists of equal length. A crossing occurs between samples $k$ and $k+1$ when `V[k] < thresh <= V[k+1]`; its time is found by linear interpolation. Downward crossings are ignored. For example, `detect_spikes([0, 1, 2, 3, 4], [-65, -20, 30, 10, -40])` returns `[1.4]`.
+starter:
+```python
+def detect_spikes(times, V, thresh=0.0):
+    pass
+```
+tests:
+```python
+assert all(abs(a - b) < 1e-9 for a, b in zip(detect_spikes([0, 1, 2, 3, 4], [-65, -20, 30, 10, -40]), [1.4]))
+got = detect_spikes([0, 1, 2, 3, 4, 5, 6], [-65, -20, 30, 10, -40, 5, -60])
+assert len(got) == 2 and abs(got[0] - 1.4) < 1e-9 and abs(got[1] - 4.888889) < 1e-5
+assert detect_spikes([0, 1, 2], [-65, -60, -62]) == []
+assert detect_spikes([0, 1, 2], [0, 10, 20]) == []
+assert abs(detect_spikes([0, 2], [-10, 10], -5)[0] - 0.5) < 1e-9
+```
+model:
+```python
+def detect_spikes(times, V, thresh=0.0):
+    """Interpolated upward crossings of thresh in a sampled trace."""
+    spikes = []
+    for k in range(len(V) - 1):
+        if V[k] < thresh <= V[k + 1]:
+            frac = (thresh - V[k]) / (V[k + 1] - V[k])
+            spikes.append(times[k] + frac * (times[k + 1] - times[k]))
+    return spikes
+```
+hint: Loop over consecutive pairs; when the first is below the threshold and the second is at or above it, interpolate the time.
+solution: A trace that starts above the threshold (the fourth test) has no upward crossing, so nothing is counted; a spike that only rises toward threshold is not a spike either. Interpolating gives times between samples, which matters when the sampling interval is coarse.
+
+@practice code
+prompt: The starter below contains `hh_simulate(amp, t_on, t_off, t_end, dt)` (Euler Hodgkin–Huxley with a rectangular current pulse; it returns the voltage trace). Write `spike_threshold(t_off)` that finds the smallest pulse amplitude (µA/cm²) of a pulse lasting from 0 to `t_off` ms that evokes a spike, by bisection on the interval $[0, 30]$ with exactly 8 halvings. Simulate each trial with `t_end = 5.0` and `dt = 0.05`, and call a trial a spike if the maximum voltage exceeds 0 mV. If the midpoint evokes a spike, make it the new upper end; otherwise make it the new lower end. Return the midpoint of the final interval. For example, `spike_threshold(1.0)` returns about `6.97`.
+starter:
+```python
+import math
+
+
+def rates(V):
+    x, y = V + 55.0, V + 40.0
+    a_n = 0.1 if abs(x) < 1e-7 else 0.01 * x / (1.0 - math.exp(-x / 10.0))
+    a_m = 1.0 if abs(y) < 1e-7 else 0.1 * y / (1.0 - math.exp(-y / 10.0))
+    return (a_n, 0.125 * math.exp(-(V + 65.0) / 80.0),
+            a_m, 4.0 * math.exp(-(V + 65.0) / 18.0),
+            0.07 * math.exp(-(V + 65.0) / 20.0),
+            1.0 / (1.0 + math.exp(-(V + 35.0) / 10.0)))
+
+
+def hh_simulate(amp, t_on, t_off, t_end, dt=0.01):
+    V = -65.0
+    a_n, b_n, a_m, b_m, a_h, b_h = rates(V)
+    n, m, h = a_n / (a_n + b_n), a_m / (a_m + b_m), a_h / (a_h + b_h)
+    trace = [V]
+    for k in range(int(round(t_end / dt))):
+        I = amp if t_on <= k * dt < t_off else 0.0
+        a_n, b_n, a_m, b_m, a_h, b_h = rates(V)
+        i_ion = (120.0 * m ** 3 * h * (V - 50.0) + 36.0 * n ** 4 * (V + 77.0)
+                 + 0.3 * (V + 54.387))
+        dV = I - i_ion
+        dn = a_n * (1 - n) - b_n * n
+        dm = a_m * (1 - m) - b_m * m
+        dh = a_h * (1 - h) - b_h * h
+        V, n, m, h = V + dt * dV, n + dt * dn, m + dt * dm, h + dt * dh
+        trace.append(V)
+    return trace
+
+
+def spike_threshold(t_off):
+    pass
+```
+tests:
+```python
+t1 = spike_threshold(1.0)
+t2 = spike_threshold(2.0)
+assert abs(t1 - 6.97265625) < 0.01
+assert abs(t2 - 3.92578125) < 0.01
+assert t2 < t1
+assert max(hh_simulate(t1 + 0.2, 0.0, 1.0, 5.0, 0.05)) > 0.0
+assert max(hh_simulate(t1 - 0.5, 0.0, 1.0, 5.0, 0.05)) < 0.0
+```
+model:
+```python
+import math
+
+
+def rates(V):
+    x, y = V + 55.0, V + 40.0
+    a_n = 0.1 if abs(x) < 1e-7 else 0.01 * x / (1.0 - math.exp(-x / 10.0))
+    a_m = 1.0 if abs(y) < 1e-7 else 0.1 * y / (1.0 - math.exp(-y / 10.0))
+    return (a_n, 0.125 * math.exp(-(V + 65.0) / 80.0),
+            a_m, 4.0 * math.exp(-(V + 65.0) / 18.0),
+            0.07 * math.exp(-(V + 65.0) / 20.0),
+            1.0 / (1.0 + math.exp(-(V + 35.0) / 10.0)))
+
+
+def hh_simulate(amp, t_on, t_off, t_end, dt=0.01):
+    V = -65.0
+    a_n, b_n, a_m, b_m, a_h, b_h = rates(V)
+    n, m, h = a_n / (a_n + b_n), a_m / (a_m + b_m), a_h / (a_h + b_h)
+    trace = [V]
+    for k in range(int(round(t_end / dt))):
+        I = amp if t_on <= k * dt < t_off else 0.0
+        a_n, b_n, a_m, b_m, a_h, b_h = rates(V)
+        i_ion = (120.0 * m ** 3 * h * (V - 50.0) + 36.0 * n ** 4 * (V + 77.0)
+                 + 0.3 * (V + 54.387))
+        dV = I - i_ion
+        dn = a_n * (1 - n) - b_n * n
+        dm = a_m * (1 - m) - b_m * m
+        dh = a_h * (1 - h) - b_h * h
+        V, n, m, h = V + dt * dV, n + dt * dn, m + dt * dm, h + dt * dh
+        trace.append(V)
+    return trace
+
+
+def spike_threshold(t_off):
+    """Smallest pulse amplitude (uA/cm^2) that evokes a spike, by bisection."""
+    lo, hi = 0.0, 30.0
+    for _ in range(8):
+        mid = (lo + hi) / 2.0
+        if max(hh_simulate(mid, 0.0, t_off, 5.0, 0.05)) > 0.0:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2.0
+```
+hint: Keep `lo` (no spike) and `hi` (spike). At each halving test the midpoint with `hh_simulate` and move the end that agrees with the outcome.
+solution: Eight halvings of an interval of width 30 locate the threshold to within about 0.12 µA/cm², so the answer is a midpoint rather than an exact value; the tests allow for that. The last two tests check the bracket: a pulse a bit above the returned value fires and one well below does not. Longer pulses need less current, the strength–duration relation.
+
+@quiz code
+prompt: Write `conduction_velocity(positions_mm, arrival_ms)` that returns the conduction velocity in m/s as the least-squares slope of position (mm) against arrival time (ms), for electrodes at `positions_mm` recording spikes at `arrival_ms` (lists of equal length, at least two points, arrival times not all equal). For example, `conduction_velocity([0, 10, 20, 30], [1.0, 1.5, 2.0, 2.5])` returns `20.0`.
+starter:
+```python
+def conduction_velocity(positions_mm, arrival_ms):
+    pass
+```
+tests:
+```python
+assert abs(conduction_velocity([0, 10, 20, 30], [1.0, 1.5, 2.0, 2.5]) - 20.0) < 1e-9
+assert abs(conduction_velocity([0, 12, 30], [2.0, 3.1, 4.5]) - 12.038217) < 1e-5
+assert abs(conduction_velocity([0, 10, 20, 30], [0.9, 1.6, 1.9, 2.6]) - 18.120805) < 1e-5
+assert abs(conduction_velocity([5, 25], [1.0, 2.0]) - 20.0) < 1e-9
+assert abs(conduction_velocity([30, 20, 10, 0], [2.5, 2.0, 1.5, 1.0]) - 20.0) < 1e-9
+```
+model:
+```python
+def conduction_velocity(positions_mm, arrival_ms):
+    """Least-squares slope of position against arrival time, in m/s."""
+    n = len(positions_mm)
+    mean_t = sum(arrival_ms) / n
+    mean_x = sum(positions_mm) / n
+    sxy = sum((t - mean_t) * (x - mean_x) for t, x in zip(arrival_ms, positions_mm))
+    sxx = sum((t - mean_t) ** 2 for t in arrival_ms)
+    return sxy / sxx
+```
+hint: Regress position on time, not time on position: the slope has units mm/ms, which is m/s.
+solution: The slope is $\sum (t - \bar t)(x - \bar x)/\sum (t - \bar t)^2$. Regressing time on position and inverting would give a different value for noisy data; the third test uses jittered arrival times, where the two differ. The fifth test lists positions in decreasing order with decreasing times, which gives the same slope.
+
+@quiz num
+prompt: A motor axon is 1.2 m long and conducts at 60 m/s. How long does a spike take to travel its whole length, in milliseconds?
+answer: 20
+unit: ms
+check: 1.2 / 60 * 1000
+hint: Time is distance over velocity; convert seconds to milliseconds at the end.
+solution: $1.2/60 = 0.02$ s $= 20$ ms.
+
+@quiz text
+prompt: What does this program print?
+```python
+V = [-60.0, -10.0, 20.0, -30.0]
+t = [0.0, 0.5, 1.0, 1.5]
+for k in range(3):
+    if V[k] < 0 <= V[k + 1]:
+        print(round(t[k] + (0 - V[k]) / (V[k + 1] - V[k]) * 0.5, 3))
+```
+answer: 0.667
+check: run("V = [-60.0, -10.0, 20.0, -30.0]\nt = [0.0, 0.5, 1.0, 1.5]\nfor k in range(3):\n    if V[k] < 0 <= V[k + 1]:\n        print(round(t[k] + (0 - V[k]) / (V[k + 1] - V[k]) * 0.5, 3))")
+hint: Only one pair of samples straddles 0 mV going upward; find it first.
+solution: The upward crossing is between $k = 1$ ($-10$ mV at 0.5 ms) and $k = 2$ ($20$ mV at 1.0 ms). The time is $0.5 + (10/30) \times 0.5 = 0.667$, so the program prints `0.667`.

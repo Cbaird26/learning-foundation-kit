@@ -1,0 +1,254 @@
+@lesson
+title: The membrane as an RC circuit
+summary: Model a patch of passive membrane as a resistor and capacitor in parallel, predict how it charges and filters current, and simulate it in Python.
+objective: Write the equation of the passive membrane, $C\,dV/dt = -(V - E_L)/R + I$, and solve it for a current step.
+objective: Explain how input resistance, capacitance and the time constant depend on cell size and on the number of open channels.
+objective: Simulate the membrane with an exact exponential update and with Euler steps, and estimate $\tau$ and $C$ from voltage and current traces.
+reading: Neuronal Dynamics, the chapter on the passive membrane; look for the section on the cell membrane as an electrical circuit and for the capacitor and resistor in parallel.
+
+@article
+Inject a small, steady current into a neuron and the voltage does not jump: it creeps toward a new level over tens of milliseconds, and when the current stops it creeps back. That slowness is the first computational property of a neuron, because it decides how long an input is remembered. It comes from two ordinary components, a resistor and a capacitor.
+
+### Two parallel components
+
+The lipid bilayer is an insulator between two conducting solutions, so it acts as a **capacitor**: charge $Q = C V$ builds up on its two faces. A typical specific capacitance is $C_m = 1\ \mu\text{F/cm}^2$. The open ion channels let current through, so they act as a **resistor**; the leak conductance has a specific resistance $R_m$, with typical values of 10 to 50 kΩ·cm². For a patch with area $A$, the whole cell has capacitance $C = C_m A$ and **input resistance** $R = R_m/A$.
+
+Currents entering the cell must go somewhere: through the capacitor, which changes the voltage, or through the resistor. With a leak reversal potential $E_L$ (the potential at which the leak current vanishes) and an injected current $I$, conservation of current gives
+
+$$C\,\frac{dV}{dt} = -\frac{V - E_L}{R} + I(t) .$$
+
+Multiplying by $R$ gives $\tau\,dV/dt = -(V - E_L) + R I$ with the **membrane time constant** $\tau = RC$. Units: with $R$ in MΩ and $I$ in pA, $RI$ is in µV, so $RI$ in mV is $R I/1000$. With $C$ in pF, $\tau$ in ms is $R\,C/1000$.
+
+### A current step
+
+Take a cell of area $10{,}000\ \mu\text{m}^2 = 10^{-4}\ \text{cm}^2$ with $R_m = 15\ \text{k}\Omega\,\text{cm}^2$ and $C_m = 1\ \mu\text{F/cm}^2$. Then $C = 100$ pF, $R = 150$ MΩ and $\tau = 15$ ms. Starting at $E_L = -70$ mV, a step of $I = 40$ pA drives the voltage toward $V_\infty = E_L + RI = -70 + 6 = -64$ mV:
+
+$$V(t) = V_\infty + (V_0 - V_\infty)\,e^{-t/\tau} .$$
+
+| time (ms) | 0 | 15 | 30 | 45 | 60 |
+|---|---|---|---|---|---|
+| $V$ (mV) | −70.00 | −66.21 | −64.81 | −64.30 | −64.11 |
+
+At $t = 0$ the capacitor is uncharged, so all of the current charges it; at the end the capacitor current is zero and all of the current crosses the resistor. When the step ends, the voltage relaxes back to $E_L$ with the same $\tau$. After $\tau$ the voltage has covered 63% of the gap, after $2\tau$ 86%, after $3\tau$ 95%.
+
+### Size and conductance
+
+Bigger cells have more membrane: $C$ grows with $A$ while $R$ shrinks, so the product $\tau = R_m C_m$ does not depend on cell size, but the voltage response $RI$ to a given current does. Opening channels, for example synaptic or potassium channels, adds conductance in parallel: $1/R$ grows, so both the steady response and $\tau$ shrink. This is the basis of **shunting**, which week 9 develops.
+
+### Filtering
+
+A sinusoidal current of frequency $f$ produces a voltage oscillation with amplitude $|Z| I$, where the impedance magnitude is
+
+$$|Z(f)| = \frac{R}{\sqrt{1 + (2\pi f\tau)^2}} ,$$
+
+and the voltage lags the current by $\arctan(2\pi f\tau)$. The membrane is a **low-pass filter** with cutoff $f_c = 1/(2\pi\tau)$, where the amplitude has fallen to $1/\sqrt{2}$ of its low-frequency value. For $\tau = 15$ ms, $f_c = 10.6$ Hz. At 20 Hz the gain is $0.469R = 70.3$ MΩ and the lag is $62^\circ$: fast fluctuations are smoothed away.
+
+### Voltage clamp
+
+The experimenter can also hold the voltage and measure current. A step of $\Delta V$ through a series (access) resistance $R_s$ makes the capacitor charge with current $I(t) = (\Delta V/R_s)\,e^{-t/(R_s C)}$. The area under this transient is $Q = C\,\Delta V$, so integrating it estimates $C$: with $I$ in pA, $t$ in ms and $\Delta V$ in mV, $\int I\,dt$ is in fC and $C = Q/\Delta V$ comes out in pF.
+
+### In code
+
+If $I$ is constant during a step of length $\Delta t$, the equation can be advanced exactly:
+
+```python
+import math
+
+
+def rc_trace(currents, dt, R, tau, E_L):
+    """Voltage (mV) at the end of each step; currents in pA, R in MOhm, times in ms."""
+    decay = math.exp(-dt / tau)
+    V, trace = E_L, []
+    for I in currents:
+        V_inf = E_L + R * I / 1000.0
+        V = V_inf + (V - V_inf) * decay
+        trace.append(V)
+    return trace
+
+print([round(v, 3) for v in rc_trace([40, 40, 40, 0, 0], 5.0, 150.0, 15.0, -70.0)])
+```
+
+This prints `[-68.299, -67.081, -66.207, -67.282, -68.053]`: three 5 ms steps of charging, then discharging. Because each step is exact for constant current, this update is stable for any $\Delta t$, unlike the Euler method $V \leftarrow V + (\Delta t/\tau)(-(V - E_L) + RI/1000)$, whose error grows with the step.
+
+@example
+title: Time to reach a voltage
+problem: The cell in the article ($R = 150$ MΩ, $\tau = 15$ ms, $E_L = -70$ mV) receives a 40 pA step. How long does it take for the voltage to reach $-66$ mV?
+step: The steady state is $V_\infty = -70 + 150 \times 40/1000 = -64$ mV, and the voltage starts $6$ mV below it.
+step: The target $-66$ mV is $2$ mV below $V_\infty$, so we need $V_\infty - V(t) = 6\,e^{-t/\tau} = 2$.
+step: Solve: $e^{-t/\tau} = 1/3$, so $t = \tau \ln 3 = 15 \times 1.0986 = 16.5$ ms.
+step: Check: $V(16.5) = -64 - 6\,e^{-1.1} = -64 - 6 \times 0.333 = -66.0$ mV.
+answer: About $16.5$ ms.
+
+@example
+title: Two cells of different size
+problem: Two spherical neurons have $R_m = 15\ \text{k}\Omega\,\text{cm}^2$ and $C_m = 1\ \mu\text{F/cm}^2$. Cell A has area $10{,}000\ \mu\text{m}^2$ and cell B has area $40{,}000\ \mu\text{m}^2$. Compare their input resistances, capacitances, time constants and responses to a 40 pA step.
+step: Convert areas: $10^{-4}$ and $4 \times 10^{-4}\ \text{cm}^2$. Capacitances $C = C_m A$ are 100 pF and 400 pF.
+step: Input resistances $R = R_m/A$: $15000/10^{-4} = 150$ MΩ for A, and $15000/(4\times10^{-4}) = 37.5$ MΩ for B.
+step: Time constants $RC$: A has $150 \times 100/1000 = 15$ ms; B has $37.5 \times 400/1000 = 15$ ms. They are equal.
+step: Steady responses $R I$: A gives $6$ mV, B gives $1.5$ mV.
+answer: Same $\tau = 15$ ms; the larger cell has four times the capacitance, one quarter of the input resistance and one quarter of the voltage response.
+
+@mistakes
+- Mixing units: MΩ times pA gives µV, not mV; divide by 1000 (or use nA) to get millivolts.
+- Thinking a bigger cell charges more slowly: $\tau = R_m C_m$ is independent of area; what changes is $R$ and $C$ separately.
+- Using Euler steps with $\Delta t$ comparable to $\tau$: the error is proportional to $\Delta t$, and for $\Delta t > 2\tau$ the update oscillates and diverges.
+- Confusing the cutoff frequency with $1/\tau$: $f_c = 1/(2\pi\tau)$, because $f$ is in cycles per second and the angular frequency is $2\pi f$.
+
+@practice num
+prompt: A cell has $R = 200$ MΩ, $C = 60$ pF and rests at $E_L = -65$ mV. A $30$ pA step starts at $t = 0$. What is the membrane potential at $t = 24$ ms, in millivolts, to two decimal places? ($\tau = RC/1000$ ms.)
+answer: -59.81
+tol: 0.01
+unit: mV
+check: -65 + 200 * 30 / 1000 * (1 - exp(-24 / (200 * 60 / 1000)))
+hint: The time constant is $200 \times 60/1000 = 12$ ms, so 24 ms is two time constants.
+solution: $RI = 200 \times 30/1000 = 6$ mV, so $V_\infty = -59$ mV, and $V(24) = -65 + 6(1 - e^{-2}) = -65 + 5.188 = -59.81$ mV.
+
+@practice num
+prompt: A neuron has $\tau = 18$ ms. After a current step starts, how long does it take for the voltage to cover 80% of the distance to its steady state? Give the answer in milliseconds to one decimal place.
+answer: 29.0
+tol: 0.1
+unit: ms
+check: 18 * log(1 / (1 - 0.8))
+hint: Solve $1 - e^{-t/\tau} = 0.8$ for $t$.
+solution: $e^{-t/\tau} = 0.2$, so $t = \tau \ln 5 = 18 \times 1.609 = 29.0$ ms.
+
+@practice mc
+prompt: The leak conductance of a cell, $1/R$, is doubled by opening more channels, while the capacitance stays the same. What happens to the steady-state voltage response to a fixed current step and to the time constant?
+choice*: Both are halved: $R$ is halved, so $RI$ is halved and $\tau = RC$ is halved.
+choice: The steady response is halved but the time constant is unchanged, because the capacitance did not change.
+choice: The time constant is halved but the steady response is unchanged, because the current is fixed.
+choice: Both are doubled, because more channels mean more current.
+hint: Doubling the conductance halves the resistance; check where $R$ appears in both quantities.
+solution: The steady response is $R I$ and the time constant is $R C$; both contain $R$, and $C$ is fixed, so halving $R$ halves both. This is why synaptic input makes a neuron both less sensitive and faster, a point developed in week 9.
+
+@practice code
+prompt: Write `euler_max_error(I, R, tau, E_L, t_end, dt)` that simulates the passive membrane with Euler steps from $V = E_L$ under a constant current `I` (pA; `R` in MΩ, `tau` and times in ms) and returns the largest absolute difference (mV) between the Euler voltage and the exact solution $V_\infty + (E_L - V_\infty)e^{-t/\tau}$, over the times $k\,dt$ for $k = 1, \dots,$ `int(round(t_end / dt))`. One Euler step is $V \leftarrow V + (dt/\tau)(-(V - E_L) + R I/1000)$. For example, `euler_max_error(40.0, 150.0, 15.0, -70.0, 60.0, 5.0)` returns about `0.4295`.
+starter:
+```python
+def euler_max_error(I, R, tau, E_L, t_end, dt):
+    pass
+```
+tests:
+```python
+assert abs(euler_max_error(40.0, 150.0, 15.0, -70.0, 60.0, 5.0) - 0.429499) < 1e-4
+assert abs(euler_max_error(40.0, 150.0, 15.0, -70.0, 60.0, 1.0) - 0.075690) < 1e-4
+assert abs(euler_max_error(-30.0, 100.0, 10.0, -65.0, 40.0, 2.0) - 0.120598) < 1e-4
+assert euler_max_error(0.0, 150.0, 15.0, -70.0, 60.0, 5.0) < 1e-12
+e1 = euler_max_error(40.0, 150.0, 15.0, -70.0, 60.0, 1.0)
+e2 = euler_max_error(40.0, 150.0, 15.0, -70.0, 60.0, 0.5)
+assert 1.7 < e1 / e2 < 2.1
+```
+model:
+```python
+import math
+
+
+def euler_max_error(I, R, tau, E_L, t_end, dt):
+    """Largest |Euler - exact| (mV) for a current step into a passive membrane."""
+    V_inf = E_L + R * I / 1000.0
+    V = E_L
+    worst = 0.0
+    for k in range(1, int(round(t_end / dt)) + 1):
+        V += dt / tau * (-(V - E_L) + R * I / 1000.0)
+        exact = V_inf + (E_L - V_inf) * math.exp(-k * dt / tau)
+        worst = max(worst, abs(V - exact))
+    return worst
+```
+hint: Keep the Euler voltage in one variable and compute the exact value at the same time $k\,dt$ in every step; track the maximum of the absolute difference.
+solution: Euler's error is proportional to the step: halving $dt$ roughly halves the largest error, which the last test checks. With no current the voltage never leaves $E_L$ and the error is zero.
+
+@practice code
+prompt: Write `estimate_tau(times, volts, V_inf)` for a voltage that relaxes toward a known steady state `V_inf` (mV) from below. `times` are in ms and `volts` in mV, both lists of the same length, with every voltage below `V_inf`. Fit the straight line $\ln(V_\infty - V) = a - t/\tau$ by ordinary least squares and return `tau` in ms. For example, for the exact data of a membrane with $\tau = 8$ ms, `estimate_tau([2, 4, 6, 8], [-62.788, -61.0653, -59.7237, -58.6788], -55.0)` returns about `8.0`.
+starter:
+```python
+def estimate_tau(times, volts, V_inf):
+    pass
+```
+tests:
+```python
+import math
+ts = [0.0, 5.0, 10.0, 20.0, 40.0]
+vs = [-70.0 + 6.0 * (1 - math.exp(-t / 15.0)) for t in ts]
+assert abs(estimate_tau(ts, vs, -64.0) - 15.0) < 1e-6
+assert abs(estimate_tau([2, 4, 6, 8], [-62.788, -61.0653, -59.7237, -58.6788], -55.0) - 8.0) < 0.01
+ts2 = [1.0, 3.0, 9.0]
+vs2 = [-40.0 + 12.0 * (1 - math.exp(-t / 4.0)) for t in ts2]
+assert abs(estimate_tau(ts2, vs2, -28.0) - 4.0) < 1e-6
+assert abs(estimate_tau([0.0, 10.0], [-70.0, -66.0], -60.0) - 10.0 / math.log(10.0 / 6.0)) < 1e-9
+```
+model:
+```python
+import math
+
+
+def estimate_tau(times, volts, V_inf):
+    """Time constant (ms) from a log-linear least-squares fit of the relaxation."""
+    ys = [math.log(V_inf - v) for v in volts]
+    n = len(times)
+    mean_t = sum(times) / n
+    mean_y = sum(ys) / n
+    sxy = sum((t - mean_t) * (y - mean_y) for t, y in zip(times, ys))
+    sxx = sum((t - mean_t) ** 2 for t in times)
+    slope = sxy / sxx
+    return -1.0 / slope
+```
+hint: Take the logarithm of the remaining distance $V_\infty - V$; for an exponential it is a straight line in $t$ with slope $-1/\tau$.
+solution: Since $V_\infty - V = (V_\infty - V_0)e^{-t/\tau}$, the log of the remaining distance is linear in time with slope $-1/\tau$. Ordinary least squares gives the slope, and $\tau$ is minus its reciprocal. With two points the fit passes through both, as the last test checks.
+
+@quiz code
+prompt: Write `capacitance_from_transient(times, currents, I_ss, dV)` that estimates the membrane capacitance (pF) from a voltage-clamp capacitive transient. `times` are in ms (increasing), `currents` in pA, `I_ss` is the steady current (pA) that flows once the capacitor is charged, and `dV` is the voltage step (mV). Integrate `current - I_ss` over time with the trapezoid rule and divide by `dV`. For example, a constant excess current of 100 pA for 1 ms with a step of 10 mV gives `10.0` pF: `capacitance_from_transient([0.0, 1.0], [150.0, 150.0], 50.0, 10.0)`.
+starter:
+```python
+def capacitance_from_transient(times, currents, I_ss, dV):
+    pass
+```
+tests:
+```python
+import math
+assert abs(capacitance_from_transient([0.0, 1.0], [150.0, 150.0], 50.0, 10.0) - 10.0) < 1e-9
+ts = [0.05 * k for k in range(201)]
+I = [1000.0 * math.exp(-t) for t in ts]
+assert abs(capacitance_from_transient(ts, I, 0.0, 10.0) - 100.0) < 0.05
+I2 = [50.0 + x for x in I]
+assert abs(capacitance_from_transient(ts, I2, 50.0, 10.0) - 100.0) < 0.05
+assert abs(capacitance_from_transient([0.0, 0.5, 2.0], [0.0, 40.0, 40.0], 0.0, 5.0) - 14.0) < 1e-9
+```
+model:
+```python
+def capacitance_from_transient(times, currents, I_ss, dV):
+    """Capacitance (pF) from the area of a capacitive transient (pA, ms, mV)."""
+    charge = 0.0
+    for k in range(len(times) - 1):
+        dt = times[k + 1] - times[k]
+        a = currents[k] - I_ss
+        b = currents[k + 1] - I_ss
+        charge += 0.5 * (a + b) * dt
+    return charge / dV
+```
+hint: The charge is the area between the current trace and the steady level; with samples at unequal times, add one trapezoid per interval.
+solution: Charge in femtocoulombs is the integral of $(I - I_\text{ss})$ in pA·ms, and $C = Q/\Delta V$ comes out in pF. The steady current flowing through the leak must be subtracted, because it does not charge the capacitor; the fourth test uses unequal sample spacing, which the trapezoid rule handles interval by interval.
+
+@quiz num
+prompt: A neuron has $R = 120$ MΩ and $\tau = 8$ ms. A sinusoidal current with amplitude $50$ pA and frequency $30$ Hz is injected. What is the amplitude of the resulting voltage oscillation, in millivolts, to two decimal places? Use $|Z| = R/\sqrt{1 + (2\pi f\tau)^2}$.
+answer: 3.32
+tol: 0.01
+unit: mV
+check: 120 / sqrt(1 + (2 * pi * 30 * 0.008) ** 2) * 50 / 1000
+hint: Convert $\tau$ to seconds before multiplying by $f$ in hertz: $2\pi \times 30 \times 0.008$.
+solution: $2\pi f\tau = 2\pi \times 30 \times 0.008 = 1.508$, so $|Z| = 120/\sqrt{1 + 2.274} = 66.3$ MΩ and the amplitude is $66.3 \times 50/1000 = 3.32$ mV.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+
+V, tau, dt = -70.0, 10.0, 5.0
+for shift in [10.0, 10.0, 0.0]:
+    V_inf = -70.0 + shift
+    V = V_inf + (V - V_inf) * math.exp(-dt / tau)
+print(round(V, 2))
+```
+answer: -66.17
+check: run("import math\nV, tau, dt = -70.0, 10.0, 5.0\nfor shift in [10.0, 10.0, 0.0]:\n    V_inf = -70.0 + shift\n    V = V_inf + (V - V_inf) * math.exp(-dt / tau)\nprint(round(V, 2))")
+hint: Each pass moves $V$ a fraction $1 - e^{-0.5} = 0.3935$ of the way to that pass's steady state.
+solution: The first two passes charge toward $-60$ mV: $-60 - 10 \times 0.6065 = -66.07$, then $-60 - 6.07 \times 0.6065 = -63.68$. The third pass discharges toward $-70$ mV: $-70 + 6.32 \times 0.6065 = -66.17$.

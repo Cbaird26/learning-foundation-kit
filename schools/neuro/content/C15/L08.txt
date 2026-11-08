@@ -1,0 +1,226 @@
+@lesson
+title: Repeated measures and mixed-effects models in outline
+summary: Analyze a within-subject experiment with a repeated-measures ANOVA written from scratch, and explain what a mixed-effects model with random intercepts adds.
+objective: Partition variability into condition, subject and error parts and compute the repeated-measures F with its degrees of freedom.
+objective: Explain why trials from one participant are not independent observations, and estimate an intraclass correlation from variance components.
+objective: Describe a random-intercept mixed-effects model, partial pooling (shrinkage) and when random slopes and crossed random effects are needed.
+reading: OpenIntro Statistics has no full chapter on repeated measures: study its sections on paired data and on ANOVA, then look up repeated-measures ANOVA and linear mixed-effects models in the free resources of the course.
+
+@article
+Five participants each perform a color-naming task in three conditions: congruent, neutral and incongruent. Their mean RTs (ms) are:
+
+| participant | congruent | neutral | incongruent |
+|---|---|---|---|
+| 1 | 480 | 505 | 540 |
+| 2 | 520 | 550 | 570 |
+| 3 | 450 | 465 | 505 |
+| 4 | 560 | 580 | 630 |
+| 5 | 500 | 520 | 555 |
+
+Everyone is slower on incongruent trials than on congruent ones, yet participants differ by more than 100 ms in overall speed. A one-way ANOVA that treats the 15 numbers as three independent groups would let that large between-person variability swamp the condition effect. Because each participant appears in every condition, we can remove it.
+
+### Repeated-measures ANOVA
+
+With $n$ participants and $k$ conditions, total variability splits into three parts:
+
+$$SS_{\text{total}} = SS_{\text{cond}} + SS_{\text{subj}} + SS_{\text{error}}.$$
+
+$SS_{\text{cond}} = n\sum_j(\bar{x}_{\cdot j} - \bar{x})^2$ measures differences between condition means; $SS_{\text{subj}} = k\sum_i(\bar{x}_{i\cdot} - \bar{x})^2$ measures stable differences between participants; the remainder, $SS_{\text{error}}$, is how much participants' condition effects vary around the average effect. Then
+
+$$F = \frac{SS_{\text{cond}}/(k-1)}{SS_{\text{error}}/\big((k-1)(n-1)\big)}, \qquad \text{df} = \big(k-1,\ (k-1)(n-1)\big).$$
+
+The subject sum of squares is simply taken out of the error term. With two conditions, $F$ equals the square of the paired $t$ statistic.
+
+```python
+def rm_anova(data):
+    """Repeated-measures F; data[i][j] is subject i in condition j."""
+    n, k = len(data), len(data[0])
+    grand = sum(sum(r) for r in data) / (n * k)
+    cond = [sum(r[j] for r in data) / n for j in range(k)]
+    subj = [sum(r) / k for r in data]
+    ss_cond = n * sum((m - grand) ** 2 for m in cond)
+    ss_subj = k * sum((m - grand) ** 2 for m in subj)
+    ss_total = sum((v - grand) ** 2 for r in data for v in r)
+    ss_error = ss_total - ss_cond - ss_subj
+    df1, df2 = k - 1, (k - 1) * (n - 1)
+    return (ss_cond / df1) / (ss_error / df2), df1, df2
+
+
+data = [[480, 505, 540], [520, 550, 570], [450, 465, 505],
+        [560, 580, 630], [500, 520, 555]]
+print(rm_anova(data))
+```
+
+The result is $F(2, 8) = 123.95$ ($SS_{\text{cond}} = 8573.3$, $SS_{\text{subj}} = 22723.3$, $SS_{\text{error}} = 276.7$), far above the 5% critical value $4.459$. The same data in a between-subject ANOVA give only $F(2, 12) = 2.24$ (critical value $3.885$), not significant, because the subject variance sits in the error term. That is the power of a within-subject design. Its cost: order and practice effects, handled by counterbalancing the order of conditions. The test also assumes **sphericity** (equal variances of the differences between all pairs of conditions) when $k \ge 3$; violations inflate $F$, and common corrections (Greenhouse–Geisser) shrink the degrees of freedom.
+
+### Why trials are not independent
+
+Participants differ in speed, so two RTs from the same person are more alike than two RTs from different people. The **intraclass correlation** (ICC) is the share of variance due to the person, $\text{ICC} = \sigma_u^2/(\sigma_u^2 + \sigma_e^2)$. From the ANOVA mean squares, $\hat{\sigma}_e^2 = MS_{\text{error}}$ and $\hat{\sigma}_u^2 = (MS_{\text{subj}} - MS_{\text{error}})/k$, floored at zero. Here $\hat{\sigma}_u^2 = 1882$ and $\hat{\sigma}_e^2 = 34.6$, so the ICC is $0.98$. Analyzing 200 trials from each of 10 people as if they were 2000 independent observations is **pseudoreplication**: the effective sample size is closer to $N/(1 + (m-1)\,\text{ICC})$ for $m$ trials per person (the design effect), and p-values become far too small.
+
+### Mixed-effects models in outline
+
+A **linear mixed-effects model** states the structure directly. For participant $i$ in condition $j$,
+
+$$y_{ij} = \beta_0 + \beta_1\,\text{cond}_j + u_i + e_{ij}, \qquad u_i \sim N(0, \sigma_u^2),\ e_{ij} \sim N(0, \sigma_e^2).$$
+
+The $\beta$'s are **fixed effects** (the effects of the conditions we care about); $u_i$ is a **random intercept**: each participant's own baseline, treated as drawn from a population. A **random slope** lets the condition effect itself vary across participants; **crossed random effects** let stimuli (items) vary as well as participants. Mixed models handle unequal numbers of trials and missing cells that break the classical ANOVA, and they use trial-level data without pseudoreplication. They estimate each participant's baseline by **partial pooling**: the estimated offset is the raw offset shrunk toward the grand mean by a factor $\lambda = \sigma_u^2/(\sigma_u^2 + \sigma_e^2/m)$, where $m$ is the number of observations behind that participant's mean. Noisy means are pulled in more. Researchers fit these models with `lme4` in R or `MixedLM` in statsmodels; the model structure (which effects are random) should follow the design and be stated in advance.
+
+```text
+# statsmodels (not run in the browser)
+import statsmodels.formula.api as smf
+fit = smf.mixedlm("rt ~ cond", df, groups=df["subject"]).fit()
+```
+
+@example
+title: The repeated-measures F equals the paired t squared
+problem: Four participants have mean RTs in two conditions: (12, 16), (14, 17), (10, 15), (16, 18) in units of 10 ms. Compute the repeated-measures $F$ and confirm that it equals $t^2$ from a paired test.
+step: Means: grand mean $14.75$; condition means $13$ and $16.5$; subject means $14, 15.5, 12.5, 17$.
+step: $SS_{\text{cond}} = 4\big((13 - 14.75)^2 + (16.5 - 14.75)^2\big) = 24.5$ and $SS_{\text{subj}} = 2(0.75^2 + 0.75^2 + 2.25^2 + 2.25^2) = 22.5$.
+step: The deviations of all eight values from the grand mean square and sum to $SS_{\text{total}} = 49.5$, so $SS_{\text{error}} = 49.5 - 24.5 - 22.5 = 2.5$ with $(k-1)(n-1) = 3$ degrees of freedom: $MS_{\text{error}} = 0.833$.
+step: $F(1, 3) = 24.5/0.833 = 29.4$ (the 5% critical value is 10.13, so it is significant).
+step: Paired $t$: the differences are $4, 3, 5, 2$ with mean $3.5$ and $s_d = 1.291$, so $t = 3.5/(1.291/2) = 5.42$ and $t^2 = 29.4$, matching $F$.
+answer: $F(1, 3) = 29.4 = 5.42^2$.
+
+@mistakes
+- Analyzing within-subject data with an independent-groups test: it wastes the power gained by removing stable differences between people.
+- Treating every trial as an independent observation: trials from one participant are correlated, so p-values come out too small.
+- Fitting a mixed model with random effects chosen after seeing which fit gives the best p-value: the random-effects structure follows the design.
+- Forgetting to counterbalance the order of conditions in a within-subject design: order effects then pose as condition effects.
+
+@practice num
+prompt: A repeated-measures experiment has $n = 12$ participants and $k = 4$ conditions. How many degrees of freedom does the error term of the $F$ test have?
+answer: 33
+check: (4 - 1) * (12 - 1)
+hint: The error degrees of freedom are $(k-1)(n-1)$.
+solution: $(4-1)(12-1) = 3 \times 11 = 33$; the condition effect has $k - 1 = 3$ degrees of freedom.
+
+@practice num
+prompt: A repeated-measures ANOVA with $n = 6$ participants and $k = 3$ conditions has $SS_{\text{cond}} = 900$, $SS_{\text{subj}} = 2500$ and $SS_{\text{error}} = 300$. What is $F$?
+answer: 15
+check: (900 / 2) / (300 / (2 * 5))
+hint: Divide $SS_{\text{cond}}$ by $k - 1$ and $SS_{\text{error}}$ by $(k-1)(n-1)$; $SS_{\text{subj}}$ is not used in the ratio.
+solution: $MS_{\text{cond}} = 900/2 = 450$ and $MS_{\text{error}} = 300/10 = 30$, so $F = 450/30 = 15$ with $(2, 10)$ degrees of freedom.
+
+@practice mc
+prompt: Ten participants each complete 200 trials in each of two conditions. A student runs an independent-samples $t$ test on all 2000 RTs per condition (4000 values in total) and reports $p = 0.0001$. What is wrong?
+choice*: Trials from the same participant are correlated, so the effective sample size is much smaller than 2000 and the p-value is far too small; analyze participant means or fit a mixed model.
+choice: Nothing is wrong: more trials always give a more reliable test of the population effect.
+choice: The test should have used the median of each participant instead, because trials never follow a normal distribution.
+choice: The p-value is too large, because the test ignores the pairing of conditions across participants.
+hint: Ask how many independent people the population-level claim rests on.
+solution: The inference concerns the population of participants, but the 4000 values come from only ten people. Treating each trial as independent is pseudoreplication and inflates the apparent evidence. Averaging within participants (then a paired test) or a mixed model with a participant random effect respects the structure.
+
+@practice code
+prompt: Write `icc_rm(data)` for a repeated-measures table `data[i][j]` (participant $i$, condition $j$). Compute $MS_{\text{subj}} = SS_{\text{subj}}/(n-1)$ with $SS_{\text{subj}} = k\sum_i(\bar{x}_{i\cdot} - \bar{x})^2$, and $MS_{\text{error}} = SS_{\text{error}}/((k-1)(n-1))$ with $SS_{\text{error}} = SS_{\text{total}} - SS_{\text{cond}} - SS_{\text{subj}}$. Then $\hat{\sigma}_e^2 = MS_{\text{error}}$ and $\hat{\sigma}_u^2 = \max(0, (MS_{\text{subj}} - MS_{\text{error}})/k)$. Return $\hat{\sigma}_u^2/(\hat{\sigma}_u^2 + \hat{\sigma}_e^2)$. For example, for `[[2, 4], [6, 10], [7, 8]]` it returns about `0.8571`.
+starter:
+```python
+def icc_rm(data):
+    pass
+```
+tests:
+```python
+assert abs(icc_rm([[2, 4], [6, 10], [7, 8]]) - 0.857143) < 1e-5
+d = [[10, 12, 14], [20, 21, 25], [15, 18, 19], [11, 13, 18]]
+assert abs(icc_rm(d) - 0.949438) < 1e-5
+d = [[300, 320, 340], [400, 410, 450], [350, 365, 380], [320, 335, 370]]
+assert abs(icc_rm(d) - 0.977811) < 1e-5
+assert icc_rm([[1, 3], [3, 1], [2, 2]]) == 0.0
+```
+model:
+```python
+def icc_rm(data):
+    """Intraclass correlation from repeated-measures variance components."""
+    n, k = len(data), len(data[0])
+    grand = sum(sum(r) for r in data) / (n * k)
+    cond = [sum(r[j] for r in data) / n for j in range(k)]
+    subj = [sum(r) / k for r in data]
+    ss_cond = n * sum((m - grand) ** 2 for m in cond)
+    ss_subj = k * sum((m - grand) ** 2 for m in subj)
+    ss_total = sum((v - grand) ** 2 for r in data for v in r)
+    ss_error = ss_total - ss_cond - ss_subj
+    ms_subj = ss_subj / (n - 1)
+    ms_error = ss_error / ((k - 1) * (n - 1))
+    var_u = max(0.0, (ms_subj - ms_error) / k)
+    return var_u / (var_u + ms_error)
+```
+hint: Compute the three sums of squares as in the lesson, convert two of them to mean squares, and floor the subject variance at zero.
+solution: The ICC is the share of variance due to stable differences between people. In the last test every participant has the same mean, so the subject mean square is 0, less than the error mean square; the raw estimate of $\sigma_u^2$ would be negative, and flooring at zero gives an ICC of exactly 0.
+
+@practice code
+prompt: Write `shrunken_means(means, m, var_u, var_e)` for a list `means` of participant means, each based on `m` observations. Let `grand` be the average of the means and `lam = var_u / (var_u + var_e / m)`. Return the list `grand + lam * (mean - grand)` for each participant, in the original order. For example, `shrunken_means([400, 500, 430], 3, 1600, 400)` returns about `[403.33, 495.64, 431.03]`.
+starter:
+```python
+def shrunken_means(means, m, var_u, var_e):
+    pass
+```
+tests:
+```python
+got = shrunken_means([400, 500, 430], 3, 1600, 400)
+want = [403.3333333, 495.6410256, 431.0256410]
+assert all(abs(a - b) < 1e-5 for a, b in zip(got, want))
+got = shrunken_means([10.0, 20.0], 5, 1.0, 1e-9)
+assert all(abs(a - b) < 1e-5 for a, b in zip(got, [10.0, 20.0]))
+got = shrunken_means([10.0, 20.0], 1, 1e-9, 4.0)
+assert all(abs(a - 15.0) < 1e-5 for a in got)
+got = shrunken_means([5.0, 9.0, 13.0], 4, 3.0, 8.0)
+assert abs(sum(got) / 3 - 9.0) < 1e-9
+```
+model:
+```python
+def shrunken_means(means, m, var_u, var_e):
+    """Partial-pooling estimates: shrink each mean toward the grand mean."""
+    grand = sum(means) / len(means)
+    lam = var_u / (var_u + var_e / m)
+    return [grand + lam * (x - grand) for x in means]
+```
+hint: Compute the shrinkage factor once; each estimate is the grand mean plus that fraction of the participant's deviation.
+solution: When between-person variance dominates (`var_e` tiny), `lam` is near 1 and nothing changes; when noise dominates, `lam` is near 0 and every participant is pulled to the grand mean. Shrinkage preserves the average of the estimates, as the last test shows, and it pulls extreme, noisy means in the most.
+
+@quiz code
+prompt: Write `normalize_within(data)` for a table `data[i][j]` (participant $i$, condition $j$) that returns a new table of the same shape with each value replaced by `value - participant_mean + grand_mean`, where `participant_mean` is the mean of that participant's row and `grand_mean` is the mean of all values. This removes stable between-participant differences before plotting within-subject error bars. Do not change the input. For example, `normalize_within([[2, 4], [6, 10], [7, 8]])` returns about `[[5.1667, 7.1667], [4.1667, 8.1667], [5.6667, 6.6667]]`.
+starter:
+```python
+def normalize_within(data):
+    pass
+```
+tests:
+```python
+d = [[2, 4], [6, 10], [7, 8]]
+got = normalize_within(d)
+want = [[5.16667, 7.16667], [4.16667, 8.16667], [5.66667, 6.66667]]
+assert all(abs(a - b) < 1e-4 for r, w in zip(got, want) for a, b in zip(r, w))
+grand = 37 / 6
+assert all(abs(sum(r) / 2 - grand) < 1e-9 for r in got)
+assert all(abs(sum(r[j] for r in got) / 3 - sum(r[j] for r in d) / 3) < 1e-9 for j in range(2))
+assert d == [[2, 4], [6, 10], [7, 8]]
+```
+model:
+```python
+def normalize_within(data):
+    """Subtract each participant's mean and add back the grand mean."""
+    n, k = len(data), len(data[0])
+    grand = sum(sum(r) for r in data) / (n * k)
+    return [[v - sum(r) / k + grand for v in r] for r in data]
+```
+hint: Use a list comprehension per row, and compute the grand mean once before the loop.
+solution: After the adjustment every participant has the same mean (the grand mean), so only within-person variation remains, while the condition means stay as they were: the subject offset averages to zero across participants. Standard errors computed on the normalized values reflect the precision of within-subject differences.
+
+@quiz num
+prompt: Each of 10 participants contributes $m = 20$ trials to a condition, and the intraclass correlation of RTs is $0.10$. Using the design effect $1 + (m-1)\,\text{ICC}$, what is the effective sample size of the 200 trials? Give one decimal place.
+answer: 69.0
+tol: 0.1
+check: 200 / (1 + (20 - 1) * 0.10)
+hint: Divide the number of trials by the design effect.
+solution: The design effect is $1 + 19 \times 0.1 = 2.9$, so the 200 correlated trials carry the information of about $200/2.9 = 69.0$ independent observations.
+
+@quiz text
+prompt: What does this program print?
+```python
+d = [[10, 14], [20, 30], [30, 34]]
+sm = [sum(r) / len(r) for r in d]
+print(sm, sum(sm) / len(sm))
+```
+answer: [12.0, 25.0, 32.0] 23.0
+check: run("d = [[10, 14], [20, 30], [30, 34]]\nsm = [sum(r) / len(r) for r in d]\nprint(sm, sum(sm) / len(sm))")
+hint: Average each row, then average the three row means.
+solution: The row means are $12$, $25$ and $32$; they average to $69/3 = 23$, so the program prints `[12.0, 25.0, 32.0] 23.0`. These are the participant means and the grand mean used in the subject sum of squares.
