@@ -1,0 +1,221 @@
+@lesson
+title: Profiling and performance
+summary: Measure where a program spends its time with timing tools and a profiler, then improve it by changing the algorithm or caching, and judge the benefit with Amdahl's law.
+objective: Measure small snippets with `timeit` and whole programs with `time` and `cProfile`.
+objective: Read profiler output (`ncalls`, `tottime`, `cumtime`) to find the real bottleneck.
+objective: Apply algorithmic fixes (a better data structure, caching) and estimate overall speedup with Amdahl's law.
+reading: The Missing Semester of Your CS Education, lecture "Debugging and Profiling" (profiling: timing, CPU profilers, memory profiling); the Python documentation pages for `timeit`, `cProfile` and `tracemalloc`.
+@article
+Programmers are famously bad at guessing why a program is slow. The rule is: **measure first, optimize the part that dominates, and measure again.** Optimizing code that takes 2% of the run time can never give more than a 2% gain.
+
+### Timing
+
+From the shell, `time ./prog` reports **real** (wall-clock) time, **user** time (CPU time in your code) and **sys** time (CPU time in the kernel). Real time includes waiting for disk or network, so real can exceed user plus sys. For a small snippet use `timeit`, which repeats the statement many times to defeat noise:
+
+```bash
+python3 -m timeit -s "xs = list(range(1000))" "999 in xs"
+python3 -m timeit -s "xs = set(range(1000))" "999 in xs"
+```
+
+The first scans the list: $O(n)$. The second is a hash lookup: $O(1)$ on average. Run each a few times and compare the best result, because other programs on your machine add noise. The shell's `time` and Python's `time.perf_counter()` are fine for one-off measurements.
+
+### Profiling
+
+A **profiler** records where time goes, function by function. Python ships with the deterministic profiler `cProfile`:
+
+```bash
+python3 -m cProfile -s cumtime slow.py
+```
+
+The report has one row per function with these columns: `ncalls` (number of calls), `tottime` (time spent **inside** the function itself, excluding the functions it calls), `percall`, `cumtime` (time in the function **including** everything it calls) and the function name. To find a bottleneck sort by `tottime` to see where the work is done, and by `cumtime` to see which of your high-level functions are responsible. A function with an enormous `ncalls` is often the clue: the same work is being repeated. Profiling adds overhead, so use the proportions, not the absolute times. **Sampling profilers** (such as `py-spy`) look at the running program periodically instead, which adds almost no overhead and can attach to a running process. For memory, the standard library's `tracemalloc` shows which lines allocate the most.
+
+### What usually helps
+
+1. **A better algorithm or data structure.** Replacing a list scan inside a loop with a set or dictionary lookup turns $O(n^2)$ into $O(n)$ on average. This beats any micro-optimization.
+2. **Do less work**: move invariant computations out of loops, stop early, avoid repeated I/O.
+3. **Cache results** of pure functions. `functools.cache` remembers each result, so a function is computed once per distinct argument. Naive recursive Fibonacci makes an exponential number of calls; with a cache it makes a linear number.
+4. **Use built-ins and the standard library**, which are implemented in C.
+5. Only then consider a faster implementation (a compiled extension, parallelism).
+
+### Amdahl's law
+
+If a fraction $p$ of the run time is made $s$ times faster and the rest is unchanged, the overall speedup is
+$$\frac{1}{(1-p) + p/s}.$$
+Even an infinitely fast improvement ($s \to \infty$) can give at most $1/(1-p)$. If $p = 0.5$, the speedup can never exceed 2. This is why you profile: improving the dominant part is the only way to get a large overall gain.
+
+Keep correctness first: an optimization needs the tests that protected the original, and clear code that is fast enough is better than fast code nobody understands.
+
+@example
+title: Reading profiler output
+problem: A profile of a program shows these rows. Which function should you investigate first?
+
+```text
+ncalls  tottime  cumtime  function
+     1    0.002    3.100  main
+     1    0.010    3.090  analyze
+ 20000    2.950    2.950  is_duplicate
+ 20000    0.130    0.130  parse_line
+```
+step: `main` and `analyze` have large `cumtime` but tiny `tottime`: they spend their time waiting on the functions they call.
+step: `is_duplicate` has `tottime` of 2.95 s out of 3.1 s total, so the work itself happens there: about 95% of the run time.
+step: It is called 20000 times, so each call takes about 0.15 ms. That points to a loop or list scan inside it that grows with the data.
+step: Investigate `is_duplicate` first (for example replace a list scan by a set). `parse_line` is only about 4%, so improving it cannot help much.
+answer: `is_duplicate`
+@example
+title: Amdahl's law
+problem: 80% of a program's run time is spent in one function. You make that function 4 times faster. What is the overall speedup?
+step: Here $p = 0.8$ and $s = 4$.
+step: The new relative run time is $(1-0.8) + 0.8/4 = 0.2 + 0.2 = 0.4$.
+step: The speedup is $1/0.4 = 2.5$.
+step: Even with an infinitely fast function the best possible speedup would be $1/0.2 = 5$.
+answer: $2.5$
+@mistakes
+- Optimizing without measuring, and speeding up code that was never the bottleneck.
+- Timing a snippet once, or comparing runs on a busy machine, and trusting the noise.
+- Confusing `tottime` (time in the function itself) with `cumtime` (including its callees).
+- Making code unreadable for a tiny gain, or breaking correctness without tests to catch it.
+@practice mc
+prompt: In `cProfile` output, a function has `tottime` 0.1 s and `cumtime` 5.0 s. What does that tell you?
+choice: The function is called 5 times.
+choice*: The function itself is cheap, but the functions it calls take most of the 5 seconds.
+choice: The function is the bottleneck and should be rewritten first.
+choice: The profiler measured incorrectly, because `cumtime` must equal `tottime`.
+hint: `cumtime` includes the time spent in every function that this one calls.
+solution: Most of the 5.0 s is spent in callees. The place to look is inside the functions it calls, not in the function's own lines.
+@practice num
+prompt: A function accounts for 75% of a program's run time. You make it 3 times faster. What is the overall speedup of the program? Give a decimal.
+answer: 2
+check: 1 / ((1 - 0.75) + 0.75 / 3)
+tol: 0.001
+hint: Use $1/((1-p)+p/s)$ with $p = 0.75$ and $s = 3$.
+solution: The new relative run time is $0.25 + 0.75/3 = 0.5$, so the speedup is $1/0.5 = 2$.
+@practice code
+prompt: Write `count_calls(func)`, a decorator that wraps `func` and keeps the number of times it has been called in the attribute `calls` of the returned wrapper (starting at 0). The wrapper must pass all positional and keyword arguments through, return `func`'s result, and keep the original `__name__` (use `functools.wraps`).
+starter:
+```python
+import functools
+
+
+def count_calls(func):
+    pass
+```
+tests:
+```python
+def add(a, b=0):
+    return a + b
+
+
+counted = count_calls(add)
+assert counted.calls == 0
+assert counted(1, 2) == 3
+assert counted(5, b=6) == 11
+assert counted.calls == 2
+assert counted.__name__ == "add"
+counted(0)
+assert counted.calls == 3
+```
+model:
+```python
+import functools
+
+
+def count_calls(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        wrapper.calls += 1
+        return func(*args, **kwargs)
+
+    wrapper.calls = 0
+    return wrapper
+```
+hint: Define an inner function `wrapper(*args, **kwargs)` and return it.
+hint: Functions are objects, so you can set `wrapper.calls = 0` after defining it and increment `wrapper.calls` on each call.
+solution: The decorator returns a wrapper that increments its own `calls` attribute and then delegates to `func`. `functools.wraps` copies the name and docstring so tools that show function names (such as profilers) still display the original.
+@practice code
+prompt: Write `fib_with_count(n)` for the naive recursive Fibonacci definition (`fib(0) = 0`, `fib(1) = 1`, `fib(n) = fib(n-1) + fib(n-2)`). Return a tuple `(value, calls)` where `calls` is the total number of invocations of the recursive function made to compute `fib(n)`, counting the first one. Example: `fib_with_count(2)` returns `(1, 3)`, since `fib(2)` calls `fib(1)` and `fib(0)`.
+starter:
+```python
+def fib_with_count(n):
+    pass
+```
+tests:
+```python
+assert fib_with_count(0) == (0, 1)
+assert fib_with_count(1) == (1, 1)
+assert fib_with_count(2) == (1, 3)
+assert fib_with_count(5) == (5, 15)
+assert fib_with_count(10) == (55, 177)
+```
+model:
+```python
+def fib_with_count(n):
+    if n < 2:
+        return (n, 1)
+    left, left_calls = fib_with_count(n - 1)
+    right, right_calls = fib_with_count(n - 2)
+    return (left + right, 1 + left_calls + right_calls)
+```
+hint: A call with `n < 2` is a single invocation with no recursion.
+hint: Otherwise the count is 1 (this call) plus the counts of the two recursive calls.
+solution: The recursive structure of the counting mirrors the structure of the computation: `calls(n) = 1 + calls(n-1) + calls(n-2)`. The count grows like the Fibonacci numbers themselves, which is exponential, and a cache removes the repeated work.
+@practice self
+prompt: The function below removes duplicates from a list while keeping the first occurrence of each item. On your computer, (1) time it with `python3 -m timeit` on a list of 5000 distinct integers, (2) run it under `cProfile` and say which line of reasoning the output supports, (3) state its time complexity, (4) rewrite it to run in $O(n)$ average time and say what you would measure to confirm the improvement.
+
+```python
+def slow_unique(items):
+    out = []
+    for x in items:
+        if x not in out:
+            out.append(x)
+    return out
+```
+hint: What is the cost of `x not in out` when `out` is a list?
+solution: `x not in out` scans the list, so each check is $O(\text{len(out)})$ and the whole function is $O(n \cdot u)$ for $u$ distinct items, which is $O(n^2)$ for distinct data. The profile attributes essentially all the time to `slow_unique` itself (a single call with a large `tottime`), pointing at the loop rather than at any callee. Rewrite with a set of seen items: `seen = set()`, and append `x` to `out` only when `x not in seen`, adding it to `seen` afterwards. Membership in a set is $O(1)$ on average, so the function is $O(n)$. Confirm by repeating the `timeit` run (and, for example, with doubled input: the old version should take about four times longer, the new one about twice) and by checking that the outputs are equal.
+rubric: Names the quadratic cost of the list membership test and gives the complexity.
+rubric: Uses a set of seen items and still preserves first-occurrence order.
+rubric: Proposes a measurement (`timeit` before and after, or doubling the input size) and a correctness check.
+@quiz code
+prompt: Write `fib_memo_with_count(n)` that computes Fibonacci with a dictionary cache and returns `(value, calls)`. Use a recursive helper. Every invocation of the helper counts, including invocations answered from the cache; the cases `n < 2` return `n` immediately and are not stored in the cache. Example: `fib_memo_with_count(10)` returns `(55, 19)`.
+starter:
+```python
+def fib_memo_with_count(n):
+    pass
+```
+tests:
+```python
+assert fib_memo_with_count(0) == (0, 1)
+assert fib_memo_with_count(1) == (1, 1)
+assert fib_memo_with_count(2) == (1, 3)
+assert fib_memo_with_count(10) == (55, 19)
+assert fib_memo_with_count(30) == (832040, 59)
+```
+model:
+```python
+def fib_memo_with_count(n):
+    cache = {}
+    calls = 0
+
+    def fib(k):
+        nonlocal calls
+        calls += 1
+        if k < 2:
+            return k
+        if k in cache:
+            return cache[k]
+        cache[k] = fib(k - 1) + fib(k - 2)
+        return cache[k]
+
+    value = fib(n)
+    return (value, calls)
+```
+hint: Use a dictionary `cache` and a counter that the helper increments at its very first line.
+hint: Check `k < 2` and the cache before recursing, and store the result before returning. The counter needs `nonlocal` inside the helper.
+solution: With a cache each value `fib(k)` is computed once, so the calls number about $2n-1$ instead of an exponential count. The first line of the helper counts the invocation whatever happens next.
+@quiz mc
+prompt: A report takes 10 s. A profile shows 9 s inside `load_rows`, which scans a list for each row, and 0.2 s inside `format_output`. What is the best next step?
+choice: Rewrite `format_output` in C, since it is the last function called.
+choice: Remove all logging statements.
+choice*: Improve the algorithm in `load_rows` (for example, use a dictionary or set instead of scanning a list), then measure again.
+choice: Buy a faster computer first.
+hint: Which function dominates the run time, and what usually has the largest effect?
+solution: `load_rows` takes 90% of the time and its list scan is a quadratic algorithm, so a better data structure has the biggest effect. Even making `format_output` free would save at most 2%.

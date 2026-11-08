@@ -1,0 +1,303 @@
+@lesson
+title: Dynamic arrays and amortized analysis
+summary: Implement a resizable array that doubles its capacity, and prove that appending is $O(1)$ amortized.
+objective: Explain the difference between the size and the capacity of a dynamic array.
+objective: Trace a doubling dynamic array and count the element copies it makes.
+objective: Use aggregate analysis to show that $n$ appends cost $O(n)$ in total.
+objective: Explain why growing by a constant amount fails to give constant amortized cost.
+reading: Open Data Structures, Chapter 2 "Array-Based Lists" (the section on ArrayStack and its resizing analysis).
+
+@article
+An **array** is a block of contiguous memory holding a fixed number of slots. Reading or writing slot `i` is $O(1)$ because the address is the start plus `i` times the slot size. The price is that the length is fixed when you allocate. A **dynamic array** hides that limit: it behaves like a list that can grow. Python's `list`, Java's `ArrayList` and C++'s `std::vector` are dynamic arrays.
+
+### Size and capacity
+
+A dynamic array keeps two numbers. Its **size** is how many elements it holds; its **capacity** is the number of slots in the underlying array. Always $\text{size} \le \text{capacity}$. Appending when `size < capacity` just writes into the next free slot. Appending when `size == capacity` first **resizes**: allocate a new array with larger capacity, copy every element across, and then append.
+
+```python
+class DynamicArray:
+    def __init__(self):
+        self._data = [None]      # capacity 1
+        self._size = 0
+
+    def append(self, x):
+        if self._size == len(self._data):
+            self._resize(2 * len(self._data))
+        self._data[self._size] = x
+        self._size += 1
+
+    def _resize(self, new_capacity):
+        new_data = [None] * new_capacity
+        for i in range(self._size):
+            new_data[i] = self._data[i]
+        self._data = new_data
+```
+
+(Here a Python list of `None` plays the role of a raw array whose length we never change.)
+
+### Why doubling
+
+A single append can cost $O(n)$, because of the copy. Yet most appends are cheap. **Amortized analysis** bounds the *average cost per operation over any sequence of operations*, with no probability involved: it is a worst-case guarantee about the whole sequence.
+
+**Aggregate analysis for doubling.** Start with capacity 1 and perform $n$ appends. A resize happens when the size reaches $1, 2, 4, 8, \dots$, copying that many elements. If the last resize copies $2^k$ elements, then $2^k < n$ and the total copying is
+$$1 + 2 + 4 + \dots + 2^k = 2^{k+1} - 1 < 2n.$$
+Each append also does one write, so the total work is less than $n + 2n = 3n$. Dividing by $n$: the **amortized cost of `append` is $O(1)$**. A resize is rare enough, and the capacity grows fast enough, that its cost is paid for by the many cheap appends before it.
+
+### Growth by a constant fails
+
+Suppose instead the capacity grows by a fixed amount $c$ (say 10) at each resize. The resizes copy $c, 2c, 3c, \dots$ elements, so $n$ appends copy about $\frac{n^2}{2c}$ elements: $O(n^2)$ total, $O(n)$ amortized. Any **geometric** growth factor $r > 1$ (doubling, 1.5, or about 1.125 as in CPython) gives $O(1)$ amortized appends; the factor trades wasted memory against copy frequency. CPython's list over-allocates by a small fraction of its size, much less than 2, to waste less memory.
+
+### Other operations
+
+| Operation | Cost |
+|---|---|
+| `get(i)`, `set(i, x)` | $O(1)$ |
+| `append(x)` | $O(1)$ amortized, $O(n)$ worst case for one call |
+| `pop()` from the end | $O(1)$ amortized |
+| `insert(i, x)`, `remove` at `i` | $O(n - i)$: later elements shift |
+| search without order | $O(n)$ |
+
+To keep memory proportional to size when removing, a dynamic array may **shrink**. Halving as soon as `size <= capacity / 2` is a trap: alternating push and pop at the boundary would resize every time. Shrinking by half only when the array is a quarter full avoids that, and keeps pops $O(1)$ amortized.
+
+### Measuring growth
+
+You can measure instead of only proving: count element copies as you append, and check that `copies / n` stays below 2 for doubling while it keeps growing for constant increments. This is the deliverable for weeks 1 and 2: a dynamic array that records its resizes.
+
+@example
+title: Tracing appends in a doubling array
+problem: A dynamic array starts with capacity 1 and doubles when full. Append 9 elements. After each append give the capacity, and find the total number of element copies.
+step: Append 1: size 0, capacity 1, room available. No copy. Capacity stays 1.
+step: Append 2: size 1 equals capacity 1, so resize to 2, copying 1 element. Append 3: full at size 2, resize to 4, copying 2.
+step: Append 4 fits (size 3, capacity 4). Append 5: full at size 4, resize to 8, copying 4. Appends 6, 7 and 8 fit.
+step: Append 9: full at size 8, resize to 16, copying 8.
+step: Capacities after each append: 1, 2, 4, 4, 8, 8, 8, 8, 16. Copies: $1 + 2 + 4 + 8 = 15$.
+answer: Capacities 1, 2, 4, 4, 8, 8, 8, 8, 16; 15 element copies in total.
+
+@example
+title: Comparing doubling with growth by 4
+problem: Compare the copies made while appending 33 elements to an array that starts at capacity 4 when it (a) doubles and (b) grows by 4 slots.
+step: (a) Doubling from 4: resizes happen at sizes 4, 8 and 16 (the 5th, 9th and 17th appends), copying 4, 8 and 16 elements. The next resize would be at size 32, the 33rd append, copying 32. Total $4 + 8 + 16 + 32 = 60$.
+step: (b) Growing by 4: a resize happens each time the size is a multiple of 4 and an append arrives, that is at sizes 4, 8, 12, ..., 32 (the 5th, 9th, ..., 33rd appends).
+step: These copy $4 + 8 + 12 + 16 + 20 + 24 + 28 + 32 = 4(1 + 2 + \dots + 8) = 4 \cdot 36 = 144$ elements.
+step: At $n = 33$ the gap is 60 versus 144, and it widens: doubling copies fewer than $2n$ elements in total, whereas growth by 4 copies about $\frac{n^2}{8}$.
+answer: Doubling copies 60 elements; growth by 4 copies 144, and the gap grows quadratically.
+
+@mistakes
+- Saying append is "$O(n)$ because of the copy". The worst case of a single call is $O(n)$, but the amortized cost over a sequence is $O(1)$.
+- Confusing amortized with average case. Amortized bounds hold for every sequence of operations and need no randomness.
+- Growing by a fixed number of slots instead of a constant factor, which makes $n$ appends cost $O(n^2)$.
+- Shrinking the array to half as soon as it is half full, so a push-pop pattern at the boundary resizes on every operation.
+
+@practice num
+prompt: A dynamic array starts with capacity 1 and doubles whenever an append finds it full. During 100 appends, how many element copies are made in total by the resizes?
+answer: 127
+check: int(run("cap = 1\nsize = 0\ncopies = 0\nfor _ in range(100):\n    if size == cap:\n        copies += size\n        cap *= 2\n    size += 1\nprint(copies)\n"))
+hint: Resizes happen when the size is 1, 2, 4, 8, and so on, up to the largest power of two below 100.
+hint: Add the copy counts $1 + 2 + 4 + 8 + 16 + 32 + 64$.
+solution: Resizes occur at sizes 1, 2, 4, 8, 16, 32 and 64 (the next would be at 128 appends), copying that many elements each: $1 + 2 + 4 + 8 + 16 + 32 + 64 = 127$.
+
+@practice mc
+prompt: A dynamic array grows its capacity by 10 slots each time it is full, instead of doubling it. What is the amortized cost of `append` over $n$ appends?
+choice: $O(1)$
+choice: $O(\log n)$
+choice*: $O(n)$
+choice: $O(n^2)$
+hint: Count the total copies: the resize copy sizes form an arithmetic series.
+solution: The resizes copy about $10, 20, 30, \dots, n$ elements, a total of roughly $\frac{n^2}{20}$. Dividing by the $n$ appends gives $O(n)$ per append amortized. The total is $O(n^2)$, but the question asks about the cost per append.
+
+@practice code
+prompt: Implement `DynamicArray` with initial capacity 1 and doubling growth. Methods: `append(x)`, `get(i)` (raises `IndexError` unless `0 <= i < len(self)`), `__len__()`, and `capacity()` returning the number of slots. Before appending to a full array, double the capacity. Also keep an integer attribute `copies` counting the elements copied by all resizes so far (it starts at 0).
+starter:
+```python
+class DynamicArray:
+    def __init__(self):
+        pass
+```
+tests:
+```python
+a = DynamicArray()
+assert len(a) == 0
+assert a.capacity() == 1
+caps = []
+for i in range(5):
+    a.append(i * 10)
+    caps.append(a.capacity())
+assert caps == [1, 2, 4, 4, 8]
+assert len(a) == 5
+assert a.get(3) == 30
+assert a.copies == 1 + 2 + 4
+assert raises(IndexError, a.get, 5)
+assert raises(IndexError, a.get, -1)
+b = DynamicArray()
+for i in range(9):
+    b.append(i)
+assert b.copies == 15
+assert b.capacity() == 16
+```
+model:
+```python
+class DynamicArray:
+    def __init__(self):
+        self._data = [None]
+        self._size = 0
+        self.copies = 0
+
+    def __len__(self):
+        return self._size
+
+    def capacity(self):
+        return len(self._data)
+
+    def get(self, i):
+        if i < 0 or i >= self._size:
+            raise IndexError("index out of range")
+        return self._data[i]
+
+    def append(self, x):
+        if self._size == len(self._data):
+            self._resize(2 * len(self._data))
+        self._data[self._size] = x
+        self._size += 1
+
+    def _resize(self, new_capacity):
+        new_data = [None] * new_capacity
+        for i in range(self._size):
+            new_data[i] = self._data[i]
+        self.copies += self._size
+        self._data = new_data
+```
+hint: Keep a list of `None` for the slots and a separate `_size` counter.
+hint: In `append`, if `_size == capacity`, allocate a list twice as long, copy `_size` elements, add that number to `copies`, and then store the new item.
+solution: The capacity is the length of the internal list; the size is a separate counter. Resizing allocates a list of twice the length, copies the `_size` existing elements and adds `_size` to `copies`. The test for 9 appends expects 15 copies, as in the trace of resizes at sizes 1, 2, 4 and 8.
+
+@practice code
+prompt: Write `growth_trace(n, start=1)` that simulates a doubling dynamic array with initial capacity `start` (a positive integer) and returns the list of capacities after each of `n` appends. It must not build the array, only track size and capacity. For example, `growth_trace(5)` returns `[1, 2, 4, 4, 8]`.
+starter:
+```python
+def growth_trace(n, start=1):
+    pass
+```
+tests:
+```python
+assert growth_trace(5) == [1, 2, 4, 4, 8]
+assert growth_trace(0) == []
+assert growth_trace(9) == [1, 2, 4, 4, 8, 8, 8, 8, 16]
+assert growth_trace(6, 3) == [3, 3, 3, 6, 6, 6]
+assert growth_trace(4, 4) == [4, 4, 4, 4]
+```
+model:
+```python
+def growth_trace(n, start=1):
+    capacity = start
+    size = 0
+    trace = []
+    for _ in range(n):
+        if size == capacity:
+            capacity *= 2
+        size += 1
+        trace.append(capacity)
+    return trace
+```
+hint: Track `size` and `capacity` as two integers. The capacity changes only when an append finds `size == capacity`.
+hint: Record the capacity after the possible doubling, once per append.
+solution: Simulate each append: if the array is full, double the capacity; then increase the size and record the capacity. With `start=3` and 6 appends, the fourth append finds the array full at size 3 and doubles to 6.
+
+@practice text
+prompt: What does this program print? Type the two numbers separated by a space.
+
+```python
+cap = 4
+size = 0
+copies = 0
+for _ in range(12):
+    if size == cap:
+        copies += size
+        cap += 4
+    size += 1
+print(copies, cap)
+```
+answer: 12 12
+check: run("cap = 4\nsize = 0\ncopies = 0\nfor _ in range(12):\n    if size == cap:\n        copies += size\n        cap += 4\n    size += 1\nprint(copies, cap)\n")
+hint: The array grows by 4, not by doubling. Find which appends find it full.
+solution: The 5th append finds `size == cap == 4`: copies become 4 and `cap` becomes 8. The 9th append finds `size == cap == 8`: copies become 12 and `cap` becomes 12. The 12th append finds size 11 and no resize. The output is `12 12`.
+
+@quiz code
+prompt: Complete the method `insert(index, x)` of this dynamic array. It must insert `x` so that it ends up at position `index`, shifting later elements one place right, and double the capacity first if the array is full. It raises `IndexError` unless `0 <= index <= len(self)` (inserting at `len(self)` is an append). The other methods are given.
+starter:
+```python
+class DynamicArray:
+    def __init__(self):
+        self._data = [None]
+        self._size = 0
+
+    def __len__(self):
+        return self._size
+
+    def to_list(self):
+        return self._data[:self._size]
+
+    def _grow(self):
+        new_data = [None] * (2 * len(self._data))
+        for i in range(self._size):
+            new_data[i] = self._data[i]
+        self._data = new_data
+
+    def insert(self, index, x):
+        pass
+```
+tests:
+```python
+a = DynamicArray()
+a.insert(0, "b")
+a.insert(0, "a")
+a.insert(2, "d")
+a.insert(2, "c")
+assert a.to_list() == ["a", "b", "c", "d"]
+assert len(a) == 4
+a.insert(1, "x")
+assert a.to_list() == ["a", "x", "b", "c", "d"]
+assert raises(IndexError, a.insert, 7, "z")
+assert raises(IndexError, a.insert, -1, "z")
+assert a.to_list() == ["a", "x", "b", "c", "d"]
+```
+model:
+```python
+class DynamicArray:
+    def __init__(self):
+        self._data = [None]
+        self._size = 0
+
+    def __len__(self):
+        return self._size
+
+    def to_list(self):
+        return self._data[:self._size]
+
+    def _grow(self):
+        new_data = [None] * (2 * len(self._data))
+        for i in range(self._size):
+            new_data[i] = self._data[i]
+        self._data = new_data
+
+    def insert(self, index, x):
+        if index < 0 or index > self._size:
+            raise IndexError("index out of range")
+        if self._size == len(self._data):
+            self._grow()
+        for i in range(self._size, index, -1):
+            self._data[i] = self._data[i - 1]
+        self._data[index] = x
+        self._size += 1
+```
+hint: Check the index range first, so a bad call leaves the array unchanged.
+hint: Shift from the right: move `_data[i - 1]` to `_data[i]` for `i` from `_size` down to `index + 1`, then store `x` at `index`.
+solution: Validate the index, grow if full, then shift elements right starting from the last one (shifting from the left would overwrite data). Finally store `x` and increase `_size`. The shift makes `insert` cost $O(n - \text{index})$.
+
+@quiz mc
+prompt: A dynamic array doubles its capacity when full. Which statement about appending $n$ items, starting from an empty array, is correct?
+choice: Every single append takes $O(1)$ time in the worst case.
+choice*: The total time for the $n$ appends is $O(n)$, although an individual append can take $O(n)$ time.
+choice: The total time is $O(n \log n)$ because each of the $\log n$ resizes costs $O(n)$.
+choice: The bound $O(1)$ per append holds only on average over random inputs.
+hint: Add up the sizes of the copies made by the resizes, not their worst-case count times $n$.
+solution: The copies sum to less than $2n$, so $n$ appends cost $O(n)$ in total, which is $O(1)$ amortized. An individual append that triggers a resize costs $O(n)$. The resize costs are not all $O(n)$: they are $1, 2, 4, \dots$, a geometric series. The guarantee needs no randomness.

@@ -1,0 +1,213 @@
+@lesson
+title: Shell scripting
+summary: Write bash scripts with arguments, variables, conditionals, loops, functions and exit statuses, and use them to summarize a log file.
+objective: Write an executable script with a shebang line that reads its arguments and returns a meaningful exit status.
+objective: Use quoting, conditionals (`if`, `[ ]`, `[[ ]]`), loops and command substitution correctly.
+objective: Explain what `set -euo pipefail` changes and why unquoted variables are a common source of bugs.
+reading: The Missing Semester of Your CS Education, lecture "Shell Tools and Scripting" (shell scripting, `bash` functions, conditionals, shebang, and the ShellCheck tool).
+@article
+A **shell script** is a text file of shell commands. Anything you type repeatedly belongs in a script: it documents what you did and runs the same way every time.
+
+### A first script
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: $0 FILE" >&2
+    exit 2
+fi
+
+echo "$1 has $(wc -l < "$1") lines"
+```
+
+The first line, the **shebang**, tells the kernel which interpreter runs the file. Save it as `count.sh`, give it execute permission with `chmod u+x count.sh` and run `./count.sh notes.txt`. Inside a script, `$0` is the script's name, `$1`, `$2`, ... are its arguments, `$#` is the number of arguments, and `"$@"` expands to all arguments, each kept as a separate word. `$(command)` is **command substitution**: it is replaced by the command's output. `$((i + 1))` does integer arithmetic. Note the `>&2`, which sends the usage message to standard error, and `exit 2`, which ends the script with a non-zero **exit status**.
+
+### Variables and quoting
+
+Assign without spaces (`name=ana`) and read with `$name`. **Always quote expansions** (`"$name"`): unquoted, the value is split at spaces and glob characters are expanded, so a file called `my notes.txt` silently becomes two arguments. An unquoted *empty* variable disappears completely, which turns `[ $x = a ]` into the syntax error `[ = a ]`. Use `"${var:-default}"` to supply a default and `"${1:?message}"` to stop with a message when an argument is missing.
+
+### Conditionals and loops
+
+```bash
+if [ -f "$file" ]; then echo "regular file"; fi
+for f in *.log; do echo "$f"; done
+while IFS= read -r line; do echo "> $line"; done < "$file"
+```
+
+`[ ... ]` (also spelled `test`) is a command that sets the exit status. Useful tests: `-f` is a regular file, `-d` a directory, `-z` an empty string, `=` string equality, and `-eq`, `-lt`, `-gt` for integers. Bash adds `[[ ... ]]`, which does not split unquoted variables and supports patterns and `&&`; it is not available in plain POSIX `sh`. The `if` statement tests the exit status of whatever command follows, so `if grep -q ERROR "$f"; then` works directly.
+
+### Functions and safety
+
+```bash
+log_error() {
+    local msg="$1"
+    echo "ERROR: $msg" >&2
+}
+```
+
+`local` keeps a variable inside the function. A function returns an exit status with `return N` and "returns" text by printing it.
+
+`set -euo pipefail` makes scripts fail loudly: `-e` exits when a command fails (except in conditions such as `if` tests), `-u` treats an unset variable as an error, and `-o pipefail` makes a pipeline fail if any stage fails, not only the last. Beware: `grep -c` exits with status 1 when nothing matches, so under `-e` write `grep -c ERROR "$f" || true` when zero matches is fine. For temporary files use `tmp=$(mktemp)` and `trap 'rm -f "$tmp"' EXIT` to clean up. Run **ShellCheck**, a static analyzer, on your scripts; it flags most quoting bugs.
+
+Once a script passes about thirty lines or needs real data structures, switch to Python, which you already know; the shell is best for gluing programs together.
+
+@example
+title: A script that summarizes a log
+problem: Write `summarize.sh LOGFILE` that prints how many lines of the log contain each of the levels `INFO`, `WARNING` and `ERROR`, where each line looks like `2026-03-02 10:15:01 ERROR disk full`.
+step: Take the file name from the first argument and stop with a message if it is missing.
+step: Loop over the three level names and count the lines with `grep -c`. The level is surrounded by spaces so it is not matched inside a message. Add `|| true` because `grep -c` returns status 1 when the count is zero.
+step: Put it together:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+log="${1:?usage: summarize.sh LOGFILE}"
+for level in INFO WARNING ERROR; do
+    count=$(grep -c " $level " "$log" || true)
+    echo "$level: $count"
+done
+```
+step: For a log with two `INFO` lines, no warnings and one error, the output is `INFO: 2`, `WARNING: 0` and `ERROR: 1`.
+answer: The script above prints one `LEVEL: count` line per level.
+@example
+title: Why the quotes matter
+problem: `file="my notes.txt"` and the script runs `rm $file`. What happens, and what is the fix?
+step: Unquoted, the shell splits `$file` at the space, so `rm` receives two arguments: `my` and `notes.txt`.
+step: `rm` reports that neither exists, or worse, deletes unrelated files that happen to be called `my` or `notes.txt`.
+step: Quote the expansion: `rm "$file"` passes one argument, `my notes.txt`.
+answer: Use `rm "$file"`; without quotes the value is split into two words.
+@mistakes
+- Leaving variable expansions unquoted, which breaks on spaces and empty values.
+- Putting spaces around `=` in an assignment (`x = 5`), or forgetting the spaces inside `[ ... ]` (`[$x=5]`).
+- Forgetting that under `set -e` a harmless non-zero status (such as `grep` finding nothing) ends the script.
+- Writing a long script in bash when a short Python program would be clearer and easier to test.
+@practice mc
+prompt: Inside a script, what does `$#` contain?
+choice: The name of the script
+choice*: The number of command-line arguments
+choice: The exit status of the last command
+choice: The process ID of the script
+hint: Compare it with `$0`, `$?` and `$$`.
+solution: `$#` is the argument count. The script name is `$0`, the last exit status is `$?`, and the process ID is `$$`.
+@practice text
+prompt: A script contains the single loop below. Type its output exactly, one line per output line.
+
+```bash
+for i in 1 2 3; do echo $((i * i)); done
+```
+answer:
+```
+1
+4
+9
+```
+check: run("for i in range(1, 4):\n    print(i * i)\n")
+hint: `$((i * i))` is integer arithmetic with the current value of `i`.
+solution: The loop visits 1, 2 and 3 and prints the squares, one per line.
+@practice code
+prompt: Write `summarize_log(text)` in Python, doing what the shell summary script does. Each log line looks like `2026-03-02 10:15:01 ERROR disk full`: date, time, level, then a message. Return a dictionary mapping each level to the number of lines that have it. Ignore blank lines and lines with fewer than three whitespace-separated fields. Example: a log with two `INFO` lines and one `ERROR` line gives `{"INFO": 2, "ERROR": 1}`.
+starter:
+```python
+def summarize_log(text):
+    pass
+```
+tests:
+```python
+log = """2026-03-02 10:15:01 INFO started
+2026-03-02 10:15:02 ERROR disk full
+2026-03-02 10:15:03 INFO retry
+"""
+assert summarize_log(log) == {"INFO": 2, "ERROR": 1}
+assert summarize_log("") == {}
+assert summarize_log("\n\noops\n") == {}
+assert summarize_log("d t WARNING a b c\nd t WARNING\n") == {"WARNING": 2}
+assert summarize_log("d t error x\nd t ERROR y\n") == {"error": 1, "ERROR": 1}
+```
+model:
+```python
+def summarize_log(text):
+    counts = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        level = fields[2]
+        counts[level] = counts.get(level, 0) + 1
+    return counts
+```
+hint: `line.split()` splits on any whitespace and ignores leading and trailing spaces; the level is the third field.
+hint: Skip a line when it has fewer than three fields, and count the rest in a dictionary with `counts.get(level, 0) + 1`.
+solution: Split each line, skip the short ones, and count the third field. Levels are compared exactly, so `error` and `ERROR` are different keys.
+@practice mc
+prompt: A script runs `name=""` and later `if [ $name = "ana" ]; then ...`. What goes wrong?
+choice: The test is simply false, so the `then` branch is skipped.
+choice*: The empty unquoted variable disappears, leaving `[ = "ana" ]`, which is a syntax error in the test.
+choice: The shell assigns `ana` to `name`.
+choice: Nothing: `[ ]` treats a missing value as the empty string.
+hint: What does the shell pass to `[` after expanding an unquoted empty variable?
+solution: Unquoted empty expansions vanish, so `[` sees `= ana` and complains. Writing `[ "$name" = "ana" ]` passes an empty string and the test is simply false.
+@practice self
+prompt: Write a bash script `errors.sh LOGFILE` for log lines of the form `DATE TIME LEVEL message` that (1) prints a usage message to standard error and exits with status 2 if no file is given, (2) prints the number of `ERROR` lines, and (3) prints the distinct messages of the `ERROR` lines, each with how many times it occurs, most frequent first. Explain why you used `|| true` or where you chose not to.
+hint: Reuse the frequency-count idiom: `sort | uniq -c | sort -rn`.
+solution:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+log="${1:?usage: errors.sh LOGFILE}"
+count=$(grep -c ' ERROR ' "$log" || true)
+echo "ERROR lines: $count"
+grep ' ERROR ' "$log" | cut -d' ' -f4- | sort | uniq -c | sort -rn || true
+```
+
+`${1:?...}` stops the script with a message when the argument is missing. `grep -c` prints `0` but exits with status 1 when nothing matches, so `|| true` stops `set -e` from ending the script. The same applies to the last pipeline, where `pipefail` would fail if `grep` finds no lines. `cut -f4-` keeps the message (field 4 onward), `sort | uniq -c` counts equal messages, and `sort -rn` puts the most frequent first.
+rubric: Checks the argument (`$1` or `${1:?...}`), writes the usage text to stderr with `>&2` or the `:?` form, and exits with a non-zero status.
+rubric: Counts `ERROR` lines with `grep -c` (or `grep | wc -l`) and quotes the file name variable.
+rubric: Builds the frequency list with `cut`, `sort`, `uniq -c` and `sort -rn`, in that order.
+@quiz code
+prompt: Write `parse_args(args)` that imitates the option parsing of a small script. `args` is a list of strings. The flag `-v` sets verbose to `True`. The option `-n` takes the next string as an integer count (default `10`). Every other string is a positional file name. Return the tuple `(verbose, n, files)`, with `files` in their original order. You may assume `-n` is always followed by a number. Example: `parse_args(["-v", "a.log", "-n", "3"])` returns `(True, 3, ["a.log"])`.
+starter:
+```python
+def parse_args(args):
+    pass
+```
+tests:
+```python
+assert parse_args(["-v", "a.log", "-n", "3"]) == (True, 3, ["a.log"])
+assert parse_args([]) == (False, 10, [])
+assert parse_args(["x", "y"]) == (False, 10, ["x", "y"])
+assert parse_args(["-n", "7", "-v", "f"]) == (True, 7, ["f"])
+assert parse_args(["-n", "1", "-n", "2"]) == (False, 2, [])
+```
+model:
+```python
+def parse_args(args):
+    verbose = False
+    n = 10
+    files = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-v":
+            verbose = True
+        elif arg == "-n":
+            i += 1
+            n = int(args[i])
+        else:
+            files.append(arg)
+        i += 1
+    return (verbose, n, files)
+```
+hint: Use an index so that `-n` can consume the argument after it.
+hint: When you see `-n`, advance the index once more and convert that string with `int`. Always advance once at the end of the loop body.
+solution: A `while` loop with an index lets `-n` skip over its value. `-v` flips the flag, other strings are collected as files, and a later `-n` overrides an earlier one.
+@quiz mc
+prompt: A script without `set -e` contains the two lines `false` followed by `echo done`. A second script adds `set -e` at the top. What do they print?
+choice: Both print `done`.
+choice*: The first prints `done`; the second prints nothing, because `false` fails and `set -e` ends the script.
+choice: The first prints nothing and the second prints `done`.
+choice: Neither prints anything, because `false` is an error.
+hint: By default the shell carries on after a command fails.
+solution: `false` only sets the exit status to 1. Without `-e` the script continues to `echo done`. With `-e` the failing command ends the script immediately.

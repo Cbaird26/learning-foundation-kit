@@ -1,0 +1,337 @@
+@lesson
+title: Choosing data structures: tries and union-find
+summary: Implement a trie and a union-find structure, and choose the right data structure for a problem by comparing the operations it needs.
+objective: Implement a trie for exact and prefix queries and state its time and space costs.
+objective: Implement union-find with path compression and union by size, and state its amortized cost.
+objective: Select among arrays, lists, hash tables, trees, heaps, tries and union-find by listing the required operations and their costs.
+reading: Open Data Structures, Chapter 13 "Data Structures for Integers" (BinaryTrie); for union-find, look up "disjoint-set data structure" in an algorithms text.
+
+@article
+Eleven weeks have produced a toolbox. This week adds two specialized tools, then turns to the skill that matters most in practice: **choosing** a structure.
+
+### Tries
+
+A **trie** (prefix tree) stores a set of strings so that every string is a path from the root. Each node has a map from a character to a child node, and a flag marking that a stored word ends there. The edges along the path from the root spell the prefix.
+
+```python
+class TrieNode:
+    def __init__(self):
+        self.children = {}      # character -> TrieNode
+        self.is_word = False
+
+class Trie:
+    def __init__(self):
+        self.root = TrieNode()
+
+    def insert(self, word):
+        node = self.root
+        for ch in word:
+            node = node.children.setdefault(ch, TrieNode())
+        node.is_word = True
+```
+
+Inserting, searching and prefix testing follow one path of length $L$ (the length of the word or prefix), so each costs $O(L)$ expected time (with dictionary children), **independent of how many words are stored**. A hash set also answers "is this word present?" in $O(L)$ (hashing a string reads it all), but it cannot answer "which words start with `pre`?" without scanning every word. A trie does: walk down the prefix, then collect everything below. This supports autocomplete, spell checking, IP routing (binary tries on address bits) and word games. The cost is memory: up to one node per character stored, although common prefixes are shared. Each stored word spells a unique path, and sorting the children alphabetically at every level lists the words in sorted order.
+
+### Union-find (disjoint sets)
+
+Some problems keep a collection of **disjoint sets** that merge over time: *are these two cities connected yet? how many groups are there?* The **union-find** structure (disjoint-set union) maintains it with two operations: `find(x)` returns a representative of $x$'s set (two elements are in the same set exactly when their representatives are equal) and `union(a, b)` merges the sets of $a$ and $b$.
+
+Represent each set as a tree stored in a `parent` array: a root is its own parent and is the representative. `find` follows parents up to the root. Two ideas make it fast:
+
+- **Union by size (or rank):** attach the root of the smaller tree under the root of the larger, so trees stay shallow (height $O(\log n)$).
+- **Path compression:** during `find`, redirect the nodes on the path to point closer to the root (or straight to it), flattening the tree for later queries.
+
+```python
+class UnionFind:
+    def __init__(self, n):
+        self.parent = list(range(n))
+        self.size = [1] * n
+
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]   # path halving
+            x = self.parent[x]
+        return x
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return False
+        if self.size[ra] < self.size[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.size[ra] += self.size[rb]
+        return True
+```
+
+With both ideas, a sequence of $m$ operations on $n$ elements takes $O(m\,\alpha(n))$ time, where $\alpha$ is the inverse Ackermann function, which grows so slowly that $\alpha(n) \le 4$ for any $n$ that could be stored in a physical computer. In practice it is "almost constant" per operation, though not exactly $O(1)$. Union-find is used for connected components of a graph as edges arrive, for detecting a cycle when adding an edge to an undirected graph (the edge closes a cycle exactly when its endpoints already have the same representative), and in Kruskal's minimum spanning tree algorithm.
+
+### Choosing a structure
+
+Start from the operations your program performs and how often, then read the cost off the table.
+
+| Need | Good choice | Cost |
+|---|---|---|
+| index by position, append | dynamic array (`list`) | $O(1)$, append amortized |
+| push/pop at both ends, FIFO queue | `collections.deque` | $O(1)$ |
+| lookup, insert, delete by key; order irrelevant | hash table (`dict`, `set`) | $O(1)$ expected |
+| sorted order, range queries, predecessor/successor | balanced search tree | $O(\log n)$ |
+| repeatedly take the minimum or maximum | binary heap (`heapq`) | $O(\log n)$ |
+| prefix queries on strings | trie | $O(L)$ |
+| merging groups, "same group?" queries | union-find | $\approx O(\alpha(n))$ |
+| relationships between items, paths | graph (adjacency list) | $O(V + E)$ for a traversal |
+
+Then check the constraints: is the worst case or only the average acceptable? How large can $n$ be? Does memory matter? Is the data static (sort it once and use binary search) or changing? Often the answer is the built-in type: a Python `dict` or `list` is hard to beat on simplicity and speed. Use a specialized structure when a measured need or an operation the built-ins cannot do efficiently (prefix queries, ordered range queries, repeated minimum extraction) calls for it. Combining structures is common: a hash table plus a heap, or a dictionary of sets for a graph.
+
+@example
+title: Prefix queries in a trie
+problem: Insert `car`, `card` and `cat` into an empty trie. Which nodes are marked as word ends, and what does a search for the prefix `ca` find?
+step: Insert `car`: create nodes for `c`, `a`, `r` along a path from the root and mark the `r` node as a word end.
+step: Insert `card`: the path `c`, `a`, `r` already exists, so only a new `d` node is added under `r`; mark `d` as a word end. Insert `cat`: follow `c`, `a`, then add a new child `t` under `a` and mark it.
+step: The word-end nodes are `r`, `d` and `t`. There are 5 non-root nodes: `c`, `a`, `r`, `d`, `t`, not the 10 characters that were typed, because the prefixes are shared.
+step: Searching for the prefix `ca`: walk `c`, `a`; the node exists, so some word starts with `ca`. Everything below it gives `car`, `card` and `cat`.
+answer: Word ends at `r`, `d` and `t`; the prefix `ca` leads to a node below which are the three words.
+
+@example
+title: Detecting a cycle with union-find
+problem: Process the undirected edges (0,1), (1,2), (3,4), (2,0) in order, with each vertex starting in its own set. Which edge closes a cycle?
+step: Edge (0,1): the sets of 0 and 1 are different, so merge them: {0,1}.
+step: Edge (1,2): 2 is in a different set, so merge: {0,1,2}. Edge (3,4): different sets, merge: {3,4}.
+step: Edge (2,0): `find(2)` and `find(0)` return the same representative, because both are already in {0,1,2}. Adding this edge would connect two vertices that are already connected, so it closes the cycle 0, 1, 2.
+step: The processing took 4 operations of near-constant time each.
+answer: The edge (2,0) closes the cycle.
+
+@mistakes
+- Forgetting the end-of-word flag in a trie, so that a stored word like `car` is not distinguished from the mere prefix of `card`.
+- Calling `find` without compression and attaching trees arbitrarily, so a sequence of unions builds a long chain and operations take $O(n)$.
+- Merging the *elements* instead of their *roots* in `union`, which corrupts the parent structure.
+- Choosing a structure by habit rather than by operations: using a list for repeated minimum extraction, or a sorted list for frequent insertion.
+
+@practice mc
+prompt: Which statement about union-find with union by size and path compression is correct?
+choice: Every `find` takes exactly $O(1)$ time in the worst case.
+choice: A sequence of $m$ operations takes $O(m \log n)$ time in the worst case, which cannot be improved.
+choice*: A sequence of $m$ operations takes $O(m\,\alpha(n))$ time, where $\alpha$ grows slower than any practical logarithm.
+choice: Union-find supports splitting a set into two sets in constant time.
+hint: Recall the inverse Ackermann function in the analysis.
+solution: With both optimizations, the amortized cost per operation is $O(\alpha(n))$, essentially constant but not exactly. The structure supports only merging sets, not splitting them, and an individual `find` can take longer than constant time on its path.
+
+@practice num
+prompt: Eight elements 0 through 7 start in separate sets. The unions (0,1), (2,3), (1,3), (0,2), (4,5), (5,4) are performed in order. How many disjoint sets remain?
+answer: 4
+check: int(run("p = list(range(8))\ndef f(x):\n    while p[x] != x:\n        x = p[x]\n    return x\nfor a, b in [(0, 1), (2, 3), (1, 3), (0, 2), (4, 5), (5, 4)]:\n    p[f(a)] = f(b)\nprint(len({f(i) for i in range(8)}))\n"))
+hint: A union reduces the number of sets by one only when the two elements are in different sets.
+solution: (0,1), (2,3), (1,3) and (4,5) each merge two different sets, giving 4 fewer sets. The unions (0,2) and (5,4) join elements that are already together and change nothing. Eight sets minus 4 merges leaves 4: {0,1,2,3}, {4,5}, {6} and {7}.
+
+@practice code
+prompt: Implement a `Trie` of non-empty lowercase words with: `insert(word)`; `search(word)` returns `True` only if exactly that word was inserted; `starts_with(prefix)` returns `True` if some inserted word begins with `prefix` (a word counts as beginning with itself); and `words_with_prefix(prefix)` returns the list of all inserted words that begin with `prefix`, sorted alphabetically (`[]` if none). `words_with_prefix("")` returns all words.
+starter:
+```python
+class Trie:
+    def __init__(self):
+        pass
+```
+tests:
+```python
+t = Trie()
+assert t.search("app") is False
+assert t.starts_with("a") is False
+assert t.words_with_prefix("a") == []
+for w in ["apple", "app", "apply", "ape", "bat", "app"]:
+    t.insert(w)
+assert t.search("app") is True
+assert t.search("ap") is False
+assert t.search("apples") is False
+assert t.starts_with("ap") is True
+assert t.starts_with("apple") is True
+assert t.starts_with("b") is True
+assert t.starts_with("c") is False
+assert t.words_with_prefix("app") == ["app", "apple", "apply"]
+assert t.words_with_prefix("ape") == ["ape"]
+assert t.words_with_prefix("z") == []
+assert t.words_with_prefix("") == ["ape", "app", "apple", "apply", "bat"]
+```
+model:
+```python
+class _Node:
+    def __init__(self):
+        self.children = {}
+        self.is_word = False
+
+
+class Trie:
+    def __init__(self):
+        self._root = _Node()
+
+    def insert(self, word):
+        node = self._root
+        for ch in word:
+            if ch not in node.children:
+                node.children[ch] = _Node()
+            node = node.children[ch]
+        node.is_word = True
+
+    def _find(self, prefix):
+        node = self._root
+        for ch in prefix:
+            if ch not in node.children:
+                return None
+            node = node.children[ch]
+        return node
+
+    def search(self, word):
+        node = self._find(word)
+        return node is not None and node.is_word
+
+    def starts_with(self, prefix):
+        node = self._find(prefix)
+        if node is None:
+            return False
+        return node.is_word or bool(node.children)
+
+    def words_with_prefix(self, prefix):
+        node = self._find(prefix)
+        if node is None:
+            return []
+        out = []
+        self._collect(node, prefix, out)
+        return sorted(out)
+
+    def _collect(self, node, path, out):
+        if node.is_word:
+            out.append(path)
+        for ch, child in node.children.items():
+            self._collect(child, path + ch, out)
+```
+hint: Each node holds a dictionary of children and a boolean `is_word`. Write a helper that walks a string from the root and returns the node reached, or `None`.
+hint: `search` needs the end node's `is_word` flag; `starts_with` only needs the node to exist (and, on an empty trie, to be reachable from some word). To list the words, collect from that node downward and sort.
+solution: One helper follows the characters of a string from the root. `search` additionally requires the end flag. `words_with_prefix` walks to the prefix node and does a depth-first collection of every word below it, building the string as it descends. On an empty trie the root has no children and is not a word, so the answers are `False` and `[]`.
+
+@practice code
+prompt: Implement `UnionFind(n)` over the elements `0` to `n - 1`, initially in separate sets. Methods: `find(x)` returns the representative of `x`'s set (use path compression, written without recursion); `union(a, b)` merges the sets of `a` and `b` using union by size and returns `True` if they were in different sets, `False` otherwise; `connected(a, b)` returns a bool; `size_of(x)` returns the number of elements in `x`'s set; `components()` returns the current number of sets.
+starter:
+```python
+class UnionFind:
+    def __init__(self, n):
+        pass
+```
+tests:
+```python
+uf = UnionFind(6)
+assert uf.components() == 6
+assert uf.union(0, 1) is True
+assert uf.union(1, 0) is False
+assert uf.union(2, 3) is True
+assert uf.union(1, 3) is True
+assert uf.connected(0, 2) is True
+assert uf.connected(0, 4) is False
+assert uf.components() == 3
+assert uf.size_of(3) == 4
+assert uf.size_of(4) == 1
+assert uf.find(0) == uf.find(3)
+assert uf.find(4) != uf.find(5)
+big = UnionFind(200)
+for i in range(199):
+    assert big.union(i, i + 1) is True
+assert big.components() == 1
+assert big.find(0) == big.find(199)
+assert big.size_of(100) == 200
+```
+model:
+```python
+class UnionFind:
+    def __init__(self, n):
+        self._parent = list(range(n))
+        self._size = [1] * n
+        self._count = n
+
+    def find(self, x):
+        while self._parent[x] != x:
+            self._parent[x] = self._parent[self._parent[x]]
+            x = self._parent[x]
+        return x
+
+    def union(self, a, b):
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra == rb:
+            return False
+        if self._size[ra] < self._size[rb]:
+            ra, rb = rb, ra
+        self._parent[rb] = ra
+        self._size[ra] += self._size[rb]
+        self._count -= 1
+        return True
+
+    def connected(self, a, b):
+        return self.find(a) == self.find(b)
+
+    def size_of(self, x):
+        return self._size[self.find(x)]
+
+    def components(self):
+        return self._count
+```
+hint: Keep a `parent` list (each element its own parent at first), a `size` list for the roots and a counter of sets.
+hint: In `union`, find both roots first. If they are equal return `False`; otherwise attach the root of the smaller set under the other, add the sizes and decrease the set counter.
+solution: `find` follows parents to the root, pointing each visited node at its grandparent (path halving) as it goes. `union` works on the two roots, so it never corrupts the tree, and attaching the smaller tree keeps the height logarithmic. The set counter drops only on a successful merge, and `size_of` reads the size stored at the root.
+
+@practice ms
+prompt: Which pairings of problem and data structure are sensible? Select all that apply.
+choice*: Lookup by key where the order of keys does not matter: a hash table.
+choice*: Listing all keys between two bounds in sorted order: a balanced search tree.
+choice: Finding an arbitrary item in $O(\log n)$ time: a binary min-heap.
+choice*: Adding at one end and removing at the other end in $O(1)$: a `collections.deque`.
+choice: Reading the item at position `i` in $O(1)$: a singly linked list.
+hint: Check each structure's cost for the operation, from the table in the article.
+solution: A hash table gives expected $O(1)$ lookup; a balanced tree keeps keys sorted so ranges are cheap; a deque is $O(1)$ at both ends. A heap only finds its minimum quickly (arbitrary search is $O(n)$), and a linked list needs $O(i)$ to reach position `i`.
+
+@quiz code
+prompt: Write `redundant_edge(n, edges)` for an undirected graph on the vertices `0` to `n - 1`. Process `edges` (a list of pairs) in order, and return the first pair `(u, v)` whose endpoints are already connected by the earlier edges (a self-loop `(v, v)` counts), or `None` if no edge is redundant. Use union-find with path compression; define your own `find`.
+starter:
+```python
+def redundant_edge(n, edges):
+    pass
+```
+tests:
+```python
+assert redundant_edge(4, [(0, 1), (1, 2), (2, 3)]) is None
+assert redundant_edge(4, [(0, 1), (1, 2), (2, 3), (3, 1)]) == (3, 1)
+assert redundant_edge(3, [(0, 1), (1, 1)]) == (1, 1)
+assert redundant_edge(2, [(0, 1), (0, 1)]) == (0, 1)
+assert redundant_edge(5, []) is None
+assert redundant_edge(6, [(0, 1), (2, 3), (4, 5), (1, 2), (3, 4), (5, 0)]) == (5, 0)
+chain = [(i, i + 1) for i in range(99)]
+assert redundant_edge(100, chain) is None
+assert redundant_edge(100, chain + [(0, 99)]) == (0, 99)
+```
+model:
+```python
+def redundant_edge(n, edges):
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for u, v in edges:
+        ru, rv = find(u), find(v)
+        if ru == rv:
+            return (u, v)
+        parent[ru] = rv
+    return None
+```
+hint: Each vertex starts in its own set. An edge is redundant exactly when its endpoints have the same representative.
+hint: For each edge, find both roots; if they are equal return the edge; otherwise point one root at the other.
+solution: Merging the sets as edges arrive means two endpoints already share a root exactly when an earlier path connects them, so the new edge would close a cycle. A self-loop has equal roots from the start. Total time is $O(m\,\alpha(n))$ for $m$ edges (or nearly so without union by size).
+
+@quiz mc
+prompt: A program stores 1 million words and must quickly answer "which stored words start with this prefix?" for many different prefixes. Which structure fits best?
+choice: A hash set of the words, scanning only the matching buckets.
+choice: An unsorted dynamic array searched with a loop for each query.
+choice*: A trie, walking down the prefix and collecting the words below that node.
+choice: A binary min-heap of the words.
+hint: Which structure organizes the words by their leading characters?
+solution: A trie reaches the node for the prefix in $O(L)$ steps, and everything below it matches. A hash set hashes whole words, so prefixes land in unrelated buckets and every word would have to be checked. A scan costs $O(n)$ per query, and a heap only orders by one extreme.

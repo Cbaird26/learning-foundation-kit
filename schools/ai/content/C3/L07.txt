@@ -1,0 +1,219 @@
+@lesson
+title: Merge conflicts and rebasing
+summary: Resolve merge conflicts by reading conflict markers, and rewrite your own branch history with rebase while knowing when not to.
+objective: Explain when a merge conflict arises and read the conflict markers in a file.
+objective: Resolve a conflict, finish or abort a merge, and verify the result.
+objective: Use `git rebase` to replay commits onto another branch and state why shared history must not be rebased.
+reading: The Missing Semester of Your CS Education, lecture "Version Control (Git)" (merging and advanced Git); Pro Git, chapter "Git Branching" (basic merge conflicts and the "Rebasing" section).
+@article
+In the three-way merge from last week, Git combines changes automatically whenever the two sides touched different places. A **merge conflict** happens when both sides changed the *same* lines in different ways (or one deleted a file the other edited). Git cannot know which version you want, so it stops and asks you.
+
+### Reading a conflict
+
+After `git merge feature`, Git reports `CONFLICT (content): Merge conflict in settings.py`, and `git status` lists the file as `both modified` under "Unmerged paths". The file now contains **conflict markers**:
+
+```text
+<<<<<<< HEAD
+timeout = 30
+=======
+timeout = 60
+>>>>>>> feature
+```
+
+Between `<<<<<<< HEAD` and `=======` is your side (the branch you are on); between `=======` and `>>>>>>> feature` is the incoming side. Non-conflicting parts of the file are already merged.
+
+### Resolving it
+
+1. Open each unmerged file and decide what the final text should be: one side, the other, or a combination. **Delete all three marker lines.**
+2. Run your tests; a file can be free of markers and still wrong.
+3. `git add settings.py` to mark it resolved.
+4. `git commit` (or `git merge --continue`) to complete the merge commit.
+
+To give up and return to the state before the merge, run `git merge --abort`. `git diff` during a conflict shows a combined diff of the unresolved parts, and `git log --merge` lists the commits involved. To avoid conflicts in the first place, keep branches short-lived, pull often, and make small commits.
+
+### Rebasing
+
+**Rebase** is the other way to integrate a branch. `git rebase main`, run on `feature`, finds the commits that `feature` has and `main` lacks, and **replays** them one by one on top of the tip of `main`:
+
+```text
+before:   A - B - C          main        after:   A - B - C                main
+               \                                             \
+                D - E        feature                          D' - E'     feature
+```
+
+`D'` and `E'` have the same changes and messages as `D` and `E` but **different parents, hence different hashes**: they are new commits, and the old ones are abandoned. The result is a linear history, as if you had started from the latest `main`. If a replayed commit conflicts, Git stops; fix the files, `git add` them and run `git rebase --continue` (or `git rebase --abort` to return to the start). You may have to resolve the same area more than once, once per commit.
+
+`git rebase -i HEAD~3` opens an editor listing the last three commits so you can `reword`, `squash`, `fixup`, `drop` or reorder them: useful for tidying a branch before review. `git pull --rebase` fetches and then rebases your local commits onto the updated upstream instead of creating a merge commit.
+
+### The golden rule
+
+**Never rebase commits that other people have already based work on** (anything pushed to a shared branch such as `main`). Rebasing rewrites history; collaborators who hold the old commits will see duplicated or conflicting history. Rebasing your *own, unshared* feature branch is safe. If you rebase a branch you already pushed, you must overwrite it with `git push --force-with-lease`, which refuses to overwrite if someone else has pushed in the meantime (plain `--force` does not check).
+
+Merge keeps the true history and never rewrites it; rebase gives a cleaner line. Many teams rebase their own feature branch onto `main` before opening a pull request, then merge it.
+
+@example
+title: Resolving a content conflict
+problem: On `main`, `config.py` contains `timeout = 30`. A branch `feature` changed it to `timeout = 60` while `main` changed it to `timeout = 45`. After `git merge feature` on `main`, the file shows markers. You decide the value should be `60`. What do you do?
+step: The merge base had `timeout = 30`. Both sides changed that line differently, so Git reports a conflict. The file shows `timeout = 45` as `HEAD` and `timeout = 60` as `feature`.
+step: Edit the file so the three lines of markers and both versions are replaced by the one line `timeout = 60`.
+step: Run the program or tests, then stage the file with `git add config.py`. `git status` now says all conflicts are fixed.
+step: Finish with `git commit` (Git proposes the message "Merge branch 'feature'"). The merge commit has two parents.
+answer: Edit to `timeout = 60`, remove the markers, then `git add config.py` and `git commit`.
+@example
+title: Rebasing a feature branch
+problem: `main` is `A - B - C`. `feature` branched at `B` and has commits `D` and `E`. You are on `feature` and run `git rebase main`. What is the history afterwards, and how many new commits are created?
+step: Git finds the commits on `feature` that `main` lacks: `D` and `E`.
+step: It checks out `C`, then re-applies the change of `D` to make `D'` (parent `C`), then the change of `E` to make `E'` (parent `D'`).
+step: The `feature` pointer moves to `E'`, so the history is `A - B - C - D' - E'`, with `main` still at `C`.
+step: Two new commits were created. A later `git switch main` and `git merge feature` is a fast-forward.
+answer: `A - B - C - D' - E'`; two new commits.
+@mistakes
+- Committing a file that still contains `<<<<<<<`, `=======` and `>>>>>>>` lines because you ran `git add` without reading it.
+- Resolving by always taking one side without understanding the other, silently discarding someone's work.
+- Rebasing a branch other people already pulled, then force-pushing with plain `--force`.
+- Panicking mid-merge: `git merge --abort` (or `git rebase --abort`) restores the earlier state.
+@practice mc
+prompt: In a conflicted file you see the block below. Which statement is correct?
+
+```text
+<<<<<<< HEAD
+retries = 3
+=======
+retries = 5
+>>>>>>> feature
+```
+choice: The merge succeeded and the file is final.
+choice*: The part above `=======` is from the branch you are on, and the part below is from `feature`; you must edit the file and remove the markers.
+choice: Git will use `retries = 5` automatically when you commit.
+choice: `git add` removes the markers for you.
+hint: Which branch does `HEAD` name during a merge?
+solution: Above `=======` is your current branch (`HEAD`), below is the incoming `feature`. Git leaves the choice to you, and `git add` just records whatever the file contains, markers included.
+@practice num
+prompt: A branch `feature` has three commits that `main` lacks. You run `git rebase main` while on `feature`. How many new commits does Git create (as copies of the originals)?
+answer: 3
+check: len(["first", "second", "third"])
+hint: Rebase replays each commit one at a time.
+solution: Each of the three commits is re-created on top of the new base with a different parent and hash, so Git creates three new commits.
+@practice code
+prompt: Simulate a three-way merge of files that have the same number of lines. `base`, `ours` and `theirs` are lists of strings. For each position: if `ours` and `theirs` agree, keep that line; otherwise, if `ours` equals `base`, take `theirs`; otherwise, if `theirs` equals `base`, take `ours`; otherwise it is a conflict and you output the five lines `"<<<<<<< ours"`, the ours line, `"======="`, the theirs line and `">>>>>>> theirs"`. Return the list of resulting lines.
+starter:
+```python
+def merge3(base, ours, theirs):
+    pass
+```
+tests:
+```python
+assert merge3(["a", "b", "c"], ["a", "B", "c"], ["a", "b", "C"]) == ["a", "B", "C"]
+assert merge3(["a"], ["x"], ["x"]) == ["x"]
+assert merge3(["a"], ["z"], ["a"]) == ["z"]
+assert merge3(["a", "b"], ["a", "X"], ["a", "Y"]) == [
+    "a", "<<<<<<< ours", "X", "=======", "Y", ">>>>>>> theirs"]
+assert merge3([], [], []) == []
+```
+model:
+```python
+def merge3(base, ours, theirs):
+    result = []
+    for b, o, t in zip(base, ours, theirs):
+        if o == t:
+            result.append(o)
+        elif o == b:
+            result.append(t)
+        elif t == b:
+            result.append(o)
+        else:
+            result.extend(["<<<<<<< ours", o, "=======", t, ">>>>>>> theirs"])
+    return result
+```
+hint: Use `zip` to look at the three versions of each line together.
+hint: Check the cases in the order given: both sides equal, only theirs changed, only ours changed, and finally the conflict.
+solution: A line changed on one side only takes the changed side. If both sides produced the same text it is taken once. Only when both changed it differently is there a conflict, which is written between marker lines. Real Git works on blocks of lines and aligns inserted lines, but the decision rule per region is the same.
+@practice ms
+prompt: Select every true statement about `git rebase`.
+choice*: It replays commits on a new base, creating new commits with different hashes.
+choice*: It can produce conflicts that you resolve and then continue with `git rebase --continue`.
+choice: It is always safe to rebase a branch that teammates have already pulled.
+choice*: It makes a branch's history linear, as if the work began from the new base.
+choice: It leaves the original commits' hashes unchanged.
+hint: Commit hashes depend on the parent.
+solution: The replayed commits have new parents and so new hashes, which is why rebasing shared history disrupts others. Conflicts can occur at each replayed commit. The linear history is its main benefit.
+@practice self
+prompt: On your own computer, create a repository with a file `greeting.txt` containing `hello` on `main`. Branch `feature`, change the line to `hello, world` and commit. On `main`, change the line to `hello there` and commit. Merge `feature` into `main`, resolve the conflict so the file reads `hello, world there`, and finish the merge. Write the commands and the final contents of the file, and state how you confirmed that no markers remain.
+hint: After editing the file you must `git add` it before committing.
+solution:
+
+```bash
+git init -b main
+echo hello > greeting.txt
+git add greeting.txt && git commit -m "Add greeting"
+git switch -c feature
+echo "hello, world" > greeting.txt
+git commit -am "Change greeting on feature"
+git switch main
+echo "hello there" > greeting.txt
+git commit -am "Change greeting on main"
+git merge feature
+# CONFLICT: edit greeting.txt so it contains one line:
+echo "hello, world there" > greeting.txt
+git add greeting.txt
+git commit -m "Merge feature"
+grep -n '<<<<<<<\|>>>>>>>' greeting.txt || echo "no markers"
+```
+
+The final file contains the single line `hello, world there`. The `grep` finds no marker lines, and `git log --graph --oneline` shows a merge commit with two parents.
+rubric: Creates two conflicting commits on diverged branches and obtains a reported conflict at the merge.
+rubric: Edits the file to the requested text with all marker lines deleted, then runs `git add` and `git commit`.
+rubric: Verifies the outcome (for example with `grep`, `git status` or `git log --graph`).
+@quiz code
+prompt: Write `parse_conflicts(text)` that finds Git conflict blocks in a text. A block starts with a line beginning `"<<<<<<< "`, has a line that is exactly `"======="`, and ends with a line beginning `">>>>>>> "`. Return a list with one `(ours, theirs)` tuple per block, where each is the list of lines on that side, in order. Text outside blocks is ignored. If there are no blocks, return `[]`.
+starter:
+```python
+def parse_conflicts(text):
+    pass
+```
+tests:
+```python
+t = "a\n<<<<<<< HEAD\nx = 1\n=======\nx = 2\n>>>>>>> feature\nb\n"
+assert parse_conflicts(t) == [(["x = 1"], ["x = 2"])]
+assert parse_conflicts("just text\n") == []
+t2 = "<<<<<<< HEAD\n=======\nnew\n>>>>>>> f\nok\n<<<<<<< HEAD\na\nb\n=======\nc\n>>>>>>> f\n"
+assert parse_conflicts(t2) == [([], ["new"]), (["a", "b"], ["c"])]
+assert parse_conflicts("") == []
+```
+model:
+```python
+def parse_conflicts(text):
+    blocks = []
+    state = None
+    ours = []
+    theirs = []
+    for line in text.splitlines():
+        if state is None:
+            if line.startswith("<<<<<<< "):
+                state = "ours"
+                ours = []
+                theirs = []
+        elif state == "ours":
+            if line == "=======":
+                state = "theirs"
+            else:
+                ours.append(line)
+        else:
+            if line.startswith(">>>>>>> "):
+                blocks.append((ours, theirs))
+                state = None
+            else:
+                theirs.append(line)
+    return blocks
+```
+hint: Use a small state machine: outside a block, in the "ours" part, or in the "theirs" part.
+hint: Start a block at `<<<<<<< `, switch parts at `=======`, and store the finished block at `>>>>>>> `.
+solution: The state variable records which part of a block you are reading. Lines are appended to the current side, and the finished pair is stored when the closing marker appears. The loop is linear in the number of lines.
+@quiz mc
+prompt: You rebased your local `feature` branch (already pushed to the shared remote, where two colleagues have pulled it) onto the latest `main`. What is the right way to update the remote, and what is the risk?
+choice: `git push` normally; there is no risk.
+choice*: `git push --force-with-lease`, because the history was rewritten; colleagues who already pulled the old commits will have to reconcile their copies.
+choice: `git push --force` is always preferred, because it checks for new commits.
+choice: Delete the remote repository and push again.
+hint: A rebase gave the branch new commits, so the remote's version is no longer an ancestor of yours.
+solution: The new history is not a descendant of the pushed one, so a normal push is rejected. `--force-with-lease` overwrites only if the remote is still where you last saw it. Rewriting a branch others use disrupts them, which is why you should coordinate or avoid it.

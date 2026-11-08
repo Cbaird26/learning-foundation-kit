@@ -1,0 +1,391 @@
+@lesson
+title: Classes and object-oriented programming
+summary: Define classes that bundle data with the operations on it, and use special methods so that your objects print, compare and combine naturally.
+objective: Write a class with `__init__`, attributes and methods, and explain what `self` is.
+objective: Distinguish instance attributes from class attributes and predict their sharing behavior.
+objective: Implement `__repr__`, `__eq__` and arithmetic special methods, and enforce invariants by raising exceptions.
+reading: MIT OpenCourseWare 6.100L, the lectures on classes and object-oriented programming (abstract data types, methods, special methods).
+
+@article
+So far, data (lists, dictionaries) and the functions that process it have been separate. **Object-oriented programming** bundles them: a **class** describes a kind of object, its **attributes** (data) and its **methods** (functions that operate on that data). An **object** (instance) is one particular value of that class. Defining a class creates a new **abstract data type**: users work with the operations, and the representation inside can change without breaking them.
+
+### A first class
+
+```python
+class Rectangle:
+    """A rectangle with positive width and height."""
+
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+
+    def area(self):
+        return self.width * self.height
+```
+
+`r = Rectangle(3, 4)` creates an object and calls `__init__` on it. The first parameter, `self`, is the object itself, filled in automatically: `r.area()` means `Rectangle.area(r)`. Attributes are created by assignment, so `self.width = width` stores data **in that object**. Each instance has its own attributes: `Rectangle(1, 1)` and `Rectangle(5, 5)` do not interfere. By convention, an attribute whose name starts with an underscore (`_balance`) is internal and should not be touched by outside code.
+
+### Class attributes
+
+An attribute assigned in the class body, outside any method, belongs to the **class** and is shared by all instances:
+
+```python
+class Dog:
+    species = "canine"          # one value shared by all dogs
+
+    def __init__(self, name):
+        self.name = name        # one value per dog
+        self.tricks = []        # a new list for each dog
+```
+
+Reading `d.species` finds it on the class. A mutable class attribute such as `items = []` is shared by every instance, so appending to it through one instance affects all: this is a classic bug. Create mutable per-object state inside `__init__`.
+
+### Methods, mutation and aliasing
+
+A method that changes the object (`self.balance += amount`) is a **mutator**; one that only reads it is an **observer**. Objects are mutable and subject to aliasing: after `b = a`, `a` and `b` are the same object. Storing a list passed to `__init__` makes the object share the caller's list; copy it (`list(items)`) if the object should own its data.
+
+### Special methods
+
+Methods with double underscores let your class work with Python syntax:
+
+| method | used by |
+|---|---|
+| `__repr__(self)` | `repr(x)`, the interactive prompt, containers; should look like code |
+| `__str__(self)` | `str(x)` and `print(x)`; falls back to `__repr__` |
+| `__eq__(self, other)` | `x == y` |
+| `__add__(self, other)` | `x + y` |
+| `__mul__(self, k)` | `x * k` |
+| `__len__(self)` | `len(x)` |
+| `__abs__(self)` | `abs(x)` |
+
+Without `__eq__`, `==` compares identity, so two distinct objects with equal contents are not equal. A good `__eq__` returns `NotImplemented` for other types so that Python can try the other operand.
+
+```python
+class Vector:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+    def __eq__(self, other):
+        if not isinstance(other, Vector):
+            return NotImplemented
+        return (self.x, self.y) == (other.x, other.y)
+
+    def __repr__(self):
+        return f"Vector({self.x}, {self.y})"
+```
+
+Defining `__eq__` without `__hash__` makes instances unhashable, which is correct for mutable objects. For simple data holders, the standard library's `dataclasses.dataclass` writes `__init__`, `__repr__` and `__eq__` for you; write them by hand first to understand them.
+
+### Representation invariants
+
+A class should state what is always true of its objects (for instance `balance >= 0`) and every method must preserve it. Reject bad requests by raising an exception *before* changing any state, so a failed call leaves the object unchanged.
+
+@example
+title: Instances, class attributes and aliasing
+problem: What does this program print?
+
+```python
+class Dog:
+    species = "canine"
+
+    def __init__(self, name):
+        self.name = name
+        self.tricks = []
+
+    def learn(self, trick):
+        self.tricks.append(trick)
+
+a = Dog("Rex")
+b = Dog("Fido")
+a.learn("sit")
+c = a
+c.learn("roll")
+print(a.tricks, b.tricks, b.species)
+```
+step: `Dog("Rex")` runs `__init__` with `self` bound to the new object; it gets its own empty `tricks` list. `b` is a second, separate object with another empty list.
+step: `a.learn("sit")` appends to **a's** list: `["sit"]`.
+step: `c = a` creates an alias, not a copy, so `c.learn("roll")` appends to the same list: `["sit", "roll"]`.
+step: `b.tricks` was never touched, so it is `[]`. `b.species` is not found on `b`, so Python reads the class attribute `"canine"`.
+answer: `['sit', 'roll'] [] canine`
+
+@example
+title: Designing a small class with special methods
+problem: Design `Money` that stores a whole number of cents, supports `+`, `==` and a readable `repr`.
+step: Store the amount as an **integer** number of cents, so no floating-point errors occur.
+step: `__add__` returns a **new** `Money` and leaves both operands unchanged.
+step: `__eq__` compares cents and returns `NotImplemented` for non-`Money` values.
+step: Put it together:
+
+```python
+class Money:
+    def __init__(self, cents):
+        self.cents = cents
+
+    def __add__(self, other):
+        return Money(self.cents + other.cents)
+
+    def __eq__(self, other):
+        if not isinstance(other, Money):
+            return NotImplemented
+        return self.cents == other.cents
+
+    def __repr__(self):
+        return f"Money({self.cents})"
+```
+step: Check: `Money(150) + Money(275)` is `Money(425)`, and `Money(425) == Money(425)` is `True`, although the two objects are different objects.
+
+@mistakes
+- Forgetting `self` as the first parameter of a method, or forgetting `self.` when reading or writing an attribute (`width = width` only sets a local variable).
+- Putting a mutable value such as `items = []` in the class body, so all instances share it.
+- Defining `__repr__` or `__str__` that *print* instead of *return* a string.
+- Modifying the object before validating the request (changing the balance, then discovering the amount was invalid).
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+class Counter:
+    def __init__(self):
+        self.n = 0
+
+    def bump(self):
+        self.n += 1
+        return self
+
+c = Counter()
+c.bump().bump()
+d = c
+d.bump()
+print(c.n)
+```
+answer: 3
+check: run("class Counter:\n    def __init__(self):\n        self.n = 0\n\n    def bump(self):\n        self.n += 1\n        return self\n\nc = Counter()\nc.bump().bump()\nd = c\nd.bump()\nprint(c.n)\n")
+hint: `bump` returns the same object, so the calls can be chained; `d` is an alias of `c`.
+solution: Two chained calls raise `n` to 2, and the call through the alias `d` raises it to 3. There is only one object.
+
+@practice mc
+prompt: What does this program print?
+
+```python
+class A:
+    items = []
+
+a = A()
+b = A()
+a.items.append(1)
+print(b.items)
+```
+choice: `[]`
+choice*: `[1]`
+choice: `None`
+choice: it raises `AttributeError`
+hint: Where is the list stored: on each object or on the class?
+solution: `items` is a class attribute, so `a.items` and `b.items` are the same list. To give every object its own list, assign `self.items = []` inside `__init__`.
+
+@practice code
+prompt: Write a class `Rectangle` whose constructor takes `width` and `height`. It has methods `area()`, `perimeter()` and `is_square()` (true when the width equals the height), and stores the values in attributes `width` and `height`.
+starter:
+```python
+class Rectangle:
+    pass
+```
+tests:
+```python
+r = Rectangle(3, 4)
+assert r.width == 3
+assert r.height == 4
+assert r.area() == 12
+assert r.perimeter() == 14
+assert r.is_square() is False
+s = Rectangle(5, 5)
+assert s.is_square() is True
+assert s.area() == 25
+assert Rectangle(1, 1).area() == 1
+```
+model:
+```python
+class Rectangle:
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+
+    def area(self):
+        return self.width * self.height
+
+    def perimeter(self):
+        return 2 * (self.width + self.height)
+
+    def is_square(self):
+        return self.width == self.height
+```
+hint: Store both numbers on `self` in `__init__`, and use them in the other methods.
+solution: `__init__` stores `self.width` and `self.height`; each method reads them through `self`. `is_square` returns the result of the comparison, which is already a `bool`.
+
+@practice code
+prompt: Write a class `BankAccount` with an optional starting balance (default `0`) stored in the attribute `balance`. `deposit(amount)` adds a positive amount; `withdraw(amount)` subtracts a positive amount that does not exceed the balance. Both raise `ValueError` if `amount <= 0`; `withdraw` also raises `ValueError` if `amount` exceeds the balance. A failed call must leave the balance unchanged.
+starter:
+```python
+class BankAccount:
+    pass
+```
+tests:
+```python
+acct = BankAccount()
+assert acct.balance == 0
+acct.deposit(100)
+acct.withdraw(30)
+assert acct.balance == 70
+assert raises(ValueError, acct.withdraw, 71)
+assert acct.balance == 70
+assert raises(ValueError, acct.deposit, 0)
+assert raises(ValueError, acct.withdraw, -5)
+assert acct.balance == 70
+other = BankAccount(10)
+other.withdraw(10)
+assert other.balance == 0
+assert acct.balance == 70
+```
+model:
+```python
+class BankAccount:
+    def __init__(self, balance=0):
+        self.balance = balance
+
+    def deposit(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        self.balance += amount
+
+    def withdraw(self, amount):
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        if amount > self.balance:
+            raise ValueError("insufficient funds")
+        self.balance -= amount
+```
+hint: Validate the amount first and raise before changing `self.balance`.
+solution: Each method checks its preconditions and raises `ValueError` before it modifies state, so a rejected call leaves the balance as it was. The invariant `balance >= 0` is then preserved by every method.
+
+@practice code
+prompt: Write a class `Vector` for two-dimensional vectors, with attributes `x` and `y`, such that: `Vector(1, 2) + Vector(3, 4) == Vector(4, 6)` (addition returns a new vector); `Vector(3, 4) * 2 == Vector(6, 8)` (multiplication by a number); `abs(Vector(3, 4))` is `5.0` (the length); `==` compares coordinates; and `repr(Vector(1, 2))` is the string `"Vector(1, 2)"`.
+starter:
+```python
+class Vector:
+    pass
+```
+tests:
+```python
+v = Vector(1, 2)
+w = Vector(3, 4)
+assert v + w == Vector(4, 6)
+assert v.x == 1 and v.y == 2
+assert w * 2 == Vector(6, 8)
+assert abs(w) == 5.0
+assert v == Vector(1, 2)
+assert v != w
+assert repr(v) == "Vector(1, 2)"
+assert repr(v + w) == "Vector(4, 6)"
+assert v.x == 1 and w.x == 3
+```
+model:
+```python
+import math
+
+
+class Vector:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def __add__(self, other):
+        return Vector(self.x + other.x, self.y + other.y)
+
+    def __mul__(self, k):
+        return Vector(self.x * k, self.y * k)
+
+    def __abs__(self):
+        return math.sqrt(self.x ** 2 + self.y ** 2)
+
+    def __eq__(self, other):
+        if not isinstance(other, Vector):
+            return NotImplemented
+        return self.x == other.x and self.y == other.y
+
+    def __repr__(self):
+        return f"Vector({self.x}, {self.y})"
+```
+hint: Each operator corresponds to a special method: `__add__`, `__mul__`, `__abs__`, `__eq__` and `__repr__`.
+hint: `__add__` and `__mul__` should return **new** `Vector` objects; `__abs__` is the square root of `x * x + y * y`, which `math.sqrt` computes.
+solution: Implement the five special methods. The arithmetic ones build and return new vectors rather than changing `self`; `__repr__` returns text that looks like the constructor call; `__eq__` compares coordinates. Python derives `!=` from `__eq__`.
+
+@quiz text
+prompt: What does this program print? Type the output exactly.
+
+```python
+class Box:
+    def __init__(self, items):
+        self.items = items
+
+a = [1, 2]
+b = Box(a)
+a.append(3)
+print(len(b.items))
+```
+answer: 3
+check: run("class Box:\n    def __init__(self, items):\n        self.items = items\n\na = [1, 2]\nb = Box(a)\na.append(3)\nprint(len(b.items))\n")
+hint: Does `__init__` copy the list it receives?
+solution: `self.items = items` stores a reference to the caller's list, so `b.items` and `a` are the same list. After appending, it has three items.
+
+@quiz code
+prompt: Write a class `Stack` (last in, first out) with methods `push(x)`, `pop()` (removes and returns the most recently pushed item), `peek()` (returns it without removing), `is_empty()` and `len(stack)` (the number of items). `pop` and `peek` on an empty stack raise `IndexError`. Two stacks must not share items.
+starter:
+```python
+class Stack:
+    pass
+```
+tests:
+```python
+s = Stack()
+assert s.is_empty() is True
+assert len(s) == 0
+s.push(1)
+s.push(2)
+assert s.peek() == 2
+assert len(s) == 2
+assert s.pop() == 2
+assert s.pop() == 1
+assert s.is_empty() is True
+assert raises(IndexError, s.pop)
+assert raises(IndexError, s.peek)
+t = Stack()
+t.push("x")
+assert len(s) == 0
+assert len(t) == 1
+```
+model:
+```python
+class Stack:
+    def __init__(self):
+        self._items = []
+
+    def push(self, x):
+        self._items.append(x)
+
+    def pop(self):
+        if not self._items:
+            raise IndexError("pop from empty stack")
+        return self._items.pop()
+
+    def peek(self):
+        if not self._items:
+            raise IndexError("peek at empty stack")
+        return self._items[-1]
+
+    def is_empty(self):
+        return len(self._items) == 0
+
+    def __len__(self):
+        return len(self._items)
+```
+hint: Keep the items in a list stored in `__init__` (not in the class body) and use the end of the list as the top.
+solution: A list in `self._items` holds the stack, with `append` and `pop()` working at the end in constant time. Creating the list in `__init__` gives each stack its own storage, and `__len__` makes `len(stack)` work.

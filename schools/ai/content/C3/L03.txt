@@ -1,0 +1,180 @@
+@lesson
+title: Pipes, redirection and text tools: grep, sort, uniq and cut
+summary: Combine small text-processing commands with pipes and redirection to filter, count and summarize text such as logs.
+objective: Redirect standard input, output and error with `<`, `>`, `>>`, `2>` and `2>&1`.
+objective: Build pipelines from `grep`, `sort`, `uniq`, `cut`, `head` and `wc` and predict their output.
+objective: Choose the right option of each tool (for example `sort -n`, `uniq -c`, `cut -d`) for a counting or filtering task.
+reading: The Missing Semester of Your CS Education, lecture "Data Wrangling" (pipes, `grep`, `sed`, `sort`, `uniq`) and the shell lecture's section on connecting programs.
+@article
+The Unix philosophy is that each program does one small job on **text**, and the shell connects the programs. A log file with a million lines is not a problem if you can write a one-line pipeline to summarize it.
+
+### Three streams
+
+Every process starts with three **streams**: **standard input** (`stdin`, file descriptor 0), **standard output** (`stdout`, 1) and **standard error** (`stderr`, 2). Both outputs go to the terminal by default, but they are separate, so error messages do not pollute data.
+
+| syntax | meaning |
+|---|---|
+| `cmd > f` | write stdout to `f`, replacing its contents |
+| `cmd >> f` | append stdout to `f` |
+| `cmd < f` | read stdin from `f` |
+| `cmd 2> f` | write stderr to `f` |
+| `cmd > f 2>&1` | send stderr to wherever stdout currently goes, so both end up in `f` |
+| `cmd > /dev/null` | discard output (`/dev/null` is a file that swallows everything) |
+| `a \| b` | the stdout of `a` becomes the stdin of `b` |
+
+Order matters in `> f 2>&1`: redirections are processed left to right, and `2>&1` means "make stderr a copy of where stdout points *now*". Writing `2>&1 > f` points stderr at the terminal first, so errors still appear on screen.
+
+### The core tools
+
+- `grep PATTERN [file]` prints matching lines. Useful options: `-i` ignore case, `-v` invert (non-matching lines), `-n` show line numbers, `-c` print the number of matching lines, `-r` search directories recursively, `-E` extended regular expressions, `-F` treat the pattern as a fixed string.
+- `sort` orders lines. By default it compares text, so `10` sorts before `9`; `-n` compares numerically, `-r` reverses, `-u` removes duplicates, and `-k2` sorts by the second whitespace-separated field (`-t,` chooses a different separator).
+- `uniq` collapses **adjacent** duplicate lines, and `uniq -c` prefixes each with its count. Since only adjacent lines are compared, you nearly always run `sort` first.
+- `cut -d, -f2` extracts the second field of comma-separated lines; `-c1-3` extracts characters. A line without the delimiter is printed whole unless you add `-s`.
+- `wc -l` counts lines, `head -n N` and `tail -n N` keep the first or last N lines, `tr a-z A-Z` translates characters, and `tee f` copies its input to a file while passing it on.
+
+The order of a plain `sort` depends on the **locale**; set `LC_ALL=C` for plain byte order when you need reproducible results.
+
+### The frequency-count idiom
+
+The most useful pipeline in this lesson answers "which value occurs most often?":
+
+```bash
+cut -d' ' -f1 access.log | sort | uniq -c | sort -rn | head -n 3
+```
+
+Extract the field, sort so equal values are adjacent, count each run, sort the counts from largest to smallest, and keep the top three. Read pipelines left to right, and build them one stage at a time, checking the output after each `|`.
+
+@example
+title: Tracing a frequency count
+problem: The file `access.log` contains the four lines below. What does `cut -d' ' -f1 access.log | sort | uniq -c | sort -rn | head -n 1` print?
+
+```text
+10.0.0.1 GET /index
+10.0.0.2 GET /about
+10.0.0.1 POST /login
+10.0.0.1 GET /index
+```
+step: `cut -d' ' -f1` keeps the first space-separated field of each line: `10.0.0.1`, `10.0.0.2`, `10.0.0.1`, `10.0.0.1`.
+step: `sort` puts equal lines next to each other: `10.0.0.1` three times, then `10.0.0.2`.
+step: `uniq -c` produces `3 10.0.0.1` and `1 10.0.0.2` (with leading padding).
+step: `sort -rn` orders numerically from largest, so `3 10.0.0.1` comes first, and `head -n 1` keeps only that line.
+answer: `3 10.0.0.1`
+@example
+title: Separating errors from data
+problem: `find /etc -name '*.conf'` prints matches but also many "Permission denied" messages. Save only the matches to `found.txt`, hide the errors, and count the matches.
+step: Matches are written to stdout and errors to stderr, so redirect them separately.
+step: Discard the errors with `2> /dev/null` and save stdout with `>`:
+
+```bash
+find /etc -name '*.conf' > found.txt 2> /dev/null
+```
+step: Count the saved matches with `wc -l < found.txt`, which prints just the number because `wc` reads stdin rather than a named file.
+answer: `find /etc -name '*.conf' > found.txt 2> /dev/null` then `wc -l < found.txt`
+@mistakes
+- Using `>` where you meant `>>` and overwriting a file, or redirecting a command's output into the same file it reads (`sort f > f` empties `f` before `sort` reads it).
+- Running `uniq` on unsorted input and expecting global counts; it only merges adjacent duplicates.
+- Sorting numbers without `-n`, so `100` comes before `20`.
+- Writing `2>&1 > f` and wondering why errors still reach the screen: the order of redirections matters.
+@practice mc
+prompt: Which command line sends both the standard output and the standard error of `build.sh` to the file `out.txt`?
+choice*: `./build.sh > out.txt 2>&1`
+choice: `./build.sh 2>&1 > out.txt`
+choice: `./build.sh | out.txt`
+choice: `./build.sh < out.txt`
+hint: Redirections are processed from left to right.
+solution: With `> out.txt 2>&1`, stdout goes to the file first, then stderr is pointed at the same place. In `2>&1 > out.txt` stderr is copied to the terminal before stdout is moved to the file, and `|` and `<` do something else entirely.
+@practice text
+prompt: The input is the three lines `b`, `a`, `b`. Type the output of `printf 'b\na\nb\n' | sort | uniq -c`, one line per output line, in the form `COUNT WORD` (the padding spaces do not matter).
+answer:
+```
+1 a
+2 b
+```
+check: run("from collections import Counter\nfor k, v in sorted(Counter(['b', 'a', 'b']).items()):\n    print(v, k)\n")
+hint: After `sort` the lines are `a`, `b`, `b`.
+solution: `uniq -c` prints each run of equal lines with its length: `a` once, `b` twice.
+@practice code
+prompt: Write `count_sorted(lines)` that simulates `sort | uniq -c | sort -rn`. Given a list of strings, return a list of `(count, line)` tuples, one per distinct line, ordered by count from largest to smallest, with ties broken by the line in ascending alphabetical order. Example: `count_sorted(["b", "a", "b"])` returns `[(2, "b"), (1, "a")]`.
+starter:
+```python
+def count_sorted(lines):
+    pass
+```
+tests:
+```python
+assert count_sorted(["b", "a", "b"]) == [(2, "b"), (1, "a")]
+assert count_sorted([]) == []
+assert count_sorted(["x", "y"]) == [(1, "x"), (1, "y")]
+assert count_sorted(["a", "b", "a"]) == [(2, "a"), (1, "b")]
+assert count_sorted(["a", "a", "a", "b", "b", "c"]) == [(3, "a"), (2, "b"), (1, "c")]
+```
+model:
+```python
+def count_sorted(lines):
+    counts = {}
+    for line in lines:
+        counts[line] = counts.get(line, 0) + 1
+    pairs = [(count, line) for line, count in counts.items()]
+    return sorted(pairs, key=lambda pair: (-pair[0], pair[1]))
+```
+hint: Count each distinct line in a dictionary first; that does the work of `sort | uniq -c`, even when duplicates are not adjacent.
+hint: Sort with a key that is `(-count, line)`, so larger counts come first and ties fall back to alphabetical order.
+solution: A dictionary gives each line's count regardless of position. Sorting by the key `(-count, line)` puts the biggest counts first and orders ties alphabetically.
+@practice mc
+prompt: A file `data.txt` has lines `10`, `9`, `100`, `20` (in that order). What is the first line printed by `sort data.txt` in the `C` locale?
+choice: `9`
+choice*: `10`
+choice: `100`
+choice: `20`
+hint: Without `-n`, `sort` compares characters from left to right.
+solution: Text comparison looks at the first character, then the next. `10` and `100` both start with `1`; `10` is a prefix of `100`, so it sorts first. `sort -n` would put `9` first.
+@practice self
+prompt: A file `scores.csv` has lines like `ana,math,91` (name, subject, score). Without a script, write (1) a pipeline that prints how many rows have the subject `math`, and (2) a pipeline that prints the three highest scores, largest first. Explain each stage in a few words.
+hint: Extract the field with `cut`, then count or sort the values.
+solution: For (1): `cut -d, -f2 scores.csv | grep -c '^math$'` (or `grep -c ',math,' scores.csv`). For (2): `cut -d, -f3 scores.csv | sort -rn | head -n 3`. `cut` extracts the field, `grep -c` counts matching lines, `sort -rn` orders numbers from largest, and `head` keeps the first three lines.
+rubric: Extracts the correct field with `cut -d,` and the right field number (2 for the subject, 3 for the score).
+rubric: Uses `sort -rn` (numeric, reversed) for the highest scores rather than a plain text sort.
+rubric: Uses `grep -c` or `wc -l` to count and `head -n 3` to keep three lines.
+@quiz code
+prompt: Write `cut_field(line, delimiter, n)` that imitates `cut -d DELIM -fN` on one line. Fields are numbered from 1. If the delimiter does not occur in `line`, return the whole line. Otherwise return field `n`, or the empty string if the line has fewer than `n` fields. Example: `cut_field("a,b,c", ",", 2)` returns `"b"`.
+starter:
+```python
+def cut_field(line, delimiter, n):
+    pass
+```
+tests:
+```python
+assert cut_field("a,b,c", ",", 2) == "b"
+assert cut_field("a,b", ",", 5) == ""
+assert cut_field("abc", ",", 2) == "abc"
+assert cut_field("a,,c", ",", 2) == ""
+assert cut_field("x:y", ":", 1) == "x"
+```
+model:
+```python
+def cut_field(line, delimiter, n):
+    if delimiter not in line:
+        return line
+    parts = line.split(delimiter)
+    if n <= len(parts):
+        return parts[n - 1]
+    return ""
+```
+hint: `str.split(delimiter)` gives all the fields as a list.
+hint: Check the no-delimiter case first, then use index `n - 1` only if the line has at least `n` fields.
+solution: Without the delimiter `cut` prints the line unchanged, so return it. Otherwise split, and index with `n - 1` because fields start at 1; a missing field gives an empty string.
+@quiz num
+prompt: The file `app.log` has these five lines:
+
+```text
+Error: disk full
+ok
+error again
+No ERRORS here
+warning
+```
+What number does `grep -ci error app.log` print?
+answer: 3
+check: sum('error' in s.lower() for s in ['Error: disk full', 'ok', 'error again', 'No ERRORS here', 'warning'])
+hint: `-i` ignores case, and `-c` counts matching lines. A pattern matches anywhere inside a line.
+solution: `Error: disk full`, `error again` and `No ERRORS here` each contain `error` in some letter case, so three lines match.

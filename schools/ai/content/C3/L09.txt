@@ -1,0 +1,245 @@
+@lesson
+title: Debugging with a debugger and with logging
+summary: Find and fix bugs systematically using tracebacks, the pdb debugger, assertions, logging and binary search through history.
+objective: Apply a systematic method: reproduce, minimize, hypothesize, test the hypothesis, fix and add a regression test.
+objective: Use `breakpoint()` and the core `pdb` commands to inspect a running Python program.
+objective: Configure Python's `logging` module with levels, and choose between a debugger, logging and `git bisect`.
+reading: The Missing Semester of Your CS Education, lecture "Debugging and Profiling" (printf debugging and logging, debuggers, static analysis); the Python documentation pages for `pdb` and for the Logging HOWTO.
+@article
+Debugging is the process of finding why a program does something other than what you intended. Guessing and changing code at random is slow; a method is faster.
+
+### A method
+
+1. **Reproduce** the failure reliably. A bug you cannot trigger on demand cannot be fixed with confidence.
+2. **Minimize**: shrink the input and the code until the smallest example still fails.
+3. **Read the evidence**. A Python traceback lists calls from the oldest at the top to the most recent at the bottom, and the last line names the exception and message; start at the bottom, then look at the nearest line of your own code.
+4. **Hypothesize** a cause and **predict** what you would observe if you were right; then observe (print, log, or step) to confirm or reject it. Change one thing at a time.
+5. **Fix** the cause, not the symptom, and add a **regression test** that fails before the fix and passes after.
+
+`assert` statements document and check assumptions (`assert len(rows) > 0, "no rows"`), turning a silent wrong answer into an early, located failure.
+
+### The debugger
+
+A **debugger** pauses a running program and lets you inspect it. In Python, call the built-in `breakpoint()` where you want to stop (or start with `python -m pdb script.py`). The `pdb` prompt `(Pdb)` accepts these commands:
+
+| command | action |
+|---|---|
+| `l` / `ll` | list the code around the current line / the whole function |
+| `n` | run the current line, stepping **over** function calls |
+| `s` | **step** into a function call |
+| `r` | run until the current function returns |
+| `c` | continue until the next breakpoint |
+| `p expr` / `pp expr` | print / pretty-print an expression |
+| `w` | show the call stack (where); `u` and `d` move up and down it |
+| `b 42` or `b func` | set a breakpoint at line 42 or at a function |
+| `q` | quit |
+
+Any other text is evaluated as Python, so you can inspect or change variables (use `!x = 5` if the name clashes with a command). If a script dies with an uncaught exception, `python -m pdb script.py` stops at the failing line (post-mortem). Setting `PYTHONBREAKPOINT=0` disables every `breakpoint()` call without editing the code. Python 3.14 added `python -m pdb -p PID` to attach to a running process. Editors such as VS Code provide the same operations with clickable breakpoints, a variables pane and a call-stack pane.
+
+A good use of a debugger: set a breakpoint just before the suspect line, check that each variable has the value you believe it has, step one line at a time, and stop at the first line where reality differs from your expectation.
+
+### Logging
+
+`print` debugging is quick, but real programs use the standard `logging` module, whose output can be filtered by severity and redirected without editing the code. The levels, from least to most severe, are `DEBUG` (10), `INFO` (20), `WARNING` (30), `ERROR` (40) and `CRITICAL` (50). A logger emits messages at or above its configured level; by default the root logger's level is `WARNING`.
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
+
+def load(path):
+    log.info("loading %s", path)
+    try:
+        return open(path).read()
+    except OSError:
+        log.exception("cannot read %s", path)
+        raise
+```
+
+Pass values as arguments (`log.info("n=%d", n)`) rather than building the string yourself, so the formatting is skipped when the level is disabled. `log.exception` inside an `except` block records the traceback at `ERROR` level. Never log passwords, tokens or personal data.
+
+### Binary search through history
+
+If a test passed last month and fails now, `git bisect` finds the commit that broke it by binary search: `git bisect start`, `git bisect bad` (current commit), `git bisect good v1.2` (a known good one), then mark each commit Git checks out, or automate it with `git bisect run ./test.sh`. With $n$ commits it needs about $\lceil \log_2 n \rceil$ steps. `git bisect reset` returns to your branch.
+
+@example
+title: Stepping through a bug with pdb
+problem: `total([1, 2, 3])` should return 6 but this function returns 5. Find the bug with a debugger.
+
+```python
+def total(nums):
+    result = 0
+    for i in range(1, len(nums)):
+        result += nums[i]
+    return result
+```
+step: Add `breakpoint()` just before `return result` and run the program. At `(Pdb)`, `p result` prints `5`, not the expected `6`, so the loop is adding the wrong items.
+step: Move the breakpoint to the first line of the loop body and use `n` to step. `p i` prints `1`, and `p nums[i]` prints `2`. The very first item, `nums[0]`, has never been added.
+step: The hypothesis is that `range(1, ...)` skips index 0. Confirm by predicting that the result for `[1, 2, 3]` will be `5`; the debugger shows exactly that.
+step: Fix with `range(len(nums))` (or `for n in nums`), and add a regression test `assert total([1, 2, 3]) == 6`.
+answer: The loop starts at index 1 and skips `nums[0]`; use `range(len(nums))`.
+@example
+title: Choosing a logging level
+problem: A service logs "user 42 logged in", "cache miss for key a1", and "database connection lost, retrying". Assign levels and say which appear with the default configuration.
+step: Routine events that confirm normal operation are `INFO`: "user 42 logged in".
+step: Detail useful only when diagnosing is `DEBUG`: "cache miss for key a1".
+step: A problem that did not stop the program but needs attention is `WARNING`, or `ERROR` if the operation failed: here a lost connection with a retry is a `WARNING`.
+step: The default level is `WARNING`, so only the connection message appears unless you call `basicConfig(level=logging.DEBUG)`.
+answer: `INFO`, `DEBUG` and `WARNING`; only the last is shown by default.
+@mistakes
+- Changing code before you can reproduce the failure, so you cannot tell whether a change fixed it.
+- Fixing the symptom (catching and ignoring an exception) instead of the cause.
+- Leaving `print` statements or a `breakpoint()` call in committed code.
+- Expecting `logging.info` to print by default: the root logger shows only `WARNING` and above until you configure it.
+@practice mc
+prompt: In `pdb`, the program is paused on the line `result = compute(data)`. You want to go **into** `compute` and inspect its first line. Which command do you type?
+choice: `n`
+choice*: `s`
+choice: `c`
+choice: `q`
+hint: One command steps over calls and another steps into them.
+solution: `s` (step) enters the called function. `n` runs the whole line, including the call, `c` continues to the next breakpoint, and `q` quits the debugger.
+@practice text
+prompt: Type the exact output of this program (the logging output is sent to standard output).
+
+```python
+import logging
+import sys
+
+logging.basicConfig(stream=sys.stdout, format="%(levelname)s:%(message)s")
+logging.info("start")
+logging.warning("low disk")
+logging.error("failed")
+```
+answer:
+```
+WARNING:low disk
+ERROR:failed
+```
+check: run("import logging\nimport sys\n\nlogging.basicConfig(stream=sys.stdout, format=\"%(levelname)s:%(message)s\")\nlogging.info(\"start\")\nlogging.warning(\"low disk\")\nlogging.error(\"failed\")\n")
+hint: What is the default level of the root logger?
+solution: The default level is `WARNING`, so `info` is dropped. The format shows the level name, a colon and the message.
+@practice code
+prompt: A function `moving_sum(nums, k)` should return the list of sums of every window of `k` consecutive items of `nums` (so `moving_sum([1, 2, 3, 4], 2)` is `[3, 5, 7]`). If there are fewer than `k` items it returns `[]`. The code in the editor has a bug: it misses the last window. Find the bug and fix it.
+starter:
+```python
+def moving_sum(nums, k):
+    sums = []
+    for i in range(len(nums) - k):
+        sums.append(sum(nums[i:i + k]))
+    return sums
+```
+tests:
+```python
+assert moving_sum([1, 2, 3, 4], 2) == [3, 5, 7]
+assert moving_sum([1, 2, 3], 3) == [6]
+assert moving_sum([1], 2) == []
+assert moving_sum([5, 5, 5], 1) == [5, 5, 5]
+assert moving_sum([], 3) == []
+```
+model:
+```python
+def moving_sum(nums, k):
+    sums = []
+    for i in range(len(nums) - k + 1):
+        sums.append(sum(nums[i:i + k]))
+    return sums
+```
+hint: Test the function on `[1, 2, 3]` with `k = 3` and compare the number of windows with what `range(len(nums) - k)` gives.
+hint: There are `len(nums) - k + 1` windows. When that is zero or negative, `range` is empty, which gives `[]`.
+solution: An off-by-one: the last window starts at index `len(nums) - k`, and `range` excludes its stop value, so the stop must be `len(nums) - k + 1`.
+@practice code
+prompt: A bug appeared somewhere between version 1 and version `n`. You are given a function `is_bad(v)` that returns `True` when version `v` shows the bug; versions before the first bad one are good and all later ones are bad, and version `n` is known to be bad. Write `first_bad(n, is_bad)` that returns the first bad version, calling `is_bad` as few times as possible (binary search, at most $\lceil \log_2 n \rceil$ calls), like `git bisect`.
+starter:
+```python
+def first_bad(n, is_bad):
+    pass
+```
+tests:
+```python
+calls = []
+
+
+def probe(v):
+    calls.append(v)
+    return v >= 37
+
+
+assert first_bad(100, probe) == 37
+assert len(calls) <= 7
+assert first_bad(1, lambda v: True) == 1
+assert first_bad(10, lambda v: v >= 10) == 10
+assert first_bad(5, lambda v: True) == 1
+```
+model:
+```python
+def first_bad(n, is_bad):
+    lo, hi = 1, n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if is_bad(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+```
+hint: Keep a range `lo..hi` that is guaranteed to contain the first bad version.
+hint: Test the middle version: if it is bad, the answer is at `mid` or earlier (`hi = mid`); if good, it is later (`lo = mid + 1`). Stop when `lo == hi`.
+solution: Each test halves the candidate range, so at most $\lceil \log_2 n \rceil$ calls are needed. When the range has one element, that version is the first bad one. This is exactly the search `git bisect` performs over commits.
+@practice self
+prompt: The function below should return the second largest distinct value of a list, or `None` if there are fewer than two distinct values, but `second_largest([5, 5, 3])` returns `5`. Describe, step by step, how you would debug it using `pdb` (name the commands you use and what you would look at), explain the bug, fix it, and give two regression tests.
+
+```python
+def second_largest(nums):
+    first = second = None
+    for n in nums:
+        if first is None or n > first:
+            second = first
+            first = n
+        elif second is None or n > second:
+            second = n
+    return second
+```
+hint: Step through the loop with `n` for the input `[5, 5, 3]` and print `first` and `second` after each iteration.
+solution: Put `breakpoint()` at the start of the function, run `second_largest([5, 5, 3])`, and use `n` to step through the loop while printing `p first, second, n`. After the second item (`5`), `first` is `5` and `second` is `5`: the `elif` branch stored `5` as `second` because `second is None` was true, although that `5` equals `first`. The fix is to ignore values equal to `first`: `elif n != first and (second is None or n > second)`. Regression tests: `assert second_largest([5, 5, 3]) == 3` and `assert second_largest([4, 4]) is None`.
+rubric: Reproduces the failure with the smallest input and uses `breakpoint()` or `python -m pdb`, with commands such as `n` and `p`.
+rubric: Identifies that a duplicate of the maximum is wrongly stored as the second value.
+rubric: Gives a fix that treats equal values correctly and at least two regression tests, including one with duplicates.
+@quiz code
+prompt: Write `filter_records(records, threshold)` that imitates a logging threshold. `records` is a list of `(level_name, message)` tuples where `level_name` is one of `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`, `"CRITICAL"` with the standard numeric values 10, 20, 30, 40, 50. `threshold` is also a level name. Return the list of messages whose level is at least the threshold, in their original order.
+starter:
+```python
+def filter_records(records, threshold):
+    pass
+```
+tests:
+```python
+recs = [("DEBUG", "a"), ("INFO", "b"), ("WARNING", "c"), ("ERROR", "d")]
+assert filter_records(recs, "WARNING") == ["c", "d"]
+assert filter_records(recs, "DEBUG") == ["a", "b", "c", "d"]
+assert filter_records(recs, "CRITICAL") == []
+assert filter_records([], "INFO") == []
+assert filter_records([("ERROR", "x"), ("INFO", "y")], "INFO") == ["x", "y"]
+```
+model:
+```python
+LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+
+
+def filter_records(records, threshold):
+    limit = LEVELS[threshold]
+    return [msg for level, msg in records if LEVELS[level] >= limit]
+```
+hint: Map each level name to its number with a dictionary.
+hint: Keep a record when its number is greater than or equal to the threshold's number.
+solution: Looking the names up in a dictionary turns them into numbers that can be compared. The comprehension keeps order and applies the "at or above" rule that the logging module uses.
+@quiz mc
+prompt: Which call is the best way to record a failed file read inside an `except OSError:` block, keeping the traceback?
+choice: `print("error")`
+choice: `logging.info("error " + str(path))`
+choice*: `log.exception("cannot read %s", path)`
+choice: `logging.debug(path)`
+hint: One logging method automatically attaches the current traceback.
+solution: `exception` logs at `ERROR` level with the traceback of the exception being handled, and the `%s` argument is formatted only if the message is emitted.

@@ -1,0 +1,268 @@
+@lesson
+title: Hash table design: load factor and resizing
+summary: Implement a chained hash map that resizes to keep its load factor bounded, and explain why resizing keeps operations $O(1)$ expected.
+objective: Choose a maximum load factor and rehash into a larger table when it is exceeded.
+objective: Argue that doubling the bucket count gives $O(1)$ amortized expected insertion.
+objective: Compare chaining, linear probing and Python's `dict` on memory, speed and deletion.
+reading: Open Data Structures, Chapter 5 "Hash Tables" (how ChainedHashTable and LinearHashTable resize, and the section on hash codes), plus the documentation of Python's `dict` and the `__hash__` data model.
+
+@article
+Last week's analysis said operations cost $\Theta(1 + \alpha)$ expected, where $\alpha = n/m$. A table with a fixed $m$ gets slower and slower as $n$ grows. The fix is the same idea as the dynamic array: when the table becomes too full, build a bigger one.
+
+### The resize policy
+
+Choose a **maximum load factor** $\alpha_{\max}$ (0.75 is a common choice for chaining; Java's `HashMap` uses 0.75, for example). After each insertion of a new key, if $n/m > \alpha_{\max}$, **rehash**: allocate a table with (typically) $2m$ buckets and reinsert every pair, computing its bucket as $h(\text{key}) \bmod 2m$.
+
+A rehash must recompute every bucket index; you cannot copy buckets across unchanged, because the index depends on $m$. A pair that was in bucket 5 of 8 may belong in bucket 5 or bucket 13 of 16.
+
+```python
+def rehash(old_buckets, new_size):
+    new_buckets = [[] for _ in range(new_size)]
+    for bucket in old_buckets:
+        for key, value in bucket:
+            new_buckets[hash(key) % new_size].append((key, value))
+    return new_buckets
+```
+
+### Cost of resizing
+
+One resize costs $O(m + n) = O(n)$, since the table has $O(n)$ buckets and $n$ pairs. But the number of buckets doubles each time, exactly as in a dynamic array, so the sizes of the rehashes form a geometric series and $n$ insertions cost $O(n)$ in total. The expected cost of one `put` is therefore $O(1)$ **amortized** (and expected, because chain lengths depend on the hash function). A single unlucky insertion that triggers a rehash is slow, which matters for latency-sensitive programs; some systems resize incrementally, moving a few buckets at a time.
+
+Between resizes, $\alpha \le \alpha_{\max}$, so the expected chain length is below 0.75 plus the item itself, a constant. Growing only is wasteful if many keys are deleted; a table may shrink when $\alpha$ falls well below a lower threshold (for example 0.25 when doubling at 0.75), and the gap between the thresholds prevents resize thrashing.
+
+### Designing the table
+
+**Choosing $m$.** If $m$ is a power of two, `h % m` is a cheap bit mask but uses only the low bits of $h$, so a weak hash function with patterned low bits will cluster. If $m$ is a prime not close to a power of two, all bits of $h$ influence the bucket. Whichever you choose, the hash function should mix its input well.
+
+**Chaining.** Simple, tolerates high $\alpha$, deletion is just removing a pair from a chain. Costs a list object per bucket and pointer chasing.
+
+**Open addressing.** Stores pairs in one array: better cache behavior and less memory per pair, but needs $\alpha < 1$, usually kept below about 0.5 to 0.7, suffers from clustering with linear probing, and needs tombstones for deletion. Python's `dict` is open-addressing with a compact layout: since Python 3.7 the language guarantees that a dict iterates in insertion order. Its keys must be hashable.
+
+**Adversarial inputs.** If an attacker can choose keys that all collide, the table degrades to $O(n)$ per operation and can be used to exhaust a server's CPU (a "hash flooding" denial of service). Defenses are a hash function seeded with a random secret at startup, as Python does for strings, or, in the theory of **universal hashing**, choosing the function at random from a family in which any two distinct keys collide with probability at most $1/m$.
+
+### Beyond the expected case
+
+If $n$ is known to be fixed and the keys are known in advance, **perfect hashing** gives $O(1)$ worst-case lookups. In most programs, the practical advice is to use the built-in `dict` and `set`, to give your own classes consistent `__eq__` and `__hash__`, and to remember what the guarantees really are: expected $O(1)$ with a good hash function, worst case $O(n)$.
+
+@example
+title: When does the table resize?
+problem: A chaining hash map starts with 4 buckets and doubles when $n/m > 0.75$ after an insertion. Insert 10 distinct keys. After which insertions does it resize, and how many buckets does it end with?
+step: With $m = 4$ the limit is $0.75 \cdot 4 = 3$ keys. Insertions 1, 2 and 3 give $n/m = 0.25, 0.5, 0.75$, none above 0.75.
+step: Insertion 4 gives $4/4 = 1 > 0.75$, so the table resizes to $m = 8$ (rehashing 4 keys). The limit is now 6 keys.
+step: Insertions 5 and 6 keep $n/m \le 0.75$ ($6/8 = 0.75$). Insertion 7 gives $7/8 > 0.75$, so it resizes to $m = 16$ (rehashing 7 keys); the limit is 12.
+step: Insertions 8 through 10 fit, since $10/16 = 0.625$.
+step: Total pairs reinserted: $4 + 7 = 11$ for 10 insertions, about one extra insertion per key.
+answer: It resizes after insertions 4 and 7 and ends with 16 buckets.
+
+@example
+title: Rehashing changes the bucket
+problem: Keys 3, 11, 5 are in a table with 8 buckets using $h(k) = k$. Where are they after rehashing to 16 buckets?
+step: With $m = 8$: $3 \bmod 8 = 3$, $11 \bmod 8 = 3$ (a collision), $5 \bmod 8 = 5$.
+step: With $m = 16$: $3 \bmod 16 = 3$, $11 \bmod 16 = 11$, $5 \bmod 16 = 5$.
+step: Keys 3 and 11 no longer share a bucket. Growing the table both lowers $\alpha$ and re-spreads the keys.
+answer: Buckets 3, 11 and 5 respectively.
+
+@mistakes
+- Copying old buckets into the larger table without recomputing each key's index, so lookups probe the wrong bucket and miss existing keys.
+- Resizing before the insertion's duplicate check, so updating an existing key grows the table.
+- Using the old size in `hash(key) % m` after the buckets list was replaced (or the reverse), leaving the table half rehashed.
+- Resizing by a constant number of buckets, which makes the total cost $O(n^2)$, as with dynamic arrays.
+
+@practice mc
+prompt: A chaining hash table of 8 buckets holds 6 keys and its maximum load factor is 0.75 (it resizes when $n/m$ exceeds 0.75). What happens when one more new key is inserted?
+choice: Nothing: the key is added and the table keeps 8 buckets.
+choice*: The key is added, $7/8 > 0.75$ triggers a resize, and all 7 pairs are rehashed into the larger table.
+choice: The insertion fails with an error because the table is full.
+choice: The existing 6 pairs stay in place and only the new key is placed in a new bucket.
+hint: Compute the load factor after the insertion.
+solution: After the insertion $n/m = 7/8 = 0.875$, which exceeds 0.75. The table doubles its bucket count and recomputes the bucket of every pair, because each index depends on $m$. Chaining never fails from fullness.
+
+@practice num
+prompt: A chaining hash map starts with 8 buckets and doubles the bucket count whenever, after inserting a new key, $n/m > 0.75$. After inserting 100 distinct keys, how many buckets does it have?
+answer: 256
+check: int(run("m = 8\nn = 0\nfor _ in range(100):\n    n += 1\n    if n / m > 0.75:\n        m *= 2\nprint(m)\n"))
+hint: The table doubles when $n$ exceeds $0.75 m$: at $n = 7$ (to 16), and so on.
+hint: Resizes happen when $n$ passes 6, 12, 24, 48 and 96.
+solution: The thresholds are 6, 12, 24, 48 and 96 keys for tables of 8, 16, 32, 64 and 128 buckets. The 97th key passes 96, so the table doubles from 128 to 256 buckets and stays there up to $0.75 \cdot 256 = 192$ keys.
+
+@practice code
+prompt: Implement `HashMap`, a map with separate chaining (a list of `(key, value)` pairs per bucket) using Python's `hash(key) % buckets` as the bucket index. Constructor `HashMap(buckets=8)`. Methods: `put(key, value)` (update the value if the key exists, else add it), `get(key, default=None)`, `remove(key)` (returns the removed value; raises `KeyError` if absent), `__contains__(key)`, `__len__()` and `num_buckets()`. After adding a **new** key, if `len(self) / num_buckets() > 0.75`, double the number of buckets and rehash every pair. Updating an existing key never resizes.
+starter:
+```python
+class HashMap:
+    def __init__(self, buckets=8):
+        pass
+```
+tests:
+```python
+m = HashMap(4)
+m.put(1, "a")
+m.put(2, "b")
+m.put(3, "c")
+assert m.num_buckets() == 4
+assert len(m) == 3
+m.put(3, "C")
+assert len(m) == 3
+assert m.num_buckets() == 4
+assert m.get(3) == "C"
+m.put(4, "d")
+assert m.num_buckets() == 8
+assert len(m) == 4
+assert [m.get(k) for k in (1, 2, 3, 4)] == ["a", "b", "C", "d"]
+assert m.get(99) is None
+assert m.get(99, "none") == "none"
+assert 2 in m
+assert 5 not in m
+assert m.remove(2) == "b"
+assert 2 not in m
+assert len(m) == 3
+assert raises(KeyError, m.remove, 2)
+big = HashMap()
+for i in range(100):
+    big.put(i * 8, i)
+assert len(big) == 100
+assert all(big.get(i * 8) == i for i in range(100))
+assert big.num_buckets() == 256
+words = HashMap()
+for w in ["apple", "pear", "fig", "plum"]:
+    words.put(w, len(w))
+assert words.get("pear") == 4
+assert words.get("kiwi") is None
+```
+model:
+```python
+class HashMap:
+    def __init__(self, buckets=8):
+        self._buckets = [[] for _ in range(buckets)]
+        self._size = 0
+
+    def __len__(self):
+        return self._size
+
+    def num_buckets(self):
+        return len(self._buckets)
+
+    def _bucket(self, key):
+        return self._buckets[hash(key) % len(self._buckets)]
+
+    def put(self, key, value):
+        bucket = self._bucket(key)
+        for i, (k, _) in enumerate(bucket):
+            if k == key:
+                bucket[i] = (key, value)
+                return
+        bucket.append((key, value))
+        self._size += 1
+        if self._size / len(self._buckets) > 0.75:
+            self._resize(2 * len(self._buckets))
+
+    def get(self, key, default=None):
+        for k, v in self._bucket(key):
+            if k == key:
+                return v
+        return default
+
+    def __contains__(self, key):
+        return any(k == key for k, _ in self._bucket(key))
+
+    def remove(self, key):
+        bucket = self._bucket(key)
+        for i, (k, v) in enumerate(bucket):
+            if k == key:
+                del bucket[i]
+                self._size -= 1
+                return v
+        raise KeyError(key)
+
+    def _resize(self, new_size):
+        new_buckets = [[] for _ in range(new_size)]
+        for bucket in self._buckets:
+            for k, v in bucket:
+                new_buckets[hash(k) % new_size].append((k, v))
+        self._buckets = new_buckets
+```
+hint: Write a helper that returns the bucket (a list) for a key; all of `put`, `get`, `remove` and `__contains__` scan it.
+hint: In `put`, scan the bucket for the key first and update in place; only when it is absent append, increment `_size` and check the load factor. In `_resize`, recompute each index from the new size.
+solution: Each operation scans one chain. `put` returns early when it updates, so only new keys can trigger the resize check. The resize builds a new bucket list and reinserts every pair with `hash(k) % new_size`. Inserting 100 keys from 8 buckets doubles at 7, 13, 25, 49 and 97 keys, ending with 256 buckets.
+
+@practice code
+prompt: Write `rehash(buckets, new_size)`. `buckets` is a list of lists of `(key, value)` pairs with integer keys, as in a chaining table. Return a **new** list of `new_size` buckets in which each pair is in bucket `key % new_size`. Visit the old buckets in index order and the pairs of each in order, appending each pair to its new bucket, and leave the old structure unchanged.
+starter:
+```python
+def rehash(buckets, new_size):
+    pass
+```
+tests:
+```python
+old = [[(2, "a"), (4, "b")], [(1, "c"), (3, "d")]]
+assert rehash(old, 4) == [[(4, "b")], [(1, "c")], [(2, "a")], [(3, "d")]]
+assert rehash(old, 1) == [[(2, "a"), (4, "b"), (1, "c"), (3, "d")]]
+four = [[(4, "b")], [(1, "c")], [(2, "a")], [(3, "d")]]
+assert rehash(four, 2) == [[(4, "b"), (2, "a")], [(1, "c"), (3, "d")]]
+assert rehash([[], []], 3) == [[], [], []]
+assert old == [[(2, "a"), (4, "b")], [(1, "c"), (3, "d")]]
+```
+model:
+```python
+def rehash(buckets, new_size):
+    new_buckets = [[] for _ in range(new_size)]
+    for bucket in buckets:
+        for key, value in bucket:
+            new_buckets[key % new_size].append((key, value))
+    return new_buckets
+```
+hint: Create `new_size` empty lists first. Do not write `[[]] * new_size`, which repeats one list object.
+hint: Loop over every old bucket and every pair, and append each pair to `new_buckets[key % new_size]`.
+solution: Create fresh empty buckets with a comprehension (so the lists are distinct objects), then reinsert every pair at its recomputed index. The old list is only read. The cost is $O(m + n)$ for $m$ old buckets and $n$ pairs.
+
+@practice ms
+prompt: Which statements about open addressing and chaining are true? Select all that apply.
+choice*: Chaining supports a load factor above 1; open addressing cannot.
+choice*: Open addressing stores pairs in one array, which usually gives better cache locality than chains of separate nodes.
+choice: Open addressing makes deletion simpler than chaining, because nothing needs to be marked.
+choice*: A weak hash function that produces many identical values can make either design take $O(n)$ time per operation.
+choice: Doubling the table size means the `put` that triggers a resize costs $O(1)$.
+hint: Think about what each design stores, and what happens when all keys collide.
+solution: Chains can grow without bound while an open-addressing table has a fixed number of slots; one array has better locality; and if all keys share a hash value both designs degrade to a linear scan. Deletion is harder in open addressing (tombstones), and the resizing `put` costs $O(n)$, though amortized it is $O(1)$.
+
+@quiz code
+prompt: Write `most_common_word(words)` that returns the word occurring most often in the non-empty list `words`. If several words tie for the highest count, return the one whose **first occurrence** is earliest. Use a dictionary of counts; do not use `collections.Counter`.
+starter:
+```python
+def most_common_word(words):
+    pass
+```
+tests:
+```python
+assert most_common_word(["a", "b", "a"]) == "a"
+assert most_common_word(["x"]) == "x"
+assert most_common_word(["b", "a", "a", "b"]) == "b"
+assert most_common_word(["c", "a", "b", "b", "a"]) == "a"
+assert most_common_word(["q", "q", "q", "r", "r"]) == "q"
+```
+model:
+```python
+def most_common_word(words):
+    counts = {}
+    for w in words:
+        counts[w] = counts.get(w, 0) + 1
+    best = None
+    best_count = 0
+    for w, c in counts.items():
+        if c > best_count:
+            best = w
+            best_count = c
+    return best
+```
+hint: Build the counts first; a dict remembers the order in which keys were first inserted.
+hint: Scan the dict in order and replace the best word only when a count is strictly greater, so earlier words win ties.
+solution: One pass counts occurrences in expected $O(n)$ time. Iterating the dict visits words in order of first occurrence, and the strict comparison `c > best_count` keeps the earliest word among equals. In `["c", "a", "b", "b", "a"]`, both `a` and `b` appear twice and `a` appeared first among those two.
+
+@quiz mc
+prompt: An open-addressing table with linear probing is allowed to fill to a load factor of 0.95 before resizing. What is the most likely consequence?
+choice: Lookups become $O(1)$ in the worst case, since there are few empty slots.
+choice*: Long clusters form, so unsuccessful searches probe many slots on average.
+choice: The hash function stops being deterministic.
+choice: Deletion becomes impossible.
+hint: Think about how long runs of occupied slots behave when almost no slot is empty.
+solution: With few empty slots, runs of occupied slots merge into long clusters, and an unsuccessful search must walk to the end of one, so the expected number of probes grows very large as $\alpha \to 1$. Open-addressing tables therefore resize at a much lower load factor than chaining tables.

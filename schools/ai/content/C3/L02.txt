@@ -1,0 +1,180 @@
+@lesson
+title: Permissions, processes and environment variables
+summary: Read and change Unix file permissions, control running processes and signals, and use environment variables including PATH.
+objective: Decode a permission string such as `rwxr-x---` into an octal mode and change it with `chmod` in octal or symbolic form.
+objective: Start, inspect, suspend and stop processes with `&`, `ps`, `jobs`, `kill` and exit statuses.
+objective: Explain how environment variables are inherited and how the shell uses `PATH` to find programs.
+reading: The Missing Semester of Your CS Education, lecture "The Shell" (sections on permissions and environment) and the `chmod`, `ps` and `kill` manual pages.
+@article
+Every file on a Unix system has an **owner**, a **group** and a set of **permissions**. Every running program is a **process** with its own **environment**. Many "it works on my machine" problems are really one of these three.
+
+### Reading `ls -l`
+
+```text
+-rwxr-xr-- 1 ana staff 120 Jan  5 10:00 run.sh
+drwxr-xr-x 2 ana staff  64 Jan  5 09:30 src
+```
+
+The first character is the type (`-` regular file, `d` directory, `l` symbolic link). The next nine are three triples of **read** (`r`), **write** (`w`) and **execute** (`x`) for the **user** (owner), the **group** and **others**, in that order. A `-` means the permission is absent. Here `run.sh` can be read, written and executed by `ana`, read and executed by the group, and only read by everyone else.
+
+Each triple is a three-bit number: `r` is 4, `w` is 2, `x` is 1. So `rwx` is $4+2+1=7$, `r-x` is 5 and `r--` is 4, and `rwxr-xr--` is the **octal mode** `754`. For a directory, `x` means permission to enter it and to reach names inside it; `r` means permission to list the names.
+
+### Changing permissions
+
+`chmod` accepts an octal mode (`chmod 754 run.sh`) or a symbolic one: who (`u`, `g`, `o` or `a` for all), an operator (`+` add, `-` remove, `=` set exactly) and permissions. `chmod u+x run.sh` adds execute for the owner; `chmod go-w file` removes write for group and others. A script must have the execute bit to run as `./run.sh`.
+
+New files get a mode from the **umask**, a mask of bits to remove. Programs typically ask for `666` for files and `777` for directories; a umask of `022` removes write for group and others, giving `644` and `755`.
+
+### Processes and signals
+
+`ps aux` lists processes, each with a **PID**; `top` shows them live. Normally the shell waits for a command to finish. Add `&` to run it in the **background** (`sleep 60 &`), list background jobs with `jobs`, and bring one back with `fg`. **Ctrl-C** sends the foreground process the **SIGINT** signal, and **Ctrl-Z** suspends it (**SIGTSTP**).
+
+`kill PID` sends **SIGTERM** (signal 15), a polite request to terminate that a program can catch to clean up. `kill -9 PID` sends **SIGKILL**, which cannot be caught or ignored, so the process gets no chance to clean up; use it only when SIGTERM fails.
+
+Every process ends with an **exit status**, an integer from 0 to 255. `0` means success and anything else means failure. The shell stores the last status in `$?`, and `&&` and `||` use it: `make && echo ok` prints `ok` only on success.
+
+### Environment variables
+
+An **environment variable** is a named string passed from a parent process to its children. Set one with `NAME=value` (no spaces around `=`); the variable is visible only inside the shell until you mark it with `export NAME`, after which every program you start inherits a copy. A child cannot change its parent's variables. Read a value with `"$NAME"`, list the environment with `printenv`, and set a variable for a single command with `DEBUG=1 ./run.sh`.
+
+The most important variable is `PATH`, a colon-separated list of directories. When you type `python3`, the shell searches those directories from left to right and runs the first executable with that name; `which python3` (or `type python3`) shows which one it found. A program in the current directory is **not** found unless `.` is on the `PATH`, which is why you write `./run.sh`.
+
+@example
+title: Decoding a permission string
+problem: A file shows `-rwxr-x---` in `ls -l`. Give its octal mode, and say who can run it.
+step: Split the nine characters into triples: `rwx`, `r-x`, `---`.
+step: Convert each triple with r=4, w=2, x=1: `rwx` is 7, `r-x` is 4+1=5, and `---` is 0.
+step: Write the digits in user, group, others order: `750`.
+step: The owner and the group both have `x`, so both can execute it; others have no permissions at all.
+answer: `750`; the owner and the group can run it.
+@example
+title: Making a script executable
+problem: `run.sh` has mode `644` and `./run.sh` fails with "Permission denied". Fix it and show the resulting mode.
+step: `644` is `rw-r--r--`: nobody has execute permission, so the kernel refuses to run it.
+step: Add execute for the owner only with `chmod u+x run.sh`.
+step: The owner triple changes from `rw-` (6) to `rwx` (7) and the others are untouched, so the mode is `744`.
+step: Run `./run.sh` again. The `./` is needed because the current directory is not on `PATH`.
+answer: `chmod u+x run.sh` gives mode `744`.
+@mistakes
+- Using `chmod 777` to "fix" a permission error, which lets every user modify the file; find the missing bit instead.
+- Writing `NAME = value` with spaces: the shell then tries to run a command called `NAME`.
+- Expecting a variable set without `export` to reach a program you launch, or expecting a child process to change the shell's variables.
+- Reaching for `kill -9` first, which skips the program's cleanup (temporary files, locks, unsaved data).
+@practice mc
+prompt: What access does `chmod 640 notes.txt` give?
+choice*: The owner can read and write, the group can read, and others have no access.
+choice: The owner can read and write, and everyone else can read.
+choice: The owner can read, write and execute; the group can read.
+choice: Everyone can read and write, and nobody can execute.
+hint: Convert each digit to bits: 6 is 4+2, 4 is 4, and 0 is nothing.
+solution: `6` is `rw-`, `4` is `r--` and `0` is `---`, so the owner reads and writes, the group only reads, and others get nothing.
+@practice num
+prompt: Give the octal mode (as a three-digit number) of a file whose permissions are `rwxr-x---`.
+answer: 750
+check: 100*(4+2+1) + 10*(4+1) + 0
+hint: Add r=4, w=2, x=1 within each triple.
+solution: The triples `rwx`, `r-x`, `---` are 7, 5 and 0, giving `750`.
+@practice code
+prompt: Write `mode_string(mode)` that takes an integer `mode` from `0` to `0o777` and returns the nine-character permission string used by `ls -l`, without the leading file-type character. Example: `mode_string(0o754)` returns `"rwxr-xr--"`.
+starter:
+```python
+def mode_string(mode):
+    pass
+```
+tests:
+```python
+assert mode_string(0o754) == "rwxr-xr--"
+assert mode_string(0o000) == "---------"
+assert mode_string(0o777) == "rwxrwxrwx"
+assert mode_string(0o644) == "rw-r--r--"
+assert mode_string(0o105) == "--x---r-x"
+```
+model:
+```python
+def mode_string(mode):
+    letters = "rwxrwxrwx"
+    result = ""
+    for i in range(9):
+        bit = 1 << (8 - i)
+        result += letters[i] if mode & bit else "-"
+    return result
+```
+hint: Bit 8 (value 256) is the owner's `r`, and bit 0 is the last `x`.
+hint: Walk through the nine letters `rwxrwxrwx`; keep letter `i` if bit number `8 - i` of `mode` is set, otherwise write `-`.
+solution: Test each of the nine bits from the most significant down, taking the matching letter of `rwxrwxrwx` when the bit is set and `-` when it is clear.
+@practice ms
+prompt: Select every true statement about environment variables.
+choice*: A variable assigned with `NAME=value` but not exported is not passed to programs started from the shell.
+choice*: A child process receives a copy of its parent's exported variables.
+choice: A child process that changes an exported variable also changes it in the parent shell.
+choice*: `PATH` is a list of directories searched, in order, for the program name you type.
+choice: Variables are saved on disk and survive logging out unless you delete them.
+hint: Think of the environment as a copy handed down when a process starts.
+solution: Exporting marks a variable for inheritance, and children get copies, so their changes never reach the parent. `PATH` is searched left to right. Variables live in process memory; to persist one you put the assignment in a startup file.
+@practice self
+prompt: On your own computer, write a script `hello.sh` containing `echo "hello from $USER"`. Show the commands you ran to (1) see that it cannot run as `./hello.sh`, (2) fix that with `chmod`, (3) run it, (4) run `sleep 30` in the background, list it with `jobs`, and stop it with `kill`, and (5) print `$?` after a command that fails, such as `ls /nonexistent`. State what each step printed.
+hint: A new file normally has mode 644, so it is not executable yet.
+solution: One session:
+
+```bash
+echo 'echo "hello from $USER"' > hello.sh
+./hello.sh        # Permission denied: no execute bit yet
+chmod u+x hello.sh
+./hello.sh        # hello from <your user name>
+sleep 30 &        # prints a job number and PID
+jobs              # [1]+ Running  sleep 30 &
+kill %1           # sends SIGTERM to job 1
+ls /nonexistent
+echo $?           # a non-zero status (1 on some systems, 2 on others)
+```
+
+The script cannot run before `chmod` because a newly created file normally has mode `644`. `ls` fails for a missing path, so `$?` is non-zero.
+rubric: Shows the "Permission denied" failure before `chmod` and the success after it.
+rubric: Starts a background job with `&`, lists it with `jobs` and ends it with `kill` (by PID or `%1`).
+rubric: Reports a non-zero value for `$?` after the failing command and explains that `0` means success.
+@quiz code
+prompt: Write `apply_chmod(mode, spec)` that returns the new integer mode after a symbolic `chmod` clause. `spec` has the form who + operator + permissions, where who is one or more of `u`, `g`, `o` (or `a` for all three) and is never empty, the operator is `+` (add), `-` (remove) or `=` (set exactly), and permissions are zero or more of `r`, `w`, `x`. Example: `apply_chmod(0o644, "u+x")` returns `0o744`.
+starter:
+```python
+def apply_chmod(mode, spec):
+    pass
+```
+tests:
+```python
+assert apply_chmod(0o644, "u+x") == 0o744
+assert apply_chmod(0o777, "go-w") == 0o755
+assert apply_chmod(0o600, "a+r") == 0o644
+assert apply_chmod(0o755, "g=r") == 0o745
+assert apply_chmod(0o644, "o=") == 0o640
+```
+model:
+```python
+def apply_chmod(mode, spec):
+    i = 0
+    while spec[i] in "ugoa":
+        i += 1
+    who, op, perms = spec[:i], spec[i], spec[i + 1:]
+    bits = 0
+    for p in perms:
+        bits |= {"r": 4, "w": 2, "x": 1}[p]
+    classes = "ugo" if "a" in who else who
+    shifts = {"u": 6, "g": 3, "o": 0}
+    for c in classes:
+        shift = shifts[c]
+        if op == "+":
+            mode |= bits << shift
+        elif op == "-":
+            mode &= ~(bits << shift)
+        else:
+            mode = (mode & ~(7 << shift)) | (bits << shift)
+    return mode
+```
+hint: Split the spec into the who letters, the operator and the permission letters, then turn the permission letters into a 3-bit number.
+hint: Shift that number left by 6 for `u`, 3 for `g` and 0 for `o`. `+` uses OR, `-` uses AND with the complement, and `=` clears the three bits first and then sets them.
+solution: Parse the clause, build the 3-bit permission value, and apply it to each selected class at its shift. `=` first clears that class with `7 << shift`, which is why `o=` removes all permissions for others.
+@quiz text
+prompt: A program creates a new regular file asking for mode `666` while the shell's umask is `027`. Type the file's resulting octal mode (three digits).
+answer: 640
+check: oct(0o666 & ~0o027)[2:]
+hint: The umask lists the bits to remove from the requested mode.
+solution: `666` is `110 110 110` and `027` is `000 010 111`. Clearing the umask bits leaves `110 100 000`, which is `640`.

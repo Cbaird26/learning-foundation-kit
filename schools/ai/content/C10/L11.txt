@@ -1,0 +1,186 @@
+@lesson
+title: Neural networks and backpropagation
+summary: Build a small feed-forward network from neurons and layers, compute its forward pass, and derive its gradients with backpropagation, the chain rule applied from the output backward.
+objective: Compute the forward pass of a network with ReLU hidden units.
+objective: Apply the chain rule to obtain gradients for every weight and bias (backpropagation).
+objective: Count parameters, and explain why nonlinear activations and careful initialization matter.
+reading: An Introduction to Statistical Learning (Python edition), Chapter 10 "Deep Learning", sections 10.1 "Single Layer Neural Networks", 10.2 "Multilayer Neural Networks" and 10.7 "Fitting a Neural Network".
+@article
+Logistic regression is a single **neuron**: a weighted sum of the inputs passed through a nonlinearity. A **neural network** wires many neurons into layers, and its power comes from composing them.
+
+### Neurons, layers and activations
+
+A neuron computes $a = \varphi(w^\top x + b)$ with weights $w$, bias $b$ and an **activation function** $\varphi$. Common choices:
+
+| Activation | Formula | Derivative |
+|---|---|---|
+| sigmoid | $1/(1 + e^{-z})$ | $\sigma(z)(1 - \sigma(z)) \le 0.25$ |
+| tanh | $(e^z - e^{-z})/(e^z + e^{-z})$ | $1 - \tanh^2 z$ |
+| ReLU | $\max(0, z)$ | $1$ if $z > 0$, else $0$ |
+
+A **layer** applies many neurons to the same input: $h = \varphi(W x + b)$ with a weight matrix $W$ (one row per neuron). A network with one hidden layer and a linear output is
+$$z_1 = W_1 x + b_1,\qquad h = \varphi(z_1),\qquad \hat{y} = W_2 h + b_2.$$
+Without the nonlinearity $\varphi$ the whole network would be $W_2(W_1x + b_1) + b_2$, a single linear map, no more expressive than linear regression. With it, a network with one hidden layer of enough units can approximate any continuous function on a bounded region arbitrarily well (the **universal approximation theorem**), though the theorem says nothing about how many units are needed or whether training finds them. The number of parameters of a layer with $m$ inputs and $r$ units is $mr + r$.
+
+### Loss functions
+
+Use the squared error $\frac{1}{2}(\hat y - y)^2$ for regression (the factor $\frac12$ cancels the 2 in the derivative), and softmax with cross-entropy for classification (week 4). Training minimizes the average loss over the data by (mini-batch) gradient descent, which needs the gradient of the loss with respect to every parameter.
+
+### Backpropagation
+
+**Backpropagation** is the chain rule organized to compute all those gradients in one backward sweep that reuses the values saved during the forward pass. For a one-hidden-unit network $z = w_1x + b_1$, $h = \operatorname{ReLU}(z)$, $\hat y = w_2h + b_2$ and $L = \frac12(\hat y - y)^2$, work backward from the loss:
+$$\frac{\partial L}{\partial \hat y} = \hat y - y,\quad \frac{\partial L}{\partial w_2} = (\hat y - y)\,h,\quad \frac{\partial L}{\partial b_2} = \hat y - y,\quad \frac{\partial L}{\partial h} = (\hat y - y)\,w_2,$$
+$$\frac{\partial L}{\partial z} = \frac{\partial L}{\partial h}\,\varphi'(z),\quad \frac{\partial L}{\partial w_1} = \frac{\partial L}{\partial z}\,x,\quad \frac{\partial L}{\partial b_1} = \frac{\partial L}{\partial z}.$$
+In matrix form, with $\delta_2 = \hat y - y$ for the output layer: $\partial L/\partial W_2 = \delta_2 h^\top$, then $\delta_1 = (W_2^\top\delta_2)\odot\varphi'(z_1)$ and $\partial L/\partial W_1 = \delta_1 x^\top$, where $\odot$ is element-wise multiplication. The backward pass costs about as much as the forward pass, which is what makes training large networks feasible. Automatic differentiation libraries do this bookkeeping for any composition of differentiable operations; you can verify any hand-derived gradient with the numerical gradient of week 3.
+
+### Practical issues
+
+**Initialization.** If all weights start equal, all hidden units in a layer receive identical gradients and stay identical (the symmetry is never broken), so weights are initialized to small random values. **Vanishing gradients.** The backward pass multiplies by $\varphi'$ at each layer; the sigmoid derivative is at most $0.25$, so in a deep sigmoid network gradients shrink exponentially toward the early layers. ReLU does not saturate for $z > 0$, which is one reason it is the default in hidden layers. **Dead ReLUs.** If $z < 0$ for every training example, the unit outputs 0 with gradient 0, so its incoming weights never change. **Non-convexity.** The loss has many local minima and saddle points, yet gradient descent with good initialization usually finds solutions that generalize.
+
+@example
+title: Forward and backward pass by hand
+problem: A network has $z = w_1 x + b_1$, $h = \max(0, z)$, $\hat y = w_2 h + b_2$ with $w_1 = 2$, $b_1 = -1$, $w_2 = 3$, $b_2 = 0.5$. For the example $x = 1$, $y = 2$ and loss $L = \frac12(\hat y - y)^2$, compute $L$ and all four gradients.
+step: Forward: $z = 2(1) - 1 = 1$, $h = \max(0, 1) = 1$, $\hat y = 3(1) + 0.5 = 3.5$, and $L = \frac12(1.5)^2 = 1.125$.
+step: Output layer: $\partial L/\partial\hat y = 3.5 - 2 = 1.5$, so $\partial L/\partial w_2 = 1.5 \cdot h = 1.5$ and $\partial L/\partial b_2 = 1.5$.
+step: Hidden unit: $\partial L/\partial h = 1.5 \cdot w_2 = 4.5$.
+step: Through the ReLU: $z = 1 > 0$, so $\varphi'(z) = 1$ and $\partial L/\partial z = 4.5$.
+step: First layer: $\partial L/\partial w_1 = 4.5 \cdot x = 4.5$ and $\partial L/\partial b_1 = 4.5$.
+answer: $L = 1.125$; the gradients are $\partial L/\partial w_1 = 4.5$, $\partial L/\partial b_1 = 4.5$, $\partial L/\partial w_2 = 1.5$, $\partial L/\partial b_2 = 1.5$.
+
+@example
+title: A sigmoid output with cross-entropy
+problem: One neuron $p = \sigma(wx + b)$ with $w = 0.5$, $b = 0$ is trained on the example $x = 2$, $y = 1$ with log loss. Find $\partial L/\partial w$ and $\partial L/\partial b$.
+step: The score is $z = 0.5 \cdot 2 + 0 = 1$ and $p = \sigma(1) \approx 0.7311$.
+step: For sigmoid with cross-entropy the chain rule simplifies to $\partial L/\partial z = p - y \approx -0.2689$ (the factor $\sigma'(z)$ cancels).
+step: $\partial L/\partial w = (p - y)\,x \approx -0.2689 \cdot 2 = -0.5379$ and $\partial L/\partial b = p - y \approx -0.2689$.
+step: Both gradients are negative, so gradient descent increases $w$ and $b$, which raises $p$ toward the label $1$.
+answer: $\partial L/\partial w \approx -0.538$ and $\partial L/\partial b \approx -0.269$.
+
+@mistakes
+- Using a linear activation in the hidden layer and expecting more than a linear model.
+- Initializing all weights to zero (or all equal), so the hidden units never become different from each other.
+- Forgetting the activation derivative in the backward pass, or evaluating it at the wrong point (it is evaluated at the pre-activation $z$ saved from the forward pass).
+- Updating a weight in the middle of the backward pass, before the gradients of the earlier layers have been computed with the old weights.
+
+@practice num
+prompt: A network has $z = w_1x + b_1$, $h = \max(0, z)$ and $\hat y = w_2h + b_2$ with $w_1 = 0.5$, $b_1 = -2$, $w_2 = 4$ and $b_2 = 1$. What is $\hat y$ for $x = 3$?
+answer: 1
+check: 4 * max(0, 0.5 * 3 - 2) + 1
+hint: Compute $z$ first, then apply the ReLU.
+solution: $z = 1.5 - 2 = -0.5$, so $h = \max(0, -0.5) = 0$ and $\hat y = 4 \cdot 0 + 1 = 1$.
+
+@practice mc
+prompt: A hidden unit with a ReLU activation has a negative pre-activation $z$ for every training example. What happens to the gradients of the loss with respect to that unit's incoming weights and bias?
+choice: They are large, because $z$ is far from the activation threshold.
+choice*: They are exactly zero, so those parameters never change during training (a dead unit).
+choice: They are positive, which moves $z$ upward immediately.
+choice: They equal the gradients of the other units in the layer.
+hint: What is the derivative of $\max(0, z)$ when $z < 0$?
+solution: The derivative of the ReLU is 0 for $z < 0$, so the factor $\varphi'(z)$ in the backward pass zeroes the gradient reaching the unit's incoming parameters. With no update the unit stays dead for those inputs.
+
+@practice code
+prompt: Write `forward(x, W1, b1, W2, b2)` for a network with one hidden ReLU layer and a linear output. `x` is a list of numbers, `W1` is a list of rows (one row per hidden unit), `b1` the hidden biases, `W2` a list of rows (one per output) and `b2` the output biases. Return the output as a list of floats: hidden `h = max(0, W1 x + b1)` element-wise, output `W2 h + b2`. Example: `forward([1, 2], [[1, 0], [0, -1]], [0, 0], [[2, 5]], [1])` is `[3.0]`.
+starter:
+```python
+def forward(x, W1, b1, W2, b2):
+    pass
+```
+tests:
+```python
+assert forward([1, 2], [[1, 0], [0, -1]], [0, 0], [[2, 5]], [1]) == [3.0]
+assert forward([1], [[2], [-3]], [1, 1], [[1, 1], [0, 2]], [0, -1]) == [3.0, -1.0]
+assert forward([2, 3], [[1, 1]], [-1], [[0.5]], [0]) == [2.0]
+assert forward([0, 0], [[1, 1], [2, 2]], [0, 0], [[1, 1]], [7]) == [7.0]
+```
+model:
+```python
+def forward(x, W1, b1, W2, b2):
+    h = []
+    for row, b in zip(W1, b1):
+        z = sum(w * xi for w, xi in zip(row, x)) + b
+        h.append(max(0.0, z))
+    out = []
+    for row, b in zip(W2, b2):
+        out.append(sum(w * hi for w, hi in zip(row, h)) + b)
+    return out
+```
+hint: Compute the hidden activations first: one dot product plus a bias per row of `W1`, then the ReLU.
+solution: Each hidden unit is `max(0, dot(row, x) + bias)`; each output is a dot product of a row of `W2` with the hidden vector plus its bias, with no activation. Keep the pre-activation values if you also need the backward pass.
+
+@practice code
+prompt: Write `backward_tiny(x, y, w1, b1, w2, b2)` for the scalar network `z = w1 * x + b1`, `h = max(0, z)`, `yhat = w2 * h + b2` with loss `L = 0.5 * (yhat - y) ** 2`. Return the tuple of gradients `(dw1, db1, dw2, db2)`. Use the ReLU derivative `1` when `z > 0` and `0` otherwise (including `z == 0`). Example: `backward_tiny(1, 2, 2, -1, 3, 0.5)` is `(4.5, 4.5, 1.5, 1.5)`.
+starter:
+```python
+def backward_tiny(x, y, w1, b1, w2, b2):
+    pass
+```
+tests:
+```python
+g = backward_tiny(1, 2, 2, -1, 3, 0.5)
+assert tuple(round(v, 6) for v in g) == (4.5, 4.5, 1.5, 1.5)
+g = backward_tiny(2, 1, 1, 0.5, 2, -1)
+assert tuple(round(v, 6) for v in g) == (12.0, 6.0, 7.5, 3.0)
+g = backward_tiny(0, 0, 1, -1, 3, 1)
+assert tuple(round(v, 6) for v in g) == (0.0, 0.0, 0.0, 1.0)
+g = backward_tiny(1, 0, 1, -1, 2, 0.5)
+assert tuple(round(v, 6) for v in g) == (0.0, 0.0, 0.0, 0.5)
+```
+model:
+```python
+def backward_tiny(x, y, w1, b1, w2, b2):
+    z = w1 * x + b1
+    h = max(0.0, z)
+    err = w2 * h + b2 - y
+    dh = err * w2
+    dz = dh * (1.0 if z > 0 else 0.0)
+    return (dz * x, dz, err * h, err)
+```
+hint: Run the forward pass first and keep `z`, `h` and the error `yhat - y`.
+hint: Work backward: `err`, then `dh = err * w2`, then `dz = dh * relu'(z)`; the weight gradients multiply by the value that fed the weight (`x` for `w1`, `h` for `w2`).
+solution: With `err = yhat - y`: `db2 = err`, `dw2 = err * h`, `dh = err * w2`, `dz = dh` if `z > 0` else 0, `db1 = dz` and `dw1 = dz * x`. In the last two tests `z <= 0`, so the first layer and `w2` receive no gradient (`h = 0`), and only `b2` changes.
+
+@practice code
+prompt: Write `softmax(zs)` that returns the list of probabilities $e^{z_i}/\sum_j e^{z_j}$ and is **numerically stable**: subtract `max(zs)` from every score before exponentiating (this does not change the result). `softmax([1000, 1000])` must work. Example: `softmax([0, 0])` is `[0.5, 0.5]`.
+starter:
+```python
+import math
+
+def softmax(zs):
+    pass
+```
+tests:
+```python
+assert softmax([0, 0]) == [0.5, 0.5]
+assert [round(p, 6) for p in softmax([1, 2, 3])] == [0.090031, 0.244728, 0.665241]
+assert [round(p, 6) for p in softmax([1000, 1000, 1000])] == [0.333333, 0.333333, 0.333333]
+assert abs(sum(softmax([-5, 0, 7, 2])) - 1) < 1e-12
+assert [round(p, 6) for p in softmax([2, -1000])] == [1.0, 0.0]
+```
+model:
+```python
+import math
+
+def softmax(zs):
+    m = max(zs)
+    exps = [math.exp(z - m) for z in zs]
+    total = sum(exps)
+    return [e / total for e in exps]
+```
+hint: The shifted scores `z - max(zs)` are all at most 0, so their exponentials lie in $[0, 1]$.
+solution: Subtracting the maximum multiplies numerator and denominator by the same factor $e^{-m}$, so the probabilities are unchanged, but the largest exponential becomes $e^0 = 1$ and nothing overflows.
+
+@quiz num
+prompt: A fully connected network has 4 inputs, one hidden layer of 5 units and 3 outputs, with a bias for every unit. How many parameters does it have?
+answer: 43
+check: (4 * 5 + 5) + (5 * 3 + 3)
+hint: A layer with $m$ inputs and $r$ units has $mr + r$ parameters. Count the two layers separately.
+solution: The hidden layer has $4 \cdot 5 + 5 = 25$ parameters and the output layer has $5 \cdot 3 + 3 = 18$, for a total of $43$.
+
+@quiz mc
+prompt: Why must a neural network use a nonlinear activation function in its hidden layers?
+choice: Without it the network cannot be trained by gradient descent.
+choice*: Without it the composition of layers is a single linear map, no more expressive than linear regression, however many layers there are.
+choice: Without it the loss function would not be convex.
+choice: Without it the biases would have no effect.
+hint: Compose two linear maps $x \mapsto W_1x + b_1$ and $h \mapsto W_2h + b_2$.
+solution: $W_2(W_1x + b_1) + b_2 = (W_2W_1)x + (W_2b_1 + b_2)$ is again an affine function of $x$, so extra linear layers add nothing. A nonlinearity between layers lets the network represent non-linear functions. Gradient descent still works for a linear network.

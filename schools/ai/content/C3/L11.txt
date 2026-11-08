@@ -1,0 +1,207 @@
+@lesson
+title: Packages, virtual environments and dependencies
+summary: Create an isolated Python environment, install and pin third-party packages, and reason about version constraints so a project is reproducible.
+objective: Create, activate and use a virtual environment with `venv` and `pip`, and keep it out of version control.
+objective: Read and write version specifiers (`==`, `>=`, `<`, `~=`) and explain semantic versioning.
+objective: Pin dependencies in `requirements.txt` (or a lock file) and describe the supply-chain risks of third-party packages.
+reading: The Missing Semester of Your CS Education, lecture "Metaprogramming" (dependency management, versioning and build systems); the Python Packaging User Guide pages on virtual environments and installing packages.
+@article
+Real programs depend on other people's code: libraries for HTTP, dates, testing, data. A **package** is a distributable unit of such code; **PyPI**, the Python Package Index, is the public repository, and **pip** is the standard installer. The difficulty is not installing one package but keeping a project working on your machine, your colleague's, and the server, months apart.
+
+### Why virtual environments
+
+Suppose project A needs `libfoo 1.x` and project B needs `libfoo 2.x`. If packages are installed system-wide, only one can win. A **virtual environment** is a directory holding its own Python interpreter link and its own `site-packages`, so each project has its own set of installed packages. Modern Linux distributions also mark the system Python as "externally managed" (PEP 668), so `pip install` outside a virtual environment is refused by design.
+
+```bash
+python3 -m venv .venv          # create the environment in .venv
+source .venv/bin/activate      # activate it (Windows: .venv\Scripts\activate)
+python -m pip install requests # install into the environment
+python -m pip list             # show what is installed
+python -m pip freeze > requirements.txt
+deactivate                     # leave the environment
+```
+
+Activation just puts `.venv/bin` first on `PATH` (see the week 2 lesson on environment variables), so `python` and `pip` now refer to the environment's copies; `which python` shows the path. Use `python -m pip` so you are sure pip belongs to the interpreter you mean. **Never commit `.venv`**: it contains machine-specific paths and is easy to recreate. Add it to `.gitignore`, and commit the dependency list instead.
+
+### Versions and constraints
+
+Packages are named with versions such as `2.31.0`. **Semantic versioning** reads this as `MAJOR.MINOR.PATCH`: a patch release fixes bugs, a minor release adds features compatibly, and a major release may break compatibility. (Not every project follows this strictly.) A **version specifier** in `requirements.txt` restricts what pip may install:
+
+| specifier | meaning |
+|---|---|
+| `foo==1.4.2` | exactly this version (a **pin**) |
+| `foo>=1.2,<2.0` | at least 1.2 and below 2.0 (comma means AND) |
+| `foo!=1.3.0` | anything except this version |
+| `foo~=1.4.2` | compatible release: `>=1.4.2` and `==1.4.*` |
+| `foo~=1.4` | `>=1.4` and `==1.*` |
+
+Compare versions **numerically by component**, not as text: `1.10` is newer than `1.9`.
+
+### Direct and transitive dependencies
+
+You list **direct** dependencies, the packages your code imports. Each of those has its own dependencies, the **transitive** ones, which pip also installs. A file made by `pip freeze` contains all of them, pinned. For an application, pin everything so a fresh install reproduces the tested set exactly; for a library, declare loose ranges so users can combine it with other packages. Modern projects declare direct dependencies in `pyproject.toml` (under `[project]`, `dependencies = [...]`), and tools such as `uv` (`uv venv`, `uv add`, `uv lock`, `uv sync`) or `pip-tools` produce a **lock file** with exact versions. The principle is the same: the specification says what you need, the lock records what you tested.
+
+### Security
+
+Every dependency is code you run with your privileges. OWASP's Top 10:2025 lists *Software Supply Chain Failures* as A03. Practical defenses: install only packages you recognize (watch for look-alike names that imitate popular ones, called typosquatting), pin versions, review updates, scan for known vulnerabilities (for example with `pip-audit`), and where practical verify hashes with `pip install --require-hashes -r requirements.txt`. Never run `pip install` with `sudo` to get past a permission error.
+
+@example
+title: Setting up a project environment
+problem: In a new directory `tool`, create an environment, install `requests`, record the dependency, and make sure Git ignores the environment.
+step: Create and activate: `python3 -m venv .venv` then `source .venv/bin/activate`. The prompt usually shows `(.venv)`.
+step: Install with `python -m pip install requests`. Pip also installs requests' own dependencies.
+step: Record the exact installed versions with `python -m pip freeze > requirements.txt`. The file has lines such as `requests==2.32.3`, one per package, including transitive ones.
+step: Run `echo ".venv/" >> .gitignore`, then `git add requirements.txt .gitignore` and commit. A teammate recreates the environment with `python3 -m venv .venv`, `source .venv/bin/activate` and `python -m pip install -r requirements.txt`.
+answer: Create and activate `.venv`, install, `pip freeze > requirements.txt`, ignore `.venv/`.
+@example
+title: Evaluating a version specifier
+problem: Does version `1.9.5` satisfy `>=1.2,<2.0`? Does `1.10.0` satisfy `>1.9`? Does `1.5.0` satisfy `~=1.4.2`?
+step: Parse versions into integer components: `1.9.5` is `(1, 9, 5)`, `1.2` is `(1, 2)`, `2.0` is `(2, 0)`.
+step: `(1, 9, 5) >= (1, 2)` is true and `(1, 9, 5) < (2, 0)` is true, so the first answer is yes.
+step: Compare `1.10.0` with `1.9` numerically: `(1, 10, 0) > (1, 9)` because `10 > 9`. The answer is yes, although the strings compare the other way.
+step: `~=1.4.2` means `>=1.4.2` and `==1.4.*`. Version `1.5.0` fails the second part because its second component is 5, not 4. The answer is no.
+answer: yes, yes, no
+@mistakes
+- Installing packages into the system Python, or running `pip` from a different interpreter than the one you run (use `python -m pip`).
+- Committing `.venv` to Git instead of a dependency list.
+- Comparing version strings alphabetically (`"1.10" < "1.9"` is true as text but false as versions).
+- Leaving dependencies unpinned in an application, so a new release of a transitive package changes behavior without any change in your code.
+@practice mc
+prompt: Why should each project use its own virtual environment?
+choice: Because pip cannot install packages without one.
+choice*: Because different projects can need different versions of the same package, and isolation keeps one project's installs from breaking another's.
+choice: Because a virtual environment makes the code run faster.
+choice: Because Git requires every project to include a `.venv` directory.
+hint: Think of two projects that need different versions of one library.
+solution: A virtual environment gives each project its own installed packages, so conflicting version requirements do not collide. It has no effect on speed, and `.venv` should not be committed.
+@practice text
+prompt: Type the command that creates a virtual environment in a directory named `.venv`, using the `venv` module of the `python3` interpreter.
+answer: python3 -m venv .venv
+accept: python -m venv .venv
+nocheck: a shell command that cannot be computed in Python
+hint: The `venv` module is run with the `-m` option of the interpreter.
+solution: `python3 -m venv .venv` runs the standard-library `venv` module and creates the environment in the `.venv` directory.
+@practice code
+prompt: Write `satisfies(version, spec)` for version strings of dot-separated integers (such as `"1.4.2"`). `spec` is one or more clauses separated by commas; each clause is one of the operators `==`, `!=`, `>=`, `<=`, `>`, `<` followed by a version. Return `True` only if the version satisfies **every** clause. Compare numerically by component, treating missing components as zero (so `1.0` equals `1.0.0`). Example: `satisfies("1.4.2", ">=1.2,<2.0")` is `True`.
+starter:
+```python
+def satisfies(version, spec):
+    pass
+```
+tests:
+```python
+assert satisfies("1.4.2", ">=1.2,<2.0") is True
+assert satisfies("2.0", ">=1.2,<2.0") is False
+assert satisfies("1.0", "==1.0.0") is True
+assert satisfies("1.2.3", "!=1.2.3") is False
+assert satisfies("1.10.0", ">1.9") is True
+assert satisfies("0.9", ">=1.0") is False
+```
+model:
+```python
+def parse(version):
+    return tuple(int(part) for part in version.split("."))
+
+
+def compare(a, b):
+    size = max(len(a), len(b))
+    a = a + (0,) * (size - len(a))
+    b = b + (0,) * (size - len(b))
+    return (a > b) - (a < b)
+
+
+def satisfies(version, spec):
+    v = parse(version)
+    for clause in spec.split(","):
+        clause = clause.strip()
+        for op in ("==", "!=", ">=", "<=", ">", "<"):
+            if clause.startswith(op):
+                c = compare(v, parse(clause[len(op):].strip()))
+                break
+        if op == "==" and c != 0:
+            return False
+        if op == "!=" and c == 0:
+            return False
+        if op == ">=" and c < 0:
+            return False
+        if op == "<=" and c > 0:
+            return False
+        if op == ">" and c <= 0:
+            return False
+        if op == "<" and c >= 0:
+            return False
+    return True
+```
+hint: Turn each version into a tuple of integers; Python compares tuples component by component, but pad the shorter one with zeros first.
+hint: Check the two-character operators (`>=`, `<=`, `==`, `!=`) before the one-character ones, or `>=` will be read as `>`.
+solution: Parse to integer tuples, pad to equal length, and compute a comparison result of -1, 0 or 1. Each clause then maps its operator to a condition on that result, and a single failing clause makes the answer `False`.
+@practice ms
+prompt: Which versions satisfy the specifier `~=1.4.2`? Select all that apply.
+choice*: `1.4.2`
+choice*: `1.4.9`
+choice: `1.5.0`
+choice: `1.4.1`
+choice: `2.0.0`
+hint: `~=1.4.2` means `>=1.4.2` together with `==1.4.*`.
+solution: `1.4.2` and `1.4.9` are at least `1.4.2` and start with `1.4`. `1.4.1` is too old, and `1.5.0` and `2.0.0` have a different second or first component.
+@practice self
+prompt: On your own computer, create a directory `repro`, a virtual environment in it, install one third-party package of your choice, write a short script that imports it, and make the setup reproducible for a colleague: write the commands you ran, the contents of the dependency file, the `.gitignore` entry, and the commands your colleague runs to get the same environment from a fresh clone.
+hint: The colleague needs a dependency list and must create their own environment.
+solution:
+
+```bash
+mkdir repro && cd repro
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install rich
+printf 'import rich\nrich.print("hello")\n' > hello.py
+python -m pip freeze > requirements.txt
+printf '.venv/\n__pycache__/\n' > .gitignore
+git init -b main
+git add requirements.txt .gitignore hello.py
+git commit -m "Add script and pinned requirements"
+```
+
+`requirements.txt` holds pinned lines such as `rich==13.7.1` (and its transitive dependencies). The colleague clones the repository and runs `python3 -m venv .venv`, `source .venv/bin/activate` and `python -m pip install -r requirements.txt`. The environment itself is not committed because it can be recreated from the list.
+rubric: Creates and activates a virtual environment and installs the package inside it.
+rubric: Records exact versions with `pip freeze` (or a lock file) and commits the list, not `.venv`.
+rubric: Gives the colleague's steps: clone, create a new environment, install from the file.
+@quiz code
+prompt: Write `parse_requirements(text)` that reads the text of a `requirements.txt` file and returns a dictionary mapping each package name to its pinned version. Ignore blank lines and comment lines starting with `#`, remove trailing comments introduced by `#`, and skip lines that do not contain `==` (such as `-r other.txt`). Example: the line `flask==3.0.0  # web` gives `{"flask": "3.0.0"}`.
+starter:
+```python
+def parse_requirements(text):
+    pass
+```
+tests:
+```python
+t = "requests==2.32.3\n# comment\n\nrich==13.7.1  # tables\n"
+assert parse_requirements(t) == {"requests": "2.32.3", "rich": "13.7.1"}
+assert parse_requirements("-r base.txt\nflask==3.0.0\n") == {"flask": "3.0.0"}
+assert parse_requirements("") == {}
+assert parse_requirements("numpy>=1.0\n") == {}
+assert parse_requirements("  a==1  \n") == {"a": "1"}
+```
+model:
+```python
+def parse_requirements(text):
+    pins = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "==" not in line:
+            continue
+        name, version = line.split("==", 1)
+        pins[name.strip()] = version.strip()
+    return pins
+```
+hint: Cut each line at the first `#` and strip whitespace; an empty result means a blank or comment line.
+hint: Skip lines without `==`; otherwise split once on `==` into name and version.
+solution: Removing everything after `#` handles both full-line and trailing comments. Blank lines and lines without `==` are skipped, and the rest are split once into a name and a pinned version.
+@quiz mc
+prompt: A deployed application has `requests>=2` in its requirements and no lock file. It worked in March and broke in June without any code change. What is the most likely cause and the best fix?
+choice: Python's interpreter slowly changes over time; reinstall Python.
+choice*: A newer release of `requests` or one of its dependencies was installed in June; pin exact versions (a lock file) so installs are reproducible, then upgrade deliberately and test.
+choice: The `.venv` directory expired; commit it to Git.
+choice: The `>=` operator is invalid; use `<=` instead.
+hint: What does an open-ended specifier allow pip to install at different times?
+solution: With only a lower bound, a fresh install picks up whatever is newest, including breaking changes in transitive packages. Pinning (and upgrading on purpose, with tests) makes installs repeatable.

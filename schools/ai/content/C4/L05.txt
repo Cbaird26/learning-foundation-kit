@@ -1,0 +1,200 @@
+@lesson
+title: Hash tables: hashing and collisions
+summary: Explain how a hash table maps keys to array slots with a hash function, and resolve collisions with chaining and with linear probing.
+objective: Compute a bucket index from a key with a hash function and the modulo operation.
+objective: State the contract between `__eq__` and `__hash__` in Python and why mutable keys are unhashable.
+objective: Trace insertion and lookup under separate chaining and linear probing.
+objective: Relate the expected cost of operations to the load factor $\alpha = n/m$.
+reading: Open Data Structures, Chapter 5 "Hash Tables" (ChainedHashTable and LinearHashTable).
+
+@article
+The **map** (dictionary) ADT stores key-value pairs and supports `put(key, value)`, `get(key)` and `remove(key)`. A **hash table** implements it with an array of $m$ slots called **buckets** and a **hash function** $h$ that turns a key into an integer. The key goes in bucket $h(\text{key}) \bmod m$. If the function spreads keys evenly, each operation touches only a few items regardless of how many keys are stored: $O(1)$ expected time, much faster than the $O(\log n)$ of a balanced tree.
+
+### Hash functions
+
+A good hash function is **deterministic** (the same key always gives the same value during one run), **fast**, and **uniform** (keys spread evenly over the buckets, so patterns in the keys do not become patterns in the buckets). For strings, a common design is a **polynomial hash**. Treat the characters' codes $c_0, c_1, \dots, c_{k-1}$ as digits in a base $B$ and reduce modulo a table size or a large prime:
+$$h(s) = \left(c_0 B^{k-1} + c_1 B^{k-2} + \dots + c_{k-1}\right) \bmod M.$$
+**Horner's rule** computes it in one pass with a running value, reducing modulo $M$ at each step:
+
+```python
+def poly_hash(s, base, m):
+    h = 0
+    for ch in s:
+        h = (h * base + ord(ch)) % m
+    return h
+```
+
+Because the characters are weighted by position, `"ab"` and `"ba"` get different hashes, which a plain sum of character codes would not give.
+
+### Hashing in Python
+
+Python's built-in `hash(x)` returns an integer for hashable objects, and `dict` and `set` use it. The contract is:
+
+- If `a == b`, then `hash(a) == hash(b)`. (The converse is not required: different objects may share a hash.)
+- An object's hash must not change while it is in a dict or set.
+
+That is why mutable containers such as `list`, `dict` and `set` are **unhashable** (`hash([1])` raises `TypeError`): changing the contents would change the equality and strand the key in the wrong bucket. Immutable values (`int`, `str`, `tuple` of hashables, `frozenset`) are hashable. When you define `__eq__` on your own class, also define a consistent `__hash__` if instances are to be keys. Also note that the hashes of `str` and `bytes` are randomized per process as a defense against deliberately crafted colliding keys, so your program's behavior must never depend on specific hash values or on the iteration order of a `set`.
+
+### Collisions
+
+A **collision** is two different keys landing in the same bucket. They are unavoidable: by the pigeonhole principle, once there are more keys than buckets some bucket holds two, and by the birthday effect collisions appear much earlier, after only about $\sqrt{m}$ insertions. A hash table must handle them.
+
+**Separate chaining.** Each bucket holds a small collection (a list, say) of the pairs that hashed there. To find a key, compute its bucket and scan that chain. Insertion appends to the chain after checking for an existing key.
+
+**Open addressing.** Every pair lives directly in the array. If the home slot is taken, probe other slots in a fixed sequence. With **linear probing**, try slot $h$, then $h+1$, $h+2$, ... wrapping around modulo $m$, until an empty slot appears. Lookup follows the same probes and stops at an empty slot (key absent) or the key (found). Deleting is subtle: simply emptying a slot would cut the probe path of keys inserted after it, so implementations leave a **tombstone** marker that lookups skip and inserts may reuse. Python's `dict` uses open addressing with a pseudo-random probe sequence rather than linear probing.
+
+### Load factor and cost
+
+The **load factor** is $\alpha = n/m$, items per bucket. Under the assumption of *simple uniform hashing* (each key equally likely to land in any bucket, independently), a chain has expected length $\alpha$, so an unsuccessful search in a chaining table costs $\Theta(1 + \alpha)$ expected. If $m$ grows in proportion to $n$, then $\alpha$ is $O(1)$ and every operation is $O(1)$ expected. The worst case is still $O(n)$, when every key collides. Chaining works for any $\alpha$, even above 1. Open addressing needs $\alpha < 1$, and linear probing degrades quickly as $\alpha$ approaches 1 because occupied runs merge into long **clusters**: at $\alpha = 0.5$ an unsuccessful search needs about 2.5 probes on average, and at $\alpha = 0.9$ about 50. Next week we keep $\alpha$ low by resizing.
+
+@example
+title: Linear probing step by step
+problem: A table has $m = 7$ slots and $h(k) = k \bmod 7$. Insert the keys 10, 24, 17, 3 in that order with linear probing. Where does each key land?
+step: Key 10: $10 \bmod 7 = 3$. Slot 3 is empty, so 10 goes in slot 3.
+step: Key 24: $24 \bmod 7 = 3$. Slot 3 is taken (collision). Probe slot 4: empty. 24 goes in slot 4.
+step: Key 17: $17 \bmod 7 = 3$. Slots 3 and 4 are taken, slot 5 is empty. 17 goes in slot 5.
+step: Key 3: $3 \bmod 7 = 3$. Slots 3, 4 and 5 are taken, slot 6 is empty. 3 goes in slot 6.
+step: The table is `[None, None, None, 10, 24, 17, 3]`. Four keys with the same home slot formed a cluster, and the last one needed 4 probes.
+answer: Slots 3, 4, 5 and 6 respectively.
+
+@example
+title: Hashing a string with Horner's rule
+problem: Compute `poly_hash("abc", 31, 1000)`. The character codes of `a`, `b` and `c` are 97, 98 and 99.
+step: Start with `h = 0`. For `a`: $h = (0 \cdot 31 + 97) \bmod 1000 = 97$.
+step: For `b`: $h = (97 \cdot 31 + 98) \bmod 1000 = 3105 \bmod 1000 = 105$.
+step: For `c`: $h = (105 \cdot 31 + 99) \bmod 1000 = 3354 \bmod 1000 = 354$.
+step: The hash is 354, so with 1000 buckets the string `"abc"` would go to bucket 354. Reducing at every step gives the same result as reducing at the end, because modular arithmetic respects addition and multiplication.
+answer: 354
+
+@mistakes
+- Expecting `hash(a) == hash(b)` to imply `a == b`: equal hashes only mean a collision may have occurred, so the table must still compare keys.
+- Defining `__eq__` on a class but not a matching `__hash__`, or using a mutable object as a key and then changing it.
+- Emptying a slot on deletion in open addressing, which breaks lookups for keys that were probed past it; use a tombstone.
+- Claiming hash tables are $O(1)$ without saying "expected" and without the assumptions of a good hash function and bounded load factor.
+
+@practice mc
+prompt: Two objects `a` and `b` of a user-defined class satisfy `a == b`. For `dict` and `set` to work correctly with these objects as keys, which statement must hold?
+choice: `a is b` must be true.
+choice*: `hash(a) == hash(b)` must be true.
+choice: `hash(a) != hash(b)` must be true.
+choice: `a` and `b` must both be instances of `int`.
+hint: A lookup computes the hash first, and only then compares keys in that bucket.
+solution: If equal keys had different hashes, a lookup for `b` would probe the wrong bucket and miss the entry stored under `a`. The reverse need not hold: unequal objects may share a hash.
+
+@practice num
+prompt: Keys 14, 27, 40, 8, 21, 2, 15 are inserted into a chaining hash table with 13 buckets and $h(k) = k \bmod 13$. How many keys are in the longest chain?
+answer: 3
+check: max(sum(1 for k in [14, 27, 40, 8, 21, 2, 15] if k % 13 == b) for b in range(13))
+hint: Compute $k \bmod 13$ for each key and count how many keys give each remainder.
+solution: The remainders are 1, 1, 1, 8, 8, 2, 2. Bucket 1 holds 14, 27 and 40, so the longest chain has 3 keys.
+
+@practice code
+prompt: Write `poly_hash(s, base, m)` that returns the polynomial hash of the string `s`: start with `h = 0` and, for each character `ch` in order, set `h = (h * base + ord(ch)) % m`. The empty string hashes to 0.
+starter:
+```python
+def poly_hash(s, base, m):
+    pass
+```
+tests:
+```python
+assert poly_hash("abc", 31, 1000) == 354
+assert poly_hash("", 31, 1000) == 0
+assert poly_hash("a", 31, 1000) == 97
+assert poly_hash("hello", 31, 101) == 17
+assert poly_hash("zzzz", 131, 997) == 472
+assert poly_hash("ab", 31, 1000) != poly_hash("ba", 31, 1000)
+```
+model:
+```python
+def poly_hash(s, base, m):
+    h = 0
+    for ch in s:
+        h = (h * base + ord(ch)) % m
+    return h
+```
+hint: Keep a running value `h` and update it once per character.
+hint: Reduce modulo `m` inside the loop, in the same statement as the multiply and add.
+solution: This is Horner's rule: each new character shifts the previous value by one base position and adds the character code, all modulo `m`. A string of length `k` costs $O(k)$ time. Because earlier characters are multiplied by `base` repeatedly, `"ab"` and `"ba"` differ.
+
+@practice code
+prompt: Write `probe_insert(table, key)` for an open-addressing table with linear probing. `table` is a list in which `None` marks an empty slot; the home slot of an integer `key` is `key % len(table)`. Place `key` in the first empty slot at or after the home slot, wrapping around the end of the list, and return the index used. If no slot is empty, raise `OverflowError` and leave the table unchanged. You may assume `key` is not already in the table.
+starter:
+```python
+def probe_insert(table, key):
+    pass
+```
+tests:
+```python
+t = [None] * 7
+assert probe_insert(t, 10) == 3
+assert probe_insert(t, 24) == 4
+assert probe_insert(t, 17) == 5
+assert probe_insert(t, 3) == 6
+assert probe_insert(t, 7) == 0
+assert probe_insert(t, 13) == 1
+assert t == [7, 13, None, 10, 24, 17, 3]
+full = [4, 1, 2, 3]
+assert raises(OverflowError, probe_insert, full, 8)
+assert full == [4, 1, 2, 3]
+```
+model:
+```python
+def probe_insert(table, key):
+    m = len(table)
+    home = key % m
+    for step in range(m):
+        i = (home + step) % m
+        if table[i] is None:
+            table[i] = key
+            return i
+    raise OverflowError("table is full")
+```
+hint: Try the offsets 0, 1, 2, ... from the home slot, at most `len(table)` of them.
+hint: Use `(home + step) % len(table)` for the wrap-around, and raise only after all slots have been tried.
+solution: The probe sequence is the home slot followed by its successors modulo the table length. The first `None` receives the key. Trying `len(table)` slots covers the whole table once, so a full table is detected without an infinite loop. Key 7 lands in slot 0 because slot 0 is its home; key 13 has home 6, finds 6 and 0 taken, and lands in slot 1.
+
+@practice ms
+prompt: Which statements about collision handling are true? Select all that apply.
+choice*: Separate chaining continues to work when there are more keys than buckets.
+choice*: Open addressing with linear probing requires $n < m$ (at least one empty slot).
+choice: With a good hash function, collisions never occur until the table is full.
+choice*: Deleting from an open-addressing table by simply setting the slot to `None` can make later lookups fail.
+choice: A longer chain in separate chaining makes the table's hash function return different values.
+hint: Think about what must be true of the probe path for a lookup to stop at an empty slot.
+solution: Chains grow without limit, so chaining tolerates $\alpha > 1$; linear probing needs a free slot to terminate; and an emptied slot may sit in the middle of another key's probe path. Collisions happen early even with a good function (the birthday effect), and the hash function does not depend on chain lengths.
+
+@quiz code
+prompt: Write `group_anagrams(words)` that groups words that are anagrams of each other (the same letters in a different order). Return a list of groups; each group is a list of words in their input order, and the groups are ordered by the first appearance of any member. Use a dictionary keyed by a canonical form of each word.
+starter:
+```python
+def group_anagrams(words):
+    pass
+```
+tests:
+```python
+assert group_anagrams(["eat", "tea", "tan", "ate", "nat", "bat"]) == [
+    ["eat", "tea", "ate"], ["tan", "nat"], ["bat"]]
+assert group_anagrams([]) == []
+assert group_anagrams(["a"]) == [["a"]]
+assert group_anagrams(["ab", "ba", "ab"]) == [["ab", "ba", "ab"]]
+assert group_anagrams(["abc", "abd"]) == [["abc"], ["abd"]]
+```
+model:
+```python
+def group_anagrams(words):
+    groups = {}
+    for w in words:
+        key = "".join(sorted(w))
+        groups.setdefault(key, []).append(w)
+    return list(groups.values())
+```
+hint: Words that are anagrams have the same letters when sorted.
+hint: Use `"".join(sorted(w))` as the dictionary key, and a list of words as each value. A dict keeps first-insertion order.
+solution: Sorting the letters gives a canonical key shared by exactly the anagrams. `setdefault` creates the group on first use, and a `dict` preserves insertion order, so the groups come out ordered by first appearance. The cost is $O(\sum k \log k)$ for word lengths $k$, plus the expected $O(1)$ dictionary operations.
+
+@quiz num
+prompt: A chaining hash table holds 30 keys in 12 buckets. What is its load factor $\alpha$? Give an exact fraction.
+answer: 5/2
+check: Fraction(30, 12)
+hint: The load factor is the number of keys divided by the number of buckets.
+solution: $\alpha = n/m = 30/12 = 5/2$. The average chain holds 2.5 keys; with chaining that is allowed, though a typical table would resize before getting there.
