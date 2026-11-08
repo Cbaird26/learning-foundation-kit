@@ -1,0 +1,166 @@
+@lesson
+title: Adversarial examples and robustness
+summary: Craft and analyze adversarial perturbations on a linear classifier, state what adversarial training and randomized smoothing guarantee, and explain why evaluating defenses requires adaptive attacks.
+objective: Compute a fast-gradient-sign step on a linear classifier and the smallest perturbation budget that flips its prediction.
+objective: Explain why high dimension makes linear models vulnerable, using the L1 norm of the weights.
+objective: State the min-max formulation of adversarial training and the certified radius of randomized smoothing.
+objective: Explain obfuscated gradients and why robustness claims need adaptive evaluation.
+reading: Interpretable Machine Learning by Christoph Molnar: the chapter on adversarial examples, as background; the primary sources are the papers cited in this lesson.
+
+@article
+An image of a panda is classified correctly. Add a perturbation whose every pixel changes by less than a quantization step, invisible to a person, and the same network confidently reports a different class. Szegedy and colleagues (2014) reported exactly this for image classifiers, and called such inputs **adversarial examples**. Why would a function that generalizes well be so brittle in directions nobody looks at?
+
+### A linear explanation
+
+Goodfellow, Shlens and Szegedy (2015) argued that high-dimensional linear behavior is enough. Take a linear score $z = \mathbf{w}^\top\mathbf{x} + b$ and perturb the input by $\boldsymbol{\delta}$ with $\lVert\boldsymbol{\delta}\rVert_\infty \le \varepsilon$ (every coordinate moves by at most $\varepsilon$). The score changes by $\mathbf{w}^\top\boldsymbol{\delta}$, which is largest when each $\delta_i = \varepsilon\,\operatorname{sign}(w_i)$:
+
+$$\max_{\lVert\boldsymbol{\delta}\rVert_\infty \le \varepsilon} \mathbf{w}^\top\boldsymbol{\delta} = \varepsilon \lVert\mathbf{w}\rVert_1 .$$
+
+The $L_1$ norm grows with the dimension $d$: with $d = 1000$ weights of size $0.01$ and $\varepsilon = 0.1$, no coordinate moves by more than $0.1$, yet the score moves by $1000 \times 0.01 \times 0.1 = 1.0$. Many tiny aligned changes add up.
+
+### The fast gradient sign method
+
+The **fast gradient sign method** (FGSM) takes one step in the direction that most increases the loss under the $L_\infty$ budget: $\mathbf{x}' = \mathbf{x} + \varepsilon\,\operatorname{sign}\big(\nabla_{\mathbf{x}} \ell\big)$. For a linear classifier with logistic loss $\ell = \log(1 + e^{-yz})$ and label $y \in \{-1, +1\}$, the gradient is $\nabla_{\mathbf{x}}\ell = -y\,\sigma(-yz)\,\mathbf{w}$. The scalar $\sigma(-yz)$ is positive and does not change the sign, so $\mathbf{x}' = \mathbf{x} - \varepsilon\, y \operatorname{sign}(\mathbf{w})$, and the margin $yz$ falls by exactly $\varepsilon\lVert\mathbf{w}\rVert_1$.
+
+```python
+def sign(v):
+    return (v > 0) - (v < 0)
+
+def fgsm(w, b, x, y, eps):
+    """FGSM step on a linear classifier with logistic loss, y in {-1, +1}."""
+    return [xi - eps * y * sign(wi) for xi, wi in zip(x, w)]
+
+def score(w, b, x):
+    return sum(wi * xi for wi, xi in zip(w, x)) + b
+```
+
+With $\mathbf{w} = (3, -2, 1)$, $b = -1$, $\mathbf{x} = (1, 0.5, 2)$ and $y = +1$ the score is $3$ and $\lVert\mathbf{w}\rVert_1 = 6$, so after the step the score is $3 - 6\varepsilon$: $0.6$ at $\varepsilon = 0.4$ and $-0.6$ at $\varepsilon = 0.6$. The prediction flips for $\varepsilon > 0.5$. For deep networks the same step uses the gradient from backpropagation; the linear picture explains why a first-order step is effective, not why every network behaves linearly.
+
+### Adversarial training and its limits
+
+Madry and colleagues (2018) formulated robust training as a **min-max** problem,
+
+$$\min_{\boldsymbol{\theta}}\ \mathbb{E}_{(\mathbf{x}, y)}\Big[\max_{\lVert\boldsymbol{\delta}\rVert_\infty \le \varepsilon} \ell\big(f_{\boldsymbol{\theta}}(\mathbf{x} + \boldsymbol{\delta}), y\big)\Big],$$
+
+and approximated the inner maximization with several steps of **projected gradient descent** (PGD): repeat $\boldsymbol{\delta} \leftarrow \Pi_{\varepsilon}\big(\boldsymbol{\delta} + \alpha\,\operatorname{sign}(\nabla_{\boldsymbol{\delta}}\ell)\big)$, projecting back into the $\varepsilon$-ball. For a linear model the inner maximum is exact: the worst case is the loss at margin $yz - \varepsilon\lVert\mathbf{w}\rVert_1$, which shows that the $L_\infty$ robust training of a linear model penalizes the $L_1$ norm of the weights. Adversarial training reliably raises robustness to the attack it uses, at a cost in clean accuracy and compute. Whether the accuracy cost is inevitable or a limitation of current methods and data is debated.
+
+### Defenses that were not defenses
+
+Athalye, Carlini and Wagner (2018) showed that many published defenses worked by **obfuscated gradients**: they made gradients uninformative (non-differentiable preprocessing, randomness, vanishing or exploding gradients), so that gradient-based attacks failed although the model remained vulnerable. Attacks adapted to the defense (approximating the non-differentiable part on the backward pass, or averaging over the defense's randomness) broke them. The methodological lesson is general: report evaluation against **adaptive attacks** that know the defense, check that attack strength increases with budget, and treat a gradient attack's failure as weak evidence.
+
+### Certified robustness
+
+A **certificate** guarantees that no perturbation within a budget changes the prediction. Cohen, Rosenfeld and Kolter (2019) showed that a classifier that returns the most likely class of a base classifier under Gaussian noise $\mathcal{N}(0, \sigma^2\mathbf{I})$, called **randomized smoothing**, is provably constant within an $L_2$ ball. If the top class has probability at least $p_A > 1/2$ under the noise, the smoothed prediction cannot change within radius
+
+$$R = \sigma\,\Phi^{-1}(p_A),$$
+
+where $\Phi^{-1}$ is the standard normal quantile function (with the runner-up probability bounded by $1 - p_A$). The probabilities are estimated by sampling, so the guarantee holds with a stated confidence. The price is a smoothed classifier that must be trained to tolerate noise, and radii that are small in high dimensions.
+
+### Open questions
+
+Researchers disagree on whether robustness is mainly a security problem for deployed systems with adversaries, or also a window into how models represent data. One view is that adversarial examples reflect predictive but brittle features that humans do not use; another that they reflect model limitations that more data and better architectures will remove. Threat models also matter: an $L_p$ ball is a convenient proxy, and robustness to one budget does not transfer to others. Whether robustness research is central to AI alignment or a separate problem is itself disputed.
+
+@example
+title: Smallest flip budget and a certified radius
+problem: A linear classifier has $\mathbf{w} = (2, -1, 3)$, $b = -4$, and the input $\mathbf{x} = (2, 1, 1.5)$ has label $y = +1$. (a) Find the smallest $\varepsilon$ at which an $L_\infty$ FGSM step flips the prediction. (b) A smoothed classifier with $\sigma = 0.5$ has $\Phi^{-1}(p_A) = 1.2816$ (that is $p_A = 0.9$) on some input. What is its certified $L_2$ radius?
+step: Score: $z = 2\cdot 2 - 1\cdot 1 + 3 \cdot 1.5 - 4 = 3.5$, so the margin is $yz = 3.5$.
+step: The FGSM step lowers the margin by $\varepsilon\lVert\mathbf{w}\rVert_1 = 6\varepsilon$, since $\lVert\mathbf{w}\rVert_1 = 2 + 1 + 3 = 6$.
+step: The margin reaches 0 at $\varepsilon = 3.5/6 \approx 0.583$, so any larger budget flips the prediction (and a smaller one does not, for this direction).
+step: Radius: $R = \sigma\,\Phi^{-1}(p_A) = 0.5 \times 1.2816 = 0.641$. Note the different norms: the first is an $L_\infty$ budget on each coordinate, the second an $L_2$ ball, and the two are not comparable without converting between them.
+answer: (a) $\varepsilon \approx 0.583$; (b) $R \approx 0.641$.
+
+@mistakes
+- Comparing budgets in different norms: an $L_\infty$ budget of $\varepsilon$ allows an $L_2$ perturbation of size up to $\varepsilon\sqrt{d}$, so robustness numbers are meaningful only with their threat model.
+- Concluding a defense works because a gradient attack failed: obfuscated gradients can defeat gradient attacks without making the model robust, so adaptive attacks are needed.
+- Getting the sign of the FGSM step wrong: the step increases the loss, which moves the input against the label, $-\varepsilon\, y \operatorname{sign}(\mathbf{w})$ for a linear model.
+- Treating a randomized-smoothing radius as a deterministic guarantee for the base classifier: it certifies the smoothed classifier, with a probability estimated from samples.
+
+@practice num
+prompt: A linear classifier has $\mathbf{w} = (1, -2, 0.5)$ and $b = 0.5$. The input $\mathbf{x} = (2, 0.5, 1)$ has label $y = +1$. After one FGSM step with $\varepsilon = 0.3$ (using $\mathbf{x}' = \mathbf{x} - \varepsilon\, y\,\operatorname{sign}(\mathbf{w})$), what is the score $\mathbf{w}^\top\mathbf{x}' + b$?
+answer: 0.95
+tol: 0.001
+check: sum(wi * (xi - 0.3 * 1 * ((wi > 0) - (wi < 0))) for wi, xi in zip([1, -2, 0.5], [2, 0.5, 1])) + 0.5
+hint: The step changes the score by $-\varepsilon\lVert\mathbf{w}\rVert_1$; first compute the original score.
+solution: The original score is $2 - 1 + 0.5 + 0.5 = 2$ and $\lVert\mathbf{w}\rVert_1 = 3.5$, so the new score is $2 - 0.3 \times 3.5 = 0.95$. The perturbed input is $(1.7, 0.8, 0.7)$, whose score is $1.7 - 1.6 + 0.35 + 0.5 = 0.95$.
+
+@practice num
+prompt: A linear classifier has $\mathbf{w} = (4, -1, 2, -3)$ and $b = -2$. The input $\mathbf{x} = (1, 1, 2, 0.5)$ has label $y = +1$. What is the smallest $L_\infty$ budget $\varepsilon$ for which the prediction can be flipped? (Flipped means the margin reaches 0.)
+answer: 0.35
+tol: 0.001
+check: (4 * 1 - 1 * 1 + 2 * 2 - 3 * 0.5 - 2) / (4 + 1 + 2 + 3)
+hint: The smallest budget is the margin divided by $\lVert\mathbf{w}\rVert_1$.
+solution: The score is $4 - 1 + 4 - 1.5 - 2 = 3.5$ and $\lVert\mathbf{w}\rVert_1 = 10$, so the margin reaches 0 at $\varepsilon = 0.35$. No $L_\infty$ perturbation of smaller size can change the score by more than $\varepsilon\lVert\mathbf{w}\rVert_1$.
+
+@practice mc
+prompt: A paper reports that a defense with a non-differentiable preprocessing step has high accuracy under a gradient-based attack. According to the analysis of Athalye, Carlini and Wagner (2018), what should a reader conclude?
+choice*: Little yet: the attack may fail because the gradients are uninformative, so the defense must be evaluated with attacks adapted to it.
+choice: The defense is certified, because gradient attacks are the strongest possible attacks.
+choice: The defense is robust to every attack with the same budget, in every norm.
+choice: The preprocessing step proves that the model's decision boundary is smooth.
+hint: A failed gradient attack is evidence about gradients, not necessarily about the model.
+solution: Obfuscated gradients can defeat gradient-based attacks without making the model robust, and adaptive attacks (approximating the preprocessing in the backward pass, or averaging over randomness) have broken such defenses. Gradient attacks are not guaranteed to be strongest, and no certificate or norm-independence follows from their failure.
+
+@practice code
+prompt: Write `fgsm_clipped(w, b, x, y, eps, lo, hi)` that returns the perturbed input for a linear classifier with logistic loss: each coordinate moves by `-eps * y * sign(w_i)` (with `sign(0) = 0`), and the result is then clipped into the range from `lo` to `hi` (valid pixel values). `y` is `+1` or `-1`, and `x` is a list of floats. The input list must not be modified. For example, `fgsm_clipped([1.0, -1.0], 0.0, [0.5, 0.95], 1, 0.2, 0.0, 1.0)` returns `[0.3, 1.0]`.
+starter:
+```python
+def fgsm_clipped(w, b, x, y, eps, lo, hi):
+    return list(x)
+```
+tests:
+```python
+got = fgsm_clipped([1.0, -1.0], 0.0, [0.5, 0.95], 1, 0.2, 0.0, 1.0)
+assert all(abs(a - c) < 1e-9 for a, c in zip(got, [0.3, 1.0]))
+got = fgsm_clipped([2.0, -1.0, 0.0, 4.0], 0.0, [0.5, 0.5, 0.5, 0.9], -1, 0.2, 0.0, 1.0)
+assert all(abs(a - c) < 1e-9 for a, c in zip(got, [0.7, 0.3, 0.5, 1.0]))
+x = [0.1]
+got = fgsm_clipped([1.0], 0.0, x, 1, 0.3, 0.0, 1.0)
+assert abs(got[0]) < 1e-9 and x == [0.1]
+got = fgsm_clipped([0.0, 0.0], 1.0, [0.2, 0.8], 1, 0.5, 0.0, 1.0)
+assert got == [0.2, 0.8]
+```
+model:
+```python
+def fgsm_clipped(w, b, x, y, eps, lo, hi):
+    """FGSM step for a linear logistic classifier, clipped to [lo, hi]."""
+    out = []
+    for wi, xi in zip(w, x):
+        s = (wi > 0) - (wi < 0)
+        out.append(min(hi, max(lo, xi - eps * y * s)))
+    return out
+```
+hint: For each coordinate compute the signed step, add it to the coordinate, then clamp with `min` and `max`; a zero weight must not move.
+solution: The gradient sign of the logistic loss for a linear model is $-y\,\operatorname{sign}(w_i)$, so each coordinate moves by $-\varepsilon y\,\operatorname{sign}(w_i)$ before clipping. The tests check both labels, the zero-weight coordinate that must stay put, clipping at both ends, and that the input list is not changed.
+
+@practice self
+prompt: A paper proposes a defense that adds random noise and random resizing to the input at test time and reports 90% accuracy under a standard PGD attack with a fixed budget. Write the evaluation you would require before accepting that the model is robust, and say what result would change your mind in each direction.
+hint: Ask what an attack must know about the defense, and what sanity checks show an attack is strong.
+solution: First, the attack must be adapted to the defense: because the defense is randomized, a single-gradient PGD attack sees a noisy gradient, so I would require attacks that average gradients over the randomness (expectation over transformations) with enough samples, and that approximate any non-differentiable component on the backward pass. Second, evidence that the attack is strong: accuracy should fall monotonically to near zero as the budget grows, with unlimited budgets giving zero accuracy; increasing the number of iterations, restarts and random seeds should not change the number materially; black-box and transfer attacks should not beat the white-box attack; and I would check that the loss really increases during the attack. Third, report accuracy on clean data, across several budgets and norms, and the compute cost of the defense. Fourth, where possible, a certificate or a theoretical argument that does not rely on the attack. A result that raises my confidence: robust accuracy that stays high under adaptive attacks with strong budgets, with the sanity checks above passing. A result that lowers it: any adaptive attack that reduces accuracy substantially, a non-monotonic accuracy curve, or a dependence of the result on the attack's random seed, all of which suggest masked gradients. Even strong evidence supports only the stated threat model.
+rubric: Requires adaptive attacks that handle the randomness and any non-differentiable component.
+rubric: Lists attack-strength sanity checks (budget monotonicity, iterations and restarts, comparison with black-box attacks).
+rubric: States what outcomes would raise or lower confidence and scopes the conclusion to the threat model.
+
+@quiz num
+prompt: A linear classifier has $\mathbf{w} = (2, -1)$ and $b = 0$. The input $\mathbf{x} = (1, 0.5)$ has label $y = +1$. For logistic loss $\ell = \log(1 + e^{-yz})$, what is the worst-case loss over all perturbations with $\lVert\boldsymbol{\delta}\rVert_\infty \le 0.1$? Give three decimal places.
+answer: 0.263
+tol: 0.001
+check: log(1 + exp(-((2 * 1 - 1 * 0.5) - 0.1 * (2 + 1))))
+hint: The worst case lowers the margin by $\varepsilon\lVert\mathbf{w}\rVert_1$; the loss is decreasing in the margin.
+solution: The clean margin is $2 - 0.5 = 1.5$, and $\varepsilon\lVert\mathbf{w}\rVert_1 = 0.1 \times 3 = 0.3$, so the worst-case margin is $1.2$ and the worst-case loss is $\log(1 + e^{-1.2}) \approx 0.263$.
+
+@quiz ms
+prompt: Which of these statements are true? Select all that apply.
+choice*: For a linear model and an $L_\infty$ budget $\varepsilon$, the largest possible change in the score is $\varepsilon\lVert\mathbf{w}\rVert_1$.
+choice*: Randomized smoothing with Gaussian noise of standard deviation $\sigma$ certifies an $L_2$ radius $\sigma\,\Phi^{-1}(p_A)$ for the smoothed classifier, where $p_A$ is a lower bound on the top-class probability under noise.
+choice: A defense that resists a gradient-based attack is guaranteed to resist every adaptive attack.
+choice: Adversarial training with PGD provides a certificate that no perturbation in the budget can change the prediction.
+hint: Recall the dual-norm calculation, the formula for the radius, and what an empirical attack does and does not establish.
+solution: The first two statements are the standard results. Resisting a particular attack is not a guarantee, and adversarial training with PGD improves empirical robustness against the attack used but gives no certificate.
+
+@quiz self
+prompt: Give the strongest case that adversarial robustness research is central to AI safety, and the strongest case that it is a separate problem that should not be confused with alignment. Then say which empirical finding would most change your view.
+hint: Compare what each field asks: whether the objective is right versus whether the input-output map is stable.
+solution: The case for centrality: systems that can be steered by small, targeted input changes cannot be trusted to follow their intended objectives in adversarial settings, and aligned behavior that can be removed by a crafted prompt or perturbation is not reliable alignment; robustness is also a precondition for oversight tools, since a reward model or a monitor that can be fooled can be exploited by the policy it trains or oversees (week 9). The case for separation: alignment concerns whether a system's objectives match human intent, which is a question about what the system tries to do; a perfectly robust classifier can still pursue a wrong objective, and a misaligned system need not be non-robust. Threat models also differ: robustness research mostly studies small perturbations under defined norms, while alignment failures involve specification and generalization, and conflating them can lead to progress on metrics that do not bear on the other problem. A fair synthesis is that they overlap where an adversary or an optimizing policy searches for inputs that exploit a learned component. The finding that would most change my view: evidence on whether robustness training of reward models or monitors measurably reduces reward hacking or successful circumvention, which would support centrality; the absence of any such effect would favor separation.
+rubric: Presents the centrality case in a strong form, including reward models and monitors as attack surfaces.
+rubric: Presents the separation case in a strong form (objective versus input brittleness, differing threat models).
+rubric: Names a specific empirical finding that would shift the conclusion, and does not simply assert one side.
