@@ -1,0 +1,563 @@
+@lesson
+title: Checking natural deduction proofs line by line
+summary: Represent a Fitch-style proof as data, check each line against its rule and the scope of its citations, and connect proofs to countermodels in finite models.
+objective: Explain what makes a Fitch-style proof correct, including the rule for each line and which earlier lines may be cited.
+objective: Represent a proof as a list of lines and write functions that check a line, a subproof citation and a whole proof.
+objective: Use the soundness of the proof system together with a finite countermodel to show that no proof exists.
+reading: Python for Everybody, Chapter 8 "Lists" and Chapter 9 "Dictionaries" (review). For the proof rules, review the natural deduction chapters of your C1 text.
+
+@article
+A proof is a finite object, and checking it is a mechanical job: no insight is needed to see whether each line is justified. That is why proof checkers can be small programs, and why a proof is a trustworthy certificate of validity. This week you write one for a fragment of the Fitch-style natural deduction system of C1, with the rule names of forall x: Calgary.
+
+### What a correct proof is
+
+A proof is a numbered list of lines. A line is a formula with a **depth** (how many subproofs it sits inside) and a **justification**: a rule and the lines it cites. The premises come first, at depth 0, with the rule `PR`; an **assumption** `AS` opens a subproof one level deeper. Here is a proof of the hypothetical syllogism.
+
+```text
+1 | P → Q        PR
+2 | Q → R        PR
+  |---
+3 | | P          AS
+4 | | Q          →E 1, 3
+5 | | R          →E 2, 4
+6 | P → R        →I 3–5
+```
+
+Line 4 is justified by →E (conditional elimination, modus ponens) from the conditional on line 1 and its antecedent on line 3. Line 6 is justified by →I from the whole subproof 3–5: assuming $P$ and reaching $R$ shows $P \to R$. Two kinds of check apply to each line: the **rule check** (does the formula follow from the cited formulas by the rule?) and the **scope check** (may the cited lines be used here?). A line may cite an earlier line only if that line is in the same subproof or in an enclosing one; lines inside a subproof that has been closed are out of reach, and only the subproof as a whole may be cited, by rules such as →I and ¬I. Another example, with a negation rule: a proof of $\neg(P \wedge \neg P)$ from no premises.
+
+```text
+  |---
+1 | | P ∧ ¬P     AS
+2 | | P          ∧E 1
+3 | | ¬P         ∧E 1
+4 | | ⊥          ¬E 3, 2
+5 | ¬(P ∧ ¬P)    ¬I 1–4
+```
+
+### A proof as data
+
+Each line is a tuple `(depth, formula, rule, cites)`, where `formula` uses the tuple representation, `cites` is a list of line numbers (counting from 1), and a subproof is cited as a pair `(first, last)`. In code we write the rule names in plain characters: `'&I'` for ∧I, `'&E'` for ∧E, `'->E'` for →E, `'->I'` for →I, `'R'`, `'PR'` and `'AS'`. The proof above is
+
+```python
+proof = [
+    (0, ('imp', 'P', 'Q'), 'PR', []),
+    (0, ('imp', 'Q', 'R'), 'PR', []),
+    (1, 'P', 'AS', []),
+    (1, 'Q', '->E', [1, 3]),
+    (1, 'R', '->E', [2, 4]),
+    (0, ('imp', 'P', 'R'), '->I', [(3, 5)]),
+]
+```
+
+### Checking scope
+
+Line `j` is **accessible** from line `i` when `j` is earlier and no line from `j` up to `i` has a smaller depth than `j`: a smaller depth means a subproof has closed. A subproof cited from line `i` must begin with an assumption at depth $d$, end at depth $d$, have no line shallower than $d$ in between, be closed right after its last line, and `i` must be at depth $d - 1$ and still inside the enclosing context.
+
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def accessible(proof, j, i):
+    return (isinstance(j, int) and 1 <= j < i
+            and all(depth(proof, k) >= depth(proof, j)
+                    for k in range(j, i + 1)))
+
+def subproof_ok(proof, a, b, i):
+    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= b < i):
+        return False
+    d = depth(proof, a)
+    return (proof[a - 1][2] == 'AS' and d >= 1 and depth(proof, b) == d
+            and all(depth(proof, k) >= d for k in range(a, b + 1))
+            and depth(proof, b + 1) < d and depth(proof, i) == d - 1
+            and all(depth(proof, k) >= d - 1 for k in range(b + 1, i + 1)))
+```
+
+### Checking rules
+
+Each rule is a small function that looks at line `i`:
+
+```python
+def check_and_intro(proof, i):
+    d, f, rule, cites = proof[i - 1]
+    if len(cites) != 2 or not all(accessible(proof, j, i) for j in cites):
+        return False
+    return f == ('and', formula(proof, cites[0]), formula(proof, cites[1]))
+
+def check_and_elim(proof, i):
+    d, f, rule, cites = proof[i - 1]
+    if len(cites) != 1 or not accessible(proof, cites[0], i):
+        return False
+    g = formula(proof, cites[0])
+    return not isinstance(g, str) and g[0] == 'and' and f in g[1:]
+```
+
+The checks for →E, →I and the other rules follow the same pattern. A whole-proof checker runs the rule check for every line, and also checks the shape of the depths. Writing it is part of this week's work and of the project.
+
+### Proofs and countermodels
+
+The proof system is **sound**: if $\Gamma \vdash A$ then $\Gamma \vDash A$. For propositional logic and, with the quantifier rules, for first-order logic it is also **complete**: if $\Gamma \vDash A$ then $\Gamma \vdash A$ (for first-order logic this is Gödel's completeness theorem, 1929–1930). Soundness gives a way to show that no proof can exist.
+
+| P1 | If $\Gamma \vdash A$, then $\Gamma \vDash A$ (soundness). |
+| P2 | In the model with domain $\{1, 2\}$ and $R = \{(1, 2), (2, 1)\}$, the sentence $\forall x\, \exists y\, Rxy$ is true and $\exists y\, \forall x\, Rxy$ is false, so $\forall x\, \exists y\, Rxy \nvDash \exists y\, \forall x\, Rxy$. |
+| C | So there is no proof of $\exists y\, \forall x\, Rxy$ from $\forall x\, \exists y\, Rxy$. |
+
+The argument is valid by modus tollens. P1 is the soundness theorem and P2 is checked by `holds` from last week. A finite model, evaluated by a program, therefore settles that a hunt for a proof is pointless.
+
+@example
+title: Proving a conjunction in the other order
+problem: Give a proof of $Q \wedge P$ from $P \wedge Q$, and say what each line does.
+step: Write the premise on line 1 with the rule `PR`. Nothing else is assumed, so there are no subproofs.
+step: Line 2 is $P$ by ∧E from line 1, and line 3 is $Q$ by ∧E from line 1: each conjunct may be extracted separately.
+step: Line 4 combines them with ∧I. The rule puts together the formulas of the cited lines in the order cited, so cite $Q$ first, then $P$:
+
+```text
+1 | P ∧ Q        PR
+  |---
+2 | P            ∧E 1
+3 | Q            ∧E 1
+4 | Q ∧ P        ∧I 3, 2
+```
+step: Check each line: line 2 and line 3 cite an accessible conjunction and give one of its parts; line 4 cites lines 3 and 2, whose formulas are $Q$ and $P$, and the conclusion is $Q \wedge P$.
+answer: The four-line proof above.
+
+@example
+title: Finding the faulty line
+problem: Find the first incorrect line of this proof of $P \to R$ from $P \to (Q \to R)$ and $Q$, and repair it.
+
+```text
+1 | P → (Q → R)   PR
+2 | Q             PR
+  |---
+3 | | P           AS
+4 | | Q → R       →E 1, 3
+5 | | R           →E 4, 3
+6 | P → R         →I 3–5
+```
+step: Lines 1 and 2 are premises, and line 3 opens a subproof with an assumption; none of them needs a rule check.
+step: Line 4 cites line 1, $P \to (Q \to R)$, and line 3, $P$. Modus ponens gives $Q \to R$. Correct.
+step: Line 5 cites line 4, $Q \to R$, and line 3, which is $P$. For →E, the second cited line must be the antecedent of the first, $Q$, but line 3 is $P$. Incorrect.
+step: Repair: the formula $Q$ is on line 2, a premise at depth 0, which is accessible from inside the subproof. Line 5 should read `→E 4, 2`, and then line 6 is correct: →I 3–5 closes the subproof and gives $P \to R$.
+answer: Line 5 is the first incorrect line; the correct justification is →E 4, 2.
+
+@mistakes
+- Citing a line inside a subproof that has already closed: only the subproof as a whole can be cited after it ends.
+- Citing the lines of →E in the wrong roles: the first is the conditional $A \to B$, the second is $A$ itself, and the conclusion is $B$.
+- Ending a →I subproof but writing the conclusion at the subproof's own depth, or citing a range whose first line is not an assumption.
+- Treating a countermodel as a failed proof attempt: a model in which the premises are true and the conclusion false shows that no proof exists, by soundness; failing to find a proof shows nothing by itself.
+
+@practice mc
+prompt: This proof has one incorrect line. Which line is incorrect, and why?
+
+```text
+1 | P → Q        PR
+  |---
+2 | | P          AS
+3 | | Q          →E 1, 2
+4 | P → Q        →I 2–3
+5 | Q            R 3
+```
+choice*: Line 5, because it cites line 3, which lies inside a subproof that has already closed
+choice: Line 4, because →I needs two cited lines rather than one subproof
+choice: Line 3, because →E must cite the antecedent before the conditional
+choice: Line 2, because an assumption may not be the antecedent of a premise
+hint: Ask for each line which lines it cites and whether those lines can still be used.
+solution: Line 3 is inside the subproof 2–3, which closed when line 4 was written at depth 0. Line 5 cannot cite it. (Indeed $Q$ does not follow from $P \to Q$ alone.) Line 4 is a correct use of →I, and line 3 correctly cites the conditional and then its antecedent.
+
+@practice text
+prompt: What does this program print?
+
+```python
+depths = [0, 0, 1, 1, 2, 1, 0, 1]
+
+def accessible(j, i):
+    return 1 <= j < i and all(d >= depths[j - 1] for d in depths[j - 1:i])
+
+print(accessible(2, 4), accessible(3, 6), accessible(5, 6))
+print(accessible(2, 8), accessible(6, 6))
+```
+answer:
+```
+True True False
+True False
+```
+check: run("depths = [0, 0, 1, 1, 2, 1, 0, 1]\n\ndef accessible(j, i):\n    return 1 <= j < i and all(d >= depths[j - 1] for d in depths[j - 1:i])\n\nprint(accessible(2, 4), accessible(3, 6), accessible(5, 6))\nprint(accessible(2, 8), accessible(6, 6))\n")
+hint: `accessible(j, i)` asks whether every depth from line `j` to line `i` is at least the depth of line `j`.
+solution: `accessible(2, 4)`: line 2 has depth 0 and the depths of lines 2 to 4 are 0, 1, 1, all at least 0, so `True`. `accessible(3, 6)`: depth 1, with lines 3 to 6 at 1, 1, 2, 1: `True`. `accessible(5, 6)`: line 5 has depth 2 but line 6 has depth 1, so `False`. `accessible(2, 8)`: the depths from line 2 on are never negative: `True`. `accessible(6, 6)`: `j < i` fails, so `False`.
+
+@practice code
+prompt: A proof is a list of lines `(depth, formula, rule, cites)`, as in this lesson. The starter defines `depth`, `formula` and `accessible`. Write `check_imp_elim(proof, i)` that returns `True` when line `i` (counting from 1) is a correct use of →E: its `cites` are two line numbers `[m, n]`, both accessible from line `i`; line `m` is a conditional `('imp', A, B)`, line `n` is `A`, and line `i` is `B`.
+starter:
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def accessible(proof, j, i):
+    return (isinstance(j, int) and 1 <= j < i
+            and all(depth(proof, k) >= depth(proof, j)
+                    for k in range(j, i + 1)))
+
+def check_imp_elim(proof, i):
+    pass
+```
+tests:
+```python
+p = [(0, ('imp', 'P', 'Q'), 'PR', []),
+     (0, 'P', 'PR', []),
+     (0, 'Q', '->E', [1, 2]),
+     (0, 'R', '->E', [1, 2]),
+     (0, 'Q', '->E', [2, 1])]
+assert check_imp_elim(p, 3) == True
+assert check_imp_elim(p, 4) == False
+assert check_imp_elim(p, 5) == False
+q = [(0, ('imp', 'P', 'Q'), 'PR', []),
+     (1, 'P', 'AS', []),
+     (1, 'Q', '->E', [1, 2]),
+     (0, ('imp', 'P', 'Q'), '->I', [(2, 3)]),
+     (0, 'Q', '->E', [1, 2])]
+assert check_imp_elim(q, 3) == True
+assert check_imp_elim(q, 5) == False
+```
+model:
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def accessible(proof, j, i):
+    return (isinstance(j, int) and 1 <= j < i
+            and all(depth(proof, k) >= depth(proof, j)
+                    for k in range(j, i + 1)))
+
+def check_imp_elim(proof, i):
+    d, f, rule, cites = proof[i - 1]
+    if len(cites) != 2 or not all(accessible(proof, j, i) for j in cites):
+        return False
+    return formula(proof, cites[0]) == ('imp', formula(proof, cites[1]), f)
+```
+hint: First check the scope: two cited lines, both accessible from line `i`.
+hint: Then check the rule: the first cited formula must equal `('imp', antecedent, f)` where the antecedent is the second cited formula.
+solution: Unpack the line, require two accessible citations, and compare the first cited formula with the conditional built from the second cited formula and the line's own formula. The last test fails the scope check: line 2 sits in a closed subproof, so it is out of reach from line 5, although the formulas fit the rule.
+
+@practice code
+prompt: The starter defines `depth`, `formula` and `subproof_ok(proof, a, b, i)` (which tells whether line `i` may cite the subproof from line `a` to line `b`). Write `check_imp_intro(proof, i)` that returns `True` when line `i` is a correct use of →I: its `cites` is a list with one pair `[(a, b)]` that `subproof_ok` accepts, and the formula of line `i` is `('imp', A, B)` where `A` is the formula of line `a` and `B` the formula of line `b`.
+starter:
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def subproof_ok(proof, a, b, i):
+    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= b < i):
+        return False
+    d = depth(proof, a)
+    return (proof[a - 1][2] == 'AS' and d >= 1 and depth(proof, b) == d
+            and all(depth(proof, k) >= d for k in range(a, b + 1))
+            and depth(proof, b + 1) < d and depth(proof, i) == d - 1
+            and all(depth(proof, k) >= d - 1 for k in range(b + 1, i + 1)))
+
+def check_imp_intro(proof, i):
+    pass
+```
+tests:
+```python
+p = [(0, ('imp', 'Q', 'R'), 'PR', []),
+     (1, 'Q', 'AS', []),
+     (1, 'R', '->E', [1, 2]),
+     (0, ('imp', 'Q', 'R'), '->I', [(2, 3)]),
+     (0, ('imp', 'Q', 'Q'), '->I', [(2, 3)]),
+     (1, 'S', 'AS', []),
+     (1, 'S', 'R', [6]),
+     (0, ('imp', 'S', 'S'), '->I', [(6, 7)])]
+assert check_imp_intro(p, 4) == True
+assert check_imp_intro(p, 5) == False
+assert check_imp_intro(p, 8) == True
+r = [(0, 'S', 'PR', []),
+     (1, 'T', 'AS', []),
+     (1, 'S', 'R', [1]),
+     (1, ('imp', 'T', 'S'), '->I', [(2, 3)])]
+assert check_imp_intro(r, 4) == False
+```
+model:
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def subproof_ok(proof, a, b, i):
+    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= b < i):
+        return False
+    d = depth(proof, a)
+    return (proof[a - 1][2] == 'AS' and d >= 1 and depth(proof, b) == d
+            and all(depth(proof, k) >= d for k in range(a, b + 1))
+            and depth(proof, b + 1) < d and depth(proof, i) == d - 1
+            and all(depth(proof, k) >= d - 1 for k in range(b + 1, i + 1)))
+
+def check_imp_intro(proof, i):
+    d, f, rule, cites = proof[i - 1]
+    if len(cites) != 1 or not isinstance(cites[0], tuple) or len(cites[0]) != 2:
+        return False
+    a, b = cites[0]
+    return (subproof_ok(proof, a, b, i)
+            and f == ('imp', formula(proof, a), formula(proof, b)))
+```
+hint: Check that there is exactly one citation and that it is a pair.
+hint: Unpack the pair as `a, b`, call `subproof_ok`, and compare the formula with `('imp', formula(proof, a), formula(proof, b))`.
+solution: A correct →I needs a well-formed subproof citation and the right conclusion: the assumption as antecedent and the last line of the subproof as consequent. Line 5 fails because the subproof ends with `R`, not `Q`. Line 4 of the last proof fails because it is written at depth 1, inside the subproof it closes, so `subproof_ok` rejects it.
+
+@practice code
+prompt: The starter defines `extend` and `holds` (the evaluator for first-order sentences in a finite model, as in week 11). Write `find_countermodel(models, premises, conclusion)` that returns the first model in the list `models` in which every premise is true and the conclusion is false (sentences are evaluated with the empty environment `{}`), or `None` if there is no such model in the list.
+starter:
+```python
+def extend(env, var, d):
+    new = dict(env)
+    new[var] = d
+    return new
+
+def holds(model, f, env):
+    op = f[0]
+    if op == 'pred':
+        return tuple(env[x] for x in f[2:]) in model['preds'][f[1]]
+    if op == 'eq':
+        return env[f[1]] == env[f[2]]
+    if op == 'not':
+        return not holds(model, f[1], env)
+    if op == 'all':
+        return all(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    if op == 'some':
+        return any(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    a = holds(model, f[1], env)
+    b = holds(model, f[2], env)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+
+def find_countermodel(models, premises, conclusion):
+    pass
+```
+tests:
+```python
+M1 = {'domain': {1, 2}, 'preds': {'R': {(1, 2), (2, 1)}}}
+M2 = {'domain': {1, 2}, 'preds': {'R': {(1, 1), (2, 1)}}}
+M3 = {'domain': {1}, 'preds': {'R': set()}}
+AS = ('all', 'x', ('some', 'y', ('pred', 'R', 'x', 'y')))
+SA = ('some', 'y', ('all', 'x', ('pred', 'R', 'x', 'y')))
+assert find_countermodel([M2, M1], [AS], SA) is M1
+assert find_countermodel([M3, M2], [AS], SA) is None
+assert find_countermodel([M3], [], SA) is M3
+assert find_countermodel([M1, M2, M3], [SA], AS) is None
+```
+model:
+```python
+def extend(env, var, d):
+    new = dict(env)
+    new[var] = d
+    return new
+
+def holds(model, f, env):
+    op = f[0]
+    if op == 'pred':
+        return tuple(env[x] for x in f[2:]) in model['preds'][f[1]]
+    if op == 'eq':
+        return env[f[1]] == env[f[2]]
+    if op == 'not':
+        return not holds(model, f[1], env)
+    if op == 'all':
+        return all(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    if op == 'some':
+        return any(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    a = holds(model, f[1], env)
+    b = holds(model, f[2], env)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+
+def find_countermodel(models, premises, conclusion):
+    for m in models:
+        if all(holds(m, p, {}) for p in premises) and not holds(m, conclusion, {}):
+            return m
+    return None
+```
+hint: Loop over the models and test the premises with `all` and the conclusion with `not`.
+solution: A countermodel makes every premise true and the conclusion false. Return the first model in the list that does, or `None` after the loop. In the first test, `M2` satisfies both sentences, so only `M1` is a countermodel to the quantifier shift; in the second test, `M3` falsifies the premise and `M2` satisfies both sentences, so there is none. By soundness, a countermodel for premises and conclusion shows there is no proof.
+
+@quiz code
+prompt: The starter defines the line checks for the rules `PR`, `AS`, `R`, `&I`, `&E`, `->E` and `->I` in a function `line_ok(proof, i)`. Write `check_proof(proof)` that returns `True` when the whole proof is correct: (1) for every line, if its rule is `AS` then its depth is one more than the previous line's depth (for line 1, one more than 0), and otherwise its depth is at most the previous line's depth; (2) every `PR` line has depth 0 and comes before every line that is not `PR`; (3) `line_ok(proof, i)` is `True` for every line `i`; (4) the last line has depth 0, so every subproof is closed.
+starter:
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def accessible(proof, j, i):
+    return (isinstance(j, int) and 1 <= j < i
+            and all(depth(proof, k) >= depth(proof, j)
+                    for k in range(j, i + 1)))
+
+def subproof_ok(proof, a, b, i):
+    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= b < i):
+        return False
+    d = depth(proof, a)
+    return (proof[a - 1][2] == 'AS' and d >= 1 and depth(proof, b) == d
+            and all(depth(proof, k) >= d for k in range(a, b + 1))
+            and depth(proof, b + 1) < d and depth(proof, i) == d - 1
+            and all(depth(proof, k) >= d - 1 for k in range(b + 1, i + 1)))
+
+def line_ok(proof, i):
+    d, f, rule, cites = proof[i - 1]
+    if rule in ('PR', 'AS'):
+        return True
+    if rule == '->I':
+        if len(cites) != 1 or not isinstance(cites[0], tuple):
+            return False
+        a, b = cites[0]
+        return (subproof_ok(proof, a, b, i)
+                and f == ('imp', formula(proof, a), formula(proof, b)))
+    if rule not in ('R', '&I', '&E', '->E'):
+        return False
+    if not all(accessible(proof, j, i) for j in cites):
+        return False
+    got = [formula(proof, j) for j in cites]
+    if rule == 'R':
+        return len(got) == 1 and got[0] == f
+    if rule == '&I':
+        return len(got) == 2 and f == ('and', got[0], got[1])
+    if rule == '&E':
+        return (len(got) == 1 and not isinstance(got[0], str)
+                and got[0][0] == 'and' and f in got[0][1:])
+    return len(got) == 2 and got[0] == ('imp', got[1], f)
+
+def check_proof(proof):
+    pass
+```
+tests:
+```python
+good = [(0, ('imp', 'P', 'Q'), 'PR', []),
+        (0, ('imp', 'Q', 'R'), 'PR', []),
+        (1, 'P', 'AS', []),
+        (1, 'Q', '->E', [1, 3]),
+        (1, 'R', '->E', [2, 4]),
+        (0, ('imp', 'P', 'R'), '->I', [(3, 5)])]
+assert check_proof(good) == True
+wrong_cite = good[:4] + [(1, 'R', '->E', [2, 3])] + good[5:]
+assert check_proof(wrong_cite) == False
+swap = [(0, ('and', 'P', 'Q'), 'PR', []), (0, 'P', '&E', [1]),
+        (0, 'Q', '&E', [1]), (0, ('and', 'Q', 'P'), '&I', [3, 2])]
+assert check_proof(swap) == True
+assert check_proof([(0, 'P', 'PR', []), (2, 'Q', 'AS', [])]) == False
+assert check_proof([(0, 'P', 'PR', []), (1, 'P', 'R', [1])]) == False
+late = [(0, 'P', 'PR', []), (0, ('and', 'P', 'P'), '&I', [1, 1]), (0, 'Q', 'PR', [])]
+assert check_proof(late) == False
+assert check_proof([(0, 'P', 'PR', []), (1, 'Q', 'AS', [])]) == False
+```
+model:
+```python
+def depth(proof, n):
+    return proof[n - 1][0]
+
+def formula(proof, n):
+    return proof[n - 1][1]
+
+def accessible(proof, j, i):
+    return (isinstance(j, int) and 1 <= j < i
+            and all(depth(proof, k) >= depth(proof, j)
+                    for k in range(j, i + 1)))
+
+def subproof_ok(proof, a, b, i):
+    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= b < i):
+        return False
+    d = depth(proof, a)
+    return (proof[a - 1][2] == 'AS' and d >= 1 and depth(proof, b) == d
+            and all(depth(proof, k) >= d for k in range(a, b + 1))
+            and depth(proof, b + 1) < d and depth(proof, i) == d - 1
+            and all(depth(proof, k) >= d - 1 for k in range(b + 1, i + 1)))
+
+def line_ok(proof, i):
+    d, f, rule, cites = proof[i - 1]
+    if rule in ('PR', 'AS'):
+        return True
+    if rule == '->I':
+        if len(cites) != 1 or not isinstance(cites[0], tuple):
+            return False
+        a, b = cites[0]
+        return (subproof_ok(proof, a, b, i)
+                and f == ('imp', formula(proof, a), formula(proof, b)))
+    if rule not in ('R', '&I', '&E', '->E'):
+        return False
+    if not all(accessible(proof, j, i) for j in cites):
+        return False
+    got = [formula(proof, j) for j in cites]
+    if rule == 'R':
+        return len(got) == 1 and got[0] == f
+    if rule == '&I':
+        return len(got) == 2 and f == ('and', got[0], got[1])
+    if rule == '&E':
+        return (len(got) == 1 and not isinstance(got[0], str)
+                and got[0][0] == 'and' and f in got[0][1:])
+    return len(got) == 2 and got[0] == ('imp', got[1], f)
+
+def check_proof(proof):
+    previous = 0
+    seen_other = False
+    for i, line in enumerate(proof, start=1):
+        d, f, rule, cites = line
+        if rule == 'AS':
+            if d != previous + 1:
+                return False
+        elif d > previous:
+            return False
+        if rule == 'PR':
+            if d != 0 or seen_other:
+                return False
+        else:
+            seen_other = True
+        if not line_ok(proof, i):
+            return False
+        previous = d
+    return previous == 0
+```
+hint: Loop over the lines with `enumerate(proof, start=1)` and remember the previous line's depth.
+hint: Check the depth rule and the premise rule inside the loop; call `line_ok` for the justification; after the loop, check that `previous == 0`.
+solution: The shape checks are local to a line and its predecessor, and `line_ok` does the rule and scope checks. After the loop, the last depth must be 0, so no subproof is left open. Each of the failing tests violates exactly one condition: a bad citation, a depth jump, a depth increase without an assumption, a late premise, or an open subproof.
+
+@quiz num
+prompt: A proof has ten lines with depths 0, 0, 1, 2, 2, 1, 1, 0, 1, 1 (line 1 first). From how many of the earlier lines 1 to 9 may line 10 cite a single line, if a line is accessible when no line from it up to line 10 is shallower than it?
+answer: 4
+unit: lines
+check: sum(1 for j in range(1, 10) if all(d >= [0, 0, 1, 2, 2, 1, 1, 0, 1, 1][j - 1] for d in [0, 0, 1, 2, 2, 1, 1, 0, 1, 1][j - 1:10]))
+hint: For each earlier line, look at the depths from that line to line 10: is any of them smaller than the earlier line's depth?
+solution: Lines 1 and 2 have depth 0, so every line from them to line 10 is at least that deep: accessible. Lines 3 to 7 are followed by line 8 at depth 0, which is shallower than they are, so they are out of reach. Line 8 (depth 0) and line 9 (depth 1) are accessible. That makes lines 1, 2, 8 and 9: 4 lines.
+
+@quiz mc
+prompt: In a finite model, every premise of an argument is true and the conclusion is false. Given that the proof system is sound, what follows?
+choice*: There is no proof of the conclusion from the premises
+choice: The proof system is unsound
+choice: A proof of the conclusion exists, but it is very long
+choice: The argument is valid, but not provable
+hint: Soundness says that whatever can be proved from premises is entailed by them.
+solution: By soundness, a proof of the conclusion from the premises would show that the premises entail the conclusion, but the model is a countermodel to that entailment. So no proof exists. Nothing in the situation shows that the system is unsound, and a valid argument is true in every model, which this one is not.

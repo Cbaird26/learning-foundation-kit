@@ -1,0 +1,365 @@
+@lesson
+title: Normal forms: negation normal form, CNF and DNF
+summary: Convert a formula to negation normal form and to conjunctive normal form by rewriting, check the result for equivalence, and extract its clauses.
+objective: Define literals, clauses, negation normal form, CNF and DNF, and decide whether a given formula is in each.
+objective: Write recursive functions that eliminate conditionals and biconditionals, push negations inward, and distribute disjunction over conjunction.
+objective: Check a conversion with a truth-table equivalence test, and explain why the CNF of some formulas is exponentially large.
+reading: Python for Everybody, Chapter 8 "Lists" (list processing). For the logic, look up "conjunctive normal form" and "disjunctive normal form" in your C1 textbook or in an encyclopedia of logic.
+
+@article
+Truth tables decide every question about propositional formulas, but they need $2^n$ rows. Many algorithms, including the satisfiability search of next week, work better on formulas of a restricted shape. Fortunately every formula can be rewritten, without changing its meaning, into such a shape.
+
+### Literals, clauses and normal forms
+
+A **literal** is a sentence letter or its negation. A formula is in **negation normal form (NNF)** when it is built from literals with $\wedge$ and $\vee$ only: negation appears only directly in front of letters, and there is no $\to$ or $\leftrightarrow$. A **clause** is a literal or a disjunction of literals. A formula is in **conjunctive normal form (CNF)** when it is a conjunction of clauses, and in **disjunctive normal form (DNF)** when it is a disjunction of **terms**, a term being a literal or a conjunction of literals. Every formula is equivalent to one in NNF, one in CNF and one in DNF.
+
+### Three rewriting steps
+
+1. **Eliminate** $\to$ and $\leftrightarrow$: $A \to B \equiv \neg A \vee B$, and $A \leftrightarrow B \equiv (\neg A \vee B) \wedge (\neg B \vee A)$.
+2. **Push negations inward** with De Morgan's laws, $\neg(A \wedge B) \equiv \neg A \vee \neg B$ and $\neg(A \vee B) \equiv \neg A \wedge \neg B$, and with double negation, $\neg\neg A \equiv A$. The result is NNF.
+3. **Distribute** $\vee$ over $\wedge$: $A \vee (B \wedge C) \equiv (A \vee B) \wedge (A \vee C)$, and symmetrically on the left. The result is CNF. For DNF distribute $\wedge$ over $\vee$ instead.
+
+### The functions
+
+Each step is a recursion over the tuple representation:
+
+```python
+def eliminate(f):
+    if isinstance(f, str):
+        return f
+    op = f[0]
+    parts = [eliminate(g) for g in f[1:]]
+    if op == 'imp':
+        return ('or', ('not', parts[0]), parts[1])
+    if op == 'iff':
+        a, b = parts
+        return ('and', ('or', ('not', a), b), ('or', ('not', b), a))
+    return (op,) + tuple(parts)
+
+def push(f):                      # f uses only not, and, or
+    if isinstance(f, str):
+        return f
+    if f[0] != 'not':
+        return (f[0], push(f[1]), push(f[2]))
+    g = f[1]
+    if isinstance(g, str):
+        return f
+    if g[0] == 'not':
+        return push(g[1])
+    flip = 'or' if g[0] == 'and' else 'and'
+    return (flip, push(('not', g[1])), push(('not', g[2])))
+
+def distribute(a, b):             # a and b are in CNF; result: CNF of a or b
+    if not isinstance(a, str) and a[0] == 'and':
+        return ('and', distribute(a[1], b), distribute(a[2], b))
+    if not isinstance(b, str) and b[0] == 'and':
+        return ('and', distribute(a, b[1]), distribute(a, b[2]))
+    return ('or', a, b)
+
+def to_cnf(f):                    # f is in NNF
+    if isinstance(f, str) or f[0] == 'not':
+        return f
+    a, b = to_cnf(f[1]), to_cnf(f[2])
+    if f[0] == 'and':
+        return ('and', a, b)
+    return distribute(a, b)
+
+def cnf(f):
+    return to_cnf(push(eliminate(f)))
+```
+
+The negation case of `push` calls itself on `('not', part)`, which applies the law to the part below. After `push`, the formula is in NNF, so `push(eliminate(f))` is a function `nnf`.
+
+### Size can explode
+
+Distribution can multiply the size. The formula $(P_1 \wedge Q_1) \vee (P_2 \wedge Q_2) \vee \dots \vee (P_n \wedge Q_n)$ is a disjunction of $n$ small terms, but its CNF has $2^n$ clauses: each clause picks one letter from every pair. No clause can be dropped. There are cleverer conversions that introduce new letters and preserve only satisfiability, not equivalence; the plain one used here preserves equivalence, and that is why it can be large.
+
+### Correctness
+
+| P1 | If every rewriting step replaces a subformula by an equivalent formula, then the final formula is equivalent to the original. |
+| P2 | Each step of `eliminate`, `push` and `distribute` replaces a subformula by an equivalent formula. |
+| C | So `cnf(f)` is equivalent to `f`. |
+
+The argument is valid (modus ponens). P1 holds because replacing a part of a formula by an equivalent part cannot change any truth value. P2 is the list of laws above, each of which a four-row truth table confirms. The argument gives us confidence in the design; checking a particular output with an equivalence test (week 8) is how you catch a bug in the code.
+
+@example
+title: Converting to CNF by hand
+problem: Convert $(P \to Q) \to R$ to CNF and check the result.
+step: Eliminate the conditionals, inside first: $P \to Q$ becomes $\neg P \vee Q$, and the whole formula becomes $\neg(\neg P \vee Q) \vee R$.
+step: Push the negation inward: $\neg(\neg P \vee Q) \equiv \neg\neg P \wedge \neg Q \equiv P \wedge \neg Q$. The formula is now $(P \wedge \neg Q) \vee R$, which is in NNF.
+step: Distribute the disjunction over the conjunction: $(P \wedge \neg Q) \vee R \equiv (P \vee R) \wedge (\neg Q \vee R)$.
+step: Check: the original is false exactly when $P \to Q$ is true and $R$ is false, that is, on the rows PQR = TTF, FTF and FFF. The CNF is false when $R$ is false and ($P$ false or $Q$ true): the same three rows.
+answer: $(P \vee R) \wedge (\neg Q \vee R)$
+
+@example
+title: Distribution multiplies clauses
+problem: What does `distribute(('and', 'P', 'Q'), ('and', 'R', 'S'))` return, and how many clauses does it have?
+step: This computes the CNF of $(P \wedge Q) \vee (R \wedge S)$. The first argument is a conjunction, so the function splits it: it returns the conjunction of `distribute('P', b)` and `distribute('Q', b)`, where `b` is `('and', 'R', 'S')`.
+step: In `distribute('P', b)` the first argument is a letter, and `b` is a conjunction, so the function splits `b`: the result is the conjunction of `('or', 'P', 'R')` and `('or', 'P', 'S')`. Similarly `distribute('Q', b)` gives `('or', 'Q', 'R')` and `('or', 'Q', 'S')`.
+step: The whole result is `('and', ('and', ('or', 'P', 'R'), ('or', 'P', 'S')), ('and', ('or', 'Q', 'R'), ('or', 'Q', 'S')))`.
+step: It has four clauses, $P \vee R$, $P \vee S$, $Q \vee R$ and $Q \vee S$: one letter chosen from each of the two original terms, $2 \times 2$ ways.
+answer: A conjunction of four clauses, as shown.
+
+@mistakes
+- Pushing a negation through a conjunction without turning it into a disjunction: $\neg(A \wedge B)$ is $\neg A \vee \neg B$, not $\neg A \wedge \neg B$.
+- Eliminating $A \to B$ as $\neg A \wedge B$ or as $A \vee \neg B$; the correct form is $\neg A \vee B$.
+- Calling a formula CNF because it contains $\wedge$ and $\vee$: in CNF no $\wedge$ may sit below a $\vee$, so $(P \wedge Q) \vee R$ is not in CNF.
+- Distributing before eliminating the conditionals and pushing the negations in, so that the function meets connectives and negations it does not handle.
+
+@practice mc
+prompt: Which formula is the negation normal form of $\neg(P \wedge \neg Q)$?
+choice*: $\neg P \vee Q$
+choice: $\neg P \wedge Q$
+choice: $P \vee \neg Q$
+choice: $\neg(P \wedge \neg Q)$ is already in negation normal form
+hint: Apply De Morgan's law to the conjunction, and then double negation.
+solution: De Morgan gives $\neg P \vee \neg\neg Q$, and double negation turns $\neg\neg Q$ into $Q$. The formula $\neg P \wedge Q$ forgets to change the conjunction into a disjunction. The original is not in NNF, because its negation sits in front of a compound formula.
+
+@practice text
+prompt: Fill in the main column of the truth table for the CNF $(P \vee Q) \wedge (\neg P \vee Q)$, with the rows in the standard order TT, TF, FT, FF for $P$ and $Q$. Type four letters, T or F, with no spaces.
+answer: TFTF
+check: tt_column(lambda p, q: (p or q) and (not p or q))
+hint: A conjunction is true only when both clauses are true.
+solution: $P \vee Q$ is T, T, T, F and $\neg P \vee Q$ is T, F, T, T. Both are true on rows TT and FT, so the column is T, F, T, F. The formula is equivalent to $Q$.
+
+@practice code
+prompt: The starter defines `is_literal(f)`, true for a sentence letter or the negation of one. Write `is_nnf(f)` that returns `True` when the formula `f` is in negation normal form: built from literals using only `and` and `or`. Formulas are letters and tuples with `'not'`, `'and'`, `'or'`, `'imp'` and `'iff'`.
+starter:
+```python
+def is_literal(f):
+    return isinstance(f, str) or (f[0] == 'not' and isinstance(f[1], str))
+
+def is_nnf(f):
+    pass
+```
+tests:
+```python
+assert is_nnf('P') == True
+assert is_nnf(('not', 'P')) == True
+assert is_nnf(('not', ('not', 'P'))) == False
+assert is_nnf(('imp', 'P', 'Q')) == False
+assert is_nnf(('and', ('not', 'P'), ('or', 'Q', 'R'))) == True
+assert is_nnf(('or', 'P', ('not', ('and', 'Q', 'R')))) == False
+```
+model:
+```python
+def is_literal(f):
+    return isinstance(f, str) or (f[0] == 'not' and isinstance(f[1], str))
+
+def is_nnf(f):
+    if is_literal(f):
+        return True
+    return f[0] in ('and', 'or') and is_nnf(f[1]) and is_nnf(f[2])
+```
+hint: Literals are in NNF. Anything else must be an `and` or an `or` whose parts are in NNF.
+hint: Test `f[0] in ('and', 'or')` before looking at `f[1]` and `f[2]`.
+solution: A literal is in NNF. Otherwise `f` must have `and` or `or` as its main connective, and both parts must be in NNF. A `not` in front of a compound formula, a `not` in front of a `not`, and `imp` and `iff` all fail the test `f[0] in ('and', 'or')`.
+
+@practice code
+prompt: The starter defines `is_literal(f)`. Write `is_cnf(f)` that returns `True` when the formula `f` is in conjunctive normal form: a literal, or a disjunction of literals, or a conjunction of such things at any nesting. No `and` may occur inside an `or`, and no `imp`, `iff` or compound negation may occur. You may define a helper function.
+starter:
+```python
+def is_literal(f):
+    return isinstance(f, str) or (f[0] == 'not' and isinstance(f[1], str))
+
+def is_cnf(f):
+    pass
+```
+tests:
+```python
+assert is_cnf(('and', ('or', 'P', ('not', 'Q')), 'R')) == True
+assert is_cnf(('or', ('and', 'P', 'Q'), 'R')) == False
+assert is_cnf('P') == True
+assert is_cnf(('and', 'P', ('and', 'Q', 'R'))) == True
+assert is_cnf(('or', 'P', ('or', 'Q', 'R'))) == True
+assert is_cnf(('not', ('or', 'P', 'Q'))) == False
+```
+model:
+```python
+def is_literal(f):
+    return isinstance(f, str) or (f[0] == 'not' and isinstance(f[1], str))
+
+def is_clause(f):
+    if is_literal(f):
+        return True
+    return f[0] == 'or' and is_clause(f[1]) and is_clause(f[2])
+
+def is_cnf(f):
+    if not isinstance(f, str) and f[0] == 'and':
+        return is_cnf(f[1]) and is_cnf(f[2])
+    return is_clause(f)
+```
+hint: First write `is_clause`: a literal, or an `or` of clauses.
+hint: A CNF is an `and` of CNFs, or else a single clause.
+solution: A clause is a literal or an `or` of clauses. A CNF formula is a conjunction of CNF formulas or, when its main connective is not `and`, a single clause. In `('or', ('and', 'P', 'Q'), 'R')` the `and` sits under an `or`, so `is_clause` fails on it.
+
+@practice code
+prompt: Write `to_clauses(f)` that takes a formula `f` already in CNF (letters, `not` applied only to letters, `and` and `or`) and returns its list of clauses, each clause a list of literal strings, in left-to-right order. A letter `'P'` is written `'P'` and its negation `'-P'`. For example `to_clauses(('and', ('or', 'P', ('not', 'Q')), 'R'))` is `[['P', '-Q'], ['R']]`.
+starter:
+```python
+def to_clauses(f):
+    pass
+```
+tests:
+```python
+assert to_clauses('P') == [['P']]
+assert to_clauses(('not', 'Q')) == [['-Q']]
+assert to_clauses(('or', ('not', 'P'), 'Q')) == [['-P', 'Q']]
+assert to_clauses(('and', ('or', 'P', ('not', 'Q')), 'R')) == [['P', '-Q'], ['R']]
+g = ('and', ('and', 'P', ('not', 'Q')), ('or', 'R', ('or', 'S', 'P')))
+assert to_clauses(g) == [['P'], ['-Q'], ['R', 'S', 'P']]
+```
+model:
+```python
+def literal_text(f):
+    return f if isinstance(f, str) else '-' + f[1]
+
+def clause_literals(f):
+    if isinstance(f, str) or f[0] == 'not':
+        return [literal_text(f)]
+    return clause_literals(f[1]) + clause_literals(f[2])
+
+def to_clauses(f):
+    if not isinstance(f, str) and f[0] == 'and':
+        return to_clauses(f[1]) + to_clauses(f[2])
+    return [clause_literals(f)]
+```
+hint: Write one function for a single clause (a literal or an `or` of literals) and one for the conjunction.
+hint: Both functions are recursions that join the lists from the two parts with `+`.
+solution: A conjunction contributes the clauses of both parts, in order. Any other formula is one clause, whose literals are collected by recursion through the `or` nodes; a negated letter becomes the string `'-'` followed by its name.
+
+@quiz code
+prompt: The starter defines `evaluate`, `atoms`, `valuations`, `equivalent` (a truth-table test, for formulas with any letters) and the functions `is_literal`, `is_clause` and `is_cnf`. Write `check_cnf(f, g)` that returns `True` when `g` is in CNF and is logically equivalent to `f`, and `False` otherwise. This checks a claimed conversion of `f`.
+starter:
+```python
+from itertools import product
+
+def evaluate(f, v):
+    if isinstance(f, str):
+        return v[f]
+    op = f[0]
+    if op == 'not':
+        return not evaluate(f[1], v)
+    a = evaluate(f[1], v)
+    b = evaluate(f[2], v)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+
+def atoms(f):
+    if isinstance(f, str):
+        return [f]
+    found = []
+    for part in f[1:]:
+        found = found + atoms(part)
+    return sorted(set(found))
+
+def valuations(names):
+    return [dict(zip(names, row))
+            for row in product([True, False], repeat=len(names))]
+
+def equivalent(f, g):
+    names = sorted(set(atoms(f) + atoms(g)))
+    return all(evaluate(f, v) == evaluate(g, v) for v in valuations(names))
+
+def is_literal(f):
+    return isinstance(f, str) or (f[0] == 'not' and isinstance(f[1], str))
+
+def is_clause(f):
+    if is_literal(f):
+        return True
+    return f[0] == 'or' and is_clause(f[1]) and is_clause(f[2])
+
+def is_cnf(f):
+    if not isinstance(f, str) and f[0] == 'and':
+        return is_cnf(f[1]) and is_cnf(f[2])
+    return is_clause(f)
+
+def check_cnf(f, g):
+    pass
+```
+tests:
+```python
+assert check_cnf(('imp', 'P', 'Q'), ('or', ('not', 'P'), 'Q')) == True
+assert check_cnf(('imp', 'P', 'Q'), ('or', 'P', ('not', 'Q'))) == False
+assert check_cnf(('imp', 'P', 'Q'), ('imp', 'P', 'Q')) == False
+assert check_cnf(('and', 'P', 'Q'), ('and', 'Q', 'P')) == True
+assert check_cnf(('or', ('and', 'P', 'Q'), 'R'), ('or', ('and', 'P', 'Q'), 'R')) == False
+g = ('and', ('or', 'P', 'R'), ('or', 'Q', 'R'))
+assert check_cnf(('or', ('and', 'P', 'Q'), 'R'), g) == True
+```
+model:
+```python
+from itertools import product
+
+def evaluate(f, v):
+    if isinstance(f, str):
+        return v[f]
+    op = f[0]
+    if op == 'not':
+        return not evaluate(f[1], v)
+    a = evaluate(f[1], v)
+    b = evaluate(f[2], v)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+
+def atoms(f):
+    if isinstance(f, str):
+        return [f]
+    found = []
+    for part in f[1:]:
+        found = found + atoms(part)
+    return sorted(set(found))
+
+def valuations(names):
+    return [dict(zip(names, row))
+            for row in product([True, False], repeat=len(names))]
+
+def equivalent(f, g):
+    names = sorted(set(atoms(f) + atoms(g)))
+    return all(evaluate(f, v) == evaluate(g, v) for v in valuations(names))
+
+def is_literal(f):
+    return isinstance(f, str) or (f[0] == 'not' and isinstance(f[1], str))
+
+def is_clause(f):
+    if is_literal(f):
+        return True
+    return f[0] == 'or' and is_clause(f[1]) and is_clause(f[2])
+
+def is_cnf(f):
+    if not isinstance(f, str) and f[0] == 'and':
+        return is_cnf(f[1]) and is_cnf(f[2])
+    return is_clause(f)
+
+def check_cnf(f, g):
+    return is_cnf(g) and equivalent(f, g)
+```
+hint: Two things must hold: the shape of `g` and its meaning relative to `f`.
+solution: A correct conversion must be in CNF (shape) and equivalent to the original (meaning). Joining the two tests with `and` rejects a conversion that is equivalent but not in CNF, such as `f` itself, and one that is in CNF but changes the meaning, such as the converse of a conditional.
+
+@quiz num
+prompt: The formula $(A_1 \wedge B_1) \vee (A_2 \wedge B_2) \vee (A_3 \wedge B_3) \vee (A_4 \wedge B_4)$ has four terms, each a conjunction of two different letters, and all eight letters are different. Distributing $\vee$ over $\wedge$ without any simplification, how many clauses does its CNF have?
+answer: 16
+unit: clauses
+check: len(list(product([0, 1], repeat=4)))
+hint: Each clause takes one letter from each of the four terms.
+solution: A clause picks either $A_i$ or $B_i$ for every $i$ from 1 to 4, and different choices give different clauses. That gives $2 \cdot 2 \cdot 2 \cdot 2 = 2^4 = 16$ clauses; with $n$ terms there would be $2^n$.
+
+@quiz mc
+prompt: Which formula is a correct CNF of $P \leftrightarrow Q$?
+choice*: $(\neg P \vee Q) \wedge (\neg Q \vee P)$
+choice: $(P \wedge Q) \vee (\neg P \wedge \neg Q)$
+choice: $(\neg P \vee Q) \vee (\neg Q \vee P)$
+choice: $(P \vee Q) \wedge (\neg P \vee \neg Q)$
+hint: A CNF is a conjunction of clauses, and it must be equivalent to the biconditional.
+solution: The biconditional is equivalent to $(P \to Q) \wedge (Q \to P)$, that is, $(\neg P \vee Q) \wedge (\neg Q \vee P)$, a conjunction of clauses. The disjunction of the two conjunctions $P \wedge Q$ and $\neg P \wedge \neg Q$ is equivalent but is a DNF, not a CNF. The disjunction of the two clauses is true on every row, and $(P \vee Q) \wedge (\neg P \vee \neg Q)$ is exclusive or, which has the opposite truth values.

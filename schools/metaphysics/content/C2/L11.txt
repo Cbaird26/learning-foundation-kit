@@ -1,0 +1,331 @@
+@lesson
+title: Sets and dictionaries: finite first-order models
+summary: Use sets and dictionaries to represent finite first-order models and write a function that decides whether a quantified sentence is true in a model.
+objective: Use sets, set operations, and dictionaries, including sets of tuples as relations.
+objective: Represent a finite model as a domain and the extensions of its predicates, and write first-order sentences as nested tuples.
+objective: Evaluate quantified sentences in a finite model, and use a small model as a countermodel to an invalid argument.
+reading: Python for Everybody, Chapter 9 "Dictionaries". For sets, look up "set types" in the Python tutorial.
+
+@article
+Propositional logic asks whether a formula is true under a valuation. First-order logic asks whether a **sentence** is true in a **model**: a non-empty set of objects, the **domain**, together with an interpretation of each predicate as a set of objects (or of tuples of objects) of which it is true. When the domain is finite, the quantifiers become loops: $\forall x$ means "for every element of the domain" and $\exists x$ means "for some element". This week you build the data structures, and write the evaluator.
+
+### Sets
+
+A **set** holds each item at most once and has no order. `{1, 2, 3}` is a set; `set()` is the empty set (while `{}` is an empty dictionary). Tests and operations:
+
+- `2 in A` tests membership, and `len(A)` is the number of elements.
+- `A | B` is the union, `A & B` the intersection, and `A - B` the elements of `A` that are not in `B`.
+- `A <= B` tests whether `A` is a subset of `B`.
+- A **set comprehension** builds a set: `{x * x for x in A if x > 1}`.
+
+A set with $n$ elements has $2^n$ subsets, which is why the number of relations on a domain grows so fast. Elements of a set must not be changeable, so lists cannot be put in sets, but tuples can: `{(1, 2), (2, 3)}` is a set of ordered pairs, which is exactly a binary relation.
+
+### Dictionaries
+
+A **dictionary** maps keys to values: `ages = {'Ana': 31, 'Bo': 27}`. Then `ages['Ana']` is `31`, `ages['Cy'] = 40` adds an entry, `'Ana' in ages` tests whether a key is present, and `ages.get('Di')` returns `None` for a missing key (where `ages['Di']` would raise a `KeyError`). Looping `for name in ages:` visits the keys, and `for name, age in ages.items():` visits key-value pairs.
+
+### Models and sentences
+
+A model is a dictionary with the domain and the extension of each predicate. We store every extension as a set of tuples, even for one-place predicates, so that all predicates are handled in one way:
+
+```python
+model = {'domain': {1, 2, 3},
+         'preds': {'F': {(1,), (2,)}, 'R': {(1, 2), (2, 3)}}}
+```
+
+Here $F$ is true of 1 and 2, and $Rab$ is true when $(a, b)$ is $(1, 2)$ or $(2, 3)$. Formulas extend the tuple representation of week 5: `('pred', 'R', 'x', 'y')` is $Rxy$, `('eq', 'x', 'y')` is $x = y$, `('all', 'x', A)` is $\forall x\, A$ and `('some', 'x', A)` is $\exists x\, A$; the connectives `not`, `and`, `or`, `imp` and `iff` are as before. For instance $\forall x\,(Fx \to \exists y\, Rxy)$ is
+
+```python
+('all', 'x', ('imp', ('pred', 'F', 'x'), ('some', 'y', ('pred', 'R', 'x', 'y'))))
+```
+
+### The evaluator
+
+The truth of a formula with free variables depends on an **environment** `env`, a dictionary from variables to elements of the domain. A quantifier extends the environment with each element in turn:
+
+```python
+def extend(env, var, d):
+    new = dict(env)
+    new[var] = d
+    return new
+
+def holds(model, f, env):
+    op = f[0]
+    if op == 'pred':
+        return tuple(env[x] for x in f[2:]) in model['preds'][f[1]]
+    if op == 'eq':
+        return env[f[1]] == env[f[2]]
+    if op == 'not':
+        return not holds(model, f[1], env)
+    if op == 'all':
+        return all(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    if op == 'some':
+        return any(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    a = holds(model, f[1], env)
+    b = holds(model, f[2], env)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+```
+
+A sentence has no free variables, so it is evaluated with the empty environment: `holds(model, sentence, {})`. The two quantifier cases are the new idea; everything else is the recursion of week 6. A universal sentence is true in an empty domain and an existential one false, but our models have non-empty domains, as in standard first-order logic.
+
+### A countermodel for a quantifier shift
+
+| P1 | Everyone admires someone: $\forall x\, \exists y\, Rxy$. |
+| C | So there is someone whom everyone admires: $\exists y\, \forall x\, Rxy$. |
+
+This argument, the **quantifier shift fallacy**, is invalid. Take the domain $\{1, 2\}$ with $R = \{(1, 2), (2, 1)\}$: each element admires the other, so the premise is true, but neither element is admired by both, so the conclusion is false. `holds` confirms it, giving `True` for the premise and `False` for the conclusion. The fallacy is exposing how the order of quantifiers matters: in the premise the admired person may depend on the admirer.
+
+@example
+title: Evaluating a nested quantifier by hand
+problem: In the model with domain $\{1, 2, 3\}$, $F = \{1, 2\}$ and $R = \{(1, 2), (2, 3)\}$, is $\forall x\,(Fx \to \exists y\, Rxy)$ true?
+step: A universal sentence is true when its body is true for every element, so check $x = 1$, $x = 2$ and $x = 3$.
+step: For $x = 1$: $F1$ is true, and $\exists y\, R1y$ is true with $y = 2$, because $(1, 2) \in R$. The conditional is true.
+step: For $x = 2$: $F2$ is true, and $\exists y\, R2y$ is true with $y = 3$. The conditional is true.
+step: For $x = 3$: $F3$ is false, so the conditional is true whatever follows, even though no $y$ satisfies $R3y$.
+answer: True, since the body holds for all three elements.
+
+@example
+title: Finding a witness to a false universal sentence
+problem: In the model with domain $\{1, 2, 3\}$ and $R = \{(1, 2), (2, 1), (2, 3)\}$, is $\forall x\, \forall y\,(Rxy \to Ryx)$ true? The sentence says that $R$ is symmetric.
+step: A universal sentence is false as soon as one case fails, so look for a pair $(x, y)$ with $Rxy$ true and $Ryx$ false.
+step: The pair $(1, 2)$ is fine: $(2, 1)$ is in $R$. The pair $(2, 1)$ is fine for the same reason.
+step: The pair $(2, 3)$ is in $R$, but $(3, 2)$ is not. With $x = 2$ and $y = 3$, the conditional $Rxy \to Ryx$ is false.
+answer: False; the witness is $x = 2$, $y = 3$.
+
+@mistakes
+- Writing `{}` for the empty set; it is an empty dictionary, and the empty set is `set()`.
+- Storing a one-place predicate as a set of numbers, `{1, 2}`, while `holds` looks for tuples such as `(1,)`.
+- Forgetting that a one-element tuple needs a comma: `(1)` is just the number `1`.
+- Evaluating a quantifier body without extending the environment, so the variable is never bound and `env[x]` raises a `KeyError`.
+
+@practice mc
+prompt: What is the value of the expression `{1, 2, 3} - {2, 5}` in Python?
+choice*: `{1, 3}`
+choice: `{5}`
+choice: `{1, 2, 3, 5}`
+choice: `{2}`
+hint: The minus operator on sets removes from the left set whatever also occurs in the right set.
+solution: The difference keeps the elements of `{1, 2, 3}` that are not in `{2, 5}`, which are 1 and 3. The element 5 was never in the left set, so it does not appear.
+
+@practice text
+prompt: What does this program print?
+
+```python
+ages = {'Ana': 31, 'Bo': 27}
+ages['Cy'] = 40
+ages['Bo'] = ages['Bo'] + 1
+print(len(ages), ages['Bo'], 'Ana' in ages, 'Di' in ages)
+```
+answer: 3 28 True False
+check: run("ages = {'Ana': 31, 'Bo': 27}\nages['Cy'] = 40\nages['Bo'] = ages['Bo'] + 1\nprint(len(ages), ages['Bo'], 'Ana' in ages, 'Di' in ages)\n")
+hint: Track the dictionary after each assignment.
+solution: Adding `'Cy'` makes three entries, and the third line changes the value for `'Bo'` from 27 to 28. `'Ana'` is a key and `'Di'` is not, so the program prints `3 28 True False`.
+
+@practice code
+prompt: A binary relation is a set of pairs. Write three functions: `is_reflexive(domain, rel)`, true when `(x, x)` is in `rel` for every `x` in `domain`; `is_symmetric(rel)`, true when `(y, x)` is in `rel` whenever `(x, y)` is; and `is_transitive(rel)`, true when `(x, w)` is in `rel` whenever both `(x, y)` and `(y, w)` are.
+starter:
+```python
+def is_reflexive(domain, rel):
+    pass
+
+def is_symmetric(rel):
+    pass
+
+def is_transitive(rel):
+    pass
+```
+tests:
+```python
+D = {1, 2, 3}
+assert is_reflexive(D, {(1, 1), (2, 2), (3, 3), (1, 2)}) == True
+assert is_reflexive(D, {(1, 1), (2, 2)}) == False
+assert is_symmetric({(1, 2), (2, 1), (3, 3)}) == True
+assert is_symmetric({(1, 2)}) == False
+assert is_transitive({(1, 2), (2, 3), (1, 3)}) == True
+assert is_transitive({(1, 2), (2, 3)}) == False
+assert is_transitive({(1, 2), (2, 1)}) == False
+assert is_transitive({(1, 2), (2, 1), (1, 1), (2, 2)}) == True
+assert is_reflexive(set(), set()) == True
+assert is_symmetric(set()) == True
+```
+model:
+```python
+def is_reflexive(domain, rel):
+    return all((x, x) in rel for x in domain)
+
+def is_symmetric(rel):
+    return all((y, x) in rel for (x, y) in rel)
+
+def is_transitive(rel):
+    return all((x, w) in rel
+               for (x, y) in rel for (z, w) in rel if y == z)
+```
+hint: Each property is a "for all" statement, which is what `all` with a generator expression expresses.
+hint: For transitivity, look at every pair of pairs `(x, y)` and `(z, w)` where `y == z`, and require `(x, w)`.
+solution: Reflexivity asks for `(x, x)` for every `x` in the domain. Symmetry asks for the reversed pair of every pair. Transitivity asks, for every two pairs that chain, for the pair that joins their ends. The empty relation is symmetric and transitive, and reflexive only on an empty domain.
+
+@practice code
+prompt: The starter defines `extend` and `holds` as in this lesson. Write `extension(model, f, var)` that returns the set of elements `d` of the domain for which the formula `f` is true when the variable `var` is given the value `d` (with no other variables free in `f`).
+starter:
+```python
+def extend(env, var, d):
+    new = dict(env)
+    new[var] = d
+    return new
+
+def holds(model, f, env):
+    op = f[0]
+    if op == 'pred':
+        return tuple(env[x] for x in f[2:]) in model['preds'][f[1]]
+    if op == 'eq':
+        return env[f[1]] == env[f[2]]
+    if op == 'not':
+        return not holds(model, f[1], env)
+    if op == 'all':
+        return all(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    if op == 'some':
+        return any(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    a = holds(model, f[1], env)
+    b = holds(model, f[2], env)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+
+def extension(model, f, var):
+    pass
+```
+tests:
+```python
+M = {'domain': {1, 2, 3, 4},
+     'preds': {'F': {(1,), (2,)}, 'G': {(2,), (3,)},
+               'R': {(1, 2), (2, 3), (3, 4)}}}
+assert extension(M, ('pred', 'F', 'x'), 'x') == {1, 2}
+assert extension(M, ('and', ('pred', 'F', 'x'), ('pred', 'G', 'x')), 'x') == {2}
+assert extension(M, ('not', ('pred', 'G', 'x')), 'x') == {1, 4}
+assert extension(M, ('some', 'y', ('pred', 'R', 'x', 'y')), 'x') == {1, 2, 3}
+g = ('all', 'y', ('imp', ('pred', 'R', 'x', 'y'), ('pred', 'G', 'y')))
+assert extension(M, g, 'x') == {1, 2, 4}
+```
+model:
+```python
+def extend(env, var, d):
+    new = dict(env)
+    new[var] = d
+    return new
+
+def holds(model, f, env):
+    op = f[0]
+    if op == 'pred':
+        return tuple(env[x] for x in f[2:]) in model['preds'][f[1]]
+    if op == 'eq':
+        return env[f[1]] == env[f[2]]
+    if op == 'not':
+        return not holds(model, f[1], env)
+    if op == 'all':
+        return all(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    if op == 'some':
+        return any(holds(model, f[2], extend(env, f[1], d))
+                   for d in model['domain'])
+    a = holds(model, f[1], env)
+    b = holds(model, f[2], env)
+    if op == 'and':
+        return a and b
+    if op == 'or':
+        return a or b
+    if op == 'imp':
+        return (not a) or b
+    return a == b
+
+def extension(model, f, var):
+    return {d for d in model['domain'] if holds(model, f, {var: d})}
+```
+hint: Loop over the domain and keep the elements for which `holds` is true; the environment `{var: d}` gives the variable its value.
+solution: A set comprehension over the domain, filtered by `holds(model, f, {var: d})`, collects exactly the satisfiers. In the last test, `x = 4` satisfies $\forall y\,(Rxy \to Gy)$ vacuously, since nothing is related to `x` by `R` as the first argument, while `x = 3` fails because $R34$ holds but $G4$ does not.
+
+@practice code
+prompt: Write `all_relations(domain)` that returns the list of all binary relations on `domain`, each a `frozenset` of ordered pairs of elements of `domain`. A domain with $n$ elements has $n^2$ possible pairs, and each subset of them is a relation, so there are $2^{n^2}$ relations. The order of the list does not matter. For `{1}` the result is a list of the two relations `frozenset()` and `frozenset({(1, 1)})`.
+starter:
+```python
+from itertools import product
+
+def all_relations(domain):
+    pass
+```
+tests:
+```python
+assert len(all_relations({1, 2})) == 16
+assert len(all_relations({1})) == 2
+assert len(all_relations(set())) == 1
+assert frozenset() in all_relations({1, 2})
+assert frozenset({(1, 1), (1, 2), (2, 1), (2, 2)}) in all_relations({1, 2})
+assert all(isinstance(r, frozenset) for r in all_relations({1, 2}))
+```
+model:
+```python
+from itertools import product
+
+def all_relations(domain):
+    pairs = [(x, y) for x in sorted(domain) for y in sorted(domain)]
+    return [frozenset(p for p, keep in zip(pairs, bits) if keep)
+            for bits in product([False, True], repeat=len(pairs))]
+```
+hint: First list all the possible ordered pairs; a relation chooses, for each pair, whether to include it.
+hint: `product([False, True], repeat=len(pairs))` lists every way of choosing; use `zip(pairs, bits)` to pick the included pairs.
+solution: Each relation corresponds to a row of a truth table over the possible pairs: `True` means the pair is in the relation. So `product` over `len(pairs)` choices generates all $2^{n^2}$ relations, and each is turned into a `frozenset` of the chosen pairs. For the empty domain there are no pairs and exactly one relation, the empty one.
+
+@quiz code
+prompt: A relation `rel` (a set of pairs) is **functional on** `domain` when every element of `domain` is the first item of exactly one pair of `rel`. Write `is_function(domain, rel)` that returns `True` in that case, and `False` otherwise.
+starter:
+```python
+def is_function(domain, rel):
+    pass
+```
+tests:
+```python
+D = {1, 2, 3}
+assert is_function(D, {(1, 2), (2, 3), (3, 1)}) == True
+assert is_function(D, {(1, 2), (2, 3)}) == False
+assert is_function(D, {(1, 2), (1, 3), (2, 3), (3, 1)}) == False
+assert is_function(D, {(1, 1), (2, 1), (3, 1)}) == True
+assert is_function(set(), set()) == True
+```
+model:
+```python
+def is_function(domain, rel):
+    return all(len([y for (x2, y) in rel if x2 == x]) == 1
+               for x in domain)
+```
+hint: For each `x`, collect the second items of the pairs that start with `x`, and look at the length of that list.
+solution: For every element `x`, the number of pairs `(x, y)` in `rel` must be exactly 1: zero means no value, and two or more mean `x` is related to several values. This is the sentence $\forall x\, \exists! y\, Rxy$ evaluated by counting.
+
+@quiz num
+prompt: A relation on a domain is any set of ordered pairs of elements of the domain. How many different binary relations are there on a domain with 3 elements?
+answer: 512
+unit: relations
+check: len(list(product([0, 1], repeat=9)))
+hint: There are $3 \times 3 = 9$ possible ordered pairs, and each is either in the relation or not.
+solution: Each of the 9 pairs is independently in or out, so there are $2^9 = 512$ relations, including the empty relation and the relation containing all nine pairs.
+
+@quiz mc
+prompt: In the model with domain $\{1, 2, 3\}$ and $R = \{(1, 2), (2, 3), (3, 1)\}$, which sentence is true?
+choice*: $\forall x\, \exists y\, Rxy$
+choice: $\exists y\, \forall x\, Rxy$
+choice: $\forall x\, \forall y\,(Rxy \to Ryx)$
+choice: $\exists x\, Rxx$
+hint: Check each sentence against the three pairs of $R$.
+solution: Every element is the first item of a pair (1 with 2, 2 with 3, 3 with 1), so $\forall x\, \exists y\, Rxy$ is true. No element is the second item of pairs starting at all three elements, so the second sentence is false; $(1, 2)$ is in $R$ but $(2, 1)$ is not, so the third is false; and no pair has equal items, so the fourth is false.

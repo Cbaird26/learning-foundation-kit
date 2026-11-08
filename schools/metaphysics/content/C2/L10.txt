@@ -1,0 +1,297 @@
+@lesson
+title: Satisfiability by search and backtracking
+summary: Decide whether a set of clauses is satisfiable by recursive search with backtracking, return a model when there is one, and use the search to test entailment.
+objective: Represent a CNF formula as a list of clauses of literal strings, and simplify it after assigning a literal.
+objective: Write and trace a backtracking search that returns a satisfying assignment or None.
+objective: Test entailment by checking that the premises together with the negated conclusion are unsatisfiable.
+reading: Python for Everybody, Chapter 8 "Lists" and Chapter 9 "Dictionaries". For the algorithm, look up the "DPLL algorithm" in an encyclopedia of logic or computer science.
+
+@article
+A truth table for $n$ letters tries all $2^n$ valuations, whether or not the first few choices already doom the formula. A **backtracking search** is smarter: it assigns letters one at a time, simplifies the formula after each choice, and abandons a branch as soon as it contains a clause that cannot be satisfied. This is the heart of the DPLL family of algorithms, named for Davis, Putnam, Logemann and Loveland, on which practical satisfiability solvers are built.
+
+### Clauses as lists
+
+Last week ended with a CNF formula as a list of clauses. A **literal** is a string: `'P'` for the letter and `'-P'` for its negation. A **clause** is a list of literals, which is true when at least one literal is true. A formula is a list of clauses, true when all clauses are true. Two special cases follow from the definitions of `any` and `all`:
+
+| list | meaning |
+|---|---|
+| `[]` (no clauses) | true under every valuation: nothing is required |
+| `[...,  [], ...]` (an empty clause) | false under every valuation: a disjunction with no literals cannot be true |
+
+### Assigning a literal
+
+Suppose we make the literal `lit` true. Then every clause containing `lit` is satisfied and can be deleted, and in the remaining clauses the opposite literal is false and can be deleted:
+
+```python
+def negate(lit):
+    return lit[1:] if lit.startswith('-') else '-' + lit
+
+def assign(clauses, lit):
+    """Simplify the clause list after making lit true."""
+    return [[x for x in c if x != negate(lit)]
+            for c in clauses if lit not in c]
+```
+
+A clause that loses its last literal becomes `[]`: a **conflict**, and the branch fails.
+
+### The search
+
+```python
+def solve(clauses):
+    """Return a dict of letters that satisfies the clauses, or None."""
+    if not clauses:
+        return {}
+    if [] in clauses:
+        return None
+    lit = clauses[0][0]
+    for choice in (lit, negate(lit)):
+        result = solve(assign(clauses, choice))
+        if result is not None:
+            result[choice.lstrip('-')] = not choice.startswith('-')
+            return result
+    return None
+```
+
+The function picks a literal from the first clause, tries it true, and, if that branch fails, tries it false: that retreat is **backtracking**. A successful branch returns a dictionary, to which each level on the way back adds the choice it made. The result may omit letters that did not matter: any value for them works. The two base cases are the two special lists in the table. The search is correct because every clause list is satisfiable if and only if it is satisfiable with `lit` true or with `lit` false. Two string methods appear in the code: `s.startswith('-')` is `True` when `s` begins with a hyphen, and `s.lstrip('-')` removes hyphens from the start of `s`.
+
+A standard improvement is **unit propagation**: a clause with a single literal forces that literal to be true, so the search need not branch on it. Choosing such a literal first, whenever one exists, prunes many branches.
+
+### Entailment by refutation
+
+| P1 | $\Gamma \vDash A$ if and only if no valuation makes all of $\Gamma$ true and $A$ false. |
+| P2 | No valuation makes $P \to Q$, $Q \to R$, $P$ and $\neg R$ all true. |
+| C | So $P \to Q,\ Q \to R,\ P \vDash R$. |
+
+The argument is valid, and P1 is the definition of entailment. P2 is exactly what the search shows: `solve([['-P', 'Q'], ['-Q', 'R'], ['P'], ['-R']])` returns `None`. To test an entailment, add the negation of the conclusion to the premises and see whether `solve` finds a model.
+
+A formula that is not in CNF can be tested with the pipeline of last week: `solve(to_clauses(cnf(f)))`. If it returns a dictionary, give every missing letter any value and confirm with `evaluate` that the formula is true; if it returns `None`, the formula is unsatisfiable. Satisfiability of CNF formulas (SAT) is NP-complete by the Cook-Levin theorem of the early 1970s: no algorithm is known that is fast on all inputs, and whether one exists is the open P versus NP problem. Backtracking nonetheless handles many large practical formulas well.
+
+@example
+title: A search that fails everywhere
+problem: Trace `solve` on `[['P', 'Q'], ['-P', 'Q'], ['-Q', 'R'], ['-R']]` and say what it returns and how many calls it makes.
+step: The first call picks `P`, the first literal of the first clause. Assigning `P` true removes `['P', 'Q']` and shortens `['-P', 'Q']` to `['Q']`, leaving `[['Q'], ['-Q', 'R'], ['-R']]`.
+step: In that branch the search picks `Q`. Assigning `Q` true leaves `[['R'], ['-R']]`. Both `R` true and `R` false produce an empty clause: two failing calls. Assigning `Q` false turns `['Q']` into `[]`: another failing call. So the branch with `P` true fails.
+step: The search backtracks and assigns `P` false. This removes `['-P', 'Q']` and shortens `['P', 'Q']` to `['Q']`, leaving the same list `[['Q'], ['-Q', 'R'], ['-R']]`, which fails in the same way.
+step: Counting calls: 1 at the top; 1 + 1 + 2 + 1 = 5 in the branch with `P` true (counting the call for the list after assigning `P`, the call after assigning `Q` true, its two failing children, and the call after assigning `Q` false); and another 5 in the branch with `P` false, which makes 11.
+answer: `None` (the clauses are unsatisfiable), after 11 calls
+
+@example
+title: A search that succeeds
+problem: Trace `solve` on `[['P', 'Q'], ['-P', 'R'], ['-Q', 'R'], ['-R', 'S']]`.
+step: Pick `P`, the first literal. Assigning `P` true deletes `['P', 'Q']` and shortens `['-P', 'R']` to `['R']`, leaving `[['R'], ['-Q', 'R'], ['-R', 'S']]`.
+step: Pick `R`. Assigning `R` true deletes `['R']` and `['-Q', 'R']` and shortens `['-R', 'S']` to `['S']`, leaving `[['S']]`.
+step: Pick `S`. Assigning it true deletes the last clause, leaving `[]`, the empty list of clauses, so the call returns `{}`.
+step: On the way back each level adds its choice: `S` true, then `R` true, then `P` true. Four calls were made, and `Q` was never needed.
+answer: `{'S': True, 'R': True, 'P': True}`; any value of `Q` works.
+
+@mistakes
+- Confusing the empty list `[]` of clauses (true, nothing required) with a list containing the empty clause `[[]]` (false).
+- Forgetting to remove the satisfied clauses, or to shorten the other clauses, after an assignment: the formula then never gets simpler.
+- Returning `None` after the first failed branch instead of trying the opposite value of the literal.
+- Treating a returned dictionary as a complete valuation: letters it omits may take either value.
+
+@practice mc
+prompt: A clause list contains the empty clause `[]` among its clauses. What does that tell you?
+choice*: The whole clause list is unsatisfiable, because an empty clause is false under every valuation
+choice: The clause list is satisfied, because an empty clause has nothing left to check
+choice: The clause list has no letters, so it is true under every valuation
+choice: The search must try the opposite value of the last literal assigned, but the list may still be satisfiable
+hint: A clause is true when at least one of its literals is true.
+solution: A clause with no literals has no literal that could be true, so the clause is false whatever the valuation, and a conjunction containing a false clause is false. This is why `solve` returns `None` as soon as `[]` appears; the same list is unsatisfiable also after backtracking, so the branch is abandoned. An empty list of clauses, in contrast, is true.
+
+@practice text
+prompt: The functions below are as in this lesson. What does the program print?
+
+```python
+def negate(lit):
+    return lit[1:] if lit.startswith('-') else '-' + lit
+
+def assign(clauses, lit):
+    return [[x for x in c if x != negate(lit)]
+            for c in clauses if lit not in c]
+
+print(assign([['P', 'Q'], ['-P', 'R'], ['S']], 'P'))
+```
+answer: [['R'], ['S']]
+check: run("def negate(lit):\n    return lit[1:] if lit.startswith('-') else '-' + lit\n\ndef assign(clauses, lit):\n    return [[x for x in c if x != negate(lit)]\n            for c in clauses if lit not in c]\n\nprint(assign([['P', 'Q'], ['-P', 'R'], ['S']], 'P'))\n")
+hint: Clauses containing `'P'` are dropped; from the others the literal `'-P'` is removed.
+solution: The clause `['P', 'Q']` contains `'P'`, so it is deleted. The clause `['-P', 'R']` loses `'-P'` and becomes `['R']`, and `['S']` is unchanged. The result is `[['R'], ['S']]`.
+
+@practice code
+prompt: Write `unit_literal(clauses)` that returns the literal of the first unit clause (a clause with exactly one literal) in the list of clauses, or `None` if there is no unit clause. The empty clause is not a unit clause.
+starter:
+```python
+def unit_literal(clauses):
+    pass
+```
+tests:
+```python
+assert unit_literal([['P', 'Q'], ['-R'], ['S']]) == '-R'
+assert unit_literal([['P', 'Q'], ['-P', 'R']]) is None
+assert unit_literal([]) is None
+assert unit_literal([['Q']]) == 'Q'
+assert unit_literal([['P', 'Q'], [], ['R']]) == 'R'
+```
+model:
+```python
+def unit_literal(clauses):
+    for c in clauses:
+        if len(c) == 1:
+            return c[0]
+    return None
+```
+hint: Loop over the clauses and look at each clause's length.
+solution: Return `c[0]` from the first clause of length exactly 1. The test is `len(c) == 1`, which skips the empty clause, and `None` is returned only after the loop has examined every clause.
+
+@practice code
+prompt: Write `all_models(clauses, names)` that returns, by brute force, the list of all valuations of the letters in `names` that satisfy every clause, as dictionaries from letter names to truth values, in the standard order (first letter changes slowest, `True` first). Literals are strings `'P'` and `'-P'`. An empty list of clauses is satisfied by every valuation, and a list containing an empty clause by none.
+starter:
+```python
+from itertools import product
+
+def all_models(clauses, names):
+    pass
+```
+tests:
+```python
+rows = all_models([['P', 'Q']], ['P', 'Q'])
+assert rows == [{'P': True, 'Q': True}, {'P': True, 'Q': False}, {'P': False, 'Q': True}]
+assert all_models([['P'], ['-P']], ['P']) == []
+assert all_models([], ['P']) == [{'P': True}, {'P': False}]
+assert all_models([[]], ['P']) == []
+assert all_models([['-P', 'Q'], ['-Q', 'P']], ['P', 'Q']) == [
+    {'P': True, 'Q': True}, {'P': False, 'Q': False}]
+```
+model:
+```python
+from itertools import product
+
+def holds(literal, v):
+    if literal.startswith('-'):
+        return not v[literal[1:]]
+    return v[literal]
+
+def all_models(clauses, names):
+    result = []
+    for row in product([True, False], repeat=len(names)):
+        v = dict(zip(names, row))
+        if all(any(holds(x, v) for x in c) for c in clauses):
+            result.append(v)
+    return result
+```
+hint: Generate every valuation with `product`, as in the truth-table lessons.
+hint: A valuation satisfies the clauses when every clause has some literal that is true; a literal `'-P'` is true when `P` is false.
+solution: For each valuation, check `all` clauses, and for each clause check `any` of its literals is true. A negative literal is true when its letter is false. `all` of nothing is true, so the empty clause list accepts every valuation, while `any` of nothing is false, so an empty clause rejects every valuation.
+
+@practice code
+prompt: The starter defines `negate`, `assign` and `solve` as in this lesson. Write `entails_clause(premises, clause)` where `premises` is a list of clauses and `clause` is a list of literals (read as their disjunction). It returns `True` when the premises entail the clause, which holds when the premises together with the negation of every literal of the clause are unsatisfiable.
+starter:
+```python
+def negate(lit):
+    return lit[1:] if lit.startswith('-') else '-' + lit
+
+def assign(clauses, lit):
+    return [[x for x in c if x != negate(lit)]
+            for c in clauses if lit not in c]
+
+def solve(clauses):
+    if not clauses:
+        return {}
+    if [] in clauses:
+        return None
+    lit = clauses[0][0]
+    for choice in (lit, negate(lit)):
+        result = solve(assign(clauses, choice))
+        if result is not None:
+            result[choice.lstrip('-')] = not choice.startswith('-')
+            return result
+    return None
+
+def entails_clause(premises, clause):
+    pass
+```
+tests:
+```python
+assert entails_clause([['-P', 'Q'], ['-Q', 'R'], ['P']], ['R']) == True
+assert entails_clause([['P', 'Q'], ['-P', 'R']], ['Q', 'R']) == True
+assert entails_clause([['P', 'Q']], ['P']) == False
+assert entails_clause([['P'], ['-P']], ['Z']) == True
+assert entails_clause([['P']], []) == False
+assert entails_clause([['P'], ['-P']], []) == True
+```
+model:
+```python
+def negate(lit):
+    return lit[1:] if lit.startswith('-') else '-' + lit
+
+def assign(clauses, lit):
+    return [[x for x in c if x != negate(lit)]
+            for c in clauses if lit not in c]
+
+def solve(clauses):
+    if not clauses:
+        return {}
+    if [] in clauses:
+        return None
+    lit = clauses[0][0]
+    for choice in (lit, negate(lit)):
+        result = solve(assign(clauses, choice))
+        if result is not None:
+            result[choice.lstrip('-')] = not choice.startswith('-')
+            return result
+    return None
+
+def entails_clause(premises, clause):
+    extra = [[negate(lit)] for lit in clause]
+    return solve(premises + extra) is None
+```
+hint: The clause is false exactly when every one of its literals is false.
+hint: Add one unit clause `[negate(lit)]` for each literal and ask whether the extended list is unsatisfiable.
+solution: A valuation is a countermodel if it satisfies the premises and makes every literal of the clause false, so add a unit clause forcing each literal false. If the extended list has no model, there is no countermodel and the entailment holds. For the empty clause no unit clauses are added, so the entailment holds exactly when the premises themselves are unsatisfiable.
+
+@quiz code
+prompt: Write `verify(clauses, model)` that returns `True` when the dictionary `model` (letters to truth values) makes every clause true: each clause must contain a literal that is true under `model`. A letter missing from `model` makes its literals not true. Literals are strings such as `'P'` and `'-P'`.
+starter:
+```python
+def verify(clauses, model):
+    pass
+```
+tests:
+```python
+assert verify([['P', 'Q'], ['-P']], {'P': False, 'Q': True}) == True
+assert verify([['P', 'Q'], ['-P']], {'P': True, 'Q': True}) == False
+assert verify([], {}) == True
+assert verify([[]], {'P': True}) == False
+assert verify([['P', '-Q']], {'Q': False}) == True
+assert verify([['P', 'Q']], {'P': False}) == False
+assert verify([['-Q']], {}) == False
+```
+model:
+```python
+def verify(clauses, model):
+    def true_literal(x):
+        if x.startswith('-'):
+            return model.get(x[1:]) is False
+        return model.get(x) is True
+    return all(any(true_literal(x) for x in c) for c in clauses)
+```
+hint: A positive literal is true when its letter is `True` in the model; a negative literal when its letter is `False`.
+hint: Use `model.get(name)`, which gives `None` for a missing letter, and compare with `True` or `False`.
+solution: Write a small test for one literal, then require `all` clauses to have `any` true literal. Testing `model.get(name) is False` fails for a missing letter, because `None` is not `False`, which is what the prompt asks.
+
+@quiz num
+prompt: The function `solve` of this lesson is called on `[['A', 'B'], ['-A', 'B'], ['A', '-B'], ['-A', '-B']]`. Counting the first call, how many calls to `solve` are made in total?
+answer: 7
+unit: calls
+check: int(run("calls = 0\ndef negate(lit):\n    return lit[1:] if lit.startswith('-') else '-' + lit\ndef assign(clauses, lit):\n    return [[x for x in c if x != negate(lit)] for c in clauses if lit not in c]\ndef solve(clauses):\n    global calls\n    calls += 1\n    if not clauses:\n        return {}\n    if [] in clauses:\n        return None\n    lit = clauses[0][0]\n    for choice in (lit, negate(lit)):\n        result = solve(assign(clauses, choice))\n        if result is not None:\n            result[choice.lstrip('-')] = not choice.startswith('-')\n            return result\n    return None\nsolve([['A', 'B'], ['-A', 'B'], ['A', '-B'], ['-A', '-B']])\nprint(calls)\n"))
+hint: Draw the search tree: the top call, one call for each value of `A`, and below each of those one call for each value of `B`.
+solution: The top call picks `A`. Both `A` true and `A` false leave `[['B'], ['-B']]`, and each of these two calls picks `B` and makes two failing calls. That is $1 + 2 + 4 = 7$ calls, and the clauses are unsatisfiable: they exclude all four combinations of `A` and `B`.
+
+@quiz mc
+prompt: Which statement about satisfiability and entailment is correct?
+choice*: $\Gamma \vDash A$ holds exactly when $\Gamma$ together with $\neg A$ is unsatisfiable
+choice: $\Gamma \vDash A$ holds exactly when $\Gamma$ together with $\neg A$ is satisfiable
+choice: $A$ is a tautology exactly when $A$ is satisfiable
+choice: A backtracking search must always try all $2^n$ valuations before it answers
+hint: A countermodel to an argument makes the premises true and the conclusion false.
+solution: A countermodel of $\Gamma \vDash A$ is a valuation satisfying $\Gamma$ and $\neg A$, so there is none exactly when $\Gamma$ and $\neg A$ together are unsatisfiable. A satisfiable formula need not be a tautology, and backtracking prunes a branch as soon as it contains an empty clause, so it often avoids most valuations.

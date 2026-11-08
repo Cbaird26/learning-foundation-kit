@@ -1,0 +1,287 @@
+@lesson
+title: Finite models of mereology in Python
+summary: Represent finite mereological models in Python, test the axioms of ground and extensional mereology on them, and build the standard power-set model.
+objective: Represent a finite model as a domain and a set of parthood pairs, and write functions that test reflexivity, antisymmetry and transitivity.
+objective: Define overlap, fusion and the supplementation principles as executable checks over a finite domain.
+objective: Build the model of nonempty sets of atoms and use it to confirm counts such as $2^n - 1$.
+reading: Stanford Encyclopedia of Philosophy: the entry "Mereology" (the sections on the axiomatic systems and their models).
+@article
+A theorem tells you what holds in every model. A **model** tells you what a theory permits. To show that a principle is *not* a theorem, you need a model of the axioms in which the principle fails, and for mereology small finite models are enough for most purposes. They are also easy to check by machine, and a machine check is a good guard against the slips that creep into hand verification of an eight-element model with sixty-four pairs.
+
+### Representing a model
+
+A finite mereological model is a pair $(D, P)$: a finite domain $D$ and a set $P \subseteq D \times D$ of ordered pairs, where $(x,y) \in P$ means $Pxy$. In Python, $D$ is a `set` and $P$ is a `set` of tuples. Every function in this lesson takes `D` and `P` first.
+
+```python
+def overlap(D, P, x, y):
+    """x and y overlap iff some z is part of both."""
+    return any((z, x) in P and (z, y) in P for z in D)
+```
+
+Each quantifier of the axioms becomes `all(...)` or `any(...)` over `D`. A universal formula $\forall x\,\forall y\,\varphi$ becomes `all(phi for x in D for y in D)`, and a conditional $\alpha \to \beta$ inside it is written `(not alpha) or beta`, which is the truth table of the material conditional.
+
+```python
+def is_partial_order(D, P):
+    """Reflexivity, antisymmetry and transitivity of P on D."""
+    refl = all((x, x) in P for x in D)
+    anti = all(x == y or not ((x, y) in P and (y, x) in P)
+               for x in D for y in D)
+    trans = all((x, z) in P
+                for x in D for y in D for z in D
+                if (x, y) in P and (y, z) in P)
+    return refl and anti and trans
+```
+
+Notice how the code mirrors the axioms. In `anti` the clause `x == y or not (...)` is the axiom $(Pxy \wedge Pyx) \to x = y$ rewritten as $x = y \vee \neg(Pxy \wedge Pyx)$.
+
+### The supplementation principles and fusion
+
+```python
+def ssp(D, P):
+    """Strong supplementation: not Pxy -> some z is part of x, disjoint from y."""
+    return all(any((z, x) in P and not overlap(D, P, z, y) for z in D)
+               for x in D for y in D if (x, y) not in P)
+
+def is_fusion(D, P, z, S):
+    """z fuses the set S iff whatever overlaps z overlaps a member of S."""
+    return all(overlap(D, P, w, z) == any(overlap(D, P, w, s) for s in S)
+               for w in D)
+```
+
+Weak supplementation is the same with the guard `(x, y) in P and x != y` and the roles of the variables adjusted. A model satisfies **unrestricted composition** when every nonempty set $S \subseteq D$ has a fusion in $D$. For a domain of 7 elements there are $2^7 - 1 = 127$ nonempty subsets, so brute force is trivial; at 20 elements it would already take over a million subsets, so finite checking is for small models.
+
+### The model of nonempty sets of atoms
+
+The most important finite model takes a set of atoms and lets the elements be the nonempty subsets, with parthood as inclusion:
+
+```python
+from itertools import combinations
+
+def power_model(atoms):
+    atoms = list(atoms)
+    D = {frozenset(c)
+         for r in range(1, len(atoms) + 1)
+         for c in combinations(atoms, r)}
+    P = {(x, y) for x in D for y in D if x <= y}
+    return D, P
+```
+
+`frozenset` is used because ordinary sets cannot be members of sets. The relation `x <= y` between sets is inclusion, so reflexivity is automatic. With three atoms the domain has $2^3 - 1 = 7$ elements and $P$ has $3^3 - 2^3 = 19$ pairs: choose, for each atom, whether it is in neither set, in both, or only in the larger one ($3^3$ ways), and remove the $2^3$ ways in which the smaller set is empty. Running `ssp`, `is_partial_order` and the fusion test on this model confirms that it is a model of CEM, as the Boolean-algebra theorem of Lesson 2 predicts.
+
+### Reading the output
+
+Counterexamples are more informative than `True`. A useful habit is to make checking functions return a *witness* when a principle fails, and to print it. When you formalize a recent argument in this course, a Python-found countermodel is a perfectly good way to show that a premise is not forced by the axioms, provided you state the model in the text so a reader can verify it by hand. Never let the code stand in for the model: write the domain and the relation down.
+
+@example
+title: Tracing a model-checking program
+problem: What does this program print? Explain the output.
+
+```python
+D = {1, 2, 3, 6}
+P = {(x, y) for x in D for y in D if y % x == 0}
+def overlap(x, y):
+    return any((z, x) in P and (z, y) in P for z in D)
+print(overlap(2, 3), overlap(2, 6))
+print(sum(1 for x in D for y in D if x != y and (x, y) in P))
+```
+step: The set `P` contains $(x,y)$ exactly when $x$ divides $y$. So the model is divisibility on $\{1,2,3,6\}$.
+step: `overlap(2, 3)` asks for a common divisor in `D` of $2$ and $3$. The number $1$ divides both, so it returns `True`.
+step: `overlap(2, 6)` is true because $2$ is part of both. The first line prints `True True`.
+step: The second line counts pairs of distinct elements with $x \mid y$: $(1,2)$, $(1,3)$, $(1,6)$, $(2,6)$, $(3,6)$, which is 5 pairs. So it prints `5`.
+answer: The program prints `True True` and then `5`.
+
+@example
+title: Writing a check from an axiom
+problem: Write `wsp(D, P)` that tests weak supplementation, and say what it returns on the two-element chain $\{0, 1\}$ with $P = \{(0,0), (1,1), (0,1)\}$.
+step: Weak supplementation says $PPxy \to \exists z\,(Pzy \wedge \neg Ozx)$. It must hold for every pair $(x,y)$ that satisfies the antecedent: $Pxy$ and $x \neq y$.
+step: Translate each part: the pair loop with its guard, the existential as `any`, and the disjointness as `not overlap(...)`:
+
+```python
+def wsp(D, P):
+    return all(any((z, y) in P and not overlap(D, P, z, x) for z in D)
+               for x in D for y in D if (x, y) in P and x != y)
+```
+step: On the chain, the only pair with $PPxy$ is $x = 0$, $y = 1$. The candidates for $z$ are $0$ and $1$, and both are parts of $1$. But $0$ overlaps $0$ (it is part of itself), and $1$ overlaps $0$ (they share the part $0$). So no candidate is disjoint from $x$, and `any` is false.
+step: Hence `wsp` returns `False` on the chain, which agrees with the lesson-1 fact that weak supplementation is not a theorem of ground mereology.
+answer: `wsp` returns `False` on the two-element chain.
+
+@mistakes
+- Writing `(x, y) in P` for proper parthood. `P` contains the reflexive pairs, so proper parthood also needs `x != y`.
+- Forgetting that `all(...)` over an empty set is `True` and `any(...)` over an empty set is `False`. An empty domain satisfies every universal axiom vacuously.
+- Writing a transitivity test that skips chains whose ends coincide (`x != z`): the chain $(1,2), (2,1)$ then escapes, although it requires $(1,1)$.
+- Testing "fusion" by the condition that every member of `S` is part of `z`. That is only half of the definition used here.
+
+@practice text
+prompt: What does this program print? Type the output exactly.
+
+```python
+D = {1, 2, 3}
+P = {(1, 1), (2, 2), (3, 3), (1, 3), (2, 3)}
+def overlap(x, y):
+    return any((z, x) in P and (z, y) in P for z in D)
+print(overlap(1, 2), overlap(1, 3), overlap(2, 3))
+```
+answer: False True True
+check: run("D = {1, 2, 3}\nP = {(1, 1), (2, 2), (3, 3), (1, 3), (2, 3)}\ndef overlap(x, y):\n    return any((z, x) in P and (z, y) in P for z in D)\nprint(overlap(1, 2), overlap(1, 3), overlap(2, 3))\n")
+hint: Find the parts of each element: which $z$ satisfy $(z,1)$ and $(z,2)$ both?
+solution: The parts of $1$ are $\{1\}$, of $2$ are $\{2\}$ and of $3$ are $\{1,2,3\}$. Elements $1$ and $2$ share no part, so `False`; $1$ and $3$ share $1$, and $2$ and $3$ share $2$, so both are `True`.
+
+@practice code
+prompt: Write `is_partial_order(D, P)`, where `D` is a set and `P` a set of pairs `(x, y)` meaning $x$ is part of $y$. Return `True` exactly when `P` is reflexive on `D`, antisymmetric and transitive. Pairs in `P` mention only members of `D`. An empty domain with an empty `P` counts as a partial order.
+starter:
+```python
+def is_partial_order(D, P):
+    pass
+```
+tests:
+```python
+chain = ({1, 2, 3}, {(1, 1), (2, 2), (3, 3), (1, 2), (2, 3), (1, 3)})
+assert is_partial_order(*chain) == True
+assert is_partial_order({1, 2}, {(1, 1), (1, 2)}) == False
+assert is_partial_order({1, 2}, {(1, 1), (2, 2), (1, 2), (2, 1)}) == False
+assert is_partial_order({1, 2, 3}, {(1, 1), (2, 2), (3, 3), (1, 2), (2, 3)}) == False
+assert is_partial_order(set(), set()) == True
+```
+model:
+```python
+def is_partial_order(D, P):
+    """Check reflexivity, antisymmetry and transitivity of P on D."""
+    refl = all((x, x) in P for x in D)
+    anti = all(x == y or not ((x, y) in P and (y, x) in P)
+               for x in D for y in D)
+    trans = all((x, z) in P
+                for x in D for y in D for z in D
+                if (x, y) in P and (y, z) in P)
+    return refl and anti and trans
+```
+hint: Write one `all(...)` for each axiom and combine the three results.
+hint: For transitivity, loop over $x$, $y$, $z$ and require $(x,z) \in P$ whenever $(x,y)$ and $(y,z)$ are in $P$.
+solution: Each axiom is a universally quantified condition over `D`, so each becomes an `all(...)`. Antisymmetry says that two distinct elements are never related both ways, and transitivity requires $(x,z)$ whenever $(x,y)$ and $(y,z)$ are present. The second test fails reflexivity (the pair for $2$ is missing), the third fails antisymmetry and the fourth fails transitivity.
+
+@practice code
+prompt: Write `overlap(D, P, x, y)` that returns `True` when some element `z` of `D` satisfies `(z, x) in P` and `(z, y) in P`, and `False` otherwise.
+starter:
+```python
+def overlap(D, P, x, y):
+    pass
+```
+tests:
+```python
+D = {1, 2, 3, 6}
+P = {(a, b) for a in D for b in D if b % a == 0}
+assert overlap(D, P, 2, 3) == True
+assert overlap(D, P, 3, 3) == True
+Q = {(1, 1), (2, 2), (3, 3), (1, 3), (2, 3)}
+assert overlap({1, 2, 3}, Q, 1, 2) == False
+assert overlap({1, 2, 3}, Q, 2, 3) == True
+assert overlap({1, 2, 3}, Q, 3, 2) == True
+```
+model:
+```python
+def overlap(D, P, x, y):
+    """True iff x and y have a common part in D."""
+    return any((z, x) in P and (z, y) in P for z in D)
+```
+hint: Overlap is an existential claim: some part of both.
+solution: Use `any` over the domain, asking for a `z` with `(z, x)` and `(z, y)` both in `P`. In the divisibility model $2$ and $3$ overlap through $1$, while in the second model $1$ and $2$ have no common part.
+
+@practice num
+prompt: Build the model whose elements are the nonempty sets of atoms from four atoms $\{a,b,c,d\}$, with parthood as inclusion. How many ordered pairs $(x,y)$ in the model satisfy $Pxy$?
+answer: 65
+unit: pairs
+check: sum(1 for A in range(1, 16) for B in range(1, 16) if A & B == A)
+hint: Encode each element by the set of atoms it contains; $Pxy$ holds when every atom of $x$ is in $y$.
+solution: For each atom there are three possibilities: in neither set, in both, or only in the larger set, so $3^4 = 81$ pairs $(A,B)$ with $A \subseteq B$. The $2^4 = 16$ with $A$ empty are not elements, leaving $81 - 16 = 65$.
+
+@practice code
+prompt: Write `power_model(atoms)` returning `(D, P)` where `D` is the set of nonempty subsets of `atoms`, each a `frozenset`, and `P` is the set of pairs `(x, y)` of members of `D` with `x` a subset of `y` (equal sets included). `atoms` is any iterable of distinct hashable values. For an empty `atoms`, return two empty sets.
+starter:
+```python
+def power_model(atoms):
+    pass
+```
+tests:
+```python
+D, P = power_model({'a', 'b', 'c'})
+assert len(D) == 7
+assert len(P) == 19
+assert (frozenset('a'), frozenset('ab')) in P
+assert (frozenset('a'), frozenset('a')) in P
+assert frozenset() not in D
+assert power_model([]) == (set(), set())
+```
+model:
+```python
+from itertools import combinations
+
+
+def power_model(atoms):
+    """The model of nonempty sets of atoms, ordered by inclusion."""
+    atoms = list(atoms)
+    D = {frozenset(c)
+         for r in range(1, len(atoms) + 1)
+         for c in combinations(atoms, r)}
+    P = {(x, y) for x in D for y in D if x <= y}
+    return D, P
+```
+hint: `itertools.combinations(atoms, r)` gives the subsets of size `r`; take `r` from 1 up to the number of atoms.
+hint: Build `P` with a set comprehension over pairs of members of `D`, using `x <= y` for inclusion.
+solution: Collect the subsets of each size from 1 to the number of atoms as `frozenset`s, which excludes the empty set, and take `P` to be all pairs related by `<=`, which includes the reflexive pairs. With three atoms there are 7 elements and 19 pairs.
+
+@quiz code
+prompt: Write `ssp(D, P)` that returns `True` exactly when strong supplementation holds in the model: for all `x` and `y` in `D` with `(x, y)` not in `P`, some `z` in `D` has `(z, x)` in `P` and is disjoint from `y` (no common part with `y` in `D`).
+starter:
+```python
+def ssp(D, P):
+    pass
+```
+tests:
+```python
+D = {1, 2, 3, 6}
+P = {(a, b) for a in D for b in D if b % a == 0}
+assert ssp(D, P) == False
+assert ssp({0, 1}, {(0, 0), (1, 1), (0, 1)}) == False
+Q = {(1, 1), (2, 2), (3, 3), (1, 3), (2, 3)}
+assert ssp({1, 2, 3}, Q) == True
+assert ssp({1, 2}, {(1, 1), (2, 2)}) == True
+assert ssp(set(), set()) == True
+```
+model:
+```python
+def ssp(D, P):
+    """Strong supplementation on a finite model."""
+    def overlap(x, y):
+        return any((z, x) in P and (z, y) in P for z in D)
+    return all(any((z, x) in P and not overlap(z, y) for z in D)
+               for x in D for y in D if (x, y) not in P)
+```
+hint: Only pairs with `(x, y)` not in `P` need a witness.
+hint: The witness must be part of `x` and must not overlap `y`.
+solution: Loop over pairs $(x,y)$ whose parthood fails and demand a witness $z$ that is part of $x$ and disjoint from $y$, using an overlap test. In the divisibility model every element has $1$ as a part, so nothing is ever disjoint from anything and `ssp` fails; in the three-element model where $1$ and $2$ are atoms below $3$, a witness always exists.
+
+@quiz num
+prompt: In the model of nonempty sets of atoms from $\{a,b,c\}$ with parthood as inclusion, how many nonempty sets $S$ of elements have the element $\{a,b,c\}$ as a fusion, in the sense that whatever overlaps $\{a,b,c\}$ overlaps a member of $S$?
+answer: 109
+unit: sets
+check: sum(1 for r in range(1, 8) for S in itertools.combinations(range(1, 8), r) if all(any(s & bit for s in S) for bit in (1, 2, 4)))
+hint: Every element overlaps $\{a,b,c\}$, so the condition says every element overlaps a member of $S$.
+hint: Equivalently, every atom must be in some member of $S$: the members of $S$ must cover $\{a,b,c\}$.
+solution: Since every element overlaps $\{a,b,c\}$, the condition requires each atom to lie in some member of $S$. Count families of the 7 elements that cover all three atoms by inclusion–exclusion. There are $2^7$ families in all. The elements avoiding a given atom number 3, those avoiding two given atoms number 1, and none avoids all three. So the count is $2^7 - 3 \cdot 2^3 + 3 \cdot 2^1 - 2^0 = 128 - 24 + 6 - 1 = 109$. The empty family covers nothing, so it is not counted.
+
+@quiz mc
+prompt: A student writes this test for transitivity of a relation `P` (a set of pairs).
+
+```python
+def trans(D, P):
+    return all((x, z) in P
+               for (x, y) in P for (w, z) in P
+               if y == w and x != z)
+```
+
+For which relation does `trans` return `True` although the relation is not transitive?
+choice: `D = {1, 2, 3}` and `P = {(1, 2), (2, 3)}`
+choice*: `D = {1, 2}` and `P = {(1, 2), (2, 1)}`
+choice: `D = {1, 2}` and `P = {(1, 1), (2, 2), (1, 2)}`
+choice: `D = set()` and `P = set()`
+hint: The guard `x != z` skips chains that start and end at the same element.
+solution: With `P = {(1, 2), (2, 1)}`, transitivity requires $(1,1)$ and $(2,2)$, because $(1,2)$ and $(2,1)$ chain back to $1$. The guard `x != z` skips exactly those chains, so `trans` returns `True` wrongly. In the first relation the chain $(1,2), (2,3)$ needs $(1,3)$, which is missing, and `trans` correctly returns `False`; the last two relations are transitive and give `True`.
