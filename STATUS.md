@@ -107,12 +107,12 @@ tasks with volunteers who agree, and no project involves animals.
 | C24 | Neural data analysis | 13/13 | yes | yes |
 | C25 | Computational neuroscience | 13/13 | yes |  |
 | C26 | Computational cognitive modeling | 13/13 | yes |  |
-| C27 | Neuroimaging methods: fMRI, EEG and MEG | 10/13 |  |  |
+| C27 | Neuroimaging methods: fMRI, EEG and MEG | 11/13 |  |  |
 | C30 | Neuroethics and neurotechnology | 13/13 | yes | yes |
-| P1 | Theoretical neuroscience | 9/13 |  |  |
-| P2 | Circuits and systems neuroscience: methods and causal evidence | 8/13 |  |  |
-| P3 | Consciousness and the science of the mind | 7/13 |  |  |
-| P4 | Brains and machines: neural networks as models of the brain | 3/13 |  |  |
+| P1 | Theoretical neuroscience | 10/13 |  |  |
+| P2 | Circuits and systems neuroscience: methods and causal evidence | 10/13 |  |  |
+| P3 | Consciousness and the science of the mind | 10/13 |  |  |
+| P4 | Brains and machines: neural networks as models of the brain | 4/13 |  |  |
 | P5 | Research methods and reproducibility in the brain and behavioral sciences | 0/13 |  |  |
 | P6 | Research apprenticeship and qualifying exams | 0/13 |  |  |
 <!-- /course-table -->
@@ -178,3 +178,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: C24 reviewed (20 fixes); P4 started; BRIEF adds NIH data-sharing and public-access dates and reporting guidelines; writers C25, C26, C27, C30, P1, P2, P3, P4 running; P5 and P6 next
 - 2026-11-08: Neuro: C30 written (review running); writers C25, C26, C27, P1, P2, P3, P4 running; P5 and P6 next
 - 2026-11-08: Neuro: C26 written (review running); reviews of C26 and C30 running; writers C25, C27, P1, P2, P3, P4 running; P5 and P6 next
+- 2026-11-08: Neuro: C25 written (review running); C30 reviewed (11 fixes); P5 and P6 started, so all 21 new courses are written or in progress; writers C27, P1–P6 and reviews of C25 and C26 running

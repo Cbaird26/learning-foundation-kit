@@ -1,0 +1,194 @@
+@lesson
+title: Encoding models and their evaluation
+summary: Fit a regularized linear encoding model from network features to neural responses, evaluate it on held-out data, and recognize the ways an evaluation can leak.
+objective: Write the linear encoding model, its least-squares and ridge solutions, and compute a one-feature ridge slope by hand.
+objective: Compute held-out explained variance and a cross-validated correlation, and explain why training fit is not evidence.
+objective: Design cross-validation folds that respect the structure of the data and name the main sources of leakage.
+reading: Neuromatch Academy computational neuroscience materials: the material on model fitting, linear regression, bias-variance and cross-validation, and on regularization.
+
+@article
+A model unit that looks like a neuron proves little. A model that predicts what a neuron will do to images it has never seen is a claim you can test. An **encoding model** is a function from stimulus features to neural responses, and its evaluation on held-out data is the standard way to turn a resemblance into evidence. The reverse direction, a **decoding model** that predicts the stimulus from the responses, is the logic of multivariate pattern analysis (Haxby and colleagues, 2001). The two use the same regression tools but answer different questions: an encoding model says which features the responses carry and how; a decoder says what information could be read out.
+
+### The linear encoding model
+
+Let $\mathbf{X}$ be an $n \times p$ matrix of features (one row per stimulus, for example the activations of a network layer), and $\mathbf{y}$ the $n$ responses of one neuron or voxel. The **linear encoding model** is $\mathbf{y} = \mathbf{X}\mathbf{w} + \boldsymbol{\varepsilon}$, with noise $\boldsymbol{\varepsilon}$. Least squares minimizes $\|\mathbf{y} - \mathbf{X}\mathbf{w}\|^2$ and gives $\hat{\mathbf{w}} = (\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{X}^\top\mathbf{y}$. With $p$ close to or larger than $n$, which is typical (thousands of units, hundreds of images), $\mathbf{X}^\top\mathbf{X}$ is singular or nearly so, and the fit memorizes the noise. **Ridge regression** shrinks the weights:
+
+$$\hat{\mathbf{w}}_\lambda = (\mathbf{X}^\top\mathbf{X} + \lambda \mathbf{I})^{-1}\mathbf{X}^\top\mathbf{y}, \qquad \lambda \ge 0.$$
+
+For one centered feature $x$ and centered $y$ this reduces to $\hat{w} = \sum_i x_i y_i / (\sum_i x_i^2 + \lambda)$, so $\lambda$ shrinks the slope toward zero. The penalty $\lambda$ is not learned from the training error, which would always prefer $\lambda = 0$; it is chosen by cross-validation. With one feature, the least-squares slope and intercept are $\hat{w} = \sum_i (x_i - \bar{x})(y_i - \bar{y})/\sum_i (x_i - \bar{x})^2$ and $\hat{b} = \bar{y} - \hat{w}\bar{x}$.
+
+### Held-out evaluation
+
+The quantity that matters is performance on stimuli the model did not see. Two summaries are common. The **held-out correlation** is the Pearson correlation between predictions and actual responses on the test stimuli, insensitive to the scale of the predictions. The **held-out explained variance** is
+
+$$R^2_{\text{test}} = 1 - \frac{\sum_i (y_i - \hat{y}_i)^2}{\sum_i (y_i - \bar{y}_{\text{test}})^2},$$
+
+with the sums over test stimuli and the mean taken over the test set. It can be negative: a model that predicts worse than the test-set mean has $R^2_{\text{test}} < 0$, which signals overfitting or a wrong model, and a negative value is informative, not a bug. In **$k$-fold cross-validation** the stimuli are split into $k$ folds; each fold is held out in turn, the model is fitted on the rest, predictions for the held-out fold are collected, and the metric is computed on all pooled predictions.
+
+Raw $R^2_{\text{test}}$ also depends on how noisy the neuron is, so in practice it is reported relative to the **noise ceiling** (Week 11), the largest value any model could reach given the reliability of the data. A neuron with $R^2_{\text{test}} = 0.2$ may be nearly perfectly explained if its repeat reliability is itself near 0.2.
+
+### Leakage and circularity
+
+An evaluation is only as good as its separation of training and test. Typical failures:
+
+- **Selecting hyperparameters on the test set**, such as $\lambda$, the layer or the number of units. Use nested cross-validation or a separate validation split.
+- **Preprocessing on all the data**, for example standardizing features or removing components using the test stimuli too. Learn every transformation from the training set only.
+- **Random folds on autocorrelated data.** In fMRI and in calcium imaging, neighboring time points share slow signals, so a test point has near-copies in the training set. Hold out contiguous blocks, runs or whole stimulus groups.
+- **Selecting units or voxels with the same data used to test them.** Choosing the voxels with the largest response and then reporting how strongly they respond to the same data is circular analysis (Kriegeskorte and colleagues, 2009). Selection must be independent of the evaluation.
+- **Near-duplicate stimuli** across train and test, such as frames from one video or views of the same object.
+
+### Choosing features
+
+The feature matrix defines the hypothesis. Features from a network layer, from a hand-built model (orientation filters, word frequency), or from a control (image luminance) can all be compared on the same held-out data. A feature set that adds explained variance beyond a control is evidence that the neurons carry something the control does not. Comparing nested feature sets on the same folds, with uncertainty over stimuli, is the standard design. In code researchers use libraries (for example, ridge solvers that fit every voxel at once), but you should be able to write one feature, one fold, and one metric by hand, which the exercises below do.
+
+@example
+title: A one-feature ridge slope
+problem: A model unit has centered responses $x = (-1, 0, 1)$ to three images, and a neuron's centered responses are $y = (-2, 0, 3)$. Find the least-squares slope and the ridge slope for $\lambda = 2$.
+step: Compute the sums: $\sum x_i y_i = 2 + 0 + 3 = 5$ and $\sum x_i^2 = 1 + 0 + 1 = 2$.
+step: Least squares ($\lambda = 0$): $\hat{w} = 5/2 = 2.5$.
+step: Ridge with $\lambda = 2$: $\hat{w}_\lambda = 5/(2 + 2) = 1.25$, half the least-squares slope.
+step: Interpret: with $\lambda$ equal to $\sum x_i^2$, the penalty halves the slope; as $\lambda$ grows the slope tends to 0 and the prediction to the training mean.
+answer: Least squares gives $2.5$ and ridge ($\lambda = 2$) gives $1.25$.
+
+@mistakes
+- Reporting training-set fit as evidence: with enough features any model fits the training responses.
+- Choosing $\lambda$, the layer or the voxel set by looking at test performance, then reporting that same test performance.
+- Using random folds on time series with slow signals, which places near-duplicates in training and test.
+- Computing $R^2$ around the training mean for test data: the denominator should use the test mean (or state the convention), and negative values should be reported, not clipped.
+
+@practice num
+prompt: A feature $x = (-2, -1, 0, 1, 2)$ and a neuron's response $y = (-3, -1, 0, 2, 2)$ are both centered. What is the ridge regression slope for $\lambda = 5$? Give your answer to three decimal places.
+answer: 0.867
+tol: 0.001
+check: sum(a * b for a, b in zip([-2, -1, 0, 1, 2], [-3, -1, 0, 2, 2])) / (sum(a * a for a in [-2, -1, 0, 1, 2]) + 5)
+hint: The ridge slope for one centered feature is $\sum x_i y_i / (\sum x_i^2 + \lambda)$.
+solution: $\sum x_i y_i = 6 + 1 + 0 + 2 + 4 = 13$ and $\sum x_i^2 = 10$, so the slope is $13/15 \approx 0.867$ (least squares would give $1.3$).
+
+@practice mc
+prompt: A voxelwise encoding model has $R^2 = 0.92$ on the stimuli used to fit it and $R^2 = 0.05$ on held-out stimuli. What is the most reasonable reading?
+choice*: The model is overfitting: it captures stimulus-specific noise in the training data and generalizes poorly.
+choice: The model is excellent, because the held-out value is a lower bound of its true accuracy.
+choice: The voxel is unresponsive to any stimulus, so no model could predict it.
+choice: The held-out stimuli were necessarily from a different category.
+hint: A large gap between training and test performance is the classic signature of one specific problem.
+solution: Training fit rewards memorizing noise, while held-out fit measures generalization. A large gap indicates overfitting, which more regularization, fewer features or more data can reduce. It does not show that the voxel carries no information; a better model might still predict it.
+
+@practice ms
+prompt: Which of these practices cause the held-out evaluation of an encoding model to be optimistic (leaky)?
+choice*: Choosing the ridge penalty $\lambda$ by the performance on the test set and reporting the same test performance.
+choice*: Standardizing each feature using its mean and standard deviation over all stimuli, including the test stimuli.
+choice*: Using randomly assigned time points as folds for a slowly varying fMRI signal.
+choice: Fitting a separate weight vector for each voxel on the training stimuli.
+hint: Ask for each practice whether information about the test responses or test stimuli reaches the fit.
+solution: Tuning on the test set, preprocessing with test statistics, and random folds on autocorrelated signals all let test information into the fit or put near-copies of test points into training. Fitting separate weights per voxel on training data is ordinary practice and leaks nothing.
+
+@practice code
+prompt: Write `heldout_r2(x_train, y_train, x_test, y_test)`. It fits the least-squares line $y = w x + b$ to the training lists (one feature), predicts the test responses, and returns the held-out explained variance $1 - \mathrm{SSE}/\mathrm{SST}$, where SSE is the sum of squared prediction errors over the test set and SST is the sum of squared deviations of `y_test` from its own mean. Do not clip negative values. For example, `heldout_r2([1, 2, 3, 4], [2, 4, 6, 8], [5, 6, 7], [10, 12, 14])` returns `1.0`.
+starter:
+```python
+def heldout_r2(x_train, y_train, x_test, y_test):
+    return 0.0
+```
+tests:
+```python
+assert abs(heldout_r2([1, 2, 3, 4], [2, 4, 6, 8], [5, 6, 7], [10, 12, 14]) - 1.0) < 1e-9
+assert abs(heldout_r2([1, 2, 3, 4], [2.1, 3.9, 6.2, 7.8], [5, 6], [10.1, 11.8]) - 0.956678) < 1e-5
+assert abs(heldout_r2([1, 2, 3, 4], [2.0, 1.0, 2.0, 1.0], [5, 6, 7], [1.0, 2.0, 1.0]) + 1.4) < 1e-9
+assert abs(heldout_r2([0, 1, 2], [1, 1, 1], [3, 4], [1, 3]) + 1.0) < 1e-9
+```
+model:
+```python
+def heldout_r2(x_train, y_train, x_test, y_test):
+    """Held-out R^2 of a least-squares line fitted on the training data."""
+    n = len(x_train)
+    mx = sum(x_train) / n
+    my = sum(y_train) / n
+    sxx = sum((a - mx) ** 2 for a in x_train)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x_train, y_train))
+    w = sxy / sxx
+    b = my - w * mx
+    mt = sum(y_test) / len(y_test)
+    sse = sum((y - (w * x + b)) ** 2 for x, y in zip(x_test, y_test))
+    sst = sum((y - mt) ** 2 for y in y_test)
+    return 1.0 - sse / sst
+```
+hint: Compute the slope and intercept from the training data only, then apply them to the test inputs.
+hint: The denominator uses the mean of `y_test`, not the training mean.
+solution: Fit the line on the training pairs, predict the test inputs, and compare the squared errors with the squared deviations of the test responses from their own mean. The third and fourth tests return negative values: a line fitted to noisy training data (or a constant) can predict the test data worse than the test mean does, and a version that clips at 0 fails them.
+
+@practice self
+prompt: You have fMRI responses of 200 voxels to 120 images shown in 6 runs (20 images per run, each image shown once), and the activations of three layers of a trained network for each image. Design the analysis that tests which layer's features best predict each voxel. State the model, the folds, how you choose regularization, the metric and how you would report the result, and one source of leakage you have designed against.
+hint: Ask which observations share signal (images within a run) and what that implies for the folds; then list what must be learned from training data only.
+solution: Model: for each voxel, a ridge regression from a layer's activations (after reducing the dimension if units outnumber images) to the voxel's response, with an intercept; the same procedure for each layer so the comparison is fair. Folds: leave-one-run-out cross-validation (six folds), so that images from the same run, which share slow scanner and physiological drift, are never split between training and test; if images repeat across runs, group the folds by image identity as well. Regularization: choose $\lambda$ from a grid by an inner cross-validation within the training runs only (nested), separately for each layer, so test data never influence it. Preprocessing: z-score features and responses using training-run statistics only and apply the same transformation to the held-out run. Metric: held-out correlation between predicted and measured responses pooled over folds for each voxel (and $R^2_{\text{test}}$ with the test mean as a check), reported both raw and as a fraction of each voxel's noise ceiling, with bootstrap confidence intervals over images or runs and a comparison with a control feature set such as low-level image statistics. Leakage designed against: the random-fold leak (neighboring images and time points sharing signal), the preprocessing leak, and the hyperparameter leak. I would also select the voxels to analyze on a localizer or a separate run, not on the same data used for the test.
+rubric: Specifies per-layer ridge models with a nested choice of regularization and training-only preprocessing.
+rubric: Uses blocked folds (leave-one-run-out) and says why random folds would leak.
+rubric: Reports held-out performance relative to a noise ceiling with uncertainty and a control feature set.
+
+@quiz num
+prompt: On a held-out set of five stimuli, a model's squared prediction errors sum to $12$ and the squared deviations of the measured responses from their test-set mean sum to $10$. What is the held-out explained variance $R^2_{\text{test}}$?
+answer: -0.2
+tol: 0.001
+check: 1 - 12 / 10
+hint: Use $R^2_{\text{test}} = 1 - \mathrm{SSE}/\mathrm{SST}$.
+solution: $1 - 12/10 = -0.2$. The model predicts the held-out responses slightly worse than a constant equal to their mean would.
+
+@quiz mc
+prompt: What distinguishes an encoding model from a decoding model?
+choice*: An encoding model predicts neural responses from stimulus features, while a decoding model predicts stimulus or behavioral variables from neural responses.
+choice: An encoding model is always linear and a decoding model is always nonlinear.
+choice: An encoding model needs held-out data and a decoding model does not.
+choice: A decoding model shows that the brain uses the decoded information, while an encoding model cannot.
+hint: Look at which side of the regression is the input and which is the output.
+solution: The direction of prediction differs. Both can be linear or nonlinear and both need held-out evaluation. Neither alone shows that the brain uses the information: a decoder shows only that the information is present in the recorded activity.
+
+@quiz code
+prompt: Write `kfold_corr(x, y, k)` for one feature. The lists `x` and `y` have length divisible by `k`. Split the indices into `k` contiguous folds of equal size (fold 0 is the first block). For each fold, fit the least-squares line on the other folds, predict the held-out fold, and collect the predictions in the original order. Return the Pearson correlation between the pooled predictions and `y`. For example, with `x = [1, 2, 3, 4, 5, 6]`, `y = [2, 4, 6, 8, 10, 12]` and `k = 3` it returns `1.0`.
+starter:
+```python
+def kfold_corr(x, y, k):
+    return 0.0
+```
+tests:
+```python
+x6 = [1, 2, 3, 4, 5, 6]
+assert abs(kfold_corr(x6, [2, 4, 6, 8, 10, 12], 3) - 1.0) < 1e-9
+assert abs(kfold_corr(x6, [1.2, 1.9, 3.4, 3.8, 5.3, 5.9], 3) - 0.987043) < 1e-5
+assert abs(kfold_corr(x6, [1.2, 1.9, 3.4, 3.8, 5.3, 5.9], 2) - 0.987338) < 1e-5
+x8 = [1, 2, 3, 4, 5, 6, 7, 8]
+y8 = [3, 1, 4, 1, 5, 9, 2, 6]
+assert abs(kfold_corr(x8, y8, 4) - 0.093387) < 1e-5
+assert abs(kfold_corr(x8, y8, 2) + 0.607628) < 1e-5
+```
+model:
+```python
+import math
+
+
+def _fit(x, y):
+    n = len(x)
+    mx, my = sum(x) / n, sum(y) / n
+    w = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    w /= sum((a - mx) ** 2 for a in x)
+    return w, my - w * mx
+
+
+def kfold_corr(x, y, k):
+    """Cross-validated correlation between pooled predictions and responses."""
+    n = len(x)
+    m = n // k
+    preds = [0.0] * n
+    for f in range(k):
+        test = set(range(f * m, (f + 1) * m))
+        tr = [i for i in range(n) if i not in test]
+        w, b = _fit([x[i] for i in tr], [y[i] for i in tr])
+        for i in test:
+            preds[i] = w * x[i] + b
+    mp, my = sum(preds) / n, sum(y) / n
+    num = sum((p - mp) * (t - my) for p, t in zip(preds, y))
+    den = math.sqrt(sum((p - mp) ** 2 for p in preds)
+                    * sum((t - my) ** 2 for t in y))
+    return num / den
+```
+hint: Build a list of training indices that excludes the held-out block, fit on those, and write the predictions into a list at the held-out positions.
+hint: Compute the correlation only once, on the pooled predictions, not per fold.
+solution: Each fold is predicted by a model that never saw it, and the predictions are pooled before one correlation is computed. Because the last test uses an erratic response series, the cross-validated correlation is near zero or negative, unlike the in-sample correlation, which a fit-on-everything version would report as positive.

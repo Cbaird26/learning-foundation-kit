@@ -1,0 +1,215 @@
+@lesson
+title: EEG and MEG: event-related potentials
+summary: Explain where EEG and MEG signals come from, and compute an event-related potential from epochs with baseline correction, artifact rejection and averaging in Python.
+objective: Describe the origin of EEG and MEG signals and compare them with fMRI in temporal and spatial resolution.
+objective: Compute an event-related potential by epoching, baseline correction, rejection and averaging, and explain why averaging helps.
+objective: Measure the peak latency and mean amplitude of a component and convert sample indices to milliseconds.
+reading: Andy's Brain Book is mostly about fMRI; for this week look up event-related potentials, epoching, baseline correction and artifact rejection in the free documentation and tutorials of an open-source EEG and MEG analysis package.
+@article
+fMRI tells you where, slowly: its sample interval is seconds and the signal lags the neurons by seconds. A person recognizes a word in a fraction of a second, and the first signs of the brain's response to a flash appear within a hundred milliseconds. To see events on that timescale you need to record electrical or magnetic activity directly. **Electroencephalography** (EEG; first recorded in humans by Berger in 1929) and **magnetoencephalography** (MEG) do that.
+
+### Where the signals come from
+
+When a population of cortical pyramidal neurons receives synaptic input at the same time, the postsynaptic currents flow along their parallel apical dendrites, and these small current dipoles add up. The summed activity produces a voltage on the scalp, measured by EEG electrodes in microvolts (µV), and a magnetic field outside the head, measured by MEG with extremely sensitive magnetic sensors, in femtotesla (fT), about a hundred million times smaller than the Earth's field. Both reflect mainly synchronized postsynaptic activity in aligned neurons, not the action potentials of single cells, which are too brief and too cancelled out to sum at a distance. Deep sources and sources with scattered orientations contribute little.
+
+| | fMRI | EEG | MEG |
+|---|---|---|---|
+| signal | blood oxygenation (BOLD) | scalp voltage | magnetic field |
+| time resolution | seconds | milliseconds | milliseconds |
+| spatial resolution | millimeters | centimeters (blurred by skull and scalp) | centimeters, sources in outline |
+| sensitive to | all brain regions | mostly cortex, radial and tangential sources | mostly cortex, tangential sources best |
+
+The skull blurs the EEG voltage, while magnetic fields pass through it nearly undistorted, which is an advantage of MEG; MEG is less sensitive to sources oriented radially to the scalp.
+
+A recording is a set of channels, each a list of voltages sampled at a rate $f_s$ (for example 250 Hz, a sample every 4 ms). Because voltage differences are measured between an electrode and a **reference**, results depend on the reference chosen. In an **average reference** one subtracts the mean over channels from each channel at each time.
+
+### Event-related potentials
+
+The brain's response to one stimulus, a few microvolts, is buried in ongoing EEG that has an amplitude of tens of microvolts. The solution is averaging. Cut the continuous recording into **epochs**, each running from before to after a stimulus onset (for example $-200$ ms to $+800$ ms), subtract the mean of a pre-stimulus **baseline** period from each epoch so that slow offsets are removed, and average across trials. The result is the **event-related potential** (ERP). If the evoked response is the same on every trial and the background activity is independent of the stimulus timing, the evoked response is preserved while the noise averages toward zero: the standard deviation of the noise in the average of $N$ trials falls to $\sigma/\sqrt{N}$. Halving the noise requires four times as many trials.
+
+Epochs with large artifacts (eye blinks, muscle activity, movement) are **rejected**, often with a rule such as a peak-to-peak amplitude over some threshold (commonly around 100 µV for EEG); alternatively an artifact is removed from the signal by regression or decomposition.
+
+### A worked ERP
+
+Four epochs sampled at $f_s = 100$ Hz (one sample every 10 ms), from $-20$ ms to $+90$ ms (12 samples), in µV. The first two samples are the baseline.
+
+```text
+trial 1: 1.4  0.4  1.8  1.0  5.5  5.1  4.3  3.2  0.3  0.6 -0.5  1.9
+trial 2: -2.8 -1.5 -3.2 -0.1 -0.4  4.1  1.7 -2.5 -1.6 -3.6 -2.0 -2.3
+trial 3: 1.2  0.2  1.1  0.4  4.3  4.5  2.2  2.4  1.0 -1.3 -0.9  1.1
+trial 4: 2.0  2.9  1.8  4.5  4.9  8.4  6.1  2.7  2.3  2.3  2.2  1.5
+```
+
+The baseline means are $0.9$, $-2.15$, $0.7$ and $2.45$ µV. After subtracting and averaging, the ERP in µV is
+
+$$[-0.025,\ 0.025,\ -0.1,\ 0.975,\ 3.1,\ 5.05,\ 3.1,\ 0.975,\ 0.025,\ -0.975,\ -0.775,\ 0.075].$$
+
+The trials differ in baseline offset by several microvolts, but the baseline correction removes this. The peak of the average is $5.05$ µV at sample index 5, which is at $t = -20 + 5 \times 10 = 30$ ms. (This is a toy example; real recordings use 250 Hz or more and hundreds of samples per epoch, and real components such as the P1, N1 and P3 have latencies from about 100 to 600 ms.)
+
+Components are measured in two common ways: the **peak amplitude and latency**, which are sensitive to noise, and the **mean amplitude in a time window** chosen in advance, which is more robust. A **difference wave** subtracts the ERP of one condition from another. Averaging has a limit: if the latency of a response varies from trial to trial, the average is broader and smaller than any single trial's response.
+
+### In code
+
+```python
+def sample_time(i, fs, t0):
+    """Time in ms of sample i of an epoch that starts at t0 ms, sampled at fs Hz."""
+    return t0 + i * 1000.0 / fs
+
+print(sample_time(5, 100, -20))
+```
+
+This prints `30.0`. The same arithmetic converts any index into a latency.
+
+@example
+title: Baseline correction and averaging of two trials
+problem: Two epochs (µV), sampled at 250 Hz, each with a 2-sample baseline, are $[2, 4, 7, 9]$ and $[0, 2, 3, 7]$. Baseline-correct each and average them.
+step: Baseline of trial 1: $(2 + 4)/2 = 3$. Corrected: $[-1, 1, 4, 6]$.
+step: Baseline of trial 2: $(0 + 2)/2 = 1$. Corrected: $[-1, 1, 2, 6]$.
+step: Average sample by sample: $[(-1-1)/2,\ (1+1)/2,\ (4+2)/2,\ (6+6)/2] = [-1, 1, 3, 6]$.
+step: The sample interval is $1000/250 = 4$ ms, so the last sample is 12 ms after the first.
+answer: The ERP is $[-1, 1, 3, 6]$ µV.
+
+@mistakes
+- Averaging epochs without baseline correction when the trials differ in slow offsets, which smears them into the average.
+- Averaging over trials that have large artifacts, so one blink dominates the ERP.
+- Expecting averaging to remove noise that is locked to the stimulus (such as an electrical artifact from the display), which survives averaging.
+- Converting samples to time with the wrong sample interval: at $f_s$ Hz the interval is $1000/f_s$ ms.
+
+@practice num
+prompt: The noise in single trials has a standard deviation of 8 µV and is independent across trials. What is the standard deviation of the noise in an ERP averaged over 64 trials, in microvolts?
+answer: 1
+tol: 0.001
+unit: µV
+check: 8 / sqrt(64)
+hint: The standard deviation of an average of $N$ independent values is $\sigma/\sqrt{N}$.
+solution: $8/\sqrt{64} = 8/8 = 1$ µV. Reducing the noise by a further factor of two would take four times as many trials, 256.
+
+@practice mc
+prompt: Why does averaging epochs improve the signal-to-noise ratio of an event-related potential?
+choice*: The response evoked by the stimulus is similar on each trial and is preserved by averaging, while background activity that is not time-locked to the stimulus varies randomly and shrinks as the number of trials grows.
+choice: Averaging amplifies the evoked response in proportion to the number of trials.
+choice: Averaging removes any signal that is locked to the stimulus, leaving only the brain's spontaneous activity.
+choice: Averaging makes the sampling rate higher, so that faster responses can be seen.
+hint: Think about what happens to a value that is the same on every trial versus values that are random with mean zero.
+solution: The time-locked response adds coherently and is unchanged by averaging; independent noise adds incoherently, so its standard deviation falls as $1/\sqrt{N}$. Averaging does not multiply the response, does not remove stimulus-locked signals (it preserves them), and does not change the sampling rate.
+
+@practice code
+prompt: Write `baseline_correct(epoch, n_base)` that subtracts the mean of the first `n_base` samples from every sample of an epoch (a list of voltages in µV) and returns the new list of floats. For example, `baseline_correct([3, 5, 8, 6], 2)` returns `[-1.0, 1.0, 4.0, 2.0]`.
+starter:
+```python
+def baseline_correct(epoch, n_base):
+    pass
+```
+tests:
+```python
+assert baseline_correct([3, 5, 8, 6], 2) == [-1.0, 1.0, 4.0, 2.0]
+assert baseline_correct([4.0, 6.0], 1) == [0.0, 2.0]
+got = baseline_correct([1.0, 2.0, 6.0], 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-2.0, -1.0, 3.0]))
+epoch = [1.0, 2.0, 3.0]
+baseline_correct(epoch, 2)
+assert epoch == [1.0, 2.0, 3.0]
+```
+model:
+```python
+def baseline_correct(epoch, n_base):
+    """Subtract the mean of the first n_base samples from the whole epoch."""
+    base = sum(epoch[:n_base]) / n_base
+    return [v - base for v in epoch]
+```
+hint: Compute the baseline mean from the first `n_base` samples, then build a new list; do not change the input list.
+solution: The baseline mean is `sum(epoch[:n_base]) / n_base`. Building a new list leaves the original epoch untouched, which the last test checks, because the original data are needed if you later change the baseline window.
+
+@practice code
+prompt: Write `erp(epochs, n_base, max_ptp)` that computes an event-related potential. `epochs` is a list of epochs (lists of voltages in µV, all the same length). Reject every epoch whose peak-to-peak amplitude, `max - min` of its raw values, is greater than `max_ptp` (equal is kept). Baseline-correct each kept epoch with the mean of its first `n_base` samples, and return a tuple `(average, n_kept)` where `average` is the sample-by-sample mean over the kept epochs and `n_kept` is their number. If no epoch is kept, return `([], 0)`. For example, `erp([[1, 2, 3], [3, 4, 9], [0, 1, 2]], 1, 5)` returns `([0.0, 1.0, 2.0], 2)`.
+starter:
+```python
+def erp(epochs, n_base, max_ptp):
+    pass
+```
+tests:
+```python
+avg, n = erp([[1, 2, 3], [3, 4, 9], [0, 1, 2]], 1, 5)
+assert n == 2 and all(abs(a - b) < 1e-9 for a, b in zip(avg, [0.0, 1.0, 2.0]))
+avg, n = erp([[1, 2, 3], [3, 4, 9], [0, 1, 2]], 1, 100)
+assert n == 3 and all(abs(a - b) < 1e-9 for a, b in zip(avg, [0.0, 1.0, 10 / 3]))
+assert erp([[0, 10], [0, 20]], 1, 5) == ([], 0)
+avg, n = erp([[1, 3, 5]], 2, 4)
+assert n == 1 and all(abs(a - b) < 1e-9 for a, b in zip(avg, [-1.0, 1.0, 3.0]))
+```
+model:
+```python
+def erp(epochs, n_base, max_ptp):
+    """Average of baseline-corrected epochs with peak-to-peak rejection."""
+    kept = []
+    for epoch in epochs:
+        if max(epoch) - min(epoch) > max_ptp:
+            continue
+        base = sum(epoch[:n_base]) / n_base
+        kept.append([v - base for v in epoch])
+    if not kept:
+        return [], 0
+    n_samples = len(kept[0])
+    avg = [sum(e[i] for e in kept) / len(kept) for i in range(n_samples)]
+    return avg, len(kept)
+```
+hint: Loop over the epochs, skip the ones with a too-large range, baseline-correct the rest, and average at the end.
+solution: Rejection uses the raw peak-to-peak range, and the comparison is strictly greater, so an epoch exactly at the limit is kept. Averaging is done sample by sample over the kept epochs only; with none kept there is nothing to average, which is returned as an empty list and a count of zero.
+
+@practice num
+prompt: An epoch starts at $-100$ ms relative to the stimulus and is sampled at 250 Hz, so the samples are 4 ms apart and sample 0 is at $-100$ ms. A component peaks at sample index 60. At what latency, in milliseconds after the stimulus, is the peak?
+answer: 140
+tol: 0.001
+unit: ms
+check: -100 + 60 * 1000 / 250
+hint: Latency is the start time plus the index times the sample interval, where the interval is $1000/f_s$ ms.
+solution: The sample interval is $4$ ms, so index 60 is $60 \times 4 = 240$ ms after the start, which is $-100 + 240 = 140$ ms after the stimulus.
+
+@quiz text
+prompt: What does this program print?
+```python
+epoch = [2.0, 4.0, 9.0, 5.0]
+base = sum(epoch[:2]) / 2
+corrected = [v - base for v in epoch]
+print(corrected.index(max(corrected)), max(corrected))
+```
+answer: 2 6.0
+check: run("epoch = [2.0, 4.0, 9.0, 5.0]\nbase = sum(epoch[:2]) / 2\ncorrected = [v - base for v in epoch]\nprint(corrected.index(max(corrected)), max(corrected))")
+hint: The baseline is the mean of the first two samples, 3.0.
+solution: The corrected epoch is $[-1, 1, 6, 2]$, whose maximum $6.0$ is at index 2, so the program prints `2 6.0`.
+
+@quiz code
+prompt: Write `mean_amplitude(erp, fs, t0, t_start, t_end)` that returns the mean of the ERP samples whose times satisfy `t_start <= t < t_end`, where sample `i` is at time `t0 + i * 1000.0 / fs` ms (`fs` in Hz, times in ms). Return `None` if no sample falls in the window. For example, with `erp = [0, 1, 2, 3, 4, 5]`, `fs = 100`, `t0 = -20`, the call `mean_amplitude(erp, 100, -20, 0, 30)` returns `3.0` (samples at 0, 10 and 20 ms).
+starter:
+```python
+def mean_amplitude(erp, fs, t0, t_start, t_end):
+    pass
+```
+tests:
+```python
+e = [0, 1, 2, 3, 4, 5]
+assert abs(mean_amplitude(e, 100, -20, 0, 30) - 3.0) < 1e-9
+assert abs(mean_amplitude(e, 100, -20, 10, 31) - 4.0) < 1e-9
+assert mean_amplitude(e, 100, -20, 100, 200) is None
+assert abs(mean_amplitude([2.0, 6.0, 4.0, 0.0], 250, 0, 4, 9) - 5.0) < 1e-9
+```
+model:
+```python
+def mean_amplitude(erp, fs, t0, t_start, t_end):
+    """Mean ERP amplitude between t_start (inclusive) and t_end (exclusive)."""
+    vals = [v for i, v in enumerate(erp)
+            if t_start <= t0 + i * 1000.0 / fs < t_end]
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+```
+hint: Compute each sample's time from its index, keep the samples inside the half-open window, and average them.
+solution: The window includes its start but not its end, which matters for samples exactly at the boundary: in the first test the sample at 30 ms is excluded, so the mean is of 2, 3 and 4. With a 250 Hz rate samples are 4 ms apart, so the fourth test uses the samples at 4 and 8 ms, with values 6 and 4, and their mean is 5.
+
+@quiz self
+prompt: A student wants to measure a small ERP component, expected to be about 2 µV, in a design where single-trial noise has a standard deviation of about 20 µV. Estimate how many trials per condition are needed for the noise in the average to be about one quarter of the component's size, say what assumptions that estimate makes, and name two ways the design could reduce the number of trials needed.
+hint: Use $\sigma/\sqrt{N}$ and set it to a quarter of 2 µV.
+solution: The target noise is $0.5$ µV, so $20/\sqrt{N} = 0.5$ gives $\sqrt{N} = 40$ and $N = 1600$ trials per condition. This assumes the noise is independent across trials with the same standard deviation, that the evoked response is identical on each trial (no latency jitter, no habituation), and that no trials are lost to artifacts; if the response varies or trials are rejected, more are needed. The number could be reduced by lowering the noise (a better recording setup, filtering of slow drifts, good electrode contact, instructing participants to stay still and blink between trials), by choosing a measure that uses more of the data (a mean amplitude over a window instead of a peak), by increasing the effect (a stronger stimulus or a contrast with a larger difference), or by adding participants rather than trials when between-person variability, not noise, limits the analysis.
+rubric: Calculates $N = 1600$ from $\sigma/\sqrt{N}$ with the target noise.
+rubric: States the assumptions of independence, identical evoked response and no data loss.
+rubric: Gives two reasonable ways to reduce the number of trials needed.
