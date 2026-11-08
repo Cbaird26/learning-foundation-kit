@@ -1,0 +1,233 @@
+@lesson
+title: Causal graphs and d-separation
+summary: Represent causal assumptions as a directed acyclic graph and use d-separation to read off which variables are independent given which others.
+objective: Describe a causal graph by its nodes and directed edges and write the factorization of the joint distribution it implies.
+objective: Classify the nodes on a path as chains, forks and colliders and say when conditioning blocks or opens a path.
+objective: Decide d-separation by hand and in code.
+reading: Causal Inference: What If (Hernán and Robins), Part I: the chapter on causal diagrams (the sections on d-separation).
+@article
+Hospital data show that, among admitted patients, having diabetes and having a broken leg are negatively associated. Nobody believes diabetes protects against fractures. What has happened is that we only looked at patients selected by a condition (admission) that either problem can cause. To reason about when such artifacts arise, and when an association is causal, we encode our assumptions in a picture; here, in a list of nodes and edges.
+
+### Causal graphs
+
+A **directed acyclic graph** (DAG) has a set of **nodes** (variables) and **directed edges** $A \to B$, with no directed cycle. In a **causal graph**, an edge $A \to B$ means $A$ is a direct cause of $B$ (relative to the variables in the graph), and the absence of an edge means no direct effect. Every common cause of two variables in the graph must itself be in the graph. The **parents** of a node are the nodes with edges into it, its **descendants** are the nodes reachable by following edges forward.
+
+A graph is written as a list: for example, nodes $\{Z, X, M, Y, C\}$ and edges $Z \to X$, $Z \to Y$, $X \to M$, $M \to Y$, $X \to C$, $Y \to C$.
+
+A distribution $P$ is **Markov** to the DAG if it factorizes along the graph:
+
+$$P(v_1, \dots, v_n) = \prod_{i=1}^{n} P\big(v_i \mid \mathrm{pa}(v_i)\big).$$
+
+For binary variables, a node with $k$ parents needs $2^k$ numbers. The graph above needs $1 + 2 + 2 + 4 + 4 = 13$ numbers versus $2^5 - 1 = 31$ for an unrestricted joint distribution.
+
+### Three building blocks
+
+Every path (a sequence of adjacent nodes, ignoring edge direction) is built from three patterns, according to what happens at the middle node $B$:
+
+| pattern | edges | $A$ and $C$ independent? |
+|---|---|---|
+| chain | $A \to B \to C$ | dependent; independent given $B$ |
+| fork | $A \leftarrow B \to C$ | dependent (common cause); independent given $B$ |
+| collider | $A \to B \leftarrow C$ | independent; dependent given $B$ or any descendant of $B$ |
+
+The collider case is the surprising one. Let $A$ and $C$ be independent fair coins and $B = A \lor C$. Then $P(A = 1) = 1/2$, but among cases with $B = 1$ the possible $(A, C)$ are $(1, 0), (0, 1), (1, 1)$, so $P(A = 1 \mid B = 1) = 2/3$; and given $B = 1$ and $C = 0$, $A = 1$ with probability 1. Conditioning on a common effect makes its causes informative about each other ("explaining away"). This is the hospital example: admission is a common effect.
+
+### d-separation
+
+Let $Z$ be a set of nodes. A path is **blocked** by $Z$ if it contains
+
+- a chain or fork whose middle node is in $Z$, or
+- a collider such that neither the collider nor any of its descendants is in $Z$.
+
+Nodes $X$ and $Y$ are **d-separated** by $Z$ if every path between them is blocked by $Z$. **Theorem (global Markov property; Verma and Pearl).** If $P$ is Markov to a DAG and $X$ and $Y$ are d-separated by $Z$, then $X \perp Y \mid Z$ in $P$. The converse, that every independence of $P$ shows up as d-separation, holds only under the additional assumption of **faithfulness** (no accidental cancelations of effects).
+
+In the five-node graph above, the paths from $X$ to $Y$ are $X \leftarrow Z \to Y$ (fork at $Z$), $X \to M \to Y$ (chain at $M$) and $X \to C \leftarrow Y$ (collider at $C$). Given $\{Z, M\}$ all three are blocked, so $X \perp Y \mid \{Z, M\}$; given $\{Z, M, C\}$ the collider path opens, and they are not d-separated.
+
+### In code
+
+```python
+def node_types(edges, path):
+    """Label each interior node of a path as chain, fork or collider."""
+    es = set(edges)
+    out = []
+    for a, b, c in zip(path, path[1:], path[2:]):
+        arrows_in = ((a, b) in es) + ((c, b) in es)
+        if arrows_in == 2:
+            out.append((b, "collider"))
+        elif (b, a) in es and (b, c) in es:
+            out.append((b, "fork"))
+        else:
+            out.append((b, "chain"))
+    return out
+
+edges = [("Z", "X"), ("Z", "Y"), ("X", "M"), ("M", "Y"), ("X", "C"), ("Y", "C")]
+print(node_types(edges, ["X", "C", "Y"]))
+```
+
+This prints `[('C', 'collider')]`.
+
+@example
+title: Reading d-separation off a graph
+problem: A graph has edges $S \to T$, $T \to U$, $V \to T$, $V \to W$. Decide whether $S$ and $W$ are d-separated by $\varnothing$, by $\{T\}$, by $\{U\}$ and by $\{T, V\}$.
+step: The only path between $S$ and $W$ is $S \to T \leftarrow V \to W$. Its interior nodes are $T$ (a collider, since both edges enter it) and $V$ (a fork).
+step: Given $\varnothing$: the collider $T$ is not in $Z$ and neither is its descendant $U$, so the path is blocked. $S \perp W$.
+step: Given $\{T\}$: the collider is opened and the fork $V$ is not conditioned, so the path is open. Not d-separated. Given $\{U\}$: $U$ is a descendant of the collider $T$, which also opens it; not d-separated.
+step: Given $\{T, V\}$: the collider is open but the fork $V$ is in $Z$, so it blocks the path. $S \perp W \mid \{T, V\}$.
+answer: d-separated by $\varnothing$ and by $\{T, V\}$; not by $\{T\}$ or $\{U\}$.
+
+@example
+title: The factorization and its parameter count
+problem: For the graph of the previous example, with all five variables binary, write the factorization and count its parameters.
+step: Parents: $S$ and $V$ have none; $T$ has parents $S, V$; $U$ has parent $T$; $W$ has parent $V$.
+step: $P(S, T, U, V, W) = P(S)\,P(V)\,P(T \mid S, V)\,P(U \mid T)\,P(W \mid V)$.
+step: Parameters: $1 + 1 + 4 + 2 + 2 = 10$, versus $2^5 - 1 = 31$ for an unrestricted joint.
+answer: $P(S)P(V)P(T \mid S,V)P(U \mid T)P(W \mid V)$, with 10 parameters.
+
+@mistakes
+- Conditioning on everything available. Conditioning on a collider or its descendant opens a path that was blocked.
+- Forgetting the descendants of a collider: a path through $A \to B \leftarrow C$ is also opened by conditioning on a child of $B$.
+- Reading an edge as correlation. An edge $A \to B$ is a causal claim, and a missing edge is a strong claim that there is no direct effect.
+- Concluding dependence from "no d-separation": d-separation certifies independence, while non-separation only allows dependence (it implies it under faithfulness).
+
+@practice mc
+prompt: In a causal graph the only edges are $A \to B$ and $C \to B$. Which statement is true?
+choice*: $A$ and $C$ are independent, but become dependent when we condition on $B$.
+choice: $A$ and $C$ are dependent, but become independent when we condition on $B$.
+choice: $A$ and $C$ are dependent whether or not we condition on $B$.
+choice: $A$ and $C$ are independent whether or not we condition on $B$.
+hint: $B$ is a common effect of $A$ and $C$ on this path.
+solution: $B$ is a collider, so the path $A \to B \leftarrow C$ is blocked when $B$ is not conditioned on, giving independence, and opened when $B$ (or a descendant of $B$) is conditioned on.
+
+@practice num
+prompt: Four binary variables have causal graph edges $A \to C$, $B \to C$ and $C \to D$. How many free parameters are needed to specify a distribution that factorizes along this graph?
+answer: 8
+unit: parameters
+check: sum(2 ** k for k in [0, 0, 2, 1])
+hint: A binary node with $k$ binary parents needs $2^k$ parameters, one probability for each parent configuration.
+solution: $A$ and $B$ have no parents (1 each), $C$ has two parents (4), and $D$ has one parent (2): $1 + 1 + 4 + 2 = 8$, compared with $2^4 - 1 = 15$ for an unrestricted joint.
+
+@practice ms
+prompt: A causal graph has edges $P \to Q$, $Q \to R$, $P \to S$ and $S \to R$. Which of these d-separation statements hold? Select all that apply.
+choice*: $P$ and $R$ are d-separated by $\{Q, S\}$.
+choice*: $Q$ and $S$ are d-separated by $\{P\}$.
+choice: $Q$ and $S$ are d-separated by $\{P, R\}$.
+choice: $P$ and $R$ are d-separated by $\{Q\}$.
+hint: List each path between the two nodes and check its middle nodes against the conditioning set.
+solution: For $P$ and $R$ given $\{Q, S\}$, both $P \to Q \to R$ and $P \to S \to R$ have their chain middles conditioned, so both are blocked. For $Q$ and $S$ given $\{P\}$, $Q \leftarrow P \to S$ is blocked at the conditioned fork and $Q \to R \leftarrow S$ at the unconditioned collider $R$. Adding $R$ to the set opens that collider. Given only $\{Q\}$, the path $P \to S \to R$ stays open.
+
+@practice code
+prompt: Write `d_separated(edges, x, y, z)` that returns `True` when nodes `x` and `y` are d-separated by the set `z`, and `False` otherwise. `edges` is a list of `(parent, child)` tuples forming a DAG, and `z` is a set of nodes that contains neither `x` nor `y`. A helper `simple_paths(edges, x, y)` in the starter returns every simple path from `x` to `y` as a list of nodes, ignoring edge direction. A path is blocked when it has an interior chain or fork node in `z`, or an interior collider (both neighbors on the path point into it) that is not in `z` and has no descendant in `z`.
+starter:
+```python
+def simple_paths(edges, x, y):
+    nbrs = {}
+    for a, b in edges:
+        nbrs.setdefault(a, set()).add(b)
+        nbrs.setdefault(b, set()).add(a)
+    found = []
+    def walk(path):
+        if path[-1] == y:
+            found.append(path)
+            return
+        for n in sorted(nbrs.get(path[-1], ())):
+            if n not in path:
+                walk(path + [n])
+    walk([x])
+    return found
+
+def d_separated(edges, x, y, z):
+    pass
+```
+tests:
+```python
+H = [("A", "B"), ("B", "C"), ("D", "B"), ("D", "E"), ("C", "F")]
+assert d_separated(H, "A", "D", set()) is True
+assert d_separated(H, "A", "D", {"B"}) is False
+assert d_separated(H, "A", "D", {"F"}) is False
+assert d_separated(H, "A", "E", {"D"}) is True
+assert d_separated(H, "E", "C", set()) is False
+assert d_separated(H, "E", "C", {"D"}) is True
+```
+model:
+```python
+def simple_paths(edges, x, y):
+    nbrs = {}
+    for a, b in edges:
+        nbrs.setdefault(a, set()).add(b)
+        nbrs.setdefault(b, set()).add(a)
+    found = []
+    def walk(path):
+        if path[-1] == y:
+            found.append(path)
+            return
+        for n in sorted(nbrs.get(path[-1], ())):
+            if n not in path:
+                walk(path + [n])
+    walk([x])
+    return found
+
+def descendants(edges, node):
+    out, stack = set(), [node]
+    while stack:
+        u = stack.pop()
+        for a, b in edges:
+            if a == u and b not in out:
+                out.add(b)
+                stack.append(b)
+    return out
+
+def d_separated(edges, x, y, z):
+    """True when every path from x to y is blocked by z."""
+    es = set(edges)
+    for path in simple_paths(edges, x, y):
+        blocked = False
+        for a, b, c in zip(path, path[1:], path[2:]):
+            if (a, b) in es and (c, b) in es:
+                if b not in z and not (descendants(edges, b) & set(z)):
+                    blocked = True
+            elif b in z:
+                blocked = True
+        if not blocked:
+            return False
+    return True
+```
+hint: For each path, scan its interior triples $(a, b, c)$; a collider has both edges $(a, b)$ and $(c, b)$ in `edges`. The path is open only if no triple blocks it.
+solution: Loop over the paths and mark each as blocked if any interior node blocks it: a collider blocks when neither it nor a descendant is in `z`, and a non-collider blocks when it is in `z`. The answer is `True` only if all paths are blocked. The third test checks the descendant rule: conditioning on `F`, a descendant of the collider `B`, opens the path.
+
+@practice num
+prompt: In a causal graph with edges $X \to A$, $A \to Y$, $X \to B$, $B \to Y$ and $A \to B$, how many distinct simple paths connect $X$ and $Y$ when edge directions are ignored?
+answer: 4
+check: int(run("edges = [('X','A'),('A','Y'),('X','B'),('B','Y'),('A','B')]\nnb = {}\nfor a, b in edges:\n    nb.setdefault(a, set()).add(b)\n    nb.setdefault(b, set()).add(a)\ncount = 0\ndef walk(p):\n    global count\n    if p[-1] == 'Y':\n        count += 1\n        return\n    for n in nb[p[-1]]:\n        if n not in p:\n            walk(p + [n])\nwalk(['X'])\nprint(count)"))
+hint: Start at $X$ and list the ways to reach $Y$ without revisiting a node; paths may use the edge between $A$ and $B$ in either direction.
+solution: The paths are $X, A, Y$; $X, B, Y$; $X, A, B, Y$; and $X, B, A, Y$. That is 4 paths. Each of them must be checked when testing d-separation.
+
+@quiz mc
+prompt: A study includes only patients admitted to a hospital. Admission is caused both by disease $D_1$ and by disease $D_2$, which are otherwise unrelated. Among admitted patients, $D_1$ and $D_2$ are negatively associated. What explains this?
+choice*: Admission is a collider; restricting to admitted patients conditions on it and opens the path $D_1 \to \text{admission} \leftarrow D_2$.
+choice: Admission is a common cause of $D_1$ and $D_2$, so it confounds them.
+choice: $D_1$ causes $D_2$ to be less likely.
+choice: Admission is a mediator between $D_1$ and $D_2$.
+hint: Draw the edges: both diseases point into admission.
+solution: Both diseases cause admission, so admission is a collider on $D_1 \to \text{admission} \leftarrow D_2$. Conditioning on it (selecting admitted patients) creates an association between its causes, since one cause makes the other less needed to explain admission.
+
+@quiz text
+prompt: What does this program print?
+```python
+edges = [("A", "C"), ("B", "C"), ("C", "D"), ("A", "D")]
+parents = {}
+for a, b in edges:
+    parents.setdefault(b, []).append(a)
+print(sorted(parents["D"]), len(parents["C"]))
+```
+answer: ['A', 'C'] 2
+check: run("edges = [('A', 'C'), ('B', 'C'), ('C', 'D'), ('A', 'D')]\nparents = {}\nfor a, b in edges:\n    parents.setdefault(b, []).append(a)\nprint(sorted(parents['D']), len(parents['C']))")
+hint: The dictionary maps each child to the list of nodes with an edge into it.
+solution: $D$ has parents $A$ and $C$, printed in sorted order as `['A', 'C']`, and $C$ has two parents ($A$ and $B$), so the program prints `['A', 'C'] 2`.
+
+@quiz self
+prompt: A causal graph has nodes $A, B, C, D$ and edges $A \to B$, $B \to C$, $D \to C$. (a) Write the factorization. (b) State every pair of nodes among $\{A, D\}$, $\{A, C\}$ that is d-separated by $\varnothing$ and by $\{B\}$, justifying each. (c) Explain what changes if we condition on $C$.
+hint: There are two paths of interest: $A \to B \to C$ and $A \to B \to C \leftarrow D$.
+solution: (a) $P(A,B,C,D) = P(A)\,P(D)\,P(B \mid A)\,P(C \mid B, D)$. (b) $A$ and $D$ are connected only by $A \to B \to C \leftarrow D$, which has a collider at $C$; it is blocked given $\varnothing$ and given $\{B\}$ (conditioning on a chain node $B$ blocks the path anyway), so $A$ and $D$ are d-separated in both cases. $A$ and $C$ are connected by $A \to B \to C$, a chain: open given $\varnothing$ (not d-separated), blocked given $\{B\}$ (d-separated). (c) Conditioning on the collider $C$ opens $A \to B \to C \leftarrow D$, so $A$ and $D$ become dependent given $C$, unless $B$ is also conditioned on, which blocks the chain part.
+rubric: Writes a factorization with each node conditioned on its parents.
+rubric: Correctly classifies the paths and applies the blocking rules for the empty set and for $\{B\}$.
+rubric: Explains that conditioning on a collider opens the path between its causes.

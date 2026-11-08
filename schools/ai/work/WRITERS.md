@@ -47,3 +47,5 @@ Log:
 - C18 reviewed (24 fixes: items and tests moved off article and example data, residual and dilated-receptive-field variants, beam-search example values corrected (0.06 and 0.03), transposed Jacobian, analogy test catches dot-product choice, project train/test pairs separated)
 - started C23
 - C17 reviewed (34 fixes: items off article and example data, 13 code items made into variants (log_softmax, iterative topological order and resettable backward, drop_last, masked decay, dropout backward, global-norm clipping, broadcasting), topological-order mistake corrected, cross-course references removed); follow-up by me: L11 residual num now has one active and one inactive ReLU
+- started C24
+- C20 done (0 errors, 0 warnings, 96; EU AI Act Articles 5 and 50, Gender Shades, NISTIR 8280 and vision attributions passed to the reviewer with verified facts); review started C20; started P1

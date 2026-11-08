@@ -1,0 +1,293 @@
+@lesson
+title: Value iteration
+summary: Compute the optimal value function by repeated Bellman optimality backups, bound its error, and read off an optimal policy.
+objective: Apply the Bellman optimality backup in synchronous and in-place sweeps on a gridworld.
+objective: Use the contraction property to bound the error when value iteration stops.
+objective: Extract a greedy policy from a value function and follow it from a start state.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the dynamic programming chapter: value iteration, asynchronous dynamic programming and generalized policy iteration.
+@article
+Policy iteration spends many sweeps evaluating each policy, even though the policy is about to change. Why wait for a perfect evaluation of a policy you are going to throw away? **Value iteration** takes the idea to its extreme: it improves after every single sweep, by folding the maximum over actions into the update itself.
+
+### The update
+
+Start from any $v_0$ (all zeros is fine) and repeat, for every non-terminal state $s$,
+
+$$v_{k+1}(s) = \max_a \sum_{s', r} p(s', r \mid s, a)\,\big[\, r + \gamma\, v_k(s') \,\big].$$
+
+This is the Bellman optimality equation turned into an assignment: the right-hand side applied to $v_k$ defines an operator $T$, and $v_{k+1} = T v_k$. Terminal states keep the value 0.
+
+### Why it converges
+
+For $\gamma < 1$ the operator $T$ is a **contraction** in the max norm: $\lVert T u - T w \rVert_\infty \le \gamma\,\lVert u - w \rVert_\infty$ for any two value functions. The optimal value function is its unique fixed point, $v_* = T v_*$, so $\lVert v_{k+1} - v_* \rVert_\infty \le \gamma\,\lVert v_k - v_* \rVert_\infty$ and $v_k \to v_*$ geometrically from any start. The same argument applies to episodic tasks that always terminate.
+
+In practice we stop when the largest change in a sweep, $\Delta = \max_s |v_{k+1}(s) - v_k(s)|$, falls below a threshold $\theta$. The contraction property turns this into a guarantee: $\lVert v_{k+1} - v_* \rVert_\infty \le \dfrac{\gamma\,\Delta}{1 - \gamma}$. With $\gamma = 0.9$ and $\theta = 0.01$ the error is below $0.09$; a discount factor near 1 means a stricter threshold is needed for the same accuracy.
+
+### Extracting the policy
+
+Value iteration returns values, not a policy. The policy that is greedy with respect to the final values,
+
+$$\pi(s) = \arg\max_a \sum_{s', r} p(s', r \mid s, a)\,\big[\, r + \gamma\, v(s') \,\big],$$
+
+is optimal when $v = v_*$ and near-optimal when $v$ is close. We break ties toward the first action in the listed order, replacing the incumbent only when a later action is strictly better.
+
+### Variants
+
+**In-place** (Gauss–Seidel) value iteration overwrites $v(s)$ immediately, so later states in a sweep use fresh values. **Asynchronous** methods update states in any order, as long as every state keeps being updated; they can focus effort on states that matter. All of these are instances of **generalized policy iteration**: an evaluation process and an improvement process that push each other toward $v_*$ and $\pi_*$. Each sweep costs $O(|\mathcal{S}|^2 |\mathcal{A}|)$ operations for dense dynamics.
+
+### A corridor with a hazard
+
+Five cells in a row, numbered $0, \dots, 4$. Cell 0 is a hazard (terminal): entering it gives reward $-10$. Cell 4 is the goal (terminal): entering it gives $+10$. In cells 1, 2 and 3 the actions are `L` (move left), `R` (move right) and `stay`, and every move that does not end the episode gives reward $-1$ (staying also gives $-1$). With $\gamma = 0.9$, value iteration from zeros gives
+
+| sweep | $v(1)$ | $v(2)$ | $v(3)$ |
+|---|---|---|---|
+| 1 | −1 | −1 | 10 |
+| 2 | −1.9 | 8 | 10 |
+| 3 | 6.2 | 8 | 10 |
+| 4 | 6.2 | 8 | 10 |
+
+Information about the goal travels one cell per sweep, like a wave moving left. At sweep 4 nothing changes, so $v_* = (6.2, 8, 10)$, and the greedy policy is `R` in every cell.
+
+### In code
+
+```python
+GAMMA = 0.9
+
+def outcome(cell, move):
+    """(next_cell, reward) for moving by `move`; 0 is hazard, 4 is goal."""
+    n = cell + move
+    if n == 0:
+        return (n, -10.0)
+    if n == 4:
+        return (n, 10.0)
+    return (n, -1.0)
+
+P = {c: {'L': [(1.0,) + outcome(c, -1)],
+         'R': [(1.0,) + outcome(c, 1)],
+         'stay': [(1.0, c, -1.0)]} for c in (1, 2, 3)}
+
+def backup(P, v, gamma):
+    """One synchronous Bellman optimality sweep."""
+    return {s: max(sum(p * (r + gamma * v.get(s2, 0.0)) for p, s2, r in outs)
+                   for outs in P[s].values()) for s in P}
+
+v = {c: 0.0 for c in P}
+for k in range(1, 4):
+    v = backup(P, v, GAMMA)
+    print(k, [v[c] for c in (1, 2, 3)])
+```
+
+The three printed rows match the first three rows of the table. `v.get(s2, 0.0)` gives terminal cells the value 0.
+
+@example
+title: One optimality backup and an error bound
+problem: In state $s$, action $a_1$ (listed first) moves to $x$ with reward 1; action $a_2$ moves to $y$ with probability 0.6 (reward 0) and to $z$ with probability 0.4 (reward $-2$); action $a_3$ ends the episode with reward 3. Let $\gamma = 0.5$, $v_k(x) = 4$, $v_k(y) = 10$, $v_k(z) = 0$. (a) Compute $v_{k+1}(s)$ and the greedy action. (b) If the last sweep of value iteration with $\gamma = 0.9$ changed no value by more than $0.004$, how far from $v_*$ can the values be?
+step: The action values: $q(a_1) = 1 + 0.5 \times 4 = 3$. $q(a_2) = 0.6\,(0 + 0.5 \times 10) + 0.4\,(-2 + 0.5 \times 0) = 3 - 0.8 = 2.2$. $q(a_3) = 3 + 0 = 3$.
+step: The backup takes the maximum: $v_{k+1}(s) = 3$. Actions $a_1$ and $a_3$ tie, and with ties going to the first listed action the greedy choice is $a_1$.
+step: For (b), the bound is $\gamma\Delta/(1 - \gamma) = 0.9 \times 0.004 / 0.1 = 0.036$.
+step: So after that sweep every value is within $0.036$ of its optimal value, even though no value moved by more than $0.004$ in the last sweep.
+answer: (a) $v_{k+1}(s) = 3$ with greedy action $a_1$. (b) The error is at most $0.036$.
+
+@mistakes
+- Taking the maximum of the immediate rewards instead of the maximum of the whole one-step value $\sum p\,(r + \gamma v(s'))$.
+- Giving terminal states a nonzero stored value, or letting them be updated like other states.
+- Reading $\Delta < \theta$ as "the error is below $\theta$": the guarantee is $\gamma\theta/(1-\gamma)$, which is much larger when $\gamma$ is close to 1.
+- Using the greedy policy of an early $v_k$ as if it were optimal: it is only as good as the values it was computed from.
+
+@practice num
+prompt: In state $s$ with $\gamma = 0.9$, action $a_1$ moves to $x$ with reward 0 ($v(x) = 5$); action $a_2$ moves to $y$ with probability 0.5 (reward 2, $v(y) = 3$) and to $z$ with probability 0.5 (reward $-1$, $v(z) = 8$); action $a_3$ ends the episode with reward 4. What is the value iteration backup $\max_a q(s, a)$ for $s$? Give your answer to two decimal places.
+answer: 5.45
+tol: 0.01
+check: max(0 + 0.9 * 5, 0.5 * (2 + 0.9 * 3) + 0.5 * (-1 + 0.9 * 8), 4)
+hint: Compute $q(s, a_1)$, $q(s, a_2)$ and $q(s, a_3)$ separately, then take the largest.
+solution: $q(a_1) = 4.5$, $q(a_2) = 0.5(4.7) + 0.5(6.2) = 5.45$ and $q(a_3) = 4$. The maximum is $5.45$, from $a_2$.
+
+@practice num
+prompt: Value iteration with $\gamma = 0.95$ stops when the largest change in a sweep is below $\theta = 0.002$. What is the guaranteed bound $\gamma\theta/(1 - \gamma)$ on the max-norm distance to $v_*$? Give your answer to three decimal places.
+answer: 0.038
+tol: 0.001
+check: 0.95 * 0.002 / (1 - 0.95)
+hint: Substitute into $\gamma\theta/(1 - \gamma)$; note that $1 - \gamma = 0.05$ is small.
+solution: $0.95 \times 0.002 / 0.05 = 0.038$. The bound is 19 times the threshold, which shows why a $\gamma$ close to 1 needs a small $\theta$.
+
+@practice mc
+prompt: How does value iteration differ from policy iteration?
+choice*: Value iteration does one sweep of the optimality backup per iteration, merging a truncated evaluation with the improvement step, instead of evaluating each policy to convergence.
+choice: Value iteration needs no model of the dynamics, while policy iteration does.
+choice: Value iteration converges only for deterministic MDPs.
+choice: Value iteration stores a policy and never uses a maximum over actions.
+hint: Compare what happens inside one iteration of each method.
+solution: Value iteration applies the optimality backup, with its maximum over actions, once per iteration, which combines one sweep of evaluation with greedy improvement. Both methods need the full dynamics, both work for stochastic MDPs, and value iteration stores values, not a policy.
+
+@practice code
+prompt: Write `value_iteration(P, gamma, theta)` for an MDP `P[s][a] = [(prob, next_state, reward), ...]` (terminal states are not keys of `P` and are worth 0). Start with `v[s] = 0.0` for every key of `P`. Run synchronous sweeps with the Bellman optimality backup, and stop after the first sweep whose largest absolute change is below `theta`. Return `(v, sweeps)` where `sweeps` counts all sweeps performed, including the last one.
+starter:
+```python
+def value_iteration(P, gamma, theta):
+    pass
+```
+tests:
+```python
+def corridor(n, hazard_r, goal_r):
+    P = {}
+    for c in range(1, n - 1):
+        out = {}
+        for name, d in (('L', -1), ('R', 1), ('stay', 0)):
+            n2 = c + d
+            r = hazard_r if n2 == 0 else goal_r if n2 == n - 1 else -1.0
+            out[name] = [(1.0, n2, r)]
+        P[c] = out
+    return P
+
+v, k = value_iteration(corridor(5, -10.0, 10.0), 0.9, 1e-9)
+assert abs(v[1] - 6.2) < 1e-9 and abs(v[2] - 8.0) < 1e-9 and abs(v[3] - 10.0) < 1e-9
+assert k == 4
+v, k = value_iteration(corridor(5, -10.0, 5.0), 0.9, 1e-9)
+assert abs(v[1] - 2.15) < 1e-9 and abs(v[3] - 5.0) < 1e-9
+Q = {0: {'L': [(1.0, 'end', 0)], 'R': [(0.8, 1, 1), (0.2, 0, 0)]},
+     1: {'L': [(1.0, 0, 2)], 'R': [(1.0, 'end', 5)]}}
+v, k = value_iteration(Q, 0.9, 1e-10)
+assert abs(v[0] - 13.0232558) < 1e-5 and abs(v[1] - 13.7209302) < 1e-5
+v, k = value_iteration(Q, 0.0, 1e-10)
+assert abs(v[0] - 0.8) < 1e-9 and abs(v[1] - 5.0) < 1e-9 and k == 2
+```
+model:
+```python
+def value_iteration(P, gamma, theta):
+    """Synchronous value iteration; returns (values, number of sweeps)."""
+    v = {s: 0.0 for s in P}
+    sweeps = 0
+    while True:
+        new_v = {}
+        for s in P:
+            new_v[s] = max(sum(p * (r + gamma * v.get(s2, 0.0))
+                               for p, s2, r in outs)
+                           for outs in P[s].values())
+        sweeps += 1
+        delta = max(abs(new_v[s] - v[s]) for s in P)
+        v = new_v
+        if delta < theta:
+            return v, sweeps
+```
+hint: Build the new dictionary from the old one, compare the two to get the largest change, and count the sweep before checking whether to stop.
+solution: Each sweep applies the optimality backup to every state using only the previous values. On the corridor the goal reward reaches the first cell in 3 sweeps and the fourth sweep changes nothing, so exactly 4 sweeps are counted. The test with `gamma = 0.0` needs two sweeps: the first computes the best immediate reward and the second changes nothing.
+
+@practice code
+prompt: Write `value_iteration_inplace(P, gamma, sweeps, order)` for the same kind of MDP (terminal states worth 0, not keys of `P`). Start with `v[s] = 0.0` for every key of `P`. In each of `sweeps` sweeps, visit the states in the list `order` and overwrite `v[s]` at once with $\max_a \sum p\,(r + \gamma v(s'))$ using the current contents of `v`. Return `v`.
+starter:
+```python
+def value_iteration_inplace(P, gamma, sweeps, order):
+    pass
+```
+tests:
+```python
+def corridor():
+    P = {}
+    for c in (1, 2, 3):
+        out = {}
+        for name, d in (('L', -1), ('R', 1), ('stay', 0)):
+            n2 = c + d
+            r = -10.0 if n2 == 0 else 10.0 if n2 == 4 else -1.0
+            out[name] = [(1.0, n2, r)]
+        P[c] = out
+    return P
+
+P = corridor()
+v = value_iteration_inplace(P, 0.9, 1, [3, 2, 1])
+assert abs(v[1] - 6.2) < 1e-9 and abs(v[2] - 8.0) < 1e-9 and abs(v[3] - 10.0) < 1e-9
+v = value_iteration_inplace(P, 0.9, 1, [1, 2, 3])
+assert abs(v[1] + 1.0) < 1e-9 and abs(v[2] + 1.0) < 1e-9 and abs(v[3] - 10.0) < 1e-9
+v = value_iteration_inplace(P, 0.9, 2, [1, 2, 3])
+assert abs(v[1] + 1.9) < 1e-9 and abs(v[2] - 8.0) < 1e-9
+v = value_iteration_inplace(P, 0.9, 0, [1, 2, 3])
+assert v == {1: 0.0, 2: 0.0, 3: 0.0}
+```
+model:
+```python
+def value_iteration_inplace(P, gamma, sweeps, order):
+    """In-place value iteration with a fixed visiting order."""
+    v = {s: 0.0 for s in P}
+    for _ in range(sweeps):
+        for s in order:
+            v[s] = max(sum(p * (r + gamma * v.get(s2, 0.0))
+                           for p, s2, r in outs)
+                       for outs in P[s].values())
+    return v
+```
+hint: Read and write the same dictionary `v`, so each update immediately affects the states visited after it.
+solution: Visiting cells from the goal outward lets the news travel through the whole corridor in one sweep, giving the optimal values after a single pass; visiting in the opposite order moves it only one cell per sweep and gives the values $(-1, -1, 10)$. A synchronous implementation would give the same answer for both orders, and the two orders are what the first two tests distinguish.
+
+@quiz code
+prompt: A deterministic MDP is given by `P[s][a] = [(1.0, next_state, reward)]` (one outcome per action, terminal states not keys of `P`, worth 0). Write `greedy_path(P, v, gamma, s0, max_steps)` that starts in `s0` and repeatedly takes the action maximizing `reward + gamma * v.get(next_state, 0.0)` (ties go to the first listed action: an action replaces the best so far only if strictly better). Return the list of visited states, including `s0` and the terminal state if it is reached. Stop at a terminal state or after `max_steps` moves.
+starter:
+```python
+def greedy_path(P, v, gamma, s0, max_steps):
+    pass
+```
+tests:
+```python
+def corridor():
+    P = {}
+    for c in (1, 2, 3):
+        out = {}
+        for name, d in (('L', -1), ('R', 1), ('stay', 0)):
+            n2 = c + d
+            r = -10.0 if n2 == 0 else 10.0 if n2 == 4 else -1.0
+            out[name] = [(1.0, n2, r)]
+        P[c] = out
+    return P
+
+P = corridor()
+v = {1: 6.2, 2: 8.0, 3: 10.0}
+assert greedy_path(P, v, 0.9, 1, 10) == [1, 2, 3, 4]
+assert greedy_path(P, v, 0.9, 4, 10) == [4]
+assert greedy_path(P, v, 0.9, 1, 2) == [1, 2, 3]
+assert greedy_path(P, {}, 0.9, 3, 5) == [3, 4]
+assert greedy_path(P, {}, 0.9, 2, 3) == [2, 1, 2, 1]
+G = {'a': {'x': [(1.0, 'b', -1)], 'y': [(1.0, 'c', -1)]},
+     'b': {'go': [(1.0, 'end', 0)]}, 'c': {'go': [(1.0, 'end', 0)]}}
+assert greedy_path(G, {'b': -1.0, 'c': -1.0}, 0.9, 'a', 5) == ['a', 'b', 'end']
+```
+model:
+```python
+def greedy_path(P, v, gamma, s0, max_steps):
+    """States visited by the greedy policy for v in a deterministic MDP."""
+    path = [s0]
+    s = s0
+    for _ in range(max_steps):
+        if s not in P:
+            break
+        best_a, best_q = None, None
+        for a, outs in P[s].items():
+            _, s2, r = outs[0]
+            q = r + gamma * v.get(s2, 0.0)
+            if best_q is None or q > best_q:
+                best_a, best_q = a, q
+        s = P[s][best_a][0][1]
+        path.append(s)
+    return path
+```
+hint: At each state compute `reward + gamma * v.get(next, 0.0)` for every action, keep the first best, move, and append the new state.
+solution: The path follows the one-step lookahead best action. With empty `v` all non-terminal values are 0, so only the immediate rewards matter: next to the goal the agent takes the +10, while in cell 2 the actions `L`, `R` and `stay` tie and the first listed one, `L`, is chosen (in cell 1 it then avoids the hazard's $-10$). In the last test the actions tie and the first listed action `x` is chosen.
+
+@quiz num
+prompt: A corridor has five cells numbered 0 to 4 with $\gamma = 0.9$. Cell 4 is a terminal goal that gives reward $+5$ when entered; cell 0 is an ordinary cell. In cells 0 to 3 the actions are `L` (move left; at cell 0 it leaves the agent in place), `R` and `stay`, and every move that does not enter the goal gives reward $-1$. What is the optimal value $v_*(0)$? Give your answer to three decimal places.
+answer: 0.935
+tol: 0.001
+check: (lambda v3: (lambda v2: (lambda v1: -1 + 0.9 * v1)(-1 + 0.9 * v2))(-1 + 0.9 * v3))(5)
+hint: Work backward from the goal: $v_*(3) = 5$, since moving right from cell 3 enters the goal. Each cell farther away is $-1 + 0.9$ times its right neighbor's value.
+solution: $v_*(3) = 5$; $v_*(2) = -1 + 0.9 \times 5 = 3.5$; $v_*(1) = -1 + 0.9 \times 3.5 = 2.15$; $v_*(0) = -1 + 0.9 \times 2.15 = 0.935$. Moving right is optimal in every cell.
+
+@quiz text
+prompt: What does this program print?
+```python
+gamma = 0.5
+v = [0.0, 0.0]
+for k in range(3):
+    v = [max(1 + gamma * v[1], 0 + gamma * v[0]),
+         max(4.0, 2 + gamma * v[0])]
+print(v)
+```
+answer: [3.0, 4.0]
+check: run("gamma = 0.5\nv = [0.0, 0.0]\nfor k in range(3):\n    v = [max(1 + gamma * v[1], 0 + gamma * v[0]),\n         max(4.0, 2 + gamma * v[0])]\nprint(v)")
+hint: Both entries on the right-hand side use the old list `v`, so this is a synchronous sweep; trace three sweeps.
+solution: Sweep 1 gives $[1.0, 4.0]$. Sweep 2 gives $[\max(1 + 2, 0.5), \max(4, 2.5)] = [3.0, 4.0]$. Sweep 3 gives $[\max(1 + 2, 1.5), \max(4, 3.5)] = [3.0, 4.0]$, so it prints `[3.0, 4.0]`.

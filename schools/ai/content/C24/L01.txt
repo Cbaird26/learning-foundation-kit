@@ -1,0 +1,189 @@
+@lesson
+title: Framing ML problems: objectives, metrics and baselines
+summary: Turn a vague product goal into a prediction task with a metric that reflects real costs, and judge any model against simple baselines before trusting it.
+objective: Translate a business goal into inputs, a target, a loss to train on and a metric to report.
+objective: Compute accuracy, precision, recall, F1 and expected cost from a confusion matrix.
+objective: Choose a decision threshold on validation data and compare a model with trivial baselines.
+reading: Made With ML, the lessons on the product design and the baselines for machine learning systems; look up "baselines" and "evaluation" in the course index.
+@article
+A mail service wants to "reduce spam". That sentence is not yet a machine learning problem. To make it one, you must say what the model sees (the **input**, for example the text and sender of an email), what it must output (the **target**: spam or not spam), when the prediction is needed (before delivery, within 50 milliseconds), and what a mistake costs. Machine learning engineering starts here, because every later choice (data, model, monitoring) inherits the framing.
+
+### Objective, loss and metric are three different things
+
+The **training loss** is what the optimizer minimizes, such as cross-entropy; it must be differentiable. The **evaluation metric** is what you report to decide whether a model is good enough, such as recall at a fixed precision; it need not be differentiable. The **business objective** is what the organization cares about, such as fewer user complaints. They are related but not identical, and a model can improve the first two while the third stays flat. Write all three down.
+
+### A concrete case
+
+Suppose a validation set holds 200 emails, of which 20 are spam. A model flags some emails; comparing flags with the truth gives the **confusion matrix**:
+
+| | actual spam | actual not spam |
+|---|---|---|
+| flagged | TP = 12 | FP = 6 |
+| not flagged | FN = 8 | TN = 174 |
+
+From these four counts:
+
+$$\text{accuracy} = \frac{TP + TN}{n} = \frac{186}{200} = 0.93,\quad \text{precision} = \frac{TP}{TP + FP} = \frac{12}{18} \approx 0.667,\quad \text{recall} = \frac{TP}{TP + FN} = \frac{12}{20} = 0.6 .$$
+
+The **F1 score** is the harmonic mean of precision $P$ and recall $R$: $F_1 = 2PR/(P + R) \approx 0.632$. Accuracy of 0.93 sounds strong, but a **baseline** that never flags anything is right on 180 of 200 emails: accuracy $0.90$. The model's gain over the baseline is 3 points, and the baseline has recall 0. Always compute a trivial baseline first (the majority class, the previous day's value, a hand-written rule, a linear model) so that you know what "good" means.
+
+### Metrics should carry costs
+
+If a missed spam message costs the user 1 unit of annoyance and a wrongly hidden real message costs 10, the two errors are not equal. A simple **expected cost** is $C = c_{FP}\,FP + c_{FN}\,FN$. With $c_{FP} = 10$ and $c_{FN} = 1$, the model above costs $10 \cdot 6 + 1 \cdot 8 = 68$ units, never flagging costs $20$, and flagging everything costs $1800$. Here the baseline that never flags wins. A model must beat the baselines on the metric that reflects costs, not merely on accuracy.
+
+### Thresholds are decisions
+
+Most models output a score. A **threshold** $t$ turns it into a decision: predict positive when the score is at least $t$. Raising $t$ trades recall for precision. Choose $t$ on **validation data**, never on the test set: the test set exists to give an unbiased estimate of the final system, and once you tune on it, it is no longer unbiased.
+
+### In code
+
+```python
+def confusion_counts(preds, labels):
+    """Return (tp, fp, fn, tn) for 0/1 predictions and 0/1 labels."""
+    tp = fp = fn = tn = 0
+    for p, y in zip(preds, labels):
+        if p == 1 and y == 1:
+            tp += 1
+        elif p == 1:
+            fp += 1
+        elif y == 1:
+            fn += 1
+        else:
+            tn += 1
+    return tp, fp, fn, tn
+
+labels = [1, 0, 0, 1, 0, 0, 0, 0]
+always_no = [0] * len(labels)
+print(confusion_counts(always_no, labels))   # (0, 0, 2, 6)
+```
+
+Practitioners compute the same counts with a metrics library, but writing them out once makes clear what each number means and which cases need care (a model that flags nothing has precision $0/0$).
+@example
+title: Metrics and a baseline from counts
+problem: On 500 validation cases, 50 are positive. A model gives TP = 30, FP = 10 and FN = 20. Compute accuracy, precision, recall and F1, and compare accuracy with the baseline that always predicts the negative class.
+step: Find the missing count: $TN = 500 - 30 - 10 - 20 = 440$.
+step: Accuracy is $(30 + 440)/500 = 0.94$. Precision is $30/(30 + 10) = 0.75$. Recall is $30/(30 + 20) = 0.6$.
+step: F1 is $2 (0.75)(0.6)/(0.75 + 0.6) = 0.9/1.35 \approx 0.667$.
+step: The always-negative baseline is right on the 450 negatives, so its accuracy is $450/500 = 0.90$. The model's accuracy gain is only 4 points, but the baseline finds none of the 50 positives, while the model finds 60% of them.
+answer: Accuracy 0.94, precision 0.75, recall 0.6, F1 about 0.667; the baseline has accuracy 0.90 and recall 0.
+@mistakes
+- Reporting accuracy on imbalanced data without the majority-class baseline: 90% accuracy can mean the model learned nothing.
+- Choosing the threshold, or any other setting, by looking at the test set; use validation data and touch the test set once.
+- Treating the training loss as the product goal: a lower cross-entropy does not guarantee a lower business cost.
+- Dividing by zero in precision or recall when there are no predicted or no actual positives; decide and document what to return.
+@practice num
+prompt: A validation set has 400 examples, of which 36 are positive. What is the accuracy, as a percent to one decimal place, of a baseline that always predicts the negative class?
+answer: 91
+unit: %
+tol: 0.1
+check: 100 * (400 - 36) / 400
+hint: The baseline is right exactly on the negative examples.
+solution: There are $400 - 36 = 364$ negatives, so the baseline is right on 364 of 400 examples: $364/400 = 0.91$, or 91.0%.
+@practice num
+prompt: A fraud screen has a false positive cost of 5 units and a false negative cost of 80 units. On a validation set it makes 14 false positives and 3 false negatives. What is its total expected cost in units?
+answer: 310
+check: 5 * 14 + 80 * 3
+hint: Multiply each error count by its own cost, then add.
+solution: False positives cost $5 \times 14 = 70$ and false negatives cost $80 \times 3 = 240$, so the total is $310$ units.
+@practice code
+prompt: Write `prf(preds, labels)` that takes equal-length lists of 0/1 predictions and 0/1 labels and returns the tuple `(precision, recall, f1)`. Return `0.0` for any quantity whose denominator is zero (no predicted positives, no actual positives, or $P + R = 0$). For example, `prf([1, 1, 0], [1, 0, 1])` returns `(0.5, 0.5, 0.5)`.
+starter:
+```python
+def prf(preds, labels):
+    pass
+```
+tests:
+```python
+p, r, f = prf([1, 1, 0], [1, 0, 1])
+assert abs(p - 0.5) < 1e-9 and abs(r - 0.5) < 1e-9 and abs(f - 0.5) < 1e-9
+p, r, f = prf([0, 0, 0], [1, 0, 1])
+assert (p, r, f) == (0.0, 0.0, 0.0)
+p, r, f = prf([1, 0], [0, 0])
+assert (p, r, f) == (0.0, 0.0, 0.0)
+p, r, f = prf([1, 1, 1, 0, 0, 0], [1, 1, 0, 1, 0, 0])
+assert abs(p - 2 / 3) < 1e-9 and abs(r - 2 / 3) < 1e-9 and abs(f - 2 / 3) < 1e-9
+p, r, f = prf([1, 1, 1, 1], [1, 0, 0, 0])
+assert abs(p - 0.25) < 1e-9 and abs(r - 1.0) < 1e-9 and abs(f - 0.4) < 1e-9
+```
+model:
+```python
+def prf(preds, labels):
+    """Precision, recall and F1, using 0.0 when a denominator is zero."""
+    tp = sum(1 for p, y in zip(preds, labels) if p == 1 and y == 1)
+    fp = sum(1 for p, y in zip(preds, labels) if p == 1 and y == 0)
+    fn = sum(1 for p, y in zip(preds, labels) if p == 0 and y == 1)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    denom = precision + recall
+    f1 = 2 * precision * recall / denom if denom else 0.0
+    return precision, recall, f1
+```
+hint: Count tp, fp and fn first, then guard each division with a check that the denominator is not zero.
+solution: Count the three kinds of outcome, then compute each ratio only when its denominator is positive. The second and third tests have no predicted or no actual positives, the cases that make a naive version raise `ZeroDivisionError`; the last test has high recall and low precision, so F1 is below the average of the two.
+@practice mc
+prompt: Why should the decision threshold of a classifier be chosen on validation data rather than on the test set?
+choice*: Tuning on the test set uses it to make a choice, so its score is no longer an unbiased estimate of performance on new data.
+choice: The test set is usually too large to evaluate more than once.
+choice: Validation data always gives a higher score than test data, which makes the model look better.
+choice: The threshold is a parameter that the optimizer learns from the training loss, so it cannot depend on the test set.
+hint: Think about what the test set is for, and what happens to an estimate after you use it to make a decision.
+solution: A test score is an honest estimate only if nothing was selected using it. Picking a threshold on the test set fits that choice to the test examples, so the reported score is optimistic. The other statements are false or irrelevant: the size of the test set is not the reason, and thresholds are chosen by the engineer, not learned by the training loss.
+@practice code
+prompt: Write `best_threshold(scores, labels, cost_fp, cost_fn)`. Each example has a score and a 0/1 label; an example is predicted positive when its score is at least the threshold. Consider as candidates every distinct value in `scores` plus `float('inf')` (which predicts nothing positive). Return the candidate with the smallest total cost `cost_fp * FP + cost_fn * FN`; on a tie, return the smallest candidate. For example, with scores `[0.9, 0.2]`, labels `[1, 0]` and costs 1 and 1, the answer is `0.9`.
+starter:
+```python
+def best_threshold(scores, labels, cost_fp, cost_fn):
+    pass
+```
+tests:
+```python
+s = [0.9, 0.8, 0.6, 0.4, 0.3, 0.1]
+y = [1, 1, 0, 1, 0, 0]
+assert best_threshold(s, y, 1, 3) == 0.4
+assert best_threshold(s, y, 3, 1) == 0.8
+assert best_threshold([0.5, 0.5], [1, 0], 1, 1) == 0.5
+assert best_threshold([0.2, 0.1], [0, 0], 1, 1) == float('inf')
+assert best_threshold([0.9, 0.2], [1, 0], 1, 1) == 0.9
+```
+model:
+```python
+def best_threshold(scores, labels, cost_fp, cost_fn):
+    """Threshold with the lowest cost; ties go to the smallest threshold."""
+    best_t, best_cost = None, None
+    for t in sorted(set(scores)) + [float('inf')]:
+        fp = sum(1 for s, y in zip(scores, labels) if s >= t and y == 0)
+        fn = sum(1 for s, y in zip(scores, labels) if s < t and y == 1)
+        cost = cost_fp * fp + cost_fn * fn
+        if best_cost is None or cost < best_cost:
+            best_t, best_cost = t, cost
+    return best_t
+```
+hint: Loop over the candidates in increasing order, compute FP and FN for each, and replace the best only when the cost is strictly smaller.
+solution: Evaluating candidates in increasing order and requiring a strictly smaller cost to replace the best makes ties go to the smallest threshold. The `float('inf')` candidate lets the function choose to flag nothing, as the fourth test requires.
+@quiz text
+prompt: What does this program print?
+```python
+preds = [1, 0, 1, 1, 0]
+labels = [1, 0, 0, 1, 1]
+tp = sum(1 for p, y in zip(preds, labels) if p == y == 1)
+fp = sum(1 for p, y in zip(preds, labels) if p == 1 and y == 0)
+print(tp, fp, round(tp / (tp + fp), 2))
+```
+answer: 2 1 0.67
+check: run("preds = [1, 0, 1, 1, 0]\nlabels = [1, 0, 0, 1, 1]\ntp = sum(1 for p, y in zip(preds, labels) if p == y == 1)\nfp = sum(1 for p, y in zip(preds, labels) if p == 1 and y == 0)\nprint(tp, fp, round(tp / (tp + fp), 2))")
+hint: Go through the five pairs and count where the prediction is 1 and the label is 1, then where the prediction is 1 and the label is 0.
+solution: Positions 0 and 3 have prediction 1 and label 1, so $TP = 2$; position 2 has prediction 1 and label 0, so $FP = 1$. Precision is $2/3 \approx 0.67$.
+@quiz num
+prompt: A model has precision 0.8 and recall 0.5 on a validation set. What is its F1 score, to three decimal places?
+answer: 0.615
+tol: 0.001
+check: 2 * 0.8 * 0.5 / (0.8 + 0.5)
+hint: F1 is the harmonic mean: $2PR/(P + R)$.
+solution: $F_1 = 2(0.8)(0.5)/(0.8 + 0.5) = 0.8/1.3 \approx 0.615$.
+@quiz self
+prompt: A hospital wants to "predict which patients will miss their appointments" so that staff can phone them. Frame this as a machine learning problem: state the input, the target, the training loss, the evaluation metric (and why), and the baseline you would beat first.
+hint: Consider that phone calls cost staff time and that most patients attend.
+solution: Input: features known when the call list is made, such as appointment type, lead time and past attendance. Target: 1 if the patient missed the appointment. Training loss: cross-entropy on the predicted probability. Metric: because staff can phone only a fixed number of patients, report precision among the top $k$ patients by score (or recall at a fixed precision), computed on a time-ordered validation split; accuracy would reward predicting "attends" for everyone. Baselines: a model that ranks by past no-show rate, and random calling; the model must beat both on the metric before it earns a place in the process.
+rubric: States input, target and when the prediction is made, with no leakage of information from after the call list is made.
+rubric: Separates the training loss from the evaluation metric and justifies a metric tied to the limited calling capacity or to costs.
+rubric: Names at least one simple baseline and says the model must beat it on the chosen metric.
