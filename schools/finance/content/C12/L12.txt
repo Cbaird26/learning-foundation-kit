@@ -1,0 +1,174 @@
+@lesson
+title: Machine learning and its pitfalls in finance
+summary: Explain overfitting and the bias-variance trade-off, evaluate forecasts out of sample with time-ordered splits, use ridge shrinkage, and correct for data snooping and multiple testing; also run a pooled event study on earnings announcements.
+objective: Explain overfitting, the bias-variance trade-off and why out-of-sample evaluation is essential for financial forecasts.
+objective: Build time-ordered train and test splits, avoid look-ahead bias, and compute an out-of-sample R-squared.
+objective: Apply ridge shrinkage and corrections for multiple testing, and test a pooled set of event-study CARs.
+reading: QuantEcon, Python Programming for Economics and Finance: the lectures on regularization (ridge and lasso) and cross-validation, if available; otherwise look up "ridge regression", "walk-forward validation" and "multiple testing" in a machine learning text.
+@article
+Machine learning (ML) methods such as penalized regression, trees and neural networks promise to find patterns in large data sets. In finance they are used for return prediction, credit scoring, fraud detection and reading text. The same flexibility makes them dangerous in finance: returns have a very low signal-to-noise ratio, so a flexible model finds patterns in the noise that vanish the day after you trade on them.
+
+### Overfitting and the bias-variance trade-off
+
+A model with many parameters can fit the sample almost perfectly. **In-sample** $R^2$ never falls as regressors are added, even useless ones. What matters is **out-of-sample** performance: forecasts on data the model has not seen. The expected squared forecast error splits into
+
+$$E\big[(y - \hat f(x))^2\big] = \underbrace{\text{Bias}^2}_{\text{too simple}} + \underbrace{\text{Variance}}_{\text{too flexible}} + \sigma^2_{\varepsilon},$$
+
+where $\sigma_\varepsilon^2$ is irreducible noise. A rigid model has high bias and low variance; a flexible one has the reverse. The goal is the level of complexity that minimizes the *sum*, found by evaluating on held-out data.
+
+### Honest evaluation with time-ordered data
+
+Split the sample into a **training** set (to fit parameters), a **validation** set (to choose tuning parameters such as the penalty) and a **test** set (touched once, at the end, to report performance). For time series and panels the split must respect time: train on the past, test on the future. Randomly shuffling observations before splitting lets the model learn from the future, a **look-ahead bias** (data leakage), and makes results look better than they could have been in real time. **Walk-forward** (rolling-origin) evaluation repeats this: fit on a window ending at time $t$, forecast the next block, move forward, and combine all the out-of-sample forecasts. Other sources of look-ahead bias are standardizing with full-sample means, using restated accounting data that was not available at the time, and survivorship bias (using only firms that still exist).
+
+The **out-of-sample $R^2$** compares the model's forecasts with a benchmark forecast, usually the historical mean $\bar y$ from the training data:
+
+$$R^2_{OOS} = 1 - \frac{\sum_{t \in \text{test}}(y_t - \hat y_t)^2}{\sum_{t \in \text{test}}(y_t - \bar y)^2}.$$
+
+It can be negative (the model is worse than the mean), and in return prediction even small positive values can be economically meaningful because returns are so noisy.
+
+### Shrinkage: ridge and lasso
+
+**Regularization** limits complexity by penalizing large coefficients. **Ridge** regression minimizes $SSR + \lambda\sum_j\beta_j^2$, giving $\hat\beta = (X'X + \lambda I)^{-1}X'y$ (with standardized regressors and an unpenalized intercept). For a single regressor with no intercept, $\hat\beta_{ridge} = \sum x_i y_i/(\sum x_i^2 + \lambda)$: it shrinks the OLS estimate toward zero, trading a little bias for less variance, and it handles collinear regressors gracefully (week 4). **Lasso** penalizes $\sum_j|\beta_j|$ instead and sets some coefficients exactly to zero, performing variable selection. The penalty $\lambda$ is chosen by validation, often **cross-validation**: split the training data into folds, fit on all but one, evaluate on the one, and average (for time series use forward-chaining folds, not random ones).
+
+### Data snooping and multiple testing
+
+Test many predictors, strategies or specifications, and some will look significant by luck. If each of $m$ independent tests has false-positive probability $\alpha$ under the null, the probability of at least one false positive is
+
+$$1 - (1-\alpha)^m,$$
+
+which is $64\%$ for $m = 20$ and $\alpha = 5\%$. The **Bonferroni correction** tests each hypothesis at level $\alpha/m$ so the chance of any false positive is at most $\alpha$ (it is conservative, and valid without independence). Reported results must account for *all* the specifications tried, including those not written up (**p-hacking** or the file drawer problem). A backtest that picks the best of many strategies overstates what to expect from it. Disciplined practice: pre-specify the hypothesis, count the trials, keep a final test set, and prefer economic reasoning, simple models and results that survive transaction costs and out-of-sample periods.
+
+### Prediction is not causation
+
+A well-fitting ML model predicts; it does not show *why*. Predictive relationships can break when market conditions change (non-stationarity) or when many investors act on them. This course's tools (inference, robust standard errors, diagnostics) remain necessary for judging whether an ML result is more than noise.
+
+@example
+title: How many false positives to expect?
+problem: A researcher screens 40 candidate predictors of next-month returns, each tested at the 5% level, when in truth none has any predictive power (and the tests are independent). What is the chance that at least one appears significant, and what Bonferroni threshold should each test use?
+step: The chance of no false positive in one test is $0.95$, so for 40 independent tests it is $0.95^{40} = 0.1285$.
+step: The probability of at least one false positive is $1 - 0.1285 = 0.8715$, about 87%. The expected number of false positives is $40 \times 0.05 = 2$.
+step: With the Bonferroni correction, each test uses $0.05/40 = 0.00125$. A predictor must have a p-value below 0.00125 to count as significant at the family-wise 5% level.
+step: Lesson: a "significant" predictor found among many candidates deserves much less trust than one chosen in advance.
+answer: About 87%; use a per-test threshold of $0.00125$.
+
+@example
+title: Out-of-sample R-squared
+problem: A model forecasts monthly returns. On a test set of four months, the actual returns are $2\%, -1\%, 3\%, -2\%$, the model's forecasts are $1\%, 0\%, 1\%, 0\%$, and the mean return in the training data was $0.5\%$. Compute $R^2_{OOS}$.
+step: Model errors: $(1, -1, 2, -2)$ percentage points, so $\sum(y - \hat y)^2 = 1 + 1 + 4 + 4 = 10$.
+step: Benchmark errors, $y - 0.5$: $(1.5, -1.5, 2.5, -2.5)$, so $\sum(y - \bar y)^2 = 2.25 + 2.25 + 6.25 + 6.25 = 17$.
+step: $R^2_{OOS} = 1 - 10/17 = 0.4118$.
+step: The model beats the historical-mean forecast on this test set. With four months this says almost nothing; real evaluations use hundreds of out-of-sample forecasts.
+answer: $R^2_{OOS} = 0.4118$.
+
+@mistakes
+- Judging a model by its in-sample fit, or by a test set that was also used to choose the specification.
+- Splitting time-series data at random, which lets future information leak into the training set.
+- Ignoring the number of strategies, predictors or specifications tried when reporting a significant result.
+- Treating a forecast model as an explanation of cause and effect, or assuming a pattern that held in the past will persist.
+
+@practice num
+prompt: A researcher tests 20 independent trading signals at the 5% level, and none truly predicts returns. What is the probability that at least one signal appears significant? Give it as a percent to two decimal places.
+answer: 64.15
+unit: %
+tol: 0.01
+check: 100 * (1 - 0.95 ** 20)
+hint: First compute the probability that all 20 tests correctly fail to reject.
+solution: The probability of no false positive is $0.95^{20} = 0.3585$, so the probability of at least one is $1 - 0.3585 = 0.6415 = 64.15\%$.
+
+@practice num
+prompt: A researcher tests 40 hypotheses and wants the chance of any false positive to be at most 5%. Using the Bonferroni correction, what significance level should each individual test use? Give it as a decimal to five places.
+answer: 0.00125
+tol: 0.00001
+check: 0.05 / 40
+hint: Divide the overall level by the number of tests.
+solution: $0.05/40 = 0.00125$. Each p-value must be below 0.00125 to be declared significant.
+
+@practice mc
+prompt: A researcher predicts next-month stock returns from 60 months of lagged variables. To evaluate the model, she randomly assigns 70% of the months to training and 30% to testing, then reports a high out-of-sample $R^2$. What is the main problem?
+choice*: Random assignment mixes past and future months, so the model is trained partly on information from after the test months (look-ahead bias) and the reported performance is overstated.
+choice: Seventy percent is the wrong ratio; an $R^2$ is valid only with a 50/50 split.
+choice: Out-of-sample evaluation is invalid for any regression with lagged variables.
+choice: Random splitting makes the standard errors too large.
+hint: In real time, could you train on next year's data to forecast this year?
+solution: A forecast can only use information available at the time. Random splits let the training set contain months after some test months, which leaks future information about regimes and relationships. Use a chronological split or a walk-forward procedure. The 70/30 ratio is a convention, not the issue.
+
+@practice num
+prompt: Eight earnings announcements have cumulative abnormal returns over the window $[-1, +1]$, in percent, of $3.2, -1.1, 4.5, 0.8, 2.9, -0.6, 5.1, 1.4$. Compute the cross-sectional $t$ statistic of the average CAR, $CAAR/(s_{CAR}/\sqrt N)$, using the sample standard deviation of the CARs. Give it to two decimal places.
+answer: 2.52
+tol: 0.01
+check: statistics.mean([3.2, -1.1, 4.5, 0.8, 2.9, -0.6, 5.1, 1.4]) / (statistics.stdev([3.2, -1.1, 4.5, 0.8, 2.9, -0.6, 5.1, 1.4]) / sqrt(8))
+hint: The mean of the eight CARs is $2.025$; the sum of squared deviations from it is $36.275$.
+hint: The sample variance divides by $N - 1 = 7$, so $s_{CAR} = \sqrt{36.275/7} = 2.276$.
+solution: $CAAR = 2.025\%$ and $s_{CAR} = 2.276$, so the standard error is $2.276/\sqrt 8 = 0.805$ and $t = 2.025/0.805 = 2.52$. With 7 degrees of freedom the 5% critical value is 2.365, so we reject zero average abnormal return, subject to the usual assumptions: independent CARs (events not clustered in time), a clean window and no confounding news.
+
+@practice code
+prompt: Write `walk_forward_splits(n, train_size, test_size)` for a series of `n` observations indexed `0` to `n - 1`. It returns a list of pairs `(train_idx, test_idx)`, each a list of indexes. The first split trains on `0 .. train_size - 1` and tests on the next `test_size` indexes; each later split moves the whole window forward by `test_size`. Include only splits whose test block fits entirely within the series. Return `[]` if no split fits.
+starter:
+```python
+def walk_forward_splits(n, train_size, test_size):
+    pass
+```
+tests:
+```python
+s = walk_forward_splits(10, 4, 2)
+assert len(s) == 3
+assert s[0] == ([0, 1, 2, 3], [4, 5])
+assert s[1] == ([2, 3, 4, 5], [6, 7])
+assert s[2] == ([4, 5, 6, 7], [8, 9])
+s = walk_forward_splits(7, 3, 2)
+assert s == [([0, 1, 2], [3, 4]), ([2, 3, 4], [5, 6])]
+assert walk_forward_splits(5, 4, 2) == []
+assert all(max(tr) < min(te) for tr, te in walk_forward_splits(30, 10, 5))
+```
+model:
+```python
+def walk_forward_splits(n, train_size, test_size):
+    """Rolling-window train/test index splits that never look ahead."""
+    splits = []
+    start = 0
+    while start + train_size + test_size <= n:
+        train = list(range(start, start + train_size))
+        test = list(range(start + train_size, start + train_size + test_size))
+        splits.append((train, test))
+        start += test_size
+    return splits
+```
+hint: Keep a `start` position; the training block is `start .. start + train_size - 1` and the test block follows immediately.
+hint: Loop while `start + train_size + test_size <= n`, and move `start` forward by `test_size` after each split.
+solution: Each split uses a fixed-length window of the past for training and the next `test_size` observations for testing, then rolls forward by the size of the test block, so every observation after the first window is tested exactly once and no test index ever precedes a training index. The loop condition drops a final test block that would run past the end of the data.
+
+@quiz code
+prompt: Write `oos_r2(y_test, y_pred, y_benchmark)` that returns the out-of-sample $R^2 = 1 - \sum(y_t - \hat y_t)^2 / \sum(y_t - \bar y)^2$, where `y_benchmark` is the benchmark forecast (a number, such as the training-sample mean) that replaces $\bar y$ in the denominator. Assume the denominator is not zero.
+starter:
+```python
+def oos_r2(y_test, y_pred, y_benchmark):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(oos_r2([1, 2, 3], [1.5, 2, 2.5], 2), 0.75, rel_tol=1e-12)
+assert math.isclose(oos_r2([0.01, 0.04, -0.02, 0.03], [0.02, 0.03, 0.0, 0.01], 0.01),
+                    1 - 10 / 22, rel_tol=1e-9)
+assert math.isclose(oos_r2([1, 2, 3], [2, 2, 2], 2), 0.0, abs_tol=1e-12)
+assert oos_r2([1, 2, 3], [3, 2, 1], 2) == -3.0
+```
+model:
+```python
+def oos_r2(y_test, y_pred, y_benchmark):
+    """Out-of-sample R-squared against a fixed benchmark forecast."""
+    ssr = sum((y - p) ** 2 for y, p in zip(y_test, y_pred))
+    sst = sum((y - y_benchmark) ** 2 for y in y_test)
+    return 1 - ssr / sst
+```
+hint: The numerator is the model's squared forecast errors; the denominator is the benchmark's squared forecast errors.
+hint: The benchmark is a fixed number: do not recompute the mean of `y_test`.
+solution: Compare the model's sum of squared errors with that of the benchmark forecast on the same test observations. Using the test-sample mean in the denominator would flatter the model, because the mean of the test set is not known at forecast time. The last test shows that a model can be worse than the benchmark, giving a negative value.
+
+@quiz num
+prompt: A researcher regresses next-month returns on a single predictor (no intercept) using the training data $x = (1, 2, 3, 4, 5)$ and $y = (1.5, 2.0, 4.0, 4.5, 6.0)$. The ridge estimate minimizes $\sum(y_i - bx_i)^2 + \lambda b^2$. With $\lambda = 3$, compute $\hat b = \sum x_iy_i/(\sum x_i^2 + \lambda)$ to two decimal places.
+answer: 1.13
+tol: 0.01
+check: sum(a * b for a, b in zip([1, 2, 3, 4, 5], [1.5, 2.0, 4.0, 4.5, 6.0])) / (sum(a * a for a in [1, 2, 3, 4, 5]) + 3)
+hint: $\sum x_iy_i = 65.5$ and $\sum x_i^2 = 55$.
+solution: $\hat b = 65.5/(55 + 3) = 65.5/58 = 1.13$. Without the penalty ($\lambda = 0$) the OLS slope would be $65.5/55 = 1.19$; ridge shrinks it toward zero.

@@ -1,0 +1,202 @@
+@lesson
+title: DCF models in code
+summary: Compute free cash flow to the firm, discount forecast flows and a Gordon growth terminal value to an enterprise value, and bridge to equity value per share.
+objective: Compute free cash flow to the firm (FCFF) from EBIT, taxes, depreciation, capex and working capital.
+objective: Write a discounted cash flow (DCF) function with a Gordon growth terminal value and guard its input.
+objective: Convert enterprise value to equity value per share and diagnose how much of a value comes from the terminal value.
+reading: QuantEcon, Python Programming for Economics and Finance: look up the lectures on functions and on numerical computation; the valuation theory is in your C8 and C9 materials.
+
+@article
+A **discounted cash flow (DCF)** model values a company as the present value of the cash it can pay to all its capital providers. The calculation is short; the judgment is in the inputs. Writing it as functions makes every input explicit and testable.
+
+### Free cash flow to the firm
+$$FCFF = EBIT\,(1 - t) + D\&A - \text{Capex} - \Delta NWC$$
+
+$EBIT(1-t)$ is operating profit after the tax the firm would pay with no debt (net operating profit after tax, NOPAT); depreciation and amortization is added back because it is non-cash; capital expenditure and the increase in net working capital ($\Delta NWC$) are cash the business must reinvest. FCFF is measured before interest, so it belongs to both lenders and shareholders.
+
+```python
+def fcff(ebit, tax_rate, depreciation, capex, change_nwc):
+    return ebit * (1 - tax_rate) + depreciation - capex - change_nwc
+```
+
+### Enterprise value
+Forecast FCFF for $N$ years, assumed to arrive at the end of each year, and discount at the **weighted average cost of capital (WACC)**. After year $N$ the firm is assumed to grow forever at a constant rate $g$ (the Gordon growth model), giving a **terminal value** at time $N$:
+
+$$TV_N = \frac{FCFF_N\,(1+g)}{WACC - g}.$$
+
+Then
+
+$$EV = \sum_{t=1}^{N} \frac{FCFF_t}{(1+WACC)^t} + \frac{TV_N}{(1+WACC)^N}.$$
+
+The formula needs $WACC > g$. If $g \ge WACC$, the perpetuity formula gives a negative or infinite value, which means the assumption is impossible (no firm grows faster than the economy forever), so the function should raise an error.
+
+```python
+def enterprise_value(fcffs, wacc, g):
+    if wacc <= g:
+        raise ValueError("wacc must exceed g")
+    pv = sum(f / (1 + wacc) ** t for t, f in enumerate(fcffs, start=1))
+    tv = fcffs[-1] * (1 + g) / (wacc - g)
+    return pv + tv / (1 + wacc) ** len(fcffs)
+```
+
+`enumerate(fcffs, start=1)` numbers the years from 1, because the first forecast flow arrives at the end of year 1.
+
+### From enterprise value to a share price
+Enterprise value belongs to all capital providers. To value the **equity**, subtract debt and add cash (that is, subtract net debt):
+
+$$\text{Equity value} = EV - \text{Debt} + \text{Cash}, \qquad \text{Value per share} = \frac{\text{Equity value}}{\text{Shares outstanding}}.$$
+
+Use diluted shares and keep units consistent (millions of dollars divided by millions of shares gives dollars per share). Other claims such as preferred stock and minority interests are also deducted when they exist.
+
+### Reading the result
+In many DCFs the terminal value is **60% to 80% or more of enterprise value**, so small changes in $g$ and WACC move the answer a lot. Always compute the share of EV that comes from the terminal value, and cross-check with a market multiple: the *implied* growth rate (or exit multiple) of your terminal value should be believable. If $TV$ is known, the growth rate it implies solves $TV = F(1+g)/(w-g)$, so $g = (TV \cdot w - F)/(TV + F)$.
+
+Two common refinements: the **mid-year convention** discounts each flow by $t - 0.5$ years because cash arrives through the year, and an **exit multiple** terminal value applies an EV/EBITDA multiple instead of a growth rate. This course uses end-of-year flows. A DCF is a model of a company, not a price: it is general education, not a recommendation about any security.
+
+@example
+title: Valuing a three-year forecast
+problem: FCFF is forecast at 100, 110 and 120 (millions of dollars) at the ends of years 1 to 3. WACC is 10% and terminal growth is 3%. Find the enterprise value.
+step: Present values of the flows: $100/1.10 = 90.9$, $110/1.10^2 = 90.9$, $120/1.10^3 = 90.2$, a total of about $272.0$.
+step: Terminal value at year 3: $120 \times 1.03/(0.10 - 0.03) = 123.6/0.07 = 1765.7$.
+step: Discount it three years: $1765.7/1.10^3 = 1326.6$.
+step: $EV = 272.0 + 1326.6 = 1598.6$. The terminal value supplies $1326.6/1598.6 = 83\%$ of the total.
+answer: Enterprise value is about \$1,598.6 million.
+
+@example
+title: From enterprise value to value per share
+problem: The company above has debt of \$400 million, cash of \$50 million and 80 million shares. Find the equity value per share.
+step: Equity value $= 1598.6 - 400 + 50 = 1248.6$ million.
+step: Divide by the 80 million shares.
+step: $1248.6/80 = 15.61$ dollars per share.
+answer: About \$15.61 per share, in this model with these inputs.
+
+@mistakes
+- Using net income instead of FCFF with a WACC, or FCFF with the cost of equity: the cash flows and the discount rate must match.
+- Adding debt (instead of subtracting it) when moving from enterprise value to equity value.
+- Letting terminal growth reach or exceed WACC, or using a perpetual growth rate above long-run economic growth.
+- Discounting the terminal value by $N - 1$ or $N + 1$ years instead of the $N$ years of the last forecast flow.
+
+@practice text
+prompt: What does this program print?
+
+```python
+flows = [100.0, 100.0]
+wacc = 0.10
+pv = sum(f / (1 + wacc) ** t for t, f in enumerate(flows, start=1))
+print(round(pv, 2))
+```
+answer: 173.55
+check: run("flows = [100.0, 100.0]\nwacc = 0.10\npv = sum(f / (1 + wacc) ** t for t, f in enumerate(flows, start=1))\nprint(round(pv, 2))\n").strip()
+hint: `enumerate(flows, start=1)` gives `t = 1` for the first flow and `t = 2` for the second.
+solution: $100/1.10 + 100/1.10^2 = 90.91 + 82.64 = 173.55$.
+
+@practice mc
+prompt: In the Gordon growth terminal value $TV = FCFF_N (1+g)/(WACC - g)$, what happens as the growth rate $g$ rises toward the WACC?
+choice: The terminal value falls toward zero, because growth is risky.
+choice*: The terminal value grows without bound, which is why the assumption must keep $g$ well below WACC.
+choice: The terminal value is unaffected, because it is discounted for $N$ years.
+choice: The terminal value becomes negative once $g$ is above half of WACC.
+hint: Look at what happens to the denominator.
+solution: As $g$ approaches WACC the denominator $WACC - g$ approaches zero and the value grows without bound; if $g$ exceeds WACC it turns negative, which is meaningless. This is why terminal growth is kept low, and why the result is so sensitive to it.
+
+@practice code
+prompt: Write `fcff(ebit, tax_rate, depreciation, capex, change_nwc)` returning free cash flow to the firm: `ebit * (1 - tax_rate) + depreciation - capex - change_nwc`. `tax_rate` is a decimal; all other amounts are in the same unit, with `change_nwc` the increase in net working capital (negative if it falls).
+starter:
+```python
+def fcff(ebit, tax_rate, depreciation, capex, change_nwc):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(fcff(200, 0.25, 50, 70, 10), 120.0, rel_tol=1e-9)
+assert math.isclose(fcff(200, 0.25, 50, 70, -10), 140.0, rel_tol=1e-9)
+assert math.isclose(fcff(0, 0.25, 40, 40, 0), 0.0, abs_tol=1e-9)
+assert math.isclose(fcff(-100, 0.0, 20, 30, 5), -115.0, rel_tol=1e-9)
+```
+model:
+```python
+def fcff(ebit, tax_rate, depreciation, capex, change_nwc):
+    """Free cash flow to the firm."""
+    nopat = ebit * (1 - tax_rate)
+    return nopat + depreciation - capex - change_nwc
+```
+hint: Start with after-tax operating profit, `ebit * (1 - tax_rate)`.
+hint: Add depreciation, then subtract capex and the increase in working capital.
+solution: Compute NOPAT, add back the non-cash depreciation, and subtract the cash reinvested in capex and working capital. A fall in working capital (negative `change_nwc`) releases cash, so subtracting it adds to FCFF.
+
+@practice code
+prompt: Write `enterprise_value(fcffs, wacc, g)`. `fcffs` is a list of free cash flows arriving at the ends of years 1, 2, ..., N; `wacc` and `g` are decimals. Return the sum of the discounted flows plus the Gordon growth terminal value `fcffs[-1] * (1 + g) / (wacc - g)` discounted N years. Raise `ValueError` if `wacc <= g` or if `fcffs` is empty.
+starter:
+```python
+def enterprise_value(fcffs, wacc, g):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(enterprise_value([80, 90, 100, 110], 0.09, 0.025),
+                  1533.1360859932026, rel_tol=1e-9)
+assert math.isclose(enterprise_value([100], 0.10, 0.0), 1000.0, rel_tol=1e-9)
+assert math.isclose(enterprise_value([100, 100], 0.08, 0.02), 1635.8024691358023, rel_tol=1e-9)
+assert math.isclose(enterprise_value([50, 60, 70, 80], 0.12, 0.025), 741.693000038361, rel_tol=1e-9)
+assert raises(ValueError, enterprise_value, [100, 110], 0.03, 0.03)
+assert raises(ValueError, enterprise_value, [100, 110], 0.02, 0.03)
+assert raises(ValueError, enterprise_value, [], 0.10, 0.03)
+```
+model:
+```python
+def enterprise_value(fcffs, wacc, g):
+    """DCF enterprise value with a Gordon growth terminal value."""
+    if wacc <= g or not fcffs:
+        raise ValueError("need wacc > g and at least one cash flow")
+    pv = sum(f / (1 + wacc) ** t for t, f in enumerate(fcffs, start=1))
+    terminal = fcffs[-1] * (1 + g) / (wacc - g)
+    return pv + terminal / (1 + wacc) ** len(fcffs)
+```
+hint: Year numbers start at 1: use `enumerate(fcffs, start=1)`.
+hint: The terminal value is discounted by `(1 + wacc) ** len(fcffs)`, the same number of years as the last flow.
+solution: Check the inputs, discount each flow by its year, compute the terminal value from the last flow, and discount it by the number of forecast years. For one flow of 100 at 10% and 0% growth the value is the perpetuity $100/0.10 = 1000$.
+
+@practice num
+prompt: FCFF is forecast at 80, 90, 100 and 110 (millions of dollars) at the ends of years 1 to 4, WACC is 9% and terminal growth is 2.5%. What percent of the enterprise value comes from the present value of the terminal value? Give the answer to one decimal place.
+answer: 80.2
+tol: 0.1
+unit: %
+check: (110 * 1.025 / 0.065 / 1.09 ** 4) / (sum(f / 1.09 ** t for t, f in enumerate([80, 90, 100, 110], 1)) + 110 * 1.025 / 0.065 / 1.09 ** 4) * 100
+hint: Compute the enterprise value, and the present value of the terminal value on its own.
+solution: The present value of the terminal value is $110 \times 1.025/0.065/1.09^4 = 1228.8$ and the enterprise value is $304.3 + 1228.8 = 1533.1$, so the share is $1228.8/1533.1 = 80.2\%$.
+
+@quiz code
+prompt: Write `implied_growth(terminal_value, last_fcff, wacc)` that returns the perpetual growth rate $g$ (a decimal) implied by a terminal value, given that `terminal_value = last_fcff * (1 + g) / (wacc - g)`. Solve the equation for `g`.
+starter:
+```python
+def implied_growth(terminal_value, last_fcff, wacc):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(implied_growth(1800, 100, 0.09), 0.03263157894736842, rel_tol=1e-9)
+assert math.isclose(implied_growth(1450, 85, 0.095), 0.034364820846905536, rel_tol=1e-9)
+assert abs(implied_growth(1000, 100, 0.10)) < 1e-12
+assert math.isclose(implied_growth(500, 20, 0.08), (500 * 0.08 - 20) / 520, rel_tol=1e-9)
+```
+model:
+```python
+def implied_growth(terminal_value, last_fcff, wacc):
+    """Growth rate implied by a Gordon growth terminal value."""
+    return (terminal_value * wacc - last_fcff) / (terminal_value + last_fcff)
+```
+hint: Multiply both sides by `(wacc - g)` and collect the terms in `g`.
+hint: $TV(w - g) = F(1 + g)$ gives $TV\,w - F = g\,(TV + F)$.
+solution: From $TV(w - g) = F(1 + g)$ we get $TV \cdot w - F = g(TV + F)$, so $g = (TV \cdot w - F)/(TV + F)$. A terminal value of 1000 on a flow of 100 at 10% is a zero-growth perpetuity.
+
+@quiz num
+prompt: A DCF gives an enterprise value of \$2,845 million. The company has debt of \$640 million, cash of \$125 million and 90 million diluted shares. Find the equity value per share, to the nearest cent.
+answer: 25.89
+tol: 0.01
+lead: \$
+check: (2845 - 640 + 125) / 90
+hint: Equity value is enterprise value minus debt plus cash.
+solution: Equity value $= 2845 - 640 + 125 = 2330$ million, and $2330/90 = 25.89$ dollars per share.

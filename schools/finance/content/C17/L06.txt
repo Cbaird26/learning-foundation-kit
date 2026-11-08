@@ -1,0 +1,258 @@
+@lesson
+title: Cleaning and checking financial data
+summary: Parse messy price data, drop or fill missing values, remove duplicates, flag outliers and find gaps, and know which checks to run before any analysis.
+objective: Convert messy text values (blanks, "NA", thousands separators) into clean numbers.
+objective: Remove duplicate dates, sort by date and detect gaps in a series.
+objective: Flag outliers with a z-score and explain why flagging differs from deleting.
+reading: QuantEcon, Python Programming for Economics and Finance: look up the pandas lecture (missing data and data cleaning); the Python documentation covers `str` methods and `datetime.date`.
+
+@article
+Real data is untidy. A price file may have blank cells, the text `NA`, numbers written `1,030.25`, the same date twice, dates out of order, or a day with a price a hundred times too large. A model built on such data gives confident, wrong answers, so **clean first and check always**.
+
+### Parsing messy values
+Convert text step by step: remove spaces with `.strip()`, remove thousands separators with `.replace(",", "")`, test for missing markers, then call `float`.
+
+```python
+def to_number(text):
+    text = text.strip().replace(",", "")
+    if text.upper() in ("", "NA"):
+        return None
+    return float(text)
+```
+
+`None` is Python's value for "no value". Returning it, rather than `0`, keeps a missing price from looking like a price of zero.
+
+### Duplicates and order
+Two rows for one date usually mean a repeated download or a correction. Decide a rule and write it down (keep the first, keep the last) and apply it the same way every time. To keep the first row for each date, record the dates you have seen in a `set`. ISO dates (`2026-01-05`) sort correctly as text, so `sorted` restores order.
+
+### Missing values: drop or fill
+You can **drop** rows with missing prices or **fill** them. A common fill for prices is the **forward fill**: repeat the last known value. It is reasonable for a stock that did not trade, and misleading for long gaps, because it creates returns of exactly zero. Never fill a price with `0`: the next return would be infinite or $-100\%$. Leading missing values have nothing to repeat and stay missing.
+
+### Gaps
+A series that should be daily may skip days. Weekends and holidays are normal gaps; a two-week hole is not. Using `(later - earlier).days` on `datetime.date` objects, list the consecutive pairs separated by more than a chosen number of days (4 days covers a long weekend), and look at them.
+
+### Outliers
+A **z-score** measures distance from the mean in standard deviations: $z_i = (x_i - \bar{x})/s$. Flag values with $|z_i| > k$ for a threshold such as $k = 3$. Two cautions:
+
+- **A flag is a question, not an answer.** A large return may be real (an earnings surprise, a crash); only investigation can tell a data error from an event. Report flagged values; do not delete them silently.
+- **Small samples cannot show large z-scores.** With $n$ values the largest possible $|z|$ is $(n-1)/\sqrt{n}$. For $n = 10$ that is 2.85, so a threshold of 3 can never flag anything. The outlier also inflates the mean and standard deviation that are used to judge it.
+
+### Validation checks
+Before using a price series, check that: prices are positive; dates are unique and increasing; the number of rows is what you expect; the largest and smallest returns are plausible; and the count of rows dropped or filled is recorded. Write these checks as functions that return a list of problems, so they can be run on every new file.
+
+@example
+title: Tracing a cleaning loop
+problem: What does this program print?
+
+```python
+raw = ["1,234.50", " 98.2", "NA"]
+values = []
+for s in raw:
+    s = s.strip().replace(",", "")
+    if s.upper() == "NA":
+        continue
+    values.append(float(s))
+print(values)
+```
+step: For `"1,234.50"`: `strip` changes nothing, `replace` gives `"1234.50"`, which is not `NA`, so `1234.5` is appended.
+step: For `" 98.2"`: `strip` gives `"98.2"`, so `98.2` is appended.
+step: For `"NA"`: the uppercase text is `"NA"`, so `continue` skips the rest of the loop body and nothing is appended.
+step: The `print` runs once after the loop.
+answer: `[1234.5, 98.2]`
+
+@example
+title: Why a z-score threshold of 3 can miss an outlier
+problem: Nine daily price changes of 1 and one of 10 are in a list of ten values. Compute the z-score of the 10 and decide whether a threshold of 3 flags it.
+step: The mean is $(9 \times 1 + 10)/10 = 1.9$.
+step: The squared deviations are $9 \times 0.81 = 7.29$ and $8.1^2 = 65.61$, which sum to $72.9$. The sample variance is $72.9/9 = 8.1$, so $s = 2.846$.
+step: The z-score of 10 is $(10 - 1.9)/2.846 = 2.846$.
+step: This is below 3, so a threshold of 3 does not flag the obvious outlier, and with $n = 10$ no value can ever reach 3. A threshold of 2 flags it.
+answer: $z = 2.85$: a threshold of 3 misses it, a threshold of 2 catches it.
+
+@mistakes
+- Filling missing prices with `0`, which creates a $-100\%$ return followed by an enormous rebound.
+- Deleting outliers automatically, which removes real crashes and flatters risk measures.
+- Sorting dates stored in a non-ISO format as text (`"12/31/2025"` sorts before `"2/1/2025"`).
+- Using `if not value:` to test for missing, which also treats a legitimate `0` as missing; test `value is None` instead.
+
+@practice text
+prompt: What does this program print?
+
+```python
+prices = [10.0, None, 12.0, None, None, 15.0]
+last = None
+filled = []
+for p in prices:
+    if p is None:
+        p = last
+    filled.append(p)
+    last = p
+print(filled)
+```
+answer: [10.0, 10.0, 12.0, 12.0, 12.0, 15.0]
+check: run("prices = [10.0, None, 12.0, None, None, 15.0]\nlast = None\nfilled = []\nfor p in prices:\n    if p is None:\n        p = last\n    filled.append(p)\n    last = p\nprint(filled)\n").strip()
+hint: `last` always holds the most recent value that was written to `filled`.
+solution: Each `None` is replaced by the last value seen, so the output repeats 10.0 once, then 12.0 twice more, and the final 15.0 is real data.
+
+@practice ms
+prompt: Select all the checks that are sensible to run on a daily closing-price series before computing returns.
+choice*: Every price is positive.
+choice*: Dates are unique and in increasing order.
+choice: Any return more than three standard deviations from the mean is deleted automatically.
+choice: Missing prices are replaced by `0` so that the number of rows stays the same.
+choice*: The number of rows dropped or filled is counted and reported.
+hint: Good checks find problems and report them; they do not hide them.
+solution: Positive prices, unique increasing dates and a record of what was dropped or filled are all standard validation checks. Deleting large returns automatically removes real events, and filling with zero creates false $-100\%$ returns.
+
+@practice code
+prompt: Write `clean_prices(rows)`. `rows` is a list of `(date_text, price_text)` pairs with ISO dates such as `"2026-01-05"`. Return a list of `(date_text, price)` with `price` a `float`, after: (1) dropping rows whose price text is blank or `NA` (any capitalization, ignoring spaces); (2) removing thousands separators, so `"2,184.60"` becomes `2184.6`; (3) keeping only the first row for each date, in file order; (4) sorting by date, earliest first.
+starter:
+```python
+def clean_prices(rows):
+    pass
+```
+tests:
+```python
+rows = [("2026-01-05", "102.0"), ("2026-01-02", "101.5"), ("2026-01-06", "NA"),
+        ("2026-01-07", ""), ("2026-01-05", "102.4"), ("2026-01-08", "2,184.60")]
+assert clean_prices(rows) == [("2026-01-02", 101.5), ("2026-01-05", 102.0),
+                              ("2026-01-08", 2184.6)]
+assert clean_prices([("2026-02-02", " na "), ("2026-02-03", "")]) == []
+assert clean_prices([]) == []
+assert clean_prices([("2026-04-01", "NA"), ("2026-04-01", "10.5")]) == [("2026-04-01", 10.5)]
+assert clean_prices([("2026-03-02", "7"), ("2026-03-01", " 6.5 ")]) == [
+    ("2026-03-01", 6.5), ("2026-03-02", 7.0)]
+```
+model:
+```python
+def clean_prices(rows):
+    """Drop missing prices, parse numbers, dedupe dates, sort by date."""
+    seen = set()
+    cleaned = []
+    for date_text, price_text in rows:
+        text = price_text.strip().replace(",", "")
+        if text.upper() in ("", "NA"):
+            continue
+        if date_text in seen:
+            continue
+        seen.add(date_text)
+        cleaned.append((date_text, float(text)))
+    return sorted(cleaned)
+```
+hint: Handle each row in turn: clean the text, skip missing prices, skip dates already seen.
+hint: Use a `set` of dates already kept; add to it only when a row is kept. Sort at the end with `sorted`.
+solution: Strip spaces and commas, skip blank and `NA` prices, and keep a set of dates already kept so that only the first row for a date survives. A date with a missing first row and a valid second row is kept, because the missing row was skipped before the date was recorded. ISO dates sort correctly as text.
+
+@practice code
+prompt: Write `find_gaps(dates, max_days)` for a list of `datetime.date` objects in increasing order. Return a list of `(earlier, later)` pairs of consecutive dates that are **more than** `max_days` days apart (actual calendar days). If there are no gaps, return `[]`.
+starter:
+```python
+def find_gaps(dates, max_days):
+    pass
+```
+tests:
+```python
+from datetime import date
+ds = [date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 8), date(2026, 1, 9),
+      date(2026, 1, 20)]
+assert find_gaps(ds, 4) == [(date(2026, 1, 9), date(2026, 1, 20))]
+assert find_gaps(ds, 2) == [(date(2026, 1, 2), date(2026, 1, 5)),
+                            (date(2026, 1, 5), date(2026, 1, 8)),
+                            (date(2026, 1, 9), date(2026, 1, 20))]
+assert find_gaps(ds, 11) == []
+assert find_gaps(ds[:1], 1) == []
+assert find_gaps([], 1) == []
+```
+model:
+```python
+def find_gaps(dates, max_days):
+    """Consecutive date pairs more than max_days apart."""
+    gaps = []
+    for earlier, later in zip(dates, dates[1:]):
+        if (later - earlier).days > max_days:
+            gaps.append((earlier, later))
+    return gaps
+```
+hint: Pair each date with the next one using `zip(dates, dates[1:])`.
+hint: Subtracting two dates gives a `timedelta`; its `.days` is the number of days. Compare with `>`, not `>=`.
+solution: Loop over consecutive pairs and keep those whose difference in days exceeds `max_days`. A gap of exactly `max_days` (the 11-day gap with `max_days=11`) is not reported, which is why the comparison is strict.
+
+@practice code
+prompt: Write `flag_outliers(values, k)` that returns the list of indexes `i` for which `abs(values[i] - mean) > k * s`, where `mean` is the mean and `s` the sample standard deviation (`statistics.stdev`) of `values`. If there are fewer than two values, or `s` is zero, return `[]`. Indexes are returned in increasing order.
+starter:
+```python
+import statistics
+
+def flag_outliers(values, k):
+    pass
+```
+tests:
+```python
+nine_fours = [4] * 9 + [13]
+assert flag_outliers(nine_fours, 2) == [9]
+assert flag_outliers(nine_fours, 3) == []
+assert flag_outliers([2] * 14 + [30], 3) == [14]
+assert flag_outliers([5.0] * 5, 2) == []
+assert flag_outliers([], 3) == []
+assert flag_outliers([4], 3) == []
+```
+model:
+```python
+import statistics
+
+def flag_outliers(values, k):
+    """Indexes of values more than k sample standard deviations from the mean."""
+    if len(values) < 2:
+        return []
+    mean = statistics.mean(values)
+    s = statistics.stdev(values)
+    if s == 0:
+        return []
+    return [i for i, v in enumerate(values) if abs(v - mean) > k * s]
+```
+hint: Compute the mean and the sample standard deviation once, before the comparison.
+hint: Return early for fewer than two values or a zero standard deviation, then use `enumerate` to get the indexes.
+solution: Guard the cases where `stdev` is undefined or zero, compute the mean and `s` once, and return the indexes whose distance from the mean exceeds `k * s`. With ten values and one outlier the largest possible z-score is 2.85, so `k = 3` flags nothing while `k = 2` flags index 9.
+
+@quiz code
+prompt: Write `forward_fill(values)` that returns a new list in which each `None` is replaced by the most recent earlier value that is not `None`. Leading `None`s stay `None`. A value of `0` is a real value and is never replaced. Do not change the input list.
+starter:
+```python
+def forward_fill(values):
+    pass
+```
+tests:
+```python
+assert forward_fill([None, 5, None, None, 7, None]) == [None, 5, 5, 5, 7, 7]
+assert forward_fill([]) == []
+assert forward_fill([1.5, 2.5]) == [1.5, 2.5]
+assert forward_fill([0, None, 3]) == [0, 0, 3]
+original = [1, None]
+forward_fill(original)
+assert original == [1, None]
+```
+model:
+```python
+def forward_fill(values):
+    """Replace None with the last earlier non-None value."""
+    filled = []
+    last = None
+    for v in values:
+        if v is None:
+            v = last
+        filled.append(v)
+        last = v
+    return filled
+```
+hint: Remember the last value you wrote; it starts as `None`.
+hint: Test `v is None`, not `not v`, so that `0` is kept.
+solution: Keep a variable `last`, starting at `None`. Replace each `None` by `last`, append, and update `last`. Leading `None`s are replaced by the initial `None`, and `is None` keeps a genuine `0`.
+
+@quiz num
+prompt: A price file has these rows as `(date, price text)`: (2026-02-02, "50.40"), (2026-02-03, "51.10"), (2026-02-03, "99.00"), (2026-02-04, "NA"), (2026-02-05, "52.30"), (2026-02-06, ""), (2026-02-09, "53.20"). Clean it by dropping blank and `NA` prices and keeping only the first row for each date. Find the mean of the remaining prices, to two decimal places.
+answer: 51.75
+tol: 0.01
+lead: \$
+check: statistics.mean([50.40, 51.10, 52.30, 53.20])
+hint: Cross out the `NA` row, the blank row and the second row for February 3, then average what is left.
+solution: The cleaned prices are 50.40, 51.10, 52.30 and 53.20 (the 99.00 duplicate is dropped), and their mean is $207.00/4 = 51.75$.

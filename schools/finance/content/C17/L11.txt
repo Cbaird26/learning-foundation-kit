@@ -1,0 +1,285 @@
+@lesson
+title: Monte Carlo simulation
+summary: Simulate uncertain inputs with a seeded random number generator, summarize the resulting distribution of NPV with means, percentiles and probabilities, and judge simulation error.
+objective: Write a simulation loop that draws uncertain inputs from a seeded generator and returns a list of outcomes.
+objective: Summarize outcomes with a mean, percentiles, a probability of loss and a standard error.
+objective: Explain how simulation error shrinks with the number of draws and check a simulation against an exact answer.
+reading: QuantEcon, Python Programming for Economics and Finance: look up the lecture on "Monte Carlo" or simulation of random variables (and the `random` module documentation).
+
+@article
+A single DCF or NPV uses one number for each uncertain input. **Monte Carlo simulation** replaces each uncertain input with a probability distribution, draws many random sets of inputs, computes the result for each, and studies the resulting distribution. Instead of "NPV = 198", you learn "NPV averages 198, with about an 8% chance of being negative".
+
+### The simulation loop
+1. Choose a distribution for each uncertain input (normal for symmetric errors, uniform for "anywhere between", triangular for a most-likely value with a range, lognormal for a positive and skewed quantity).
+2. Draw a value for each input.
+3. Compute the output (here, NPV).
+4. Repeat $n$ times and collect the outputs in a list.
+
+Python's `random.Random(seed)` creates a generator. A **seed** makes the sequence reproducible: the same seed gives the same draws, so a result can be re-run and audited. A function that takes the generator as an argument stays testable:
+
+```python
+import random
+
+def simulate_values(draw, n, seed):
+    rng = random.Random(seed)
+    return [draw(rng) for _ in range(n)]
+```
+
+Here `draw(rng)` produces one outcome, for example `rng.gauss(300, 80)` (mean 300, standard deviation 80) or `rng.uniform(1, 2)`.
+
+### Example: a project with uncertain cash flows
+A project costs \$1,000 and returns a cash flow at the end of each of 5 years, each independently normal with mean 300 and standard deviation 80, discounted at 8%. The exact answer is available, because NPV is a linear combination of independent normals:
+
+- mean NPV $= -1000 + 300 \times 3.9927 = 197.8$, where $3.9927$ is the 5-year annuity factor at 8%;
+- standard deviation $= 80\sqrt{\sum_{t=1}^{5} 1.08^{-2t}} = 143.7$;
+- probability of a negative NPV $= \Phi(-197.8/143.7) = \Phi(-1.377) = 8.4\%$.
+
+A simulation of this project should reproduce those numbers, which makes it a test of your code. When the exact answer is not available (taxes, caps, options), the simulation is the answer.
+
+### Summarizing the results
+- **Mean:** `statistics.mean(values)`.
+- **Percentiles:** sort the values and interpolate. For $p$ between 0 and 100 the position is $(n - 1)p/100$; if it falls between two sorted values, interpolate linearly. For the sorted list 10, 20, 30, 40 the 25th percentile has position $0.75$, so it is $10 + 0.75 \times 10 = 17.5$.
+- **Probability of loss:** the fraction of values below zero.
+
+### Simulation error
+A simulated mean is itself random. Its **standard error** is
+
+$$SE = \frac{s}{\sqrt{n}},$$
+
+where $s$ is the sample standard deviation of the outcomes. With $s = 120$ and $n = 10{,}000$ draws, $SE = 1.2$. To halve the error you need **four times** as many draws. About 95% of the time the true mean lies within $1.96\,SE$ of the simulated mean. Report the number of draws and the standard error with the result.
+
+### Cautions
+- Garbage in, garbage out: the distributions are assumptions, and fat tails or correlations that you leave out make the result look safer than it is. Drawing one shock and applying it to every year, versus an independent draw each year, gives very different spreads.
+- Never test a simulation against specific random numbers. Test properties: the number of results, the range, and a mean within a few standard errors of the exact answer.
+- The same seed gives the same results only for the same code and the same Python; do not depend on particular values.
+
+### On your own computer
+NumPy generates and sums arrays of draws at once, so a hundred thousand draws take a fraction of a second:
+
+```python
+# on your own computer: NumPy
+import numpy as np
+
+rng = np.random.default_rng(42)
+flows = rng.normal(300, 80, size=(100_000, 5))
+factors = 1.08 ** -np.arange(1, 6)
+npv = -1000 + flows @ factors
+print(npv.mean(), npv.std(ddof=1), (npv < 0).mean())
+```
+
+The browser version uses plain loops, so keep the number of draws to a few thousand.
+
+@example
+title: Percentile by hand and in a program
+problem: What does this program print?
+
+```python
+values = [4, 1, 3, 2]
+values.sort()
+n = len(values)
+pos = (n - 1) * 0.25
+low = int(pos)
+frac = pos - low
+print(values[low] + frac * (values[low + 1] - values[low]))
+```
+step: After sorting, `values` is `[1, 2, 3, 4]` and `n` is `4`.
+step: The position is $(4 - 1) \times 0.25 = 0.75$, so `low` is `0` and `frac` is `0.75`.
+step: The percentile is `values[0] + 0.75 * (values[1] - values[0])` $= 1 + 0.75 \times 1 = 1.75$.
+step: This is the 25th percentile of the list under linear interpolation.
+answer: `1.75`
+
+@example
+title: How many draws do I need?
+problem: A simulation of NPV with 10,000 draws has a sample standard deviation of 120. Find the standard error of the mean, and the number of draws needed to cut it to 0.6.
+step: $SE = 120/\sqrt{10000} = 1.2$.
+step: Halving the error needs four times the draws: from 1.2 to 0.6 means $n \times 4 = 40{,}000$.
+step: Check: $120/\sqrt{40000} = 120/200 = 0.6$.
+answer: The standard error is 1.2; 40,000 draws give 0.6.
+
+@mistakes
+- Using the same random draw for every year of a project (perfect correlation) when the cash flows are independent, which overstates the spread.
+- Reporting a simulated mean without its number of draws or standard error, so the reader cannot judge its precision.
+- Testing a simulation against exact random values instead of against properties and the exact answer where one exists.
+- Letting a distribution produce impossible values (negative sales or prices) without capping or choosing a better distribution.
+
+@practice text
+prompt: What does this program print?
+
+```python
+values = [9, 3, 7, 5, 1]
+values.sort()
+n = len(values)
+pos = (n - 1) * 0.375
+low = int(pos)
+frac = pos - low
+print(values[low] + frac * (values[low + 1] - values[low]))
+```
+answer: 4.0
+check: run("values = [9, 3, 7, 5, 1]\nvalues.sort()\nn = len(values)\npos = (n - 1) * 0.375\nlow = int(pos)\nfrac = pos - low\nprint(values[low] + frac * (values[low + 1] - values[low]))\n").strip()
+hint: Sort first, then compute the position `(n - 1) * 0.375`.
+solution: The sorted list is `[1, 3, 5, 7, 9]`; the position $4 \times 0.375 = 1.5$ lies between index 1 and index 2, so the value is $3 + 0.5 \times (5 - 3) = 4.0$.
+
+@practice mc
+prompt: A simulation has a standard error of 2.0 with 5,000 draws. Which change reduces the standard error to about 1.0?
+choice: Using 10,000 draws, which is double.
+choice*: Using 20,000 draws, which is four times as many.
+choice: Using a different seed with the same number of draws.
+choice: Using 7,500 draws, which is 50% more.
+hint: The standard error is proportional to $1/\sqrt{n}$.
+solution: Since $SE = s/\sqrt{n}$, halving it requires $\sqrt{n}$ to double, so $n$ must quadruple: 20,000 draws. Doubling the draws only cuts the error by a factor of $\sqrt{2}$, and a different seed gives a different but not a more accurate estimate.
+
+@practice code
+prompt: Write `simulate_values(draw, n, seed)` that creates `rng = random.Random(seed)` and returns a list of `n` outcomes, each produced by calling `draw(rng)`. The same `seed` must give the same list, and `n = 0` gives `[]`.
+starter:
+```python
+import random
+
+def simulate_values(draw, n, seed):
+    pass
+```
+tests:
+```python
+vals = simulate_values(lambda rng: rng.uniform(1, 2), 500, 42)
+assert len(vals) == 500
+assert all(1 <= v <= 2 for v in vals)
+assert abs(sum(vals) / len(vals) - 1.5) < 0.1
+assert simulate_values(lambda rng: rng.random(), 20, 7) == simulate_values(
+    lambda rng: rng.random(), 20, 7)
+assert simulate_values(lambda rng: rng.random(), 20, 1) != simulate_values(
+    lambda rng: rng.random(), 20, 2)
+assert simulate_values(lambda rng: 1.0, 0, 1) == []
+```
+model:
+```python
+import random
+
+def simulate_values(draw, n, seed):
+    """n outcomes from draw(rng), using a seeded generator."""
+    rng = random.Random(seed)
+    return [draw(rng) for _ in range(n)]
+```
+hint: Create the generator once, outside the loop, and pass it to `draw` each time.
+hint: A list comprehension `[draw(rng) for _ in range(n)]` runs the draw `n` times.
+solution: Make one `Random(seed)` generator and call `draw(rng)` `n` times. Creating the generator once makes the whole list reproducible; creating it inside the loop would repeat the same value `n` times.
+
+@practice code
+prompt: Write `percentile(values, p)` returning the `p`-th percentile (`p` from 0 to 100) of a list of numbers by linear interpolation: sort the values, take position `(len(values) - 1) * p / 100`, and interpolate between the two neighboring sorted values. Raise `ValueError` for an empty list or `p` outside 0 to 100. The input may be unsorted and must not be changed.
+starter:
+```python
+def percentile(values, p):
+    pass
+```
+tests:
+```python
+import math
+data = [80, 20, 60, 100, 40]
+assert math.isclose(percentile(data, 50), 60.0, rel_tol=1e-9)
+assert math.isclose(percentile(data, 30), 44.0, rel_tol=1e-9)
+assert math.isclose(percentile(data, 90), 92.0, rel_tol=1e-9)
+assert percentile(data, 0) == 20
+assert percentile(data, 100) == 100
+assert percentile([7], 50) == 7
+assert data == [80, 20, 60, 100, 40]
+assert raises(ValueError, percentile, [], 50)
+assert raises(ValueError, percentile, [1, 2], 101)
+```
+model:
+```python
+def percentile(values, p):
+    """Linear-interpolation percentile, p from 0 to 100."""
+    if not values or not 0 <= p <= 100:
+        raise ValueError("need values and 0 <= p <= 100")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * p / 100
+    low = int(position)
+    if low + 1 >= len(ordered):
+        return ordered[-1]
+    fraction = position - low
+    return ordered[low] + fraction * (ordered[low + 1] - ordered[low])
+```
+hint: `sorted(values)` makes a sorted copy without changing the input.
+hint: The position is `(n - 1) * p / 100`; its integer part is the lower index and its fractional part is the weight on the next value. At `p = 100` there is no next value.
+solution: Sort a copy, compute the fractional position, and interpolate between the two surrounding values. At 100 the position is the last index, so return the last value directly. The 90th percentile of 20, 40, 60, 80, 100 has position 3.6, so it is $80 + 0.6 \times 20 = 92$.
+
+@practice code
+prompt: Write `standard_error(values)` returning the standard error of the mean, `statistics.stdev(values) / sqrt(n)` with `n = len(values)` (sample standard deviation). Raise `ValueError` if there are fewer than two values.
+starter:
+```python
+import math
+import statistics
+
+def standard_error(values):
+    pass
+```
+tests:
+```python
+import math
+data = [2, 4, 4, 4, 5, 5, 7, 9]
+assert math.isclose(standard_error(data), 0.7559289460184544, rel_tol=1e-9)
+assert standard_error([3, 3, 3]) == 0
+assert math.isclose(standard_error([1, 3]), 1.0, rel_tol=1e-9)
+assert raises(ValueError, standard_error, [5])
+assert raises(ValueError, standard_error, [])
+```
+model:
+```python
+import math
+import statistics
+
+def standard_error(values):
+    """Standard error of the sample mean."""
+    n = len(values)
+    if n < 2:
+        raise ValueError("need at least two values")
+    return statistics.stdev(values) / math.sqrt(n)
+```
+hint: The standard error is the sample standard deviation divided by the square root of the number of values.
+hint: Check `len(values) < 2` first and raise `ValueError`.
+solution: Compute `statistics.stdev(values)` (divisor $n - 1$) and divide by `math.sqrt(n)`. For `[1, 3]` the standard deviation is $\sqrt{2}$ and $n = 2$, so the standard error is 1.
+
+@quiz code
+prompt: A project costs 900 at time 0 and returns a cash flow at the end of each of years 1 to 4, each independently drawn from a normal distribution with mean 280 and standard deviation 60 (use `rng.gauss(280, 60)` once per year). The discount rate is 7% per year. Write `simulate_project_npv(n, seed)` that uses `random.Random(seed)` and returns a list of `n` simulated NPVs.
+starter:
+```python
+import random
+
+def simulate_project_npv(n, seed):
+    pass
+```
+tests:
+```python
+import statistics
+vals = simulate_project_npv(300, 11)
+assert len(vals) == 300
+assert abs(statistics.mean(vals) - 48.42) < 30
+assert 0.75 * 101.9 < statistics.stdev(vals) < 1.25 * 101.9
+assert simulate_project_npv(20, 5) == simulate_project_npv(20, 5)
+assert simulate_project_npv(0, 5) == []
+```
+model:
+```python
+import random
+
+def simulate_project_npv(n, seed):
+    """Simulated NPVs of a project with four uncertain cash flows."""
+    rng = random.Random(seed)
+    results = []
+    for _ in range(n):
+        npv = -900.0
+        for year in range(1, 5):
+            npv += rng.gauss(280, 60) / 1.07 ** year
+        results.append(npv)
+    return results
+```
+hint: Create one generator, then repeat the whole project `n` times.
+hint: Start each NPV at `-900.0`; for each year draw a new cash flow with `rng.gauss(280, 60)` and add its present value.
+solution: For each simulated project draw an independent cash flow for each of the four years, discount each by `1.07 ** year`, and add them to the outlay. The exact mean NPV is 48.4 and the exact standard deviation is 101.9, which the tests check with generous margins; one shock reused for all years would give a standard deviation of about 203 and fail.
+
+@quiz num
+prompt: A project's NPV is normally distributed with a mean of \$150 thousand and a standard deviation of \$120 thousand. What is the probability that the NPV is negative? Give the answer as a percent to one decimal place.
+answer: 10.6
+tol: 0.1
+unit: %
+check: ncdf(-150 / 120) * 100
+hint: Compute the z-score of zero: $(0 - 150)/120$, then use the standard normal cumulative distribution.
+solution: $z = (0 - 150)/120 = -1.25$ and $\Phi(-1.25) = 0.1056$, so the probability of a loss is about 10.6%.

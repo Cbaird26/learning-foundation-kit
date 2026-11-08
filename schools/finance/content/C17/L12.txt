@@ -1,0 +1,291 @@
+@lesson
+title: Model design, testing and documentation
+summary: Design a financial model as a tested, documented set of functions, with input validation, cross-checks between independent methods, and a user guide.
+objective: Organize a model into inputs, calculations and outputs, with validation of the inputs.
+objective: Write tests that use known answers, boundary cases and independent cross-checks, and run them as a suite.
+objective: Document a model's purpose, units, assumptions and limits so that someone else can use it correctly.
+reading: QuantEcon, Python Programming for Economics and Finance: look up the lecture "Writing Good Code" and, for tests, the Python documentation of the `unittest` module.
+
+@article
+Spreadsheet errors have contributed to well-documented losses and restatements in real firms, and code has the same failure modes: a wrong sign, a unit mismatch, a hard-coded number nobody remembers. Your last defense is design: build a model so that mistakes are hard to make and easy to see.
+
+### Design: inputs, calculations, outputs
+Keep three layers apart. **Inputs** are assumptions in one place (a dictionary or a table), each with a unit. **Calculations** are small functions that take inputs and return values, with no hidden state and no printing. **Outputs** are summaries and tables built from the calculation results. Information flows one way, from inputs to outputs. Rules that follow:
+
+- No hard-coded numbers inside formulas. A `0.25` in the middle of a function is an assumption that nobody will find when the tax rate changes.
+- One unit system. State whether amounts are in dollars, thousands or millions, and whether rates are per year or per month, in each docstring.
+- Descriptive names: `terminal_growth`, not `g2`.
+- One job per function, so each can be tested alone.
+
+### Validate inputs
+Check inputs at the top of a function or in a single `validate_assumptions` function, and raise `ValueError` with a clear message. Typical rules: a tax rate lies in $[0, 1)$, WACC exceeds terminal growth, shares are positive, probabilities sum to 1. A model that refuses impossible inputs is safer than one that returns a plausible-looking number.
+
+### Test in layers
+1. **Known answers.** A case you can do by hand or that a textbook states: the 10-year \$100 annuity at 5% is worth \$772.17.
+2. **Boundaries.** Zero rate, one period, empty list, a loss year.
+3. **Properties.** A balance sheet balances; a schedule ends at zero; more risk never lowers the required return; value is decreasing in WACC.
+4. **Independent cross-checks.** Compute the same quantity two different ways and compare within a tolerance: a loan's remaining balance from the schedule loop and from the closed form; an IRR by bisection and a check that NPV at that rate is zero; a simulation and the exact normal answer.
+5. **Regression tests.** Once a bug is fixed, add a test that would have caught it.
+
+Compare floats with a tolerance. Run all tests after every change, because fixing one function can break another. With the standard library, put assertions in functions and a runner that collects failures:
+
+```python
+def run_checks(checks):
+    return [name for name, check in checks if not check()]
+```
+
+On your own computer, the `unittest` module (or the third-party `pytest`) discovers and runs test files for you:
+
+```python
+# on your own computer: unittest from the standard library
+import math
+import unittest
+from tvm import pv_annuity
+
+class TestAnnuity(unittest.TestCase):
+    def test_known_answer(self):
+        self.assertTrue(math.isclose(pv_annuity(100, 0.05, 10), 772.17349, rel_tol=1e-6))
+
+    def test_zero_rate(self):
+        self.assertEqual(pv_annuity(100, 0, 10), 1000)
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+### Sanity checks on outputs
+A model that passes its tests can still be misused. After each run compare outputs with reality: an enterprise value-to-revenue multiple of 738 means a units mistake; a terminal value of 95% of value deserves a second look; a return above 100% a year needs an explanation. Report these checks alongside the answer.
+
+### Documentation
+Write a short **user guide**: what the model is for and what it is not for; the inputs with their units and allowed ranges; the key assumptions (end-of-period cash flows, constant terminal growth); how to run the tests; known limitations; and a version number with a change log. In code, docstrings state what a function takes and returns. A reader should be able to reproduce your result from the guide without asking you anything, and the guide should say plainly that a model output is an estimate under stated assumptions, not a recommendation to buy or sell anything.
+
+### A small package
+A library is a folder of modules plus tests:
+
+```text
+finlib/
+    __init__.py
+    tvm.py          npv, irr, pv_annuity, payment
+    loans.py        amortization_schedule, remaining_balance
+    returns.py      simple_returns, annualized_volatility
+    statements.py   income_statement, next_balance_sheet
+    dcf.py          fcff, enterprise_value
+tests/
+    test_tvm.py
+README.md
+```
+
+Next week you assemble yours as the course project.
+
+@example
+title: Cross-checking two methods
+problem: A \$12,000 loan at 6% nominal annual interest is repaid in 12 monthly payments of \$1,032.80. Two functions give the balance after 3 payments: a schedule loop and a closed form. What should a test check?
+step: The loop applies, month by month, $B_k = B_{k-1}(1.005) - PMT$, giving 11,027.20, 10,049.54 and then 9,066.99.
+step: The closed form $B_3 = P(1.005)^3 - PMT\,\dfrac{1.005^3 - 1}{0.005}$ also gives 9,066.99.
+step: The two methods use different arithmetic, so agreement within a tolerance such as $10^{-6}$ is strong evidence both are right; exact `==` would fail because of float rounding (they differ around the 11th decimal).
+step: Put this in a test that loops over several loans, including a zero-rate loan and the final payment.
+answer: Test that the two balances agree within a small tolerance (about 9,066.99 here), for many inputs.
+
+@example
+title: A units sanity check
+problem: A model reports an enterprise value of 18,450 labeled "millions of dollars". The company's revenue is 25,000 labeled "thousands of dollars". Is something wrong?
+step: Convert both to the same unit: revenue is \$25 million.
+step: The EV-to-revenue multiple is $18450/25 = 738$ if 18,450 really is in millions, which is absurd for almost any business.
+step: If the EV is actually in thousands, it is \$18.45 million and the multiple is $18.45/25 = 0.74$, which is plausible for a low-margin business.
+step: The label on the EV is wrong. A units check in the output would have caught it, so write one.
+answer: Yes: the EV is in thousands of dollars, not millions; the multiple is 0.74, not 738.
+
+@mistakes
+- Hard-coding an assumption inside a formula so that changing the input table does not change the result.
+- Testing only the happy path: no zero rate, no empty list, no loss year, no invalid input.
+- Testing a function against itself (calling the same code twice) instead of against a hand-computed answer or an independent method.
+- Mixing units (dollars with thousands, annual with monthly) and relying on the reader to notice.
+
+@practice mc
+prompt: A function `remaining_balance` computes a loan balance with a closed-form formula. Which test gives the strongest evidence that it is correct?
+choice: Run it once on one loan and check that the answer looks reasonable.
+choice*: Compare it with the balance from an independently written schedule loop for several loans, including a zero-rate loan and the final payment.
+choice: Check that it returns a positive number for any input.
+choice: Check that it runs without raising an error.
+hint: Which test would fail if the formula had a mistake?
+solution: Two independent methods that agree for many inputs, including boundaries, are hard to get both wrong in the same way. The other tests would pass for many wrong formulas: a number that "looks reasonable", a positive number, or a program that merely runs.
+
+@practice ms
+prompt: Select all the items that belong in a model's user guide.
+choice*: The unit and allowed range of each input.
+choice*: The main assumptions and known limitations.
+choice*: How to run the tests and the version number of the model.
+choice: A recommendation about whether readers should buy the company's stock.
+choice: The login details for the data provider's account.
+hint: A user guide lets a new person use the model correctly.
+solution: A guide documents inputs with units and ranges, assumptions and limitations, and how to test and identify the version. A model describes an estimate under stated assumptions and gives no instruction to buy or sell, and credentials never belong in documentation.
+
+@practice code
+prompt: Write `validate_assumptions(a)` for a dictionary with the keys `"tax_rate"`, `"wacc"` and `"terminal_growth"` (all decimals). Return `None` if the assumptions are acceptable and raise `ValueError` if any rule is broken: `tax_rate` must satisfy `0 <= tax_rate < 1`; `wacc` must be positive; `wacc` must be greater than `terminal_growth`. A missing key raises `KeyError`.
+starter:
+```python
+def validate_assumptions(a):
+    pass
+```
+tests:
+```python
+good = {"tax_rate": 0.25, "wacc": 0.09, "terminal_growth": 0.025}
+assert validate_assumptions(good) is None
+assert validate_assumptions(dict(good, tax_rate=0.0)) is None
+assert raises(ValueError, validate_assumptions, dict(good, tax_rate=1.0))
+assert raises(ValueError, validate_assumptions, dict(good, tax_rate=-0.1))
+assert raises(ValueError, validate_assumptions, dict(good, wacc=0.025))
+assert raises(ValueError, validate_assumptions, dict(good, wacc=0.0, terminal_growth=-0.01))
+assert raises(KeyError, validate_assumptions, {"tax_rate": 0.25})
+```
+model:
+```python
+def validate_assumptions(a):
+    """Raise ValueError if the valuation assumptions are impossible."""
+    tax_rate = a["tax_rate"]
+    wacc = a["wacc"]
+    growth = a["terminal_growth"]
+    if not 0 <= tax_rate < 1:
+        raise ValueError("tax_rate must be in [0, 1)")
+    if wacc <= 0:
+        raise ValueError("wacc must be positive")
+    if wacc <= growth:
+        raise ValueError("wacc must exceed terminal_growth")
+```
+hint: Read the three values from the dictionary first, so a missing key raises `KeyError` naturally.
+hint: Use one `if` per rule, each raising `ValueError`; the function returns `None` when no rule is broken.
+solution: Look up the three keys, then test each rule in turn. A function that ends without a `return` gives `None`. The case `wacc=0.0, terminal_growth=-0.01` passes the "exceeds growth" rule but fails the positivity rule, so it needs its own check.
+
+@practice code
+prompt: Write `run_checks(checks)`. `checks` is a list of `(name, function)` pairs; each function takes no arguments and should return a true value if the check passes. Return the list of names of the checks that fail, in the original order. A check fails if it returns a false value (such as `False` or `0`) or raises any exception.
+starter:
+```python
+def run_checks(checks):
+    pass
+```
+tests:
+```python
+def ok():
+    return True
+
+def bad():
+    return False
+
+def boom():
+    raise ZeroDivisionError("division by zero")
+
+assert run_checks([("a", ok), ("b", bad), ("c", boom), ("d", ok)]) == ["b", "c"]
+assert run_checks([]) == []
+assert run_checks([("a", ok)]) == []
+assert run_checks([("zero", lambda: 0)]) == ["zero"]
+
+def oops():
+    raise KeyError("missing")
+
+assert run_checks([("e", oops), ("a", ok)]) == ["e"]
+```
+model:
+```python
+def run_checks(checks):
+    """Names of the checks that return a false value or raise."""
+    failed = []
+    for name, check in checks:
+        try:
+            passed = check()
+        except Exception:
+            passed = False
+        if not passed:
+            failed.append(name)
+    return failed
+```
+hint: Call each check inside a `try` block so that an exception does not stop the loop.
+hint: In the `except Exception:` branch treat the check as failed, then append its name if it did not pass.
+solution: Loop over the pairs, call each function in a `try` block, and record the name when the result is false or an exception occurs. Catching the exception lets later checks still run, so one broken check does not hide the others.
+
+@practice code
+prompt: The function `percentile(values, p)` (linear interpolation, `p` from 0 to 100) is already defined in the editor. Write `summarize_npv(values)` for a list of simulated NPVs. Return a dictionary with the keys `"mean"` (the arithmetic mean), `"p5"` (5th percentile), `"p95"` (95th percentile) and `"prob_negative"` (the fraction of values strictly below zero).
+starter:
+```python
+def percentile(values, p):
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * p / 100
+    low = int(position)
+    if low + 1 >= len(ordered):
+        return ordered[-1]
+    return ordered[low] + (position - low) * (ordered[low + 1] - ordered[low])
+
+def summarize_npv(values):
+    pass
+```
+tests:
+```python
+import math
+vals = [-20, -10, 0, 10, 20, 30, 40, 50, 60, 70, 80]
+s = summarize_npv(vals)
+assert set(s) == {"mean", "p5", "p95", "prob_negative"}
+assert math.isclose(s["mean"], 30.0, rel_tol=1e-9)
+assert math.isclose(s["p5"], -15.0, rel_tol=1e-9)
+assert math.isclose(s["p95"], 75.0, rel_tol=1e-9)
+assert math.isclose(s["prob_negative"], 2 / 11, rel_tol=1e-9)
+assert summarize_npv([5, 6, 7])["prob_negative"] == 0
+```
+model:
+```python
+def percentile(values, p):
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * p / 100
+    low = int(position)
+    if low + 1 >= len(ordered):
+        return ordered[-1]
+    return ordered[low] + (position - low) * (ordered[low + 1] - ordered[low])
+
+def summarize_npv(values):
+    """Mean, 5th and 95th percentiles and probability of a loss."""
+    return {
+        "mean": sum(values) / len(values),
+        "p5": percentile(values, 5),
+        "p95": percentile(values, 95),
+        "prob_negative": sum(1 for v in values if v < 0) / len(values),
+    }
+```
+hint: The probability of a loss is the count of negative values divided by the number of values.
+hint: Use `percentile(values, 5)` and `percentile(values, 95)` for the two percentiles; build the dictionary in one `return`.
+solution: Compute each statistic from the list: the mean as total over count, the two percentiles with the supplied function, and the loss probability as the count of values below zero divided by the count. Two of the eleven values are negative, so the probability is $2/11$.
+
+@quiz code
+prompt: Write `compare_models(f_fast, f_slow, inputs, tol)` to cross-check two implementations. `inputs` is a list of tuples of arguments. Return the list of those input tuples (in the original order) for which `abs(f_fast(*args) - f_slow(*args))` is **greater than** `tol`. If the two models agree everywhere, return `[]`.
+starter:
+```python
+def compare_models(f_fast, f_slow, inputs, tol):
+    pass
+```
+tests:
+```python
+square = lambda x: x * x
+glitchy = lambda x: x ** 2 + (0.5 if x == 3 else 0)
+inputs = [(1,), (2,), (3,), (4,)]
+assert compare_models(square, glitchy, inputs, 0.01) == [(3,)]
+assert compare_models(square, glitchy, inputs, 1) == []
+assert compare_models(lambda x: x, lambda x: x + 0.5, [(1,)], 0.5) == []
+assert compare_models(lambda a, b: a + b, lambda a, b: a * b, [(2, 2), (1, 3)], 0.5) == [(1, 3)]
+assert compare_models(square, glitchy, [], 0.01) == []
+```
+model:
+```python
+def compare_models(f_fast, f_slow, inputs, tol):
+    """Inputs on which two implementations disagree by more than tol."""
+    return [args for args in inputs
+            if abs(f_fast(*args) - f_slow(*args)) > tol]
+```
+hint: Each element of `inputs` is a tuple; call both functions with `*args`.
+hint: Keep the tuple when the absolute difference is strictly greater than `tol`.
+solution: Unpack each tuple into both functions and keep the tuples with a difference above the tolerance. A difference exactly equal to the tolerance is accepted, which is why the 0.5 gap against `tol=0.5` returns `[]`.
+
+@quiz num
+prompt: A model reports an enterprise value of 45,300 in thousands of dollars. The company has debt of \$12.5 million, no cash, and 8 million shares outstanding. Find the equity value per share, to the nearest cent.
+answer: 4.10
+tol: 0.01
+lead: \$
+check: (45300 * 1000 - 12.5e6) / 8e6
+hint: Convert the enterprise value to dollars before subtracting debt: 45,300 thousand is \$45.3 million.
+solution: Enterprise value is \$45.3 million, so equity value is $45.3 - 12.5 = 32.8$ million dollars, and $32.8/8 = 4.10$ dollars per share.

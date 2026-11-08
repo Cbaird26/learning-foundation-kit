@@ -1,0 +1,258 @@
+@lesson
+title: Panel data
+summary: Estimate pooled, fixed-effects and random-effects models on panel data, choose between them with a Hausman test, and use cluster-robust standard errors; also estimate a GARCH(1,1) model by comparing log-likelihoods.
+objective: Explain what the unobserved-effects model assumes and why pooled OLS can be biased when the effects are correlated with the regressors.
+objective: Compute the fixed-effects (within) estimator and its degrees of freedom, and compare fixed and random effects with a Hausman test.
+objective: Explain why panel regressions need cluster-robust standard errors, and pick GARCH(1,1) parameters by maximum likelihood.
+reading: QuantEcon, Python Programming for Economics and Finance: the lectures on linear regression with panel data (fixed effects) in Python; also look up "fixed effects vs random effects" and the `linearmodels` package documentation.
+@article
+Much of empirical finance uses data on many firms over several years. Such **panel data** (longitudinal data) follow $N$ entities (firms, funds, countries) over $T$ periods, giving $NT$ observations indexed $it$. A panel is **balanced** if every entity is observed in every period. Panels let you control for unobserved differences between entities that a single cross-section or a single time series cannot handle.
+
+### The unobserved-effects model
+
+$$y_{it} = \beta\,x_{it} + a_i + \varepsilon_{it},$$
+
+where $a_i$ is an **unobserved effect** that is specific to entity $i$ and constant over time (a firm's management quality, a fund's strategy, a country's institutions) and $\varepsilon_{it}$ is the idiosyncratic error. Several regressors work the same way; the notation uses a single $x$ for clarity.
+
+### Pooled OLS
+
+**Pooled OLS** regresses $y_{it}$ on $x_{it}$ with a common intercept, treating $a_i$ as part of the error. It is consistent only if $a_i$ is uncorrelated with $x_{it}$. If, say, firms with high unobserved quality have both high $x$ and high $y$ (or, in the example below, the opposite), the pooled slope is biased. The errors $a_i + \varepsilon_{it}$ are also correlated across time for the same firm, so the usual standard errors are typically too small (when that correlation is positive, as it usually is); standard errors clustered by firm correct for it.
+
+### Fixed effects
+
+The **fixed-effects (within) estimator** removes $a_i$ by subtracting each entity's time average, $\tilde y_{it} = y_{it} - \bar y_i$ and $\tilde x_{it} = x_{it} - \bar x_i$, and running OLS on the demeaned data:
+
+$$\hat\beta_{FE} = \frac{\sum_i\sum_t \tilde x_{it}\,\tilde y_{it}}{\sum_i\sum_t \tilde x_{it}^2}.$$
+
+This is numerically identical to OLS with a dummy variable for every entity (LSDV). It uses only variation *within* each entity over time, so $a_i$ may be correlated with $x_{it}$ without causing bias, but regressors that never change within an entity (industry, country) cannot be estimated. With $k$ regressors, the variance is estimated with the residual sum of squares divided by the **degrees of freedom $NT - N - k$**: the $N$ entity means use up $N$ degrees of freedom. **Time effects** (year dummies) can be added the same way (a two-way fixed-effects model). **First differences**, $\Delta y_{it} = \beta\Delta x_{it} + \Delta\varepsilon_{it}$, is an alternative that also removes $a_i$.
+
+### Random effects
+
+**Random effects (RE)** treats $a_i$ as a random draw, uncorrelated with the regressors. Estimation is by generalized least squares on "quasi-demeaned" data: subtract only the fraction $\theta$ of the entity mean, where $\theta = 1 - \sqrt{\sigma_\varepsilon^2/(\sigma_\varepsilon^2 + T\sigma_a^2)}$. If $\theta = 1$ RE equals FE, if $\theta = 0$ it equals pooled OLS. When the RE assumption holds, it is more efficient than FE and also estimates time-invariant regressors; when it fails, RE is biased.
+
+The **Hausman test** compares the two. Under $H_0$ (the effects are uncorrelated with the regressors) both estimators are consistent and RE is efficient, so the estimates should be close. For one coefficient,
+
+$$H = \frac{(\hat\beta_{FE} - \hat\beta_{RE})^2}{\text{Var}(\hat\beta_{FE}) - \text{Var}(\hat\beta_{RE})} \sim \chi^2_1.$$
+
+A large $H$ (5% critical value 3.841) rejects $H_0$, so use FE. The test assumes the model is otherwise correctly specified, and uses ordinary (not robust) variances.
+
+### Standard errors
+
+Observations on the same entity are correlated over time, and the error variance may differ across entities. **Cluster-robust standard errors** allow arbitrary correlation within each cluster (an entity). For the within estimator with one regressor, ignoring small-sample corrections,
+
+$$\widehat{\text{Var}}_{cluster}(\hat\beta_{FE}) = \frac{\sum_i\Big(\sum_t \tilde x_{it}\,\hat e_{it}\Big)^2}{\Big(\sum_i\sum_t \tilde x_{it}^2\Big)^2},$$
+
+where $\hat e_{it} = \tilde y_{it} - \hat\beta_{FE}\tilde x_{it}$. They rely on a large number of clusters: with fewer than about 30 to 50 clusters they can be badly biased. Cluster at the level at which errors may be correlated (usually the entity, sometimes also time).
+
+### Maximum likelihood in practice
+
+Last week's GARCH(1,1) parameters are found by maximizing the log-likelihood. Software uses a numerical optimizer; the idea can be seen by evaluating the log-likelihood at several candidate parameter sets and keeping the best. The practice code below does exactly that, with the first variance set to the sample mean of the squared shocks.
+
+@example
+title: Pooled versus fixed effects
+problem: Four firms are observed for three years. $x$ is a firm's cash-flow ratio and $y$ its investment ratio (both in percent of assets).
+
+| Firm | Year | $x$ | $y$ |
+|---|---|---|---|
+| A | 1 | 1 | 10.0 |
+| A | 2 | 2 | 11.0 |
+| A | 3 | 3 | 12.2 |
+| B | 1 | 4 | 8.0 |
+| B | 2 | 5 | 8.9 |
+| B | 3 | 6 | 10.1 |
+| C | 1 | 7 | 5.0 |
+| C | 2 | 8 | 6.2 |
+| C | 3 | 9 | 7.1 |
+| D | 1 | 10 | 2.0 |
+| D | 2 | 11 | 3.1 |
+| D | 3 | 12 | 3.9 |
+
+Compare the pooled OLS slope with the fixed-effects slope.
+step: Pooled OLS ignores the firm labels: it gives $\hat y = 12.46 - 0.795\,x$, a *negative* slope (standard error 0.143), because the firms with high cash flow happen to be firms with low average investment.
+step: For fixed effects, subtract each firm's means. Every firm has $x = (a, a+1, a+2)$, so $\tilde x = (-1, 0, 1)$ for all four firms, and $\sum\tilde x^2 = 4 \times 2 = 8$. The demeaned investment of firm A is $\tilde y = (-1.067, -0.067, 1.133)$; those of B, C and D are $(-1.0, -0.1, 1.1)$, $(-1.1, 0.1, 1.0)$ and $(-1.0, 0.1, 0.9)$.
+step: $\sum\tilde x\tilde y = \tilde y_3 - \tilde y_1$ summed over firms $= 2.2 + 2.1 + 2.1 + 1.9 = 8.3$, so $\hat\beta_{FE} = 8.3/8 = 1.0375$.
+step: The degrees of freedom are $NT - N - k = 12 - 4 - 1 = 7$. The residual sum of squares is $0.0754$, so $s^2 = 0.01077$ and $\text{se} = \sqrt{0.01077/8} = 0.0367$, with $t = 28.3$.
+step: Within each firm, investment rises about 1 point for each point of cash flow, while across firms the relationship is negative: pooled OLS mixes the two. Fixed effects keeps only the within-firm variation. (With only four firms, cluster-robust standard errors, which give 0.027 here, cannot be trusted.)
+answer: Pooled slope $-0.795$; fixed-effects slope $1.0375$ ($\text{se} = 0.0367$).
+
+@example
+title: A Hausman test
+problem: In a panel regression, the fixed-effects estimate of a coefficient is $0.80$ with standard error $0.12$, and the random-effects estimate is $0.50$ with standard error $0.05$. Carry out the Hausman test at the 5% level.
+step: The squared difference of the estimates is $(0.80 - 0.50)^2 = 0.09$.
+step: The difference of the variances is $0.12^2 - 0.05^2 = 0.0144 - 0.0025 = 0.0119$.
+step: $H = 0.09/0.0119 = 7.56$. The 5% critical value of $\chi^2_1$ is 3.841.
+step: Since $7.56 > 3.841$, we reject $H_0$: the estimates differ too much for both to be consistent, which suggests the effects are correlated with the regressor. Use fixed effects.
+answer: $H = 7.56 > 3.841$: reject random effects, use fixed effects.
+
+@mistakes
+- Using pooled OLS with ordinary standard errors on panel data, ignoring both the unobserved effects and the correlation of errors within an entity.
+- Expecting fixed effects to estimate the effect of a variable that does not change within entities (such as industry).
+- Using the wrong degrees of freedom for fixed effects: $NT - k$ instead of $NT - N - k$ overstates the precision.
+- Using cluster-robust standard errors with only a handful of clusters, where they are unreliable.
+
+@practice num
+prompt: Two firms are observed for three years. Firm A has $x = (1, 2, 3)$ and $y = (2, 4, 5)$; firm B has $x = (5, 6, 7)$ and $y = (1, 2, 4)$. Compute the fixed-effects (within) slope, $\sum\tilde x\tilde y/\sum\tilde x^2$ with each variable demeaned by firm. Give it to two decimal places.
+answer: 1.50
+tol: 0.01
+check: float(run('x=[[1,2,3],[5,6,7]]\ny=[[2,4,5],[1,2,4]]\nsxy=0;sxx=0\nfor xs,ys in zip(x,y):\n    xm=sum(xs)/3;ym=sum(ys)/3\n    sxy+=sum((a-xm)*(b-ym) for a,b in zip(xs,ys))\n    sxx+=sum((a-xm)**2 for a in xs)\nprint(sxy/sxx)\n'))
+hint: Demean within each firm: firm A's $x$ becomes $(-1, 0, 1)$ and its $y$ becomes $(-1.667, 0.333, 1.333)$.
+hint: Firm B's demeaned $x$ is also $(-1, 0, 1)$, and its demeaned $y$ is $(-1.333, -0.333, 1.667)$.
+solution: $\sum\tilde x\tilde y = 3.0 + 3.0 = 6.0$ and $\sum\tilde x^2 = 2 + 2 = 4$, so $\hat\beta_{FE} = 1.50$. The pooled OLS slope on the same six points is slightly negative ($-0.07$), because firm B has higher $x$ and lower $y$ levels than firm A.
+
+@practice num
+prompt: A fixed-effects regression uses a balanced panel of 50 firms observed for 10 years, with 3 regressors (and no overall intercept, since each firm has its own). How many degrees of freedom does the residual variance estimate have, $NT - N - k$?
+answer: 447
+check: 50 * 10 - 50 - 3
+hint: There are $NT = 500$ observations; the estimation uses 50 firm means and 3 slopes.
+solution: $500 - 50 - 3 = 447$. Using $500 - 3 = 497$ would ignore the 50 estimated firm effects.
+
+@practice mc
+prompt: A panel regression of firm investment on cash flow gives a Hausman statistic that rejects the null at the 1% level. Which conclusion is appropriate?
+choice*: The random-effects estimator is likely inconsistent because the unobserved effects are correlated with the regressors; prefer fixed effects.
+choice: Both estimators are consistent, and random effects is preferable because it is more efficient.
+choice: The firm effects are zero, so pooled OLS is the best choice.
+choice: The standard errors must be wrong, so the sample is too small to analyze.
+hint: What is the null hypothesis of the Hausman test?
+solution: The null is that the effects are uncorrelated with the regressors, in which case random effects is consistent and efficient. Rejection says the FE and RE estimates differ systematically, so RE is probably biased; fixed effects remains consistent in either case.
+
+@practice code
+prompt: Write `within_slope(firms, x, y)` that returns the fixed-effects (within) slope of `y` on `x`. The three lists have the same length; `firms[i]` is the entity label of observation `i` (the labels are not necessarily contiguous or equal in number of observations). Demean `x` and `y` within each entity and return $\sum\tilde x\tilde y/\sum\tilde x^2$. Use only the standard library.
+starter:
+```python
+def within_slope(firms, x, y):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(within_slope(['A'] * 3 + ['B'] * 3, [1, 2, 3, 5, 6, 7],
+                                 [2, 4, 5, 1, 2, 4]), 1.5, rel_tol=1e-9)
+assert math.isclose(within_slope(['A', 'A', 'B', 'B', 'B'], [1, 3, 2, 4, 6],
+                                 [2.0, 5.0, 1.0, 2.5, 4.5]), 1.0, rel_tol=1e-9)
+assert math.isclose(within_slope(['u', 'v', 'u', 'v'], [1, 5, 3, 9],
+                                 [4, 10, 8, 16]), 1.6, rel_tol=1e-9)
+```
+model:
+```python
+def within_slope(firms, x, y):
+    """Fixed-effects (within) slope for a panel given as parallel lists."""
+    groups = {}
+    for i, firm in enumerate(firms):
+        groups.setdefault(firm, []).append(i)
+    sxy = 0.0
+    sxx = 0.0
+    for idx in groups.values():
+        x_bar = sum(x[i] for i in idx) / len(idx)
+        y_bar = sum(y[i] for i in idx) / len(idx)
+        for i in idx:
+            sxy += (x[i] - x_bar) * (y[i] - y_bar)
+            sxx += (x[i] - x_bar) ** 2
+    return sxy / sxx
+```
+hint: First collect the observation positions of each firm, for example in a dictionary from label to list of indexes.
+hint: For each firm compute its own means of `x` and `y`, then add that firm's cross-products and squares to two running totals.
+solution: Group the indexes by label, subtract each firm's own mean from its observations, and accumulate $\sum\tilde x\tilde y$ and $\sum\tilde x^2$ over all firms. Using the overall means instead of firm means would give the pooled slope, which is the mistake the first test (pooled slope $-0.07$) catches. The third test has interleaved labels, so the code must not assume that each firm's rows are adjacent.
+
+@practice code
+prompt: Write `best_garch(eps, candidates)` that returns the candidate $(\omega, \alpha, \beta)$ from the list `candidates` with the highest Gaussian log-likelihood for the list of shocks `eps`. For each candidate, set $\sigma_1^2$ to the mean of the squared shocks, use $\sigma_t^2 = \omega + \alpha\varepsilon_{t-1}^2 + \beta\sigma_{t-1}^2$ for $t \ge 2$, and sum $-\tfrac12[\ln(2\pi) + \ln\sigma_t^2 + \varepsilon_t^2/\sigma_t^2]$ over all `len(eps)` shocks. If candidates tie, return the first. Use only the standard library.
+starter:
+```python
+def best_garch(eps, candidates):
+    pass
+```
+tests:
+```python
+clustered = [0.4, -0.6, 0.5, -0.3, 2.1, -2.4, 1.8, -1.6, 0.9, -0.5,
+             0.3, 0.2, -0.4, 0.5, -2.0, 2.3, -1.7, 0.8, -0.4, 0.3]
+steady = [0.9, -1.1, 0.8, -0.7, 1.0, -0.9, 1.2, -0.8, 0.7, -1.0,
+          0.9, -1.2, 0.6, -0.8, 1.1, -0.9]
+cands = [(0.05, 0.10, 0.85), (0.85, 0.0, 0.0), (0.10, 0.30, 0.60)]
+assert best_garch(clustered, cands) == (0.05, 0.10, 0.85)
+assert best_garch(steady, cands) == (0.85, 0.0, 0.0)
+assert best_garch(steady, list(reversed(cands))) == (0.85, 0.0, 0.0)
+assert best_garch(clustered, [(0.1, 0.3, 0.6)]) == (0.1, 0.3, 0.6)
+```
+model:
+```python
+import math
+
+
+def _loglik(eps, omega, alpha, beta):
+    sigma2 = sum(e * e for e in eps) / len(eps)
+    total = 0.0
+    for t, e in enumerate(eps):
+        if t > 0:
+            sigma2 = omega + alpha * eps[t - 1] ** 2 + beta * sigma2
+        total += -0.5 * (math.log(2 * math.pi) + math.log(sigma2) + e * e / sigma2)
+    return total
+
+
+def best_garch(eps, candidates):
+    """Candidate (omega, alpha, beta) with the highest Gaussian log-likelihood."""
+    best = candidates[0]
+    best_ll = _loglik(eps, *best)
+    for cand in candidates[1:]:
+        ll = _loglik(eps, *cand)
+        if ll > best_ll:
+            best, best_ll = cand, ll
+    return best
+```
+hint: Write a helper that computes the log-likelihood of one candidate: run the variance recursion and add up the log-density terms.
+hint: Loop over the candidates, remember the best log-likelihood so far, and replace it only when a candidate is strictly better (so ties keep the first).
+solution: The log-likelihood of a candidate comes from the variance recursion started at the mean squared shock. Compare the candidates and keep the maximum. In the clustered sample, large shocks come in runs, which a persistent GARCH variance tracks, while in the steady sample the best model is simply a constant variance (alpha and beta zero). Real estimation searches over a continuum of parameters with an optimizer, but the principle is the same.
+
+@quiz code
+prompt: Write `cluster_se_within(firms, x, y)` that returns the cluster-robust standard error (clusters = firms, no small-sample correction) of the fixed-effects slope: $\sqrt{\sum_i\left(\sum_t\tilde x_{it}\hat e_{it}\right)^2}\Big/\sum_i\sum_t\tilde x_{it}^2$, where $\tilde x, \tilde y$ are the entity-demeaned values, $\hat\beta = \sum\tilde x\tilde y/\sum\tilde x^2$ and $\hat e = \tilde y - \hat\beta\tilde x$. The lists have equal length, and `firms[i]` is the label of observation `i`. Use only the standard library.
+starter:
+```python
+def cluster_se_within(firms, x, y):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(cluster_se_within(['A', 'A', 'B', 'B', 'B'], [1, 3, 2, 4, 6],
+                                      [2.0, 5.0, 1.0, 2.5, 4.5]),
+                    0.1414213562373095, rel_tol=1e-9)
+assert math.isclose(cluster_se_within(['u', 'v', 'u', 'v'], [1, 5, 3, 9],
+                                      [4, 10, 8, 16]),
+                    0.11313708498984763, rel_tol=1e-9)
+```
+model:
+```python
+import math
+
+
+def cluster_se_within(firms, x, y):
+    """Cluster-robust standard error of the fixed-effects slope."""
+    groups = {}
+    for i, firm in enumerate(firms):
+        groups.setdefault(firm, []).append(i)
+    xt = [0.0] * len(x)
+    yt = [0.0] * len(y)
+    for idx in groups.values():
+        x_bar = sum(x[i] for i in idx) / len(idx)
+        y_bar = sum(y[i] for i in idx) / len(idx)
+        for i in idx:
+            xt[i] = x[i] - x_bar
+            yt[i] = y[i] - y_bar
+    sxx = sum(v * v for v in xt)
+    beta = sum(a * b for a, b in zip(xt, yt)) / sxx
+    resid = [b - beta * a for a, b in zip(xt, yt)]
+    meat = 0.0
+    for idx in groups.values():
+        score = sum(xt[i] * resid[i] for i in idx)
+        meat += score ** 2
+    return math.sqrt(meat) / sxx
+```
+hint: Demean `x` and `y` within each firm and compute the slope and the residuals first.
+hint: For each firm add up $\tilde x\hat e$ over its observations (its "score"), square that sum, and add the squares across firms; then take the square root and divide by $\sum\tilde x^2$.
+solution: The cluster-robust variance squares each entity's *total* score before summing, which lets the errors of one entity be correlated over time; summing squared individual terms instead would give the heteroskedasticity-robust (not clustered) variance. Take the square root and divide by $\sum\tilde x^2$.
+
+@quiz num
+prompt: In a panel regression, the fixed-effects estimate is $0.52$ with standard error $0.10$ and the random-effects estimate is $0.40$ with standard error $0.06$. Compute the Hausman statistic to two decimal places.
+answer: 2.25
+tol: 0.01
+check: (0.52 - 0.40) ** 2 / (0.10 ** 2 - 0.06 ** 2)
+hint: The denominator is the difference of the two variances, the squared standard errors.
+solution: $H = (0.12)^2/(0.0100 - 0.0036) = 0.0144/0.0064 = 2.25$. This is below the 5% critical value of $\chi^2_1$, 3.841, so we do not reject: random effects is not contradicted by the data.

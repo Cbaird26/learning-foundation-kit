@@ -1,0 +1,210 @@
+@lesson
+title: Debt, interest and the cash sweep
+summary: Build a debt schedule with mandatory repayments, a cash sweep and interest on beginning or average balances, and resolve the circularity between interest and cash flow.
+objective: Lay out a debt schedule with beginning balance, mandatory repayment, optional repayment and ending balance.
+objective: Compute cash available for debt repayment and the cash sweep, respecting a minimum cash balance.
+objective: Explain the circularity created by interest on average balances and solve it by iteration.
+objective: Code a debt schedule that tests correctly at the edges.
+reading: SEC EDGAR: in a company's 10-K, the debt note (maturity table, interest rates, covenants) and the liquidity section of MD&A.
+
+@article
+Debt turns a business model into a levered one: interest is a fixed claim ahead of shareholders, and repayment drains cash. The debt schedule answers three questions each year. How much must the company repay? How much more can it repay? What interest does that produce?
+
+### The schedule
+
+For each debt tranche (a term loan, bonds, a revolver), keep a roll-forward:
+
+$$\text{Ending} = \text{Beginning} - \text{Mandatory repayment} - \text{Optional repayment} + \text{Draws}.$$
+
+**Mandatory repayment** (scheduled amortization or a maturity) comes from the debt note: it must be paid. **Optional repayment** is the discretionary prepayment the model assumes from spare cash. A **revolver** (revolving credit facility) is a borrowing line that the model draws when cash would otherwise fall below the minimum and repays first when cash is spare.
+
+### Cash available and the sweep
+
+A **cash sweep** sends all spare cash to repaying debt. Spare cash is what remains after keeping a **minimum cash balance** the business needs to operate:
+
+$$\text{Cash available for debt repayment} = \text{Beginning cash} + \text{Cash flow before debt repayment} - \text{Minimum cash}.$$
+
+After the mandatory repayment, the sweep is the rest, but never more than the balance outstanding and never negative:
+
+$$\text{Optional repayment} = \max\bigl(0,\ \min(\text{Available} - \text{Mandatory},\ \text{Balance after mandatory})\bigr).$$
+
+If available cash is smaller than the mandatory payment, the model shows a shortfall that must be funded by the revolver, new debt or a dividend cut. A sweep assumption is a forecasting convention: real companies choose whether to prepay, and loan agreements may require a share of excess cash flow to be swept.
+
+### Interest and the circularity
+
+Interest expense equals the rate times a balance. Two conventions:
+
+- **Beginning balance**: $\text{Interest} = r \times \text{Beginning}$. Simple, and it creates no circularity, but ignores repayments during the year.
+- **Average balance**: $\text{Interest} = r \times (\text{Beginning} + \text{Ending})/2$. More accurate, but circular: interest lowers net income, which lowers cash flow, which lowers repayment, which changes the ending balance, which changes interest.
+
+Spreadsheet models often enable iterative calculation, or add a switch to break the loop when it blows up. In Python, solve it by iteration: guess the interest, compute the repayment, recompute interest, and repeat until the change is negligible. Because each pass multiplies the error by about $r/2$, convergence is fast. When all spare cash is swept, the fixed point is also solvable by algebra: with cash flow before interest $CF$, repayment $X = CF - I$ and $I = r(B - X/2)$, so $X = (CF - rB)/(1 - r/2)$.
+
+### Building it right
+
+Use the sign convention that repayments reduce debt and cash. Put the mandatory repayment first and the sweep second. Test the edges: zero cash, a balance already smaller than the scheduled payment, and cash flow so large it repays everything. Taxes are left out of the schedules in this lesson's small examples for clarity; interest is tax deductible, which the full model in week 8 handles.
+
+```python
+balance = 500.0
+rate = 0.06
+interest_beginning = rate * balance
+print(interest_beginning)              # 30.0
+```
+
+@example
+title: A year of the debt schedule
+problem: Granite Pass Industries starts the year with a \$500 million term loan at 6%. Cash at the start of the year is \$40 million, the minimum cash balance is \$30 million, cash flow before debt repayment (already after interest) is \$90 million, and the mandatory repayment is \$25 million. Find the sweep and ending debt, and the interest on the beginning and average balances.
+step: Cash available for debt repayment: $40 + 90 - 30 = 100$.
+step: After the mandatory \$25 million, \$75 million is left, well below the \$475 million outstanding, so the optional repayment is \$75 million.
+step: Ending debt: $500 - 25 - 75 = 400$.
+step: Interest on the beginning balance: $0.06 \times 500 = 30.0$. On the average balance: $0.06 \times (500 + 400)/2 = 0.06 \times 450 = 27.0$.
+answer: Sweep of \$75 million; ending debt of \$400 million; interest of \$30.0 million (beginning) or \$27.0 million (average).
+
+@example
+title: Iterating on the circularity
+problem: A company has a \$400 million loan at 5% and \$120 million of cash flow before interest. All of it, after interest, repays debt, and cash starts and ends at the minimum. Interest is charged on the average balance. Find the interest and the repayment.
+step: Start with a guess, interest on the beginning balance: $I_0 = 0.05 \times 400 = 20$. Then repayment is $120 - 20 = 100$.
+step: Recompute on the average balance: $I_1 = 0.05 \times (400 + 300)/2 = 17.5$, so repayment becomes $102.5$.
+step: Again: $I_2 = 0.05 \times (400 + 297.5)/2 = 17.4375$, repayment $102.5625$; the next pass gives $17.4359$. The changes shrink by about a factor of 40 each time.
+step: The algebra confirms it: $X = (120 - 0.05 \times 400)/(1 - 0.025) = 100/0.975 = 102.564$ and $I = 120 - 102.564 = 17.436$.
+answer: Interest of about \$17.44 million; repayment of about \$102.56 million.
+
+@mistakes
+- Letting the sweep repay more than the outstanding balance, so debt goes negative.
+- Forgetting the minimum cash balance, so the model spends cash the business needs.
+- Treating a mandatory repayment as optional (or the reverse), so a shortfall hides inside a positive sweep.
+- Computing interest on the ending balance, which understates interest in a year of repayment.
+
+@practice num
+prompt: A company repays its debt from \$800 million at the start of the year to \$700 million at the end. The rate is 7.5% and interest is charged on the average balance. What is the interest expense in millions of dollars? Give it to two decimal places.
+answer: 56.25
+lead: \$
+tol: 0.01
+check: 0.075 * (800 + 700) / 2
+hint: The average balance is the mean of the beginning and ending balances.
+solution: The average balance is $(800 + 700)/2 = 750$, and interest is $0.075 \times 750 = \$56.25$ million.
+
+@practice code
+prompt: Write `optional_repayment(cash_begin, cash_flow, min_cash, mandatory, balance)` that returns the cash-sweep amount: available cash is `cash_begin + cash_flow - min_cash`; after paying `mandatory` the rest is swept, but the result is never negative and never more than `balance - mandatory`. All amounts are in the same units. For example, `optional_repayment(60, 80, 30, 20, 500)` is `90`.
+starter:
+```python
+def optional_repayment(cash_begin, cash_flow, min_cash, mandatory, balance):
+    pass
+```
+tests:
+```python
+assert optional_repayment(60, 80, 30, 20, 500) == 90
+assert optional_repayment(10, 20, 30, 25, 500) == 0
+assert optional_repayment(100, 400, 20, 50, 200) == 150
+assert optional_repayment(0, 0, 0, 0, 0) == 0
+assert optional_repayment(50, 50, 20, 10, 60) == 50
+```
+model:
+```python
+def optional_repayment(cash_begin, cash_flow, min_cash, mandatory, balance):
+    """Cash sweep after the mandatory repayment."""
+    available = cash_begin + cash_flow - min_cash
+    sweep = min(available - mandatory, balance - mandatory)
+    return max(0, sweep)
+```
+hint: Available cash is beginning cash plus cash flow minus the minimum cash balance.
+hint: Take the smaller of the spare cash and the balance left after the mandatory payment, then floor it at zero.
+solution: Spare cash after the mandatory payment is `available - mandatory`; the sweep cannot exceed the balance that remains, `balance - mandatory`, so take the minimum of the two and floor the result at 0 with `max`. In the last test the available cash is 50 + 50 - 20 = 80, so the spare cash after the mandatory payment is 80 - 10 = 70, but only 60 - 10 = 50 of debt remains, so the sweep is 50.
+
+@practice mc
+prompt: Why does charging interest on the average debt balance create a circular reference in a three-statement model?
+choice: Because the average balance cannot be computed without a calculator
+choice*: Because interest affects net income and cash flow, which determine repayment, which determines the ending balance that interest depends on
+choice: Because interest is not tax deductible
+choice: Because the beginning balance is always unknown
+hint: Follow the chain from interest to cash and back to the balance.
+solution: Interest depends on the ending balance through the average, but the ending balance depends on repayment, which depends on cash flow, which depends on net income and therefore on interest. Interest on the beginning balance avoids the loop because the beginning balance is already known.
+
+@practice code
+prompt: Write `debt_schedule(beginning, rate, mandatory, cash_flows)` that returns a list of ending debt balances, one per year. Each year: interest is `rate` times the beginning balance; the mandatory repayment is `mandatory` but never more than the balance; the optional repayment is the cash flow (before interest and debt repayment) minus interest minus the mandatory repayment, but never negative and never more than what remains after the mandatory payment. If cash is short, still pay the mandatory amount (a revolver would fund it, which you ignore). For example, `debt_schedule(1000, 0.05, 100, [200, 300])` is `[850.0, 592.5]`.
+starter:
+```python
+def debt_schedule(beginning, rate, mandatory, cash_flows):
+    pass
+```
+tests:
+```python
+import math
+out = debt_schedule(1000, 0.05, 100, [200, 300])
+assert len(out) == 2
+assert math.isclose(out[0], 850.0) and math.isclose(out[1], 592.5)
+assert debt_schedule(1000, 0.05, 100, [60]) == [900]
+assert debt_schedule(50, 0.10, 100, [500]) == [0]
+assert math.isclose(debt_schedule(200, 0.0, 20, [100])[0], 100.0)
+assert debt_schedule(300, 0.05, 20, []) == []
+```
+model:
+```python
+def debt_schedule(beginning, rate, mandatory, cash_flows):
+    """Ending debt balance for each year with a cash sweep."""
+    balance = beginning
+    ending = []
+    for cash_flow in cash_flows:
+        interest = rate * balance
+        required = min(mandatory, balance)
+        spare = cash_flow - interest - required
+        optional = max(0, min(spare, balance - required))
+        balance = balance - required - optional
+        ending.append(balance)
+    return ending
+```
+hint: Compute interest on the beginning balance first, then the mandatory payment capped at the balance.
+hint: The sweep is the spare cash after interest and the mandatory payment, floored at zero and capped at what remains.
+solution: Each year: interest on the beginning balance, mandatory payment capped at the balance, spare cash after both, and an optional repayment bounded between 0 and the remaining balance. The test with a cash flow of 60 shows the shortfall case: the cash flow does not cover interest and the mandatory payment, the sweep is zero, and the balance still falls by the mandatory 100.
+
+@practice self
+prompt: In four to six sentences, explain what the circularity in a model's interest calculation is, name two ways to handle it, and say which you would choose for a first draft of a model and why.
+hint: Give one way that avoids the loop and one that solves it.
+solution: Interest on the average balance depends on the ending debt, which depends on the cash sweep, which depends on cash flow after interest, so interest depends on itself. One option is to charge interest on the beginning balance, which breaks the loop at the cost of some accuracy; another is to iterate (or solve algebraically) until interest stops changing. For a first draft I would use the beginning balance, which is transparent, always converges and is easy to audit, and then switch to the average balance with iteration once the model balances and I can measure how much the difference matters.
+rubric: Describes the loop correctly (interest, net income, cash flow, repayment, ending balance, interest).
+rubric: Names two valid handling methods, such as beginning balance and iteration.
+rubric: Chooses one and justifies it with a trade-off between simplicity and accuracy.
+
+@quiz code
+prompt: Write `average_balance_interest(beginning, rate, cash_flow)` for a loan whose interest is charged on the average of the beginning and ending balance. Assume all of `cash_flow` (the cash flow before interest and debt repayment) after paying interest is used to repay debt (you may assume the repayment stays below the balance). Return the tuple `(interest, repayment)`. Solve the circularity by iterating until interest changes by less than `1e-12` (at most 200 passes).
+starter:
+```python
+def average_balance_interest(beginning, rate, cash_flow):
+    pass
+```
+tests:
+```python
+import math
+i, x = average_balance_interest(1000, 0.08, 300)
+assert math.isclose(i, 70.83333333333333, rel_tol=1e-9)
+assert math.isclose(x, 229.16666666666669, rel_tol=1e-9)
+i, x = average_balance_interest(500, 0.0, 80)
+assert i == 0.0 and x == 80
+i, x = average_balance_interest(200, 0.10, 50)
+assert math.isclose(x, (50 - 0.10 * 200) / (1 - 0.05), rel_tol=1e-9)
+assert math.isclose(i + x, 50.0, rel_tol=1e-12)
+```
+model:
+```python
+def average_balance_interest(beginning, rate, cash_flow):
+    """Interest on the average balance, solved by iteration."""
+    interest = rate * beginning
+    for _ in range(200):
+        repayment = cash_flow - interest
+        new_interest = rate * (beginning - repayment / 2)
+        if abs(new_interest - interest) < 1e-12:
+            interest = new_interest
+            break
+        interest = new_interest
+    return interest, cash_flow - interest
+```
+hint: Start with interest on the beginning balance as the first guess.
+hint: Each pass: repayment = cash flow minus interest, then new interest is the rate times the average of beginning and ending balances.
+solution: Guess interest, compute the repayment as the cash flow less that interest, recompute interest on the average of `beginning` and `beginning - repayment`, and repeat until the change is tiny. The result agrees with the algebraic solution $X = (CF - rB)/(1 - r/2)$ used in the last test.
+
+@quiz num
+prompt: A company has \$650 million of debt at the start of the year. It makes a mandatory repayment of \$30 million and a cash-sweep repayment of \$85 million during the year, and draws no new debt. What is the ending debt in millions of dollars?
+answer: 535
+lead: \$
+check: 650 - 30 - 85
+hint: Ending debt equals beginning debt minus all repayments.
+solution: $650 - 30 - 85 = \$535$ million.

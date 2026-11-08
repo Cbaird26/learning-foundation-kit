@@ -1,0 +1,250 @@
+@lesson
+title: Time value of money functions
+summary: Write and test Python functions for net present value, internal rate of return, annuity present value and loan payments.
+objective: Write `npv(rate, flows)` with the first cash flow at time 0 and explain how it differs from a spreadsheet's NPV.
+objective: Find an internal rate of return by bisection and know when it does not exist.
+objective: Write annuity and payment functions that handle a zero rate and annuity-due timing.
+reading: QuantEcon, Python Programming for Economics and Finance: look up the lectures on functions and on the "Python Essentials" (loops, comprehensions, `enumerate`); the finance formulas themselves are in your C7 materials.
+
+@article
+The time-value-of-money (TVM) functions are the core of any finance library. All of them follow from one idea: a cash flow $CF_t$ received at time $t$ (in periods) is worth $CF_t/(1+r)^t$ today when the discount rate is $r$ per period.
+
+### Net present value
+$$NPV = \sum_{t=0}^{N} \frac{CF_t}{(1+r)^t}$$
+
+Our convention: `flows[0]` is at time 0 (today, undiscounted), `flows[1]` is one period later, and so on.
+
+```python
+def npv(rate, flows):
+    """Net present value; flows[0] occurs at time 0."""
+    return sum(cf / (1 + rate) ** t for t, cf in enumerate(flows))
+```
+
+`enumerate(flows)` supplies the time index $t$ along with each flow. **A spreadsheet's `NPV(rate, values)` discounts its first value by one full period**, so it equals this function's answer divided by $(1+r)$ when you pass the whole list. Always say which convention a function uses.
+
+### Internal rate of return
+The IRR is the rate $r$ that makes $NPV(r) = 0$. There is no closed form for more than two or three flows, so we search. **Bisection** keeps an interval $[lo, hi]$ in which the NPV changes sign, looks at the midpoint and keeps the half that still contains the sign change. After 200 halvings the interval is far smaller than floating-point precision.
+
+```python
+def irr(flows):
+    """Rate at which NPV is zero, searched between -99% and 1000%."""
+    lo, hi = -0.99, 10.0
+    f_lo = npv(lo, flows)
+    if f_lo * npv(hi, flows) > 0:
+        raise ValueError("no sign change: no IRR in the search range")
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        f_mid = npv(mid, flows)
+        if f_lo * f_mid <= 0:
+            hi = mid
+        else:
+            lo, f_lo = mid, f_mid
+    return (lo + hi) / 2
+```
+
+If every flow has the same sign there is no IRR, and flows that change sign more than once can have several. The function below raises an error when the NPV has the same sign at both ends of its search range, which catches the first case; with several sign changes it returns just one of the IRRs, so look at the pattern of cash flows before you rely on it.
+
+### Annuities
+A level payment $PMT$ at the end of each of $n$ periods has present value
+
+$$PV = PMT \times \frac{1 - (1+r)^{-n}}{r}.$$
+
+An **annuity due** pays at the *start* of each period, so every payment is one period closer and the value is multiplied by $(1+r)$. At $r = 0$ the formula divides by zero, but the value is simply $PMT \times n$; a robust function handles that case separately.
+
+```python
+def pv_annuity(pmt, rate, nper, when=0):
+    """PV of level payments; when=0 end of period, when=1 start."""
+    if rate == 0:
+        return pmt * nper
+    factor = (1 - (1 + rate) ** -nper) / rate
+    return pmt * factor * (1 + rate) ** when
+```
+
+### Loan payments
+The level end-of-period payment that repays a loan of $PV$ over $n$ periods solves the annuity formula for $PMT$:
+
+$$PMT = \frac{PV \cdot r}{1 - (1+r)^{-n}}.$$
+
+For a monthly loan, $r$ is the annual rate divided by 12 and $n$ is the number of months. Using the annual rate as the monthly rate is the classic error.
+
+@example
+title: NPV of a project, then in code
+problem: A project costs \$1,000 today and returns \$300, \$400 and \$500 at the end of years 1, 2 and 3. The discount rate is 10% per year. Find the NPV and say what `npv(0.10, [-1000, 300, 400, 500])` returns.
+step: Discount each flow: $300/1.10 = 272.73$, $400/1.10^2 = 330.58$, $500/1.10^3 = 375.66$.
+step: The present value of the inflows is $272.73 + 330.58 + 375.66 = 978.96$.
+step: Subtract the outlay at time 0: $978.96 - 1000 = -21.04$.
+step: The function does the same sum, with `t = 0, 1, 2, 3`, so it returns about `-21.04`. A negative NPV means the project earns less than 10%.
+answer: The NPV is about -\$21.04.
+
+@example
+title: An annuity and an annuity due
+problem: Find the present value of \$100 received at the end of each year for 10 years at 5%, and then if the payments come at the start of each year.
+step: The factor is $\dfrac{1 - 1.05^{-10}}{0.05} = 7.7217$.
+step: Ordinary annuity: $100 \times 7.7217 = 772.17$, so `pv_annuity(100, 0.05, 10)` is about `772.17`.
+step: Annuity due: every payment arrives a year sooner, so multiply by $1.05$: $772.17 \times 1.05 = 810.78$, which is `pv_annuity(100, 0.05, 10, when=1)`.
+answer: \$772.17 for the ordinary annuity and \$810.78 for the annuity due.
+
+@mistakes
+- Passing a spreadsheet-style list (first flow at time 1) to a time-0 `npv`, or the reverse, and getting an answer off by a factor of $1 + r$.
+- Using the annual rate as the monthly rate (or the monthly rate with annual periods) in a payment formula.
+- Dividing by `rate` when `rate == 0`, which crashes; handle the zero-rate case separately.
+- Reporting an IRR when the flows never change sign, or when they change sign several times and several rates solve the equation.
+
+@practice text
+prompt: What does this program print?
+
+```python
+def npv(rate, flows):
+    total = 0.0
+    for t, cf in enumerate(flows):
+        total += cf / (1 + rate) ** t
+    return total
+
+print(round(npv(0.10, [-100, 60, 60]), 2))
+```
+answer: 4.13
+check: run("def npv(rate, flows):\n    total = 0.0\n    for t, cf in enumerate(flows):\n        total += cf / (1 + rate) ** t\n    return total\n\nprint(round(npv(0.10, [-100, 60, 60]), 2))\n").strip()
+hint: The flow at `t = 0` is not discounted; the others are divided by $1.10^t$.
+solution: $-100 + 60/1.10 + 60/1.10^2 = -100 + 54.55 + 49.59 = 4.13$.
+
+@practice mc
+prompt: The flows `[-2000, 700, 900, 1100]` are valued at 8% with a time-0 function `npv` and with a spreadsheet's `NPV(0.08, values)` given the same four numbers. How do the results compare?
+choice: They are identical, because both functions treat the first value as occurring today.
+choice*: The spreadsheet result is the time-0 result divided by 1.08, because it discounts the first value one full period.
+choice: The spreadsheet result is the time-0 result multiplied by 1.08, because it compounds the first value forward.
+choice: The spreadsheet ignores negative values, so its result is larger.
+hint: In the spreadsheet function the first value is treated as the end of period 1.
+solution: A spreadsheet's `NPV` assumes the first value arrives one period from now, so every flow is discounted one extra period. With the whole list passed, the result is the time-0 NPV divided by $1 + r$. Spreadsheet users add the time-0 outlay separately, outside the function.
+
+@practice code
+prompt: Write `npv(rate, flows)` returning the net present value of `flows` at the decimal discount rate `rate` per period. `flows[0]` occurs at time 0 and is not discounted; each later flow is one period after the previous one. An empty list has NPV `0`.
+starter:
+```python
+def npv(rate, flows):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(npv(0.07, [-900, 250, 350, 450]), 6.682459309591536, rel_tol=1e-9)
+assert math.isclose(npv(0.12, [-1200, 400, 500, 600, 200]), 109.91156028737996, rel_tol=1e-9)
+assert npv(0.05, [100]) == 100
+assert npv(0, [-50, 20, 40]) == 10
+assert npv(0.10, []) == 0
+```
+model:
+```python
+def npv(rate, flows):
+    """Net present value; flows[0] occurs at time 0."""
+    return sum(cf / (1 + rate) ** t for t, cf in enumerate(flows))
+```
+hint: Pair each flow with its period number using `enumerate`.
+hint: Divide each flow by `(1 + rate) ** t` and add them up; `sum` of an empty list is `0`.
+solution: Sum `cf / (1 + rate) ** t` over the flows, with `t` starting at `0` so the first flow is undiscounted. A single flow at time 0 is returned unchanged, a zero rate just adds the flows, and an empty list sums to `0`.
+
+@practice code
+prompt: Write `pv_annuity(pmt, rate, nper, when=0)` returning the present value of `nper` level payments of `pmt`, at the decimal rate `rate` per period. `when=0` means payments at the end of each period (ordinary annuity); `when=1` means at the start (annuity due). If `rate` is `0`, return `pmt * nper`.
+starter:
+```python
+def pv_annuity(pmt, rate, nper, when=0):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(pv_annuity(250, 0.04, 8), 1683.1862187376007, rel_tol=1e-9)
+assert math.isclose(pv_annuity(250, 0.04, 8, when=1), 1750.5136674871048, rel_tol=1e-9)
+assert pv_annuity(100, 0, 10) == 1000
+assert pv_annuity(100, 0.05, 0) == 0
+assert math.isclose(pv_annuity(600, 0.005, 36, 1), 19821.222792276956, rel_tol=1e-9)
+```
+model:
+```python
+def pv_annuity(pmt, rate, nper, when=0):
+    """PV of level payments; when=0 end of period, when=1 start."""
+    if rate == 0:
+        return pmt * nper
+    factor = (1 - (1 + rate) ** -nper) / rate
+    return pmt * factor * (1 + rate) ** when
+```
+hint: The ordinary annuity factor is $(1 - (1+r)^{-n})/r$.
+hint: For an annuity due multiply the ordinary value by `(1 + rate) ** when`, and treat `rate == 0` before dividing.
+solution: Handle the zero rate first. Otherwise compute the annuity factor, multiply by the payment, and multiply by `(1 + rate) ** when`, which is `1` for an ordinary annuity and `1 + rate` for an annuity due. Zero payments (`nper = 0`) give a factor of `0`.
+
+@practice code
+prompt: The function `npv(rate, flows)` (time-0 convention) is already defined in the editor. Write `irr(flows)` that returns the decimal rate at which the NPV is zero, using bisection between `-0.99` and `10.0` (200 halvings is plenty). If the NPV has the same sign at both ends of that range, raise `ValueError`.
+starter:
+```python
+def npv(rate, flows):
+    return sum(cf / (1 + rate) ** t for t, cf in enumerate(flows))
+
+def irr(flows):
+    pass
+```
+tests:
+```python
+assert abs(irr([-1000, 1100]) - 0.10) < 1e-7
+assert abs(irr([-600, 200, 250, 300]) - 0.11218718743504652) < 1e-7
+assert abs(irr([-100, 60, 60]) - 0.13066238629180738) < 1e-7
+assert abs(npv(irr([-250, 90, 120, 150]), [-250, 90, 120, 150])) < 1e-6
+assert raises(ValueError, irr, [100, 200, 300])
+```
+model:
+```python
+def npv(rate, flows):
+    return sum(cf / (1 + rate) ** t for t, cf in enumerate(flows))
+
+def irr(flows):
+    """Rate at which NPV is zero, searched between -99% and 1000%."""
+    lo, hi = -0.99, 10.0
+    f_lo = npv(lo, flows)
+    if f_lo * npv(hi, flows) > 0:
+        raise ValueError("no sign change in the search range")
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        f_mid = npv(mid, flows)
+        if f_lo * f_mid <= 0:
+            hi = mid
+        else:
+            lo, f_lo = mid, f_mid
+    return (lo + hi) / 2
+```
+hint: If the NPV at `lo` and the NPV at the midpoint have opposite signs (or the product is zero or negative), the root is in the lower half.
+hint: Replace `hi` with `mid` when the root is in the lower half, otherwise replace `lo` with `mid` and remember its NPV; check the starting signs first and raise `ValueError` if they match.
+solution: Check that the NPV changes sign over the range, then repeatedly halve the interval, keeping the half whose end points have opposite NPV signs. After 200 halvings `lo` and `hi` agree to machine precision. All-positive flows have no sign change, so the function raises `ValueError`.
+
+@quiz code
+prompt: Write `payment(rate, nper, pv)` that returns the level end-of-period payment (a positive number) that repays a loan of `pv` over `nper` periods at the decimal rate `rate` per period. If `rate` is `0`, return `pv / nper`.
+starter:
+```python
+def payment(rate, nper, pv):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(payment(0.005, 360, 200000), 1199.1010503055138, rel_tol=1e-9)
+assert math.isclose(payment(0.01, 12, 5000), 444.24394339170806, rel_tol=1e-9)
+assert payment(0, 12, 1200) == 100
+assert math.isclose(payment(0.005, 1, 1000), 1005.0, rel_tol=1e-9)
+```
+model:
+```python
+def payment(rate, nper, pv):
+    """Level end-of-period loan payment as a positive number."""
+    if rate == 0:
+        return pv / nper
+    return pv * rate / (1 - (1 + rate) ** -nper)
+```
+hint: The formula is $PMT = PV\,r / (1 - (1+r)^{-n})$.
+hint: Treat `rate == 0` separately before using the formula.
+solution: Solve the annuity formula for the payment: multiply the loan by `rate` and divide by `1 - (1 + rate) ** -nper`. With a zero rate the loan is just split evenly. One period at 0.5% costs `1000 * 1.005 = 1005`.
+
+@quiz num
+prompt: An investment costs \$8,000 today and returns \$2,500, \$3,000 and \$3,500 at the end of years 1, 2 and 3. Find its internal rate of return as a percent per year, to two decimal places.
+answer: 5.79
+tol: 0.01
+unit: %
+check: irr([-8000, 2500, 3000, 3500]) * 100
+hint: Find the rate at which $-8000 + 2500/(1+r) + 3000/(1+r)^2 + 3500/(1+r)^3 = 0$; try rates near 5% and 6% and interpolate.
+solution: At 5% the NPV is positive and at 6% it is negative; refining gives $r \approx 5.79\%$, where the NPV is zero.

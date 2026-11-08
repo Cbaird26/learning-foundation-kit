@@ -1,0 +1,266 @@
+@lesson
+title: Loans, schedules and dates
+summary: Build a level-payment amortization schedule in Python and handle payment dates and day-count conventions with the `datetime` module.
+objective: Generate an amortization schedule row by row from interest, principal and balance.
+objective: Add months to a date safely at month-ends and compute day counts under actual and 30/360 conventions.
+objective: Compute a remaining loan balance directly, without building the whole schedule.
+reading: QuantEcon, Python Programming for Economics and Finance: look up the lecture on Python essentials (loops and lists); for dates, the Python documentation of the `datetime` and `calendar` modules.
+
+@article
+A **loan schedule** is a table with one row per payment. It is the most common model in consumer and corporate finance, and writing it in code makes the logic visible.
+
+### The schedule logic
+Take a loan of $P$ at an annual rate $i$ with monthly payments over $y$ years. The monthly rate is $r = i/12$ and the number of payments is $n = 12y$. The level payment is
+
+$$PMT = \frac{P\,r}{1 - (1+r)^{-n}}.$$
+
+Each month, starting from the balance $B_{k-1}$:
+
+1. interest $= B_{k-1} \times r$
+2. principal repaid $= PMT - \text{interest}$
+3. new balance $B_k = B_{k-1} - \text{principal repaid}$
+
+Interest falls and principal rises each month, while the payment stays the same. After $n$ payments the balance is zero, apart from floating-point dust of order $10^{-8}$ that you check with a tolerance, never with `==`.
+
+```python
+def amortization_schedule(principal, annual_rate, years):
+    r, n = annual_rate / 12, years * 12
+    pmt = principal / n if r == 0 else principal * r / (1 - (1 + r) ** -n)
+    balance, rows = principal, []
+    for k in range(1, n + 1):
+        interest = balance * r
+        repaid = pmt - interest
+        balance -= repaid
+        rows.append((k, pmt, interest, repaid, balance))
+    return rows
+```
+
+A 360-row schedule in floats is instant; carry full precision and round only when you display.
+
+### Remaining balance without a table
+After $k$ payments the balance is the present value of the payments still to come, or equivalently the loan grown at $r$ minus the payments grown at $r$:
+
+$$B_k = P(1+r)^k - PMT\,\frac{(1+r)^k - 1}{r}.$$
+
+This closed form is a powerful cross-check on the schedule: two independent methods must agree.
+
+### Dates
+Python's `datetime.date` supports subtraction, which returns a `timedelta` whose `.days` is the actual number of days. Adding months is not built in, because months have different lengths. January 31 plus one month has no February 31, so we clamp to the last day of the month using `calendar.monthrange(year, month)[1]`.
+
+```python
+import calendar
+from datetime import date
+
+def add_months(d, n):
+    year, month0 = divmod(d.year * 12 + d.month - 1 + n, 12)
+    last = calendar.monthrange(year, month0 + 1)[1]
+    return date(year, month0 + 1, min(d.day, last))
+```
+
+Always compute payment $k$ from the **first** payment date (`add_months(first, k)`), not from the previous date: if you step from a clamped February 28 you will never return to the 31st.
+
+### Day counts
+Interest between two dates depends on a **day-count convention**. *Actual/365* uses the real number of days over 365; *actual/360* uses real days over 360; *30/360 (bond basis, US)* treats every month as 30 days. The 30/360 rule: if the first day is 31, set it to 30; if the second day is 31 and the (adjusted) first day is 30 or more, set it to 30; then days $= 360\Delta Y + 30\Delta M + \Delta D$. The convention is part of the contract, so a model must state which it uses.
+
+@example
+title: The first two rows of a schedule by hand
+problem: A \$12,000 loan at 6% per year is repaid in 12 monthly payments. Find the payment and the first two schedule rows.
+step: The monthly rate is $r = 0.06/12 = 0.005$, and $PMT = \dfrac{12000 \times 0.005}{1 - 1.005^{-12}} = 1032.80$.
+step: Month 1: interest $12000 \times 0.005 = 60.00$; principal $1032.80 - 60.00 = 972.80$; balance $12000 - 972.80 = 11027.20$.
+step: Month 2: interest $11027.20 \times 0.005 = 55.14$; principal $1032.80 - 55.14 = 977.66$; balance $11027.20 - 977.66 = 10049.54$.
+step: Interest fell by \$4.86 and principal rose by the same amount, so the payment is unchanged.
+answer: Payment \$1,032.80; month 1 balance \$11,027.20; month 2 balance \$10,049.54.
+
+@example
+title: Month-end payment dates
+problem: A loan's first payment is on January 31, 2026, with monthly payments. Give the dates of payments 1 to 3, and explain why stepping from the previous date is wrong.
+step: Payment 1 is the first date, `add_months(first, 0)`: January 31, 2026.
+step: Payment 2 is `add_months(first, 1)`. February 2026 has 28 days, so the day is clamped to 28: February 28, 2026.
+step: Payment 3 is `add_months(first, 2)`: March has 31 days, so the date is March 31, 2026.
+step: Stepping from the previous date would add a month to February 28 and give March 28, and every later date would stay on the 28th. Counting from the first date keeps the 31st whenever the month has one.
+answer: January 31, February 28 and March 31, 2026.
+
+@mistakes
+- Using the annual rate as the monthly rate, or `years` as the number of payments, so the schedule has the wrong length.
+- Testing that the final balance `== 0`; floating-point arithmetic leaves a tiny remainder, so use a tolerance.
+- Stepping dates one month at a time from the previous (clamped) date, which drifts off the 31st.
+- Mixing day-count conventions: a model that uses actual days for accrual and 30/360 for the rate schedule is inconsistent.
+
+@practice text
+prompt: What does this program print? (Each `print` shows the month number, the interest and the new balance.)
+
+```python
+balance = 1000.0
+for month in range(1, 4):
+    interest = balance * 0.01
+    balance = balance + interest - 300
+    print(month, f"{interest:.2f}", f"{balance:.2f}")
+```
+answer:
+```
+1 10.00 710.00
+2 7.10 417.10
+3 4.17 121.27
+```
+check: run("balance = 1000.0\nfor month in range(1, 4):\n    interest = balance * 0.01\n    balance = balance + interest - 300\n    print(month, f\"{interest:.2f}\", f\"{balance:.2f}\")\n")
+hint: Each pass computes interest on the current balance, adds it, and subtracts the 300 payment.
+solution: Month 1: interest $1000 \times 0.01 = 10.00$, balance $1000 + 10 - 300 = 710.00$. Month 2: interest $7.10$, balance $417.10$. Month 3: interest $4.171$ prints as `4.17`, balance $417.10 + 4.171 - 300 = 121.271$ prints as `121.27`.
+
+@practice code
+prompt: Write `add_months(d, n)` that returns the `datetime.date` that is `n` months after the date `d` (`n` may be negative). If the target month is shorter than `d.day`, return the last day of that month. Example: `add_months(date(2026, 1, 31), 1)` is `date(2026, 2, 28)`.
+starter:
+```python
+import calendar
+from datetime import date
+
+def add_months(d, n):
+    pass
+```
+tests:
+```python
+from datetime import date
+assert add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+assert add_months(date(2028, 1, 31), 1) == date(2028, 2, 29)
+assert add_months(date(2026, 11, 15), 3) == date(2027, 2, 15)
+assert add_months(date(2026, 3, 31), -1) == date(2026, 2, 28)
+assert add_months(date(2026, 12, 31), 12) == date(2027, 12, 31)
+assert add_months(date(2026, 5, 20), 0) == date(2026, 5, 20)
+```
+model:
+```python
+import calendar
+from datetime import date
+
+def add_months(d, n):
+    """Date n months after d, clamped to the end of a short month."""
+    year, month0 = divmod(d.year * 12 + d.month - 1 + n, 12)
+    last = calendar.monthrange(year, month0 + 1)[1]
+    return date(year, month0 + 1, min(d.day, last))
+```
+hint: Convert the date to a month count, `year * 12 + month - 1`, add `n`, and use `divmod(..., 12)` to get the new year and month.
+hint: `calendar.monthrange(year, month)[1]` is the number of days in a month; use `min(d.day, that)` as the day.
+solution: Counting months as `year * 12 + (month - 1)` makes the addition simple, and `divmod` converts back to a year and a zero-based month. The day is `min(d.day, days_in_month)`, which clamps January 31 to February 28 (or 29 in a leap year).
+
+@practice code
+prompt: Write `days_30_360(d1, d2)` for two `datetime.date` objects, using the US 30/360 (bond basis) rule: if `d1.day` is 31 treat it as 30; if `d2.day` is 31 and the adjusted first day is 30 or more, treat it as 30. The result is `360 * (y2 - y1) + 30 * (m2 - m1) + (day2 - day1)` with the adjusted days.
+starter:
+```python
+def days_30_360(d1, d2):
+    pass
+```
+tests:
+```python
+from datetime import date
+assert days_30_360(date(2026, 1, 15), date(2026, 2, 15)) == 30
+assert days_30_360(date(2026, 1, 31), date(2026, 3, 31)) == 60
+assert days_30_360(date(2026, 1, 30), date(2026, 1, 31)) == 0
+assert days_30_360(date(2026, 1, 15), date(2026, 1, 31)) == 16
+assert days_30_360(date(2026, 2, 28), date(2026, 3, 31)) == 33
+assert days_30_360(date(2026, 1, 1), date(2027, 1, 1)) == 360
+```
+model:
+```python
+def days_30_360(d1, d2):
+    """Days between two dates, US 30/360 (bond basis)."""
+    day1 = 30 if d1.day == 31 else d1.day
+    day2 = d2.day
+    if day2 == 31 and day1 >= 30:
+        day2 = 30
+    return 360 * (d2.year - d1.year) + 30 * (d2.month - d1.month) + (day2 - day1)
+```
+hint: Adjust the first day first, because the rule for the second day depends on the adjusted first day.
+hint: A second day of 31 is changed only when the adjusted first day is 30 or more; January 15 to January 31 keeps the 31.
+solution: Set `day1` to 30 if it is 31, then set `day2` to 30 only if it is 31 and `day1 >= 30`. For January 15 to January 31, `day2` stays 31 and the answer is 16, but January 30 to January 31 gives 0.
+
+@practice code
+prompt: Write `amortization_schedule(principal, annual_rate, years)` for a loan with level monthly payments at the end of each month. `annual_rate` is a decimal per year (monthly rate is `annual_rate / 12`); if it is `0`, the payment is `principal / n`. Return a list of tuples `(period, payment, interest, principal_repaid, ending_balance)`, one per month, with period numbers starting at 1. Do not round.
+starter:
+```python
+def amortization_schedule(principal, annual_rate, years):
+    pass
+```
+tests:
+```python
+import math
+rows = amortization_schedule(250000, 0.06, 30)
+assert len(rows) == 360
+assert math.isclose(rows[0][1], 1498.8763128818923, rel_tol=1e-9)
+assert math.isclose(rows[0][2], 1250.0, rel_tol=1e-9)
+assert math.isclose(rows[0][3], 248.87631288189232, rel_tol=1e-9)
+assert abs(rows[-1][4]) < 1e-6
+assert math.isclose(sum(r[2] for r in rows), 289595.4726374699, rel_tol=1e-9)
+short = amortization_schedule(9000, 0.06, 1)
+assert math.isclose(short[1][2], 41.35201066318129, rel_tol=1e-9)
+free = amortization_schedule(1200, 0, 1)
+assert len(free) == 12 and free[0][1] == 100 and free[0][2] == 0
+```
+model:
+```python
+def amortization_schedule(principal, annual_rate, years):
+    """Monthly schedule of (period, payment, interest, repaid, balance)."""
+    r, n = annual_rate / 12, years * 12
+    if r == 0:
+        pmt = principal / n
+    else:
+        pmt = principal * r / (1 - (1 + r) ** -n)
+    balance, rows = principal, []
+    for k in range(1, n + 1):
+        interest = balance * r
+        repaid = pmt - interest
+        balance -= repaid
+        rows.append((k, pmt, interest, repaid, balance))
+    return rows
+```
+hint: First compute the level payment and the number of months $n = 12 \times \text{years}$.
+hint: In a loop over `range(1, n + 1)`: interest is `balance * r`, principal repaid is `pmt - interest`, and the balance falls by the principal repaid.
+solution: Compute the payment once, then loop over the months: interest on the opening balance, principal repaid as the rest of the payment, and a new balance. Append a tuple each month. The zero-rate case avoids dividing by zero and gives equal principal payments with no interest.
+
+@practice num
+prompt: A \$250,000 loan at 6% nominal annual interest is repaid with level monthly payments over 30 years. Use the unrounded monthly payment and find the total interest paid over the life of the loan, to the nearest dollar.
+answer: 289595
+tol: 1
+lead: \$
+check: 360 * (250000 * 0.005 / (1 - 1.005 ** -360)) - 250000
+hint: Total interest is total payments minus the amount borrowed: $PMT \times 360 - 250000$.
+solution: $PMT = 250000 \times 0.005 / (1 - 1.005^{-360}) = 1498.8763$, so total payments are $360 \times 1498.8763 = 539595.47$ and total interest is $539595.47 - 250000 \approx 289595$.
+
+@quiz code
+prompt: Write `remaining_balance(principal, annual_rate, years, k)` returning the balance after `k` level monthly payments on a loan of `principal` at the decimal annual rate `annual_rate`, using the closed form (no loop over months). The monthly rate is `annual_rate / 12` and there are `years * 12` payments. If the rate is `0`, the balance falls in a straight line.
+starter:
+```python
+def remaining_balance(principal, annual_rate, years, k):
+    pass
+```
+tests:
+```python
+import math
+assert math.isclose(remaining_balance(250000, 0.06, 30, 60), 232635.89205704854, rel_tol=1e-9)
+assert math.isclose(remaining_balance(100000, 0.09, 5, 24), 65278.39541400958, rel_tol=1e-9)
+assert math.isclose(remaining_balance(20000, 0.06, 3, 12), 13728.122098527616, rel_tol=1e-9)
+assert remaining_balance(80000, 0.05, 10, 0) == 80000
+assert abs(remaining_balance(80000, 0.05, 10, 120)) < 1e-6
+assert math.isclose(remaining_balance(1200, 0, 1, 3), 900.0, rel_tol=1e-9)
+```
+model:
+```python
+def remaining_balance(principal, annual_rate, years, k):
+    """Balance after k level monthly payments, closed form."""
+    r, n = annual_rate / 12, years * 12
+    if r == 0:
+        return principal * (1 - k / n)
+    pmt = principal * r / (1 - (1 + r) ** -n)
+    growth = (1 + r) ** k
+    return principal * growth - pmt * (growth - 1) / r
+```
+hint: The balance is the loan grown for `k` months minus the payments grown for `k` months.
+hint: With $g = (1+r)^k$, the balance is $P g - PMT\,(g - 1)/r$; handle $r = 0$ separately.
+solution: Compute the level payment, then use $B_k = P(1+r)^k - PMT\,((1+r)^k - 1)/r$. With a zero rate every payment is `principal / n`, so the balance after `k` payments is `principal * (1 - k / n)`.
+
+@quiz mc
+prompt: In a level-payment loan, what happens to the interest and principal portions of the payment as the months go by?
+choice: Both stay constant, because the payment is constant.
+choice: Interest rises and principal falls, because the balance compounds.
+choice*: Interest falls and principal rises, with the two always adding to the same payment.
+choice: Interest and principal both fall, because the balance falls.
+hint: Interest is charged on the outstanding balance.
+solution: Interest is the balance times the periodic rate, so it shrinks as the balance falls. The payment is fixed, so the principal portion (payment minus interest) grows by exactly the amount the interest falls.
