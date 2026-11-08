@@ -86,3 +86,5 @@ Log:
 - P6 reviewed (8 fixes: Bliss and Lømo 1973 placed in the rabbit dentate gyrus, H.M.'s motor learning attributed to later testing, orientation selectivity sharpened in cortex rather than first appearing there, imaging counts, example minutes, exam success criteria made disjoint); follow-ups by me: RT/F stated as 25.7 mV at 25 °C, Benjamini–Hochberg's independence or positive-dependence condition stated
 - all 21 new courses written and reviewed (review_log has 21 entries); audit of the new courses: "cancelled/cancelling" changed to American "canceled/canceling" in C27, P1 and P4; no other spelling or cross-item reference hits
 - final validation of all 70 courses started
+- final: all 70 courses validate with 0 errors; page 16.7 MB, 289 runnable blocks; tests: 292 routes with 0 math or page errors, Python, grading, the final exam, the error log and the phone layout checked; privacy scan clean
+- published Nov 8 after the owner's yes: repo neuroscience-learning-foundation, live at https://cbaird26.github.io/neuroscience-learning-foundation/ (checked live: 70 courses, Python runs); added to the hub (olive --c-neuro, neuron glyph)
