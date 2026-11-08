@@ -1,0 +1,237 @@
+@lesson
+title: Monte Carlo estimation and its error
+summary: Estimate expectations and probabilities by averaging random samples, report the standard error and a confidence interval, and decide how many samples a target accuracy needs.
+objective: Write Monte Carlo estimators for a mean and a probability and compute their standard errors.
+objective: Explain why the error shrinks like $1/\sqrt{n}$ and compute the number of samples needed for a target error.
+objective: Describe how a variance-reduction trick such as antithetic sampling lowers the error without more samples.
+reading: Python for Data Analysis, 3rd edition: look up the sections on descriptive statistics (`mean`, `std`) and random sampling in the NumPy and pandas chapters; also see a statistics text on the central limit theorem.
+@article
+What is the probability that a poker hand contains a flush, or that a queue overflows, or that a model's prediction changes under random noise? When the exact calculation is hard, simulate: run the experiment many times and count. This is the **Monte Carlo method**, and the reason it works, and how well, is the subject of this lesson.
+
+### The estimator
+
+Let $X$ be a random quantity we can sample, and suppose we want $\mu = \mathbb{E}[X]$. Draw independent samples $X_1, \ldots, X_n$ and average them:
+$$\hat{\mu}_n = \frac{1}{n}\sum_{i=1}^{n} X_i .$$
+This is **unbiased**: $\mathbb{E}[\hat{\mu}_n] = \mu$. By the law of large numbers it converges to $\mu$. A probability is a special case: for an event $A$, let $X = 1$ if $A$ occurs and $0$ otherwise. Then $\mathbb{E}[X] = P(A)$, and $\hat{p}$ is the fraction of runs in which $A$ occurred.
+
+### How large is the error?
+
+The samples are independent, so the variance of the average is $\operatorname{Var}(\hat{\mu}_n) = \sigma^2/n$, where $\sigma^2 = \operatorname{Var}(X)$. The **standard error** is
+$$\operatorname{SE}(\hat{\mu}_n) = \frac{\sigma}{\sqrt{n}} .$$
+In practice $\sigma$ is unknown and is estimated by the sample standard deviation $s = \sqrt{\tfrac{1}{n-1}\sum (X_i - \hat{\mu}_n)^2}$, giving $\widehat{\operatorname{SE}} = s/\sqrt{n}$. For a probability, $X$ takes values 0 and 1 with $\sigma^2 = p(1-p)$, so
+$$\widehat{\operatorname{SE}}(\hat{p}) = \sqrt{\frac{\hat{p}(1 - \hat{p})}{n}} .$$
+By the central limit theorem, $\hat{\mu}_n$ is approximately normal for large $n$, so an approximate **95% confidence interval** is $\hat{\mu}_n \pm 1.96\,\widehat{\operatorname{SE}}$. (For rare events, with fewer than about 10 hits or 10 misses, this normal approximation is unreliable.)
+
+Two consequences matter for planning. The error shrinks like $1/\sqrt{n}$: to halve it you need **four times** as many samples, and one more decimal digit needs 100 times as many. And the error does not depend on the dimension of the problem, which is why Monte Carlo is used for integrals in hundreds of dimensions where grid methods are impossible. The largest possible $p(1-p)$ is $\tfrac14$ at $p = \tfrac12$, so $n = \big(\tfrac{0.5}{\text{target SE}}\big)^2$ samples always suffice for a probability.
+
+```python
+import math
+import random
+
+def estimate_probability(trial, n, rng):
+    hits = sum(1 for _ in range(n) if trial(rng))
+    p = hits / n
+    return p, math.sqrt(p * (1 - p) / n)
+
+def two_dice_at_least_10(rng):
+    return rng.randint(1, 6) + rng.randint(1, 6) >= 10
+
+p, se = estimate_probability(two_dice_at_least_10, 4000, random.Random(0))
+print(p, se)   # p near 6/36 = 0.1667, se near 0.006
+```
+
+### Reducing the variance
+
+Better estimators lower $\sigma$ rather than raise $n$. **Antithetic sampling** pairs each draw $U$ with its mirror image $1 - U$. To estimate $\mathbb{E}[e^U] = e - 1 \approx 1.718$ for $U$ uniform on $[0, 1]$: a single draw of $e^U$ has variance $0.2420$. Two independent draws averaged have variance $0.1210$. The antithetic pair $\tfrac12(e^U + e^{1-U})$ costs the same two function evaluations but has variance $0.0039$, about 31 times smaller, because when $e^U$ is large $e^{1-U}$ is small, so they cancel. Other standard tools are **control variates** (subtract a correlated quantity with known mean) and **importance sampling** (sample from a different distribution and reweight), which matters for rare events.
+
+@example
+title: Reporting a simulated probability
+problem: In 400 independent simulated runs an event occurred 252 times. Report $\hat{p}$, its standard error and a 95% confidence interval.
+step: The estimate is $\hat{p} = 252/400 = 0.63$.
+step: The standard error is $\sqrt{0.63 \times 0.37 / 400} = \sqrt{0.0005828} \approx 0.0241$.
+step: The 95% interval is $0.63 \pm 1.96 \times 0.0241 = 0.63 \pm 0.0473$, that is $(0.583, 0.677)$.
+step: Both hit and miss counts (252 and 148) are far above 10, so the normal approximation is reasonable.
+answer: $\hat{p} = 0.63$, $\operatorname{SE} \approx 0.024$, interval $(0.583, 0.677)$.
+
+@example
+title: How many samples?
+problem: You want a probability estimate with standard error at most $0.005$. How many samples are needed in the worst case, and how many if you know $p$ is about $0.1$?
+step: Solve $\sqrt{p(1-p)/n} \le 0.005$ for $n$: $n \ge p(1-p)/0.005^2 = p(1-p) \times 40{,}000$.
+step: Worst case, $p = 0.5$: $n \ge 0.25 \times 40{,}000 = 10{,}000$.
+step: For $p \approx 0.1$: $n \ge 0.09 \times 40{,}000 = 3600$.
+answer: At most 10,000 samples, and about 3600 when $p \approx 0.1$.
+
+@mistakes
+- Reporting the estimate without its standard error: a simulated probability of 0.63 means little without knowing whether the error is 0.002 or 0.2.
+- Dividing the standard deviation by $n$ instead of $\sqrt{n}$, or forgetting the square root in the binomial formula.
+- Expecting ten times more samples to give ten times more accuracy: it gives only about 3.2 times.
+- Using the same random numbers for runs that must be independent (for example by reseeding inside the loop), which makes the samples dependent and the standard error meaningless.
+
+@practice num
+prompt: A simulation of 900 independent runs produced an event 270 times. What is the standard error of the estimated probability $\hat{p}$? Give your answer to four decimal places.
+answer: 0.0153
+tol: 0.0001
+check: sqrt((270 / 900) * (1 - 270 / 900) / 900)
+hint: First find $\hat{p} = 270/900$, then use $\sqrt{\hat{p}(1-\hat{p})/n}$.
+solution: $\hat{p} = 0.3$, so the standard error is $\sqrt{0.3 \times 0.7 / 900} = \sqrt{0.000233} \approx 0.0153$.
+
+@practice num
+prompt: What is the smallest number of samples that guarantees a standard error of at most $0.01$ for a Monte Carlo estimate of a probability, whatever the true probability?
+answer: 2500
+check: (0.5 / 0.01) ** 2
+hint: The standard error $\sqrt{p(1-p)/n}$ is largest when $p = 0.5$, where $p(1-p) = 0.25$.
+solution: We need $\sqrt{0.25/n} \le 0.01$, so $n \ge 0.25/0.0001 = 2500$.
+
+@practice mc
+prompt: A Monte Carlo estimate based on $n$ independent samples has standard error $\sigma/\sqrt{n}$. If you quadruple the number of samples to $4n$, what happens to the standard error?
+choice*: It is halved.
+choice: It is quartered.
+choice: It stays the same, because the estimator is unbiased.
+choice: It is divided by $\sqrt{2}$.
+hint: Replace $n$ by $4n$ in the formula and simplify.
+solution: $\sigma/\sqrt{4n} = \tfrac12 \cdot \sigma/\sqrt{n}$. Unbiasedness says the estimator is correct on average, but the spread of the estimate still shrinks with $n$.
+
+@practice code
+prompt: Write `estimate_mean(samples)` that takes a list of at least two numbers and returns `(mean, se)`: the sample mean and the estimated standard error $s/\sqrt{n}$, where $s$ is the sample standard deviation with the divisor $n - 1$. Raise `ValueError` if there are fewer than two samples.
+starter:
+```python
+import math
+
+def estimate_mean(samples):
+    pass
+```
+tests:
+```python
+m, se = estimate_mean([1, 2, 3, 4, 5])
+assert abs(m - 3.0) < 1e-12 and abs(se - math.sqrt(2.5 / 5)) < 1e-12
+m, se = estimate_mean([0, 2])
+assert abs(m - 1.0) < 1e-12 and abs(se - 1.0) < 1e-12
+m, se = estimate_mean([4.0, 4.0, 4.0])
+assert abs(m - 4.0) < 1e-12 and abs(se) < 1e-12
+m, se = estimate_mean([10, 20, 30, 40])
+assert abs(se - math.sqrt(500 / 3 / 4)) < 1e-9
+assert raises(ValueError, estimate_mean, [1.0])
+assert raises(ValueError, estimate_mean, [])
+```
+model:
+```python
+import math
+
+def estimate_mean(samples):
+    """Sample mean and its estimated standard error s / sqrt(n)."""
+    n = len(samples)
+    if n < 2:
+        raise ValueError("need at least two samples")
+    mean = sum(samples) / n
+    var = sum((x - mean) ** 2 for x in samples) / (n - 1)
+    return mean, math.sqrt(var / n)
+```
+hint: Compute the mean, then the variance with divisor `n - 1`, then divide it by `n` before taking the square root.
+solution: $s^2/n$ is the estimated variance of the mean, so its square root is the standard error. The second test separates the divisors: with divisor $n$ the answer would be $0.707$, not 1.0.
+
+@practice code
+prompt: Write `estimate_probability(trial, n, rng)` where `trial` is a function taking a `random.Random` instance and returning `True` or `False`. Run it `n` times with the same `rng` and return `(p_hat, se)`, where `p_hat` is the fraction of `True` results and `se = math.sqrt(p_hat * (1 - p_hat) / n)`.
+starter:
+```python
+import math
+
+def estimate_probability(trial, n, rng):
+    pass
+```
+tests:
+```python
+import random
+p, se = estimate_probability(lambda r: True, 50, random.Random(1))
+assert p == 1.0 and se == 0.0
+p, se = estimate_probability(lambda r: False, 50, random.Random(1))
+assert p == 0.0 and se == 0.0
+p, se = estimate_probability(lambda r: r.random() < 0.3, 4000, random.Random(2))
+assert abs(p - 0.3) < 5 * se + 1e-12
+assert abs(se - math.sqrt(p * (1 - p) / 4000)) < 1e-12
+a = estimate_probability(lambda r: r.random() < 0.5, 100, random.Random(7))
+b = estimate_probability(lambda r: r.random() < 0.5, 100, random.Random(7))
+assert a == b
+calls = []
+estimate_probability(lambda r: calls.append(1) or True, 37, random.Random(0))
+assert len(calls) == 37
+```
+model:
+```python
+import math
+
+def estimate_probability(trial, n, rng):
+    """Monte Carlo probability of an event with its standard error."""
+    hits = 0
+    for _ in range(n):
+        if trial(rng):
+            hits += 1
+    p = hits / n
+    return p, math.sqrt(p * (1 - p) / n)
+```
+hint: Count the `True` results over `n` calls of `trial(rng)`, divide by `n`, and plug the fraction into the standard error formula.
+solution: The count divided by $n$ is the sample mean of 0/1 values, and $\sqrt{\hat p(1-\hat p)/n}$ is its standard error. The test with 4000 runs accepts any estimate within five standard errors, which fails only for a broken estimator, and the last test checks that exactly `n` trials are run.
+
+@quiz code
+prompt: Write `estimate_pi(n, seed)` that throws `n` darts uniformly at the unit square $[0, 1)^2$ using `rng = random.Random(seed)` (draw `x = rng.random()` then `y = rng.random()` for each dart). A dart is a hit if `x * x + y * y < 1`. The hit fraction `p` estimates $\pi/4$. Return `(4 * p, 4 * math.sqrt(p * (1 - p) / n))`: the estimate of $\pi$ and its standard error.
+starter:
+```python
+import math
+import random
+
+def estimate_pi(n, seed):
+    pass
+```
+tests:
+```python
+est, se = estimate_pi(4000, 1)
+assert abs(est - math.pi) < 5 * se + 1e-12
+assert 0.0 < se < 0.1
+assert estimate_pi(500, 3) == estimate_pi(500, 3)
+est, se = estimate_pi(10, 2)
+assert abs(est * 10 / 4 - round(est * 10 / 4)) < 1e-9
+assert estimate_pi(2000, 4)[1] < estimate_pi(200, 4)[1]
+```
+model:
+```python
+import math
+import random
+
+def estimate_pi(n, seed):
+    """Monte Carlo estimate of pi from darts in the unit square."""
+    rng = random.Random(seed)
+    hits = 0
+    for _ in range(n):
+        x = rng.random()
+        y = rng.random()
+        if x * x + y * y < 1:
+            hits += 1
+    p = hits / n
+    return 4 * p, 4 * math.sqrt(p * (1 - p) / n)
+```
+hint: Count the darts with `x * x + y * y < 1`, convert the fraction to an estimate of $\pi$, and scale the standard error by the same factor 4.
+solution: The area of the quarter disk inside the unit square is $\pi/4$, so the hit probability is $\pi/4$ and multiplying by 4 estimates $\pi$; the standard error scales by 4 as well. The tests accept any estimate within five standard errors and check that the error falls as $n$ grows.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+
+n = 100
+hits = 20
+p = hits / n
+se = math.sqrt(p * (1 - p) / n)
+print(round(se, 3), round(1.96 * se, 3))
+```
+answer: 0.04 0.078
+check: run("import math\n\nn = 100\nhits = 20\np = hits / n\nse = math.sqrt(p * (1 - p) / n)\nprint(round(se, 3), round(1.96 * se, 3))")
+hint: $p = 0.2$, so $p(1-p) = 0.16$ and $\sqrt{0.16/100} = 0.04$.
+solution: The standard error is $\sqrt{0.16/100} = 0.04$ (printed as `0.04`), and the half-width of the 95% interval is $1.96 \times 0.04 = 0.0784$, which rounds to `0.078`.
+
+@quiz ms
+prompt: Which of these statements about Monte Carlo estimation are true? Select all that apply.
+choice*: The sample average of independent draws is an unbiased estimator of the expectation.
+choice*: Reducing the standard error from 0.02 to 0.005 requires about 16 times as many samples.
+choice*: Antithetic sampling can lower the variance of an estimate without increasing the number of function evaluations.
+choice: The standard error of a Monte Carlo estimate is proportional to the dimension of the integral.
+hint: The standard error is $\sigma/\sqrt{n}$; ask what happens when $n$ is multiplied by 16.
+solution: The average is unbiased, and cutting the error to a quarter needs $4^2 = 16$ times as many samples. Antithetic pairs are a variance-reduction method that reuses the same number of evaluations. The $1/\sqrt{n}$ rate does not depend on the dimension, which is a main strength of the method.

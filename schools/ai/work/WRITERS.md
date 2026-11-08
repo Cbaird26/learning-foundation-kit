@@ -32,3 +32,4 @@ Log:
 - AI school: reused courses validated under the newest validator (44 ok); fixed two position references in reused C8 L04 and C9 L07 (same issue remains in the Coding school's C16 L04 and C18 L07).
 - batch 1 (Nov 7): C11 C12 C13 C14 C15
 - C14 done (0 errors, 4 long-line warnings, 96 + 3 exam, no nocheck; datasheets 2018 checked); review started C14; started C16
+- C13 done (0 errors, 0 warnings, 96 + 3 exam, code items in 8 lessons, no nocheck; Metropolis 1953, Hastings 1970, Efron 1979, Benjamini-Hochberg 1995, Dietterich 1998, Nadeau-Bengio without year); review started C13; started C17

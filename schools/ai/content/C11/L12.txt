@@ -1,0 +1,296 @@
+@lesson
+title: Reading data files and preparing arrays
+summary: Read a CSV file into numeric lists, handle missing values, standardize columns using training-set statistics, encode categories, and split data reproducibly.
+objective: Parse delimited text into rows of floats and represent missing values explicitly.
+objective: Standardize columns, one-hot encode a categorical feature and build a design matrix, and explain why scaling matters numerically.
+objective: Split data into training and test sets with a seeded shuffle and avoid leaking test information into preprocessing.
+reading: Python for Data Analysis, 3rd edition: the chapters "Data Loading, Storage, and File Formats" and "Data Cleaning and Preparation" (missing data, transforming data, categorical variables).
+@article
+Every model in this course so far took neat lists of numbers. Real data arrives as text: a CSV file with a header line, numbers written as strings, blank cells, and categories such as city names. Most of the work of a machine learning project is turning that text into a clean numeric matrix, and mistakes at this stage quietly ruin everything after it.
+
+### From text to numbers
+
+A **CSV** (comma-separated values) file has one record per line and fields separated by commas, usually with a header line of column names. Read it with `open`, split the text into lines with `splitlines()`, and split each line with `split(",")`. Fields are strings, so convert numbers with `float(...)`. The `csv` module handles quoted fields that contain commas (`"Paris, France"`), which a plain `split` cannot. A **missing value** is an empty field: `float("")` raises `ValueError`, so decide how to represent it. We use `None`.
+
+```python
+def read_csv_numeric(text):
+    lines = text.splitlines()
+    header = lines[0].split(",")
+    rows = []
+    for line in lines[1:]:
+        cells = line.split(",")
+        rows.append([float(c) if c.strip() != "" else None for c in cells])
+    return header, rows
+
+header, rows = read_csv_numeric("x,y\n1,2.5\n3,\n")
+print(header, rows)   # ['x', 'y'] [[1.0, 2.5], [3.0, None]]
+```
+
+With pandas this is `df = pd.read_csv("file.csv")`, and missing cells become `NaN`; the logic underneath is the same.
+
+### Handling missing values
+
+Options include dropping rows with missing cells (simple, but wasteful and possibly biased), or **imputing** a value such as the column mean. Imputation with the mean leaves the column average unchanged but shrinks its spread, and it hides the fact that a value was missing; a careful analysis may add an indicator column. Whatever you choose, compute it from observed values only, and say so.
+
+### Standardizing columns
+
+Columns often live on different scales: an age near 40 and an income near 50,000. Unscaled columns hurt in two ways. The matrix $\mathbf{X}^\top\mathbf{X}$ becomes badly conditioned (Lesson 6), and gradient descent needs a tiny step size for the big column and then crawls along the small one. **Standardization** replaces each value $x$ in a column by
+$$z = \frac{x - \bar{x}}{\sigma},$$
+where $\bar{x}$ is the column mean and $\sigma$ its standard deviation (we divide by $n$, the population version; dividing by $n - 1$ changes nothing important). The new column has mean 0 and standard deviation 1. A constant column has $\sigma = 0$; set it to zeros rather than dividing by zero. **Min–max scaling**, $(x - \min)/(\max - \min)$, maps a column to $[0, 1]$ instead and is sensitive to outliers.
+
+### Avoiding leakage
+
+Statistics such as $\bar{x}$ and $\sigma$ must be computed from the **training rows only** and then applied unchanged to the test rows. Computing them on all the data lets information from the test set influence the model, called **data leakage**, and makes test performance look better than it will be on genuinely new data. The same rule applies to imputation values. First split, then fit the preprocessing on the training part.
+
+### Categories, bias and splitting
+
+A categorical feature with $K$ levels becomes $K$ **one-hot** columns, where exactly one is 1. If the design matrix also has a column of ones for the intercept, the $K$ one-hot columns add up to that column, so the matrix is rank deficient and $\mathbf{X}^\top\mathbf{X}$ is singular. The usual fix is to drop one level, leaving $K - 1$ columns.
+
+To split data, shuffle the row indices with a seeded generator (Lesson 10), take the first part for testing and the rest for training. Fixing the seed makes the split reproducible. Note that a split that depends on file order can hide trends, for instance when the file is sorted by date.
+
+```python
+import random
+
+rng = random.Random(0)
+idx = list(range(10))
+rng.shuffle(idx)
+test_idx, train_idx = idx[:2], idx[2:]
+print(len(test_idx), len(train_idx))   # 2 8
+```
+
+@example
+title: Parse, impute and standardize
+problem: The text `x,y` / `1,2.5` / `3,` / `5,7.5` is read into rows. Standardize both columns using only observed values, then set the missing value to 0 after standardizing.
+step: Parsing gives the rows $[1.0, 2.5]$, $[3.0, \text{None}]$, $[5.0, 7.5]$.
+step: Column $x$ has observed values $1, 3, 5$ with mean $3$ and population standard deviation $\sqrt{(4 + 0 + 4)/3} = \sqrt{8/3} \approx 1.633$.
+step: Column $y$ has observed values $2.5$ and $7.5$ with mean $5$ and standard deviation $2.5$.
+step: Standardized $x$: $(1 - 3)/1.633 = -1.2247$, then $0$, then $1.2247$. Standardized $y$: $-1$, then the missing value becomes $0$ (the column mean after standardizing), then $1$.
+answer: The standardized rows are $[-1.2247, -1]$, $[0, 0]$, $[1.2247, 1]$.
+
+@example
+title: Using training statistics on test data
+problem: The training values of a column are $10, 20, 30$ and a test value is $100$. Standardize the test value correctly, and say what goes wrong if the statistics are computed on all four numbers.
+step: Training mean: $20$. Training population standard deviation: $\sqrt{(100 + 0 + 100)/3} = \sqrt{200/3} \approx 8.165$.
+step: The test value becomes $z = (100 - 20)/8.165 \approx 9.80$, correctly flagging it as extreme relative to the training data.
+step: With all four numbers the mean is $40$ and the standard deviation is $\sqrt{(900 + 400 + 100 + 3600)/4} \approx 35.4$, so $100$ would look like $z = 1.7$, ordinary. The test point has leaked into the statistics and hides its outlying nature.
+answer: The correct test $z$-score is about $9.80$; using all the data gives about $1.7$ and understates the difference.
+
+@mistakes
+- Computing means and standard deviations on the whole data set before splitting: the test set then influences preprocessing (leakage).
+- Using `split(",")` on files with quoted fields that contain commas: use the `csv` module for those.
+- Including a full set of one-hot columns together with a column of ones: the columns are linearly dependent and $\mathbf{X}^\top\mathbf{X}$ is singular.
+- Dividing by a standard deviation of 0 for a constant column, which produces `ZeroDivisionError` or `nan`.
+
+@practice num
+prompt: A column has the values $1, 2, 3, 10$. Using the population standard deviation (divide by $n$), what is the $z$-score of the value $10$? Give your answer to three decimal places.
+answer: 1.697
+tol: 0.001
+check: (10 - 4) / sqrt(((1 - 4) ** 2 + (2 - 4) ** 2 + (3 - 4) ** 2 + (10 - 4) ** 2) / 4)
+hint: The mean is 4; the squared deviations are $9, 4, 1, 36$.
+solution: The variance is $50/4 = 12.5$, so $\sigma \approx 3.5355$, and $z = (10 - 4)/3.5355 \approx 1.697$.
+
+@practice num
+prompt: A data table has 3 numeric features and one categorical feature with 4 distinct values. You build a design matrix with a column of ones, the 3 numeric columns and the one-hot columns for the categorical feature with one level dropped to avoid linear dependence. How many columns does the matrix have?
+answer: 7
+check: 1 + 3 + (4 - 1)
+hint: Count each group: the intercept, the numeric features and the remaining one-hot columns.
+solution: There is $1$ intercept column, $3$ numeric columns and $4 - 1 = 3$ one-hot columns, giving $7$ columns.
+
+@practice mc
+prompt: You will standardize the features of a data set and then evaluate a model on a held-out test set. Which procedure avoids data leakage?
+choice*: Split first, compute each column's mean and standard deviation on the training rows only, and apply those same numbers to the test rows.
+choice: Compute the means and standard deviations on all rows, then split.
+choice: Standardize the training rows with their own statistics and the test rows with the test set's own statistics.
+choice: Standardize only the test rows, because the training rows are used to fit the model.
+hint: The test set should play the role of data that arrives after training, which cannot influence the preprocessing.
+solution: Statistics computed on all rows let the test data affect the preprocessing; using separate statistics for the test set changes what the model sees and also uses test information. The model must receive test inputs transformed exactly as it was trained, with training statistics.
+
+@practice code
+prompt: Write `read_csv_numeric(filename)` that opens a CSV file (comma-separated, no quoted fields) whose first line is a header and returns `(header, rows)`: `header` is the list of column names (strings) and `rows` is a list of rows, each a list of floats, with `None` for an empty field. Skip completely blank lines. Strip spaces around fields before converting.
+starter:
+```python
+def read_csv_numeric(filename):
+    pass
+```
+tests:
+```python
+write_file("a.csv", "x,y\n1,2.5\n3,\n")
+assert read_csv_numeric("a.csv") == (["x", "y"], [[1.0, 2.5], [3.0, None]])
+write_file("b.csv", "p,q,r\n 4 , -1e2 ,0.5\n\n7,8,9\n\n")
+h, rows = read_csv_numeric("b.csv")
+assert h == ["p", "q", "r"]
+assert rows == [[4.0, -100.0, 0.5], [7.0, 8.0, 9.0]]
+write_file("c.csv", "only\n")
+assert read_csv_numeric("c.csv") == (["only"], [])
+write_file("d.csv", "a,b\n,\n2,3")
+assert read_csv_numeric("d.csv")[1] == [[None, None], [2.0, 3.0]]
+```
+model:
+```python
+def read_csv_numeric(filename):
+    """Read a simple numeric CSV file; empty fields become None."""
+    with open(filename) as f:
+        lines = f.read().splitlines()
+    header = [c.strip() for c in lines[0].split(",")]
+    rows = []
+    for line in lines[1:]:
+        if line.strip() == "":
+            continue
+        cells = [c.strip() for c in line.split(",")]
+        rows.append([float(c) if c != "" else None for c in cells])
+    return header, rows
+```
+hint: Read the whole file, split it into lines, treat the first line as the header, then convert each remaining nonblank line cell by cell.
+solution: Each line is split on commas and each cell is stripped; an empty string becomes `None` and anything else goes through `float`, which also accepts forms such as `-1e2`. The blank-line check keeps trailing newlines from producing empty rows.
+
+@practice code
+prompt: Write `standardize_columns(rows)` for a list of rows of floats or `None`. For each column compute the mean and the population standard deviation (divide by $n$) using only the observed (non-`None`) values. Return `(out, means, stds)`: `out` has each observed value replaced by `(x - mean) / std` and each `None` replaced by `0.0`; if a column's standard deviation is 0, every entry of that column in `out` is `0.0`. Assume each column has at least one observed value.
+starter:
+```python
+import math
+
+def standardize_columns(rows):
+    pass
+```
+tests:
+```python
+out, means, stds = standardize_columns([[2.0, 10.0], [4.0, None], [6.0, 30.0], [8.0, 20.0]])
+assert abs(means[0] - 5.0) < 1e-12 and abs(means[1] - 20.0) < 1e-12
+assert abs(stds[0] - math.sqrt(5)) < 1e-12 and abs(stds[1] - math.sqrt(200 / 3)) < 1e-12
+want = [[-3 / math.sqrt(5), -10 / math.sqrt(200 / 3)], [-1 / math.sqrt(5), 0.0],
+        [1 / math.sqrt(5), 10 / math.sqrt(200 / 3)], [3 / math.sqrt(5), 0.0]]
+assert all(abs(a - b) < 1e-9 for ra, rb in zip(out, want) for a, b in zip(ra, rb))
+out, means, stds = standardize_columns([[1.0, 7.0], [2.0, 7.0]])
+assert out[0][1] == 0.0 and out[1][1] == 0.0 and stds[1] == 0.0
+col = [r[0] for r in out]
+assert abs(sum(col)) < 1e-12 and abs(sum(c * c for c in col) / 2 - 1.0) < 1e-12
+rows = [[1.0], [3.0]]
+standardize_columns(rows)
+assert rows == [[1.0], [3.0]]
+```
+model:
+```python
+import math
+
+def standardize_columns(rows):
+    """Standardize columns using observed values; missing entries become 0."""
+    ncols = len(rows[0])
+    means = []
+    stds = []
+    for j in range(ncols):
+        vals = [r[j] for r in rows if r[j] is not None]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        means.append(mean)
+        stds.append(math.sqrt(var))
+    out = []
+    for r in rows:
+        new = []
+        for j in range(ncols):
+            if r[j] is None or stds[j] == 0:
+                new.append(0.0)
+            else:
+                new.append((r[j] - means[j]) / stds[j])
+        out.append(new)
+    return out, means, stds
+```
+hint: First pass: collect the observed values of each column and compute its mean and standard deviation. Second pass: build the new rows, writing 0.0 for missing values and constant columns.
+solution: The statistics come only from observed values, so a missing cell does not distort them; after standardizing, the column mean is 0, so 0.0 is the mean imputation. The constant column has standard deviation exactly 0 (all entries equal 7.0), which the code must not divide by.
+
+@quiz code
+prompt: Write `train_test_split(rows, test_fraction, seed)` that returns `(train, test)`, two lists of rows. Make a list of the indices `0..n-1`, shuffle it with `random.Random(seed).shuffle`, let `n_test = int(n * test_fraction)`, take the first `n_test` shuffled indices for the test set and the rest for training (keep each part in shuffled order). Do not modify `rows`.
+starter:
+```python
+import random
+
+def train_test_split(rows, test_fraction, seed):
+    pass
+```
+tests:
+```python
+rows = [[i, i * i] for i in range(10)]
+train, test = train_test_split(rows, 0.2, 0)
+assert len(test) == 2 and len(train) == 8
+assert sorted(train + test) == sorted(rows)
+assert all(r not in test for r in train)
+assert train_test_split(rows, 0.3, 5) == train_test_split(rows, 0.3, 5)
+assert any(train_test_split(rows, 0.3, s) != train_test_split(rows, 0.3, 0) for s in range(1, 10))
+tr, te = train_test_split(rows, 0.0, 1)
+assert te == [] and len(tr) == 10
+assert rows == [[i, i * i] for i in range(10)]
+assert len(train_test_split(list(range(20)), 0.25, 3)[1]) == 5
+```
+model:
+```python
+import random
+
+def train_test_split(rows, test_fraction, seed):
+    """Seeded random split into (train, test)."""
+    n = len(rows)
+    idx = list(range(n))
+    random.Random(seed).shuffle(idx)
+    n_test = int(n * test_fraction)
+    test = [rows[i] for i in idx[:n_test]]
+    train = [rows[i] for i in idx[n_test:]]
+    return train, test
+```
+hint: Shuffle a list of indices rather than the rows, then slice it at `n_test` and look up the rows.
+solution: Shuffling indices leaves `rows` untouched, and slicing at `n_test` gives disjoint parts that together contain every row exactly once. The seed makes the split repeatable, while different seeds give different splits.
+
+@quiz code
+prompt: A simulation writes its trial outcomes to a CSV file with the header `trial,hit` and one line per trial, where `hit` is `1` or `0`. Write `probability_from_file(filename)` that reads the file (skip blank lines) and returns `(p_hat, se)`: the fraction of lines with `hit` equal to 1 and the standard error `math.sqrt(p_hat * (1 - p_hat) / n)`, where `n` is the number of trials.
+starter:
+```python
+import math
+
+def probability_from_file(filename):
+    pass
+```
+tests:
+```python
+write_file("t1.csv", "trial,hit\n1,1\n2,0\n3,0\n4,1\n5,0\n6,0\n7,0\n8,0\n9,0\n10,0\n")
+p, se = probability_from_file("t1.csv")
+assert abs(p - 0.2) < 1e-12 and abs(se - math.sqrt(0.16 / 10)) < 1e-12
+write_file("t2.csv", "trial,hit\n1,1\n2,1\n3,1\n\n")
+p, se = probability_from_file("t2.csv")
+assert p == 1.0 and se == 0.0
+write_file("t3.csv", "trial,hit\n" + "".join(f"{i},{i % 2}\n" for i in range(100)))
+p, se = probability_from_file("t3.csv")
+assert abs(p - 0.5) < 1e-12 and abs(se - 0.05) < 1e-12
+```
+model:
+```python
+import math
+
+def probability_from_file(filename):
+    """Estimate a probability and its standard error from a CSV of outcomes."""
+    with open(filename) as f:
+        lines = f.read().splitlines()
+    hits = 0
+    n = 0
+    for line in lines[1:]:
+        if line.strip() == "":
+            continue
+        trial, hit = line.split(",")
+        n += 1
+        if int(hit) == 1:
+            hits += 1
+    p = hits / n
+    return p, math.sqrt(p * (1 - p) / n)
+```
+hint: Skip the header and blank lines, count the trials and the lines whose `hit` field is 1, then use the binomial standard error formula.
+solution: The file is a log of Bernoulli outcomes, so the hit fraction estimates the probability and $\sqrt{\hat p(1-\hat p)/n}$ is its standard error. The second test shows the all-hits edge case where the standard error is exactly 0 (a reason to be careful with so few trials).
+
+@quiz text
+prompt: What does this program print?
+```python
+text = "a,b\n1,2\n3,4\n"
+lines = text.splitlines()
+header = lines[0].split(",")
+rows = [[float(c) for c in line.split(",")] for line in lines[1:]]
+print(header, rows[1][0] + rows[0][1])
+```
+answer: ['a', 'b'] 5.0
+check: run("text = \"a,b\\n1,2\\n3,4\\n\"\nlines = text.splitlines()\nheader = lines[0].split(\",\")\nrows = [[float(c) for c in line.split(\",\")] for line in lines[1:]]\nprint(header, rows[1][0] + rows[0][1])")
+hint: `rows[1][0]` is the first number of the second data line and `rows[0][1]` is the second number of the first data line; the values are floats.
+solution: The data rows are `[1.0, 2.0]` and `[3.0, 4.0]`. Then `rows[1][0] + rows[0][1]` is $3.0 + 2.0 = 5.0$, and the header prints as the list `['a', 'b']`.

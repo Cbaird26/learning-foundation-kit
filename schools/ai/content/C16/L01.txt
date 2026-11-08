@@ -1,0 +1,246 @@
+@lesson
+title: Clustering with k-means and k-means++
+summary: Implement Lloyd's k-means algorithm from scratch, explain why it only finds a local minimum, and seed it with k-means++ to make good solutions likely.
+objective: Write the k-means objective and run Lloyd's algorithm by hand and in code.
+objective: Explain why k-means decreases its objective at every step yet depends on initialization.
+objective: Compute the k-means++ seeding probabilities from squared distances.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the chapter on clustering: the section on k-means clustering and its initialization.
+
+@article
+A shop has five customers, and the only thing we know about each is how many euros they spent last month: 1, 2, 9, 10 and 12. Nobody told us which customers are "big spenders". Can a program discover two groups on its own? That is **unsupervised learning**: we have inputs $\mathbf{x}_1, \dots, \mathbf{x}_n$ and no labels, and we look for structure in the inputs alone. The simplest structure is a partition into $k$ **clusters**.
+
+### The k-means objective
+
+Each cluster $j$ gets a **center** (centroid) $\boldsymbol{\mu}_j$, and each point gets an assignment $z_i \in \{1, \dots, k\}$. The **k-means objective** is the within-cluster sum of squared distances,
+
+$$J(z, \boldsymbol{\mu}) = \sum_{i=1}^{n} \lVert \mathbf{x}_i - \boldsymbol{\mu}_{z_i} \rVert_2^2 .$$
+
+Finding the global minimum of $J$ is NP-hard in general, so we use a simple alternating method.
+
+### Lloyd's algorithm
+
+Start from $k$ initial centers and repeat two steps until the assignments stop changing:
+
+1. **Assignment step.** Send each point to its nearest center: $z_i = \arg\min_j \lVert \mathbf{x}_i - \boldsymbol{\mu}_j \rVert_2^2$.
+2. **Update step.** Move each center to the mean of its points: $\boldsymbol{\mu}_j = \frac{1}{|C_j|} \sum_{i \in C_j} \mathbf{x}_i$. If a cluster is empty, a common rule is to leave its center where it is.
+
+Run it on the five customers with initial centers 1 and 2. Assignment: the point 1 goes to the center 1, and 2, 9, 10, 12 are all closer to 2 (ties go to the lower index). Update: $\mu_1 = 1$ and $\mu_2 = (2+9+10+12)/4 = 8.25$, so $J = 18.6875$. Assignment again: the point 2 is now 1 away from $\mu_1$ and 6.25 from $\mu_2$, so it moves. Update: $\mu_1 = 1.5$ and $\mu_2 = (9+10+12)/3 \approx 10.333$, so $J \approx 5.1667$. A third pass changes nothing, and the algorithm stops.
+
+### Why it converges, and to what
+
+The mean is the point that minimizes the sum of squared distances to a set, so the update step cannot increase $J$ for fixed assignments; the assignment step cannot increase $J$ for fixed centers because each point picks its closest center. So $J$ never increases. There are only finitely many partitions and $J$ strictly decreases whenever the partition changes, so the algorithm terminates. It stops at a **local minimum** of $J$, not necessarily the global one.
+
+Here is a concrete trap. Take the corners of a rectangle, $(0,0)$, $(4,0)$, $(0,2)$ and $(4,2)$, with initial centers $(2,0)$ and $(2,2)$. Every point is already at squared distance 4 from its own center and 8 from the other, so Lloyd's algorithm stops at once with $J = 16$. Starting from $(0,1)$ and $(4,1)$ gives $J = 4$. The result of k-means depends on its initialization, so practitioners run it several times and keep the lowest $J$.
+
+### k-means++ seeding
+
+**k-means++** (Arthur and Vassilvitskii, 2007) chooses starting centers that are spread out:
+
+1. Pick the first center uniformly at random from the data.
+2. For each point let $D(\mathbf{x})^2$ be its squared distance to the nearest center chosen so far.
+3. Pick the next center from the data with probability proportional to $D(\mathbf{x})^2$.
+4. Repeat until $k$ centers are chosen, then run Lloyd's algorithm.
+
+Far-away points are much more likely to be chosen, but not certain, which protects against outliers dominating. Arthur and Vassilvitskii proved that the expected value of $J$ after seeding is within a factor $O(\log k)$ of the optimum, a guarantee that uniform random seeding lacks. For the customers with first center 1, the squared distances are $0, 1, 64, 81, 121$, which sum to 267, so the point 12 is chosen with probability $121/267 \approx 0.453$.
+
+### In code
+
+```python
+def dist2(a, b):
+    return sum((x - y) ** 2 for x, y in zip(a, b))
+
+def lloyd_step(points, centers):
+    labels = [min(range(len(centers)), key=lambda j: dist2(p, centers[j]))
+              for p in points]
+    new = []
+    for j, c in enumerate(centers):
+        members = [p for p, l in zip(points, labels) if l == j]
+        if members:
+            c = [sum(col) / len(members) for col in zip(*members)]
+        new.append(c)
+    return labels, new
+
+pts = [[1.0], [2.0], [9.0], [10.0], [12.0]]
+ctr = [[1.0], [2.0]]
+for _ in range(3):
+    labels, ctr = lloyd_step(pts, ctr)
+    print(labels, ctr)
+```
+
+With NumPy the same step is two lines of broadcasting, and scikit-learn's `KMeans` uses k-means++ seeding with several restarts by default. Because k-means uses squared Euclidean distance, features on large scales dominate, so standardize them first.
+
+@example
+title: Lloyd's algorithm on five numbers
+problem: Run k-means with $k = 2$ on the one-dimensional points $2, 4, 10, 12, 20$, starting from the centers $\mu_1 = 2$ and $\mu_2 = 20$. Report the final centers and the objective $J$.
+step: Assignment with $\mu = (2, 20)$: the points 2, 4 and 10 are closer to 2 (distances 0, 2, 8 against 18, 16, 10), and the points 12 and 20 are closer to 20 (distances 8, 0 against 10, 18). Clusters: $\{2, 4, 10\}$ and $\{12, 20\}$.
+step: Update: $\mu_1 = (2+4+10)/3 = 16/3 \approx 5.333$ and $\mu_2 = (12+20)/2 = 16$.
+step: Assign again. The point 10 is 4.667 from 5.333 and 6 from 16, so it stays. The point 12 is 6.667 from 5.333 and 4 from 16, so it stays. No assignment changed, so the algorithm has converged.
+step: Objective: cluster 1 contributes $(2-5.333)^2 + (4-5.333)^2 + (10-5.333)^2 = 11.111 + 1.778 + 21.778 = 34.667$ and cluster 2 contributes $16 + 16 = 32$, so $J = 66.667 = 200/3$.
+answer: Centers $16/3$ and $16$; $J = 200/3 \approx 66.667$.
+
+@example
+title: Seeding probabilities for k-means++
+problem: The points are $0, 2, 3, 8, 12$ and the first center chosen is $3$. What is the probability that k-means++ picks $8$ as the second center?
+step: Squared distances to the center 3: $9, 1, 0, 25, 81$ for the points $0, 2, 3, 8, 12$.
+step: Their sum is $9 + 1 + 0 + 25 + 81 = 116$.
+step: The probability of choosing the point 8 is $25 / 116 \approx 0.2155$. The point 12 is the most likely at $81/116 \approx 0.698$, but it is not certain.
+answer: $25/116 \approx 0.2155$.
+
+@mistakes
+- Treating the result as the global optimum: Lloyd's algorithm only reaches a local minimum, so different initializations can give different clusters with different $J$.
+- Updating a center to the median or to the nearest data point: k-means uses the mean, because the mean is what minimizes squared distance.
+- Clustering raw features on different scales: a feature measured in thousands swamps one measured in fractions, so standardize first.
+- Crashing on an empty cluster: dividing by a zero count; decide a rule (keep the old center) before running.
+
+@practice num
+prompt: The points $(1,1)$, $(2,1)$, $(5,4)$ and $(6,5)$ are split into the clusters $\{(1,1),(2,1)\}$ and $\{(5,4),(6,5)\}$, each with its mean as the center. What is the k-means objective $J$?
+answer: 1.5
+tol: 0.001
+check: (lambda A, B: sum(sum((a[k] - sum(p[k] for p in A) / len(A)) ** 2 for k in range(2)) for a in A) + sum(sum((b[k] - sum(p[k] for p in B) / len(B)) ** 2 for k in range(2)) for b in B))([(1, 1), (2, 1)], [(5, 4), (6, 5)])
+hint: Find each cluster's mean, then add up the squared distances from the points to their own mean.
+solution: The first center is $(1.5, 1)$ and the points contribute $0.25 + 0.25 = 0.5$. The second center is $(5.5, 4.5)$ and each point is $0.5^2 + 0.5^2 = 0.5$ away, contributing $1.0$. So $J = 0.5 + 1.0 = 1.5$.
+
+@practice mc
+prompt: Which statement about Lloyd's algorithm for k-means is true?
+choice*: The objective $J$ never increases from one iteration to the next, but the final result can depend on the initial centers.
+choice: It always finds the partition with the globally smallest $J$, whatever the initial centers.
+choice: It needs labeled examples to decide which cluster each point belongs to.
+choice: The update step moves each center to the data point closest to the cluster's mean.
+hint: Think about what each of the two steps can and cannot do to $J$, and about the rectangle example.
+solution: Both steps can only lower or keep $J$, so $J$ is non-increasing and the algorithm terminates, but it stops at a local minimum that depends on the starting centers. It uses no labels, and the update moves a center to the mean itself, which need not be a data point.
+
+@practice code
+prompt: Write `assign(points, centers)` that returns, for each point, the index of its nearest center under squared Euclidean distance. `points` and `centers` are lists of lists of floats of the same dimension. On a tie, return the lowest index. For example, `assign([[0.0], [9.0]], [[0.0], [10.0]])` returns `[0, 1]`.
+starter:
+```python
+def assign(points, centers):
+    pass
+```
+tests:
+```python
+assert assign([[0.0], [9.0]], [[0.0], [10.0]]) == [0, 1]
+assert assign([[0.0, 0.0], [1.0, 0.0], [5.0, 5.0]], [[0.0, 0.0], [5.0, 5.0]]) == [0, 0, 1]
+assert assign([[1.0]], [[0.0], [2.0]]) == [0]
+assert assign([[3.0], [4.0]], [[5.0]]) == [0, 0]
+assert assign([[0.0, 3.0]], [[2.0, 0.0], [0.0, 0.0], [1.0, 5.0]]) == [1]
+```
+model:
+```python
+def assign(points, centers):
+    """Index of the nearest center (squared Euclidean) for each point."""
+    labels = []
+    for p in points:
+        best, best_d = 0, None
+        for j, c in enumerate(centers):
+            d = sum((x - y) ** 2 for x, y in zip(p, c))
+            if best_d is None or d < best_d:
+                best, best_d = j, d
+        labels.append(best)
+    return labels
+```
+hint: For each point, compute the squared distance to every center and keep the index of the smallest, replacing the best only when strictly smaller.
+solution: Looping over centers in order and replacing the best only on a strictly smaller distance keeps the lowest index on ties. The third test is a tie that a `<=` comparison gets wrong.
+
+@practice num
+prompt: The points are $0, 1, 4, 9$ and the first k-means++ center is $0$. What is the probability that the second center is the point $9$? Give your answer to three decimal places.
+answer: 0.827
+tol: 0.001
+check: 81 / sum(x ** 2 for x in [0, 1, 4, 9])
+hint: The weights are the squared distances to the center 0; divide the weight of 9 by the total.
+solution: The squared distances are $0, 1, 16, 81$, with total 98, so the probability is $81/98 \approx 0.827$.
+
+@practice code
+prompt: Write `kmeans(points, centers, iters)` that runs exactly `iters` iterations of Lloyd's algorithm and returns the final centers as a list of lists of floats. Each iteration assigns every point to its nearest center (lowest index on ties), then moves each center to the mean of its points; a center with no points stays where it is. `points` and `centers` are lists of lists of floats, and the starting `centers` must not be modified. For example, `kmeans([[0.0], [2.0]], [[0.0], [3.0]], 1)` returns `[[0.0], [2.0]]`, because the point 2.0 is closer to the center 3.0.
+starter:
+```python
+def kmeans(points, centers, iters):
+    return [list(c) for c in centers]
+```
+tests:
+```python
+got = kmeans([[0.0], [2.0], [3.0], [9.0]], [[0.0], [2.0]], 1)
+assert all(abs(a[0] - b) < 1e-9 for a, b in zip(got, [0.0, 14 / 3]))
+got = kmeans([[0.0], [2.0], [3.0], [9.0]], [[0.0], [2.0]], 5)
+assert all(abs(a[0] - b) < 1e-9 for a, b in zip(got, [5 / 3, 9.0]))
+P = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [8.0, 8.0], [8.0, 9.0], [9.0, 8.0]]
+got = kmeans(P, [[0.0, 0.0], [1.0, 0.0]], 6)
+want = [[1 / 3, 1 / 3], [25 / 3, 25 / 3]]
+assert all(abs(a - b) < 1e-9 for g, w in zip(got, want) for a, b in zip(g, w))
+got = kmeans([[0.0], [1.0], [10.0]], [[0.0], [100.0], [10.0]], 3)
+assert all(abs(a[0] - b) < 1e-9 for a, b in zip(got, [0.5, 100.0, 10.0]))
+start = [[0.0], [2.0]]
+assert kmeans([[0.0], [2.0], [3.0]], start, 0) == [[0.0], [2.0]]
+assert start == [[0.0], [2.0]]
+```
+model:
+```python
+def kmeans(points, centers, iters):
+    """Run `iters` iterations of Lloyd's algorithm; return the new centers."""
+    centers = [list(c) for c in centers]
+    for _ in range(iters):
+        groups = [[] for _ in centers]
+        for p in points:
+            dists = [sum((x - y) ** 2 for x, y in zip(p, c)) for c in centers]
+            groups[dists.index(min(dists))].append(p)
+        for j, members in enumerate(groups):
+            if members:
+                centers[j] = [sum(col) / len(members) for col in zip(*members)]
+    return centers
+```
+hint: Inside the loop, build one list of members per center, then replace each center that has members by the coordinate-wise mean of its members.
+solution: `dists.index(min(dists))` picks the lowest index on ties. Copying the starting centers avoids changing the caller's list, and skipping empty groups keeps their centers fixed, which the fourth test checks. The first two tests differ only in the number of iterations, so a function that stops after one pass fails the second.
+
+@quiz text
+prompt: What does this program print?
+```python
+pts = [1, 3, 8, 10]
+c = [3, 8]
+for _ in range(2):
+    groups = [[], []]
+    for p in pts:
+        groups[0 if abs(p - c[0]) <= abs(p - c[1]) else 1].append(p)
+    c = [sum(g) / len(g) for g in groups]
+print(c)
+```
+answer: [2.0, 9.0]
+check: run("pts = [1, 3, 8, 10]\nc = [3, 8]\nfor _ in range(2):\n    groups = [[], []]\n    for p in pts:\n        groups[0 if abs(p - c[0]) <= abs(p - c[1]) else 1].append(p)\n    c = [sum(g) / len(g) for g in groups]\nprint(c)")
+hint: In the first pass the points 1 and 3 are closer to 3 and the points 8 and 10 closer to 8. Then see whether the second pass changes anything.
+solution: Pass one gives the groups $[1, 3]$ and $[8, 10]$, so the centers become $2.0$ and $9.0$. Pass two assigns the same groups, so the program prints `[2.0, 9.0]`.
+
+@quiz code
+prompt: Write `seed_probs(points, centers)` that returns the k-means++ selection probabilities: for each point, its squared Euclidean distance to the nearest center in `centers`, divided by the sum of these squared distances over all points. `points` and `centers` are lists of lists of floats; assume at least one point is not at a center. For example, `seed_probs([[0.0], [3.0]], [[0.0]])` returns `[0.0, 1.0]`.
+starter:
+```python
+def seed_probs(points, centers):
+    return [0.0 for _ in points]
+```
+tests:
+```python
+got = seed_probs([[0.0], [1.0], [4.0], [9.0]], [[0.0]])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 1 / 98, 16 / 98, 81 / 98]))
+got = seed_probs([[0.0], [1.0], [4.0], [9.0]], [[0.0], [9.0]])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 1 / 17, 16 / 17, 0.0]))
+got = seed_probs([[0.0, 0.0], [3.0, 4.0], [6.0, 8.0]], [[0.0, 0.0]])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.2, 0.8]))
+assert abs(sum(seed_probs([[1.0], [2.0], [7.0]], [[2.0]])) - 1.0) < 1e-9
+```
+model:
+```python
+def seed_probs(points, centers):
+    """k-means++ probabilities: squared distance to the nearest center, normalized."""
+    d2 = [min(sum((x - y) ** 2 for x, y in zip(p, c)) for c in centers)
+          for p in points]
+    total = sum(d2)
+    return [d / total for d in d2]
+```
+hint: First compute, for each point, the minimum over centers of the squared distance; then divide each by the total.
+solution: Each point's weight is $D(\mathbf{x})^2$, the squared distance to its nearest center, and the probabilities are these weights over their sum. The second test checks that distance is measured to the nearest of several centers, not to the first one; the third checks squared, not plain, distances.
+
+@quiz ms
+prompt: Which of these statements about k-means and k-means++ are true? Select all that apply.
+choice*: Running Lloyd's algorithm from different initial centers can end at different clusterings with different values of $J$.
+choice*: In k-means++, a point twice as far from the existing centers as another point is four times as likely to be chosen as the next center.
+choice*: Standardizing the features first prevents a large-scale feature from dominating the distances.
+choice: Each Lloyd iteration can raise $J$ temporarily, but the final value is always the global minimum.
+hint: Recall that the seeding weight is the squared distance, and that each Lloyd step cannot increase $J$.
+solution: Different initializations reach different local minima, so the first statement holds. The seeding weight is $D^2$, so doubling the distance multiplies the probability by four. Standardizing equalizes feature scales. Lloyd's algorithm never raises $J$ and has no global-optimality guarantee.
