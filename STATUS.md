@@ -95,15 +95,15 @@ tasks with volunteers who agree, and no project involves animals.
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
 | C11 | Introduction to neuroscience: brain and behavior | 13/13 | yes | yes |
-| C12 | Cellular and molecular neuroscience | 11/13 |  |  |
+| C12 | Cellular and molecular neuroscience | 13/13 | yes |  |
 | C13 | Neuroanatomy and functional systems | 13/13 | yes | yes |
 | C14 | Cognitive psychology | 13/13 | yes | yes |
-| C15 | Statistics and experimental design for brain and behavioral science | 13/13 | yes |  |
-| C16 | Sensation, perception and psychophysics | 4/13 |  |  |
-| C17 | Learning, memory and plasticity | 4/13 |  |  |
-| C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 1/13 |  |  |
-| C19 | Cognitive neuroscience | 0/13 |  |  |
-| C20 | Language and cognitive development | 0/13 |  |  |
+| C15 | Statistics and experimental design for brain and behavioral science | 13/13 | yes | yes |
+| C16 | Sensation, perception and psychophysics | 6/13 |  |  |
+| C17 | Learning, memory and plasticity | 7/13 |  |  |
+| C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 6/13 |  |  |
+| C19 | Cognitive neuroscience | 4/13 |  |  |
+| C20 | Language and cognitive development | 3/13 |  |  |
 | C24 | Neural data analysis | 0/13 |  |  |
 | C25 | Computational neuroscience | 0/13 |  |  |
 | C26 | Computational cognitive modeling | 0/13 |  |  |
@@ -170,3 +170,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: C11 and C13 reviewed with follow-ups; C14 written and in review; C12, C15, C16, C17 and C18 being written
 - 2026-11-08: C15 written and in review; C19 started
 - 2026-11-08: C14 reviewed; C20 started
+- 2026-11-08: C12 written and in review; C15 reviewed with follow-up; C24 started
