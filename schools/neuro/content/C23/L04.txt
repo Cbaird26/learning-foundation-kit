@@ -1,0 +1,456 @@
+@lesson
+title: Backpropagation as reverse-mode automatic differentiation
+summary: Build a tiny scalar autograd engine that records a graph during the forward pass and computes all gradients in one backward pass, and check it against finite differences.
+objective: Explain why reverse-mode differentiation computes the gradient of a scalar loss with respect to all parameters in one backward pass.
+objective: Implement a scalar `Value` class with local backward rules and a topological-order backward pass.
+objective: Add new operations to an autograd engine by writing their local derivatives, and validate them with a gradient check.
+reading: Understanding Deep Learning (Prince), the chapter on backpropagation; also the sections on automatic differentiation.
+@article
+Last week we differentiated a graph by hand. This week a program does it. **Backpropagation** (popularized for neural networks by Rumelhart, Hinton and Williams, 1986) is the special case of **reverse-mode automatic differentiation** (autodiff) applied to a network's loss. It is not symbolic differentiation (no formula for the derivative is built) and it is not finite differences (no approximation): it applies the exact chain rule to the numbers that the forward pass actually produced.
+
+### Why reverse mode
+
+Automatic differentiation has two modes. **Forward mode** carries a derivative along with each value, so one sweep gives the derivative of every output with respect to *one* input. **Reverse mode** first runs the function forward and records the graph, then sweeps backward from the output, so one sweep gives the derivative of *one* output with respect to *every* input. A training loss is a single scalar and a network has millions of parameters, so reverse mode wins: its cost is a small constant multiple of one forward pass, regardless of the number of parameters. Its price is memory, because the intermediate values of the forward pass must be stored.
+
+### The design of a scalar engine
+
+Each number is wrapped in a `Value` object holding its `data`, its `grad` (initially 0), the `parents` that produced it, and a small function `_backward` that pushes the node's gradient to its parents using the local derivative. Operations build new `Value` objects, so ordinary Python expressions record the graph as they run.
+
+```python
+class Value:
+    def __init__(self, data, parents=()):
+        self.data = data
+        self.grad = 0.0
+        self.parents = parents
+        self._backward = lambda: None
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other))
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other))
+        def _backward():
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+```
+
+Every `_backward` uses `+=` because a node can be used many times. A `tanh` is added the same way: with $t = \tanh(\text{data})$, the local derivative is $1 - t^2$.
+
+### The backward pass
+
+A node's gradient is complete only when *every* node that uses it has already sent its contribution. That is guaranteed by processing nodes in **reverse topological order**: a topological order lists every node after its parents, so its reverse lists every node before its parents. A depth-first search that appends a node after visiting its parents produces one.
+
+```python
+    def backward(self):
+        order, seen = [], set()
+        def visit(v):
+            if id(v) not in seen:
+                seen.add(id(v))
+                for p in v.parents:
+                    visit(p)
+                order.append(v)
+        visit(self)
+        self.grad = 1.0
+        for v in reversed(order):
+            v._backward()
+```
+
+The seed is $\partial L/\partial L = 1$. As a check, take the neuron $o = \tanh(w_1 x_1 + w_2 x_2 + b)$ with $x_1 = 1$, $x_2 = -1$, $w_1 = 0.5$, $w_2 = 0.25$, $b = 0.1$. The pre-activation is 0.35, so $o = \tanh 0.35 \approx 0.3364$ and $\partial o/\partial z = 1 - o^2 \approx 0.8869$. The gradients are then $\partial o/\partial w_1 = 0.8869 \cdot x_1 = 0.8869$, $\partial o/\partial w_2 = 0.8869 \cdot x_2 = -0.8869$, $\partial o/\partial x_1 = 0.8869 \cdot w_1 = 0.4434$, $\partial o/\partial x_2 = 0.2217$ and $\partial o/\partial b = 0.8869$. The engine reproduces exactly these numbers.
+
+### Notes on practice
+
+Gradients accumulate, so before a second backward pass on a fresh forward computation you must reset them to zero (frameworks provide `zero_grad`); building new `Value`s each time, as here, resets them automatically. The recursion in `visit` fails on graphs deeper than Python's recursion limit, so a production engine uses an explicit stack. PyTorch's `Tensor` does the same thing with tensors instead of scalars: each operation records a `grad_fn`, and `loss.backward()` walks the graph in reverse topological order.
+
+The universal test for any new operation is the gradient check from Week 3: compare each `grad` with a central finite difference of the forward computation. A derivative formula that is wrong in one operation shows up as a disagreement in exactly the parameters that depend on it.
+
+@example
+title: Backward pass by hand on a shared node
+problem: With $a = 2$ and $b = -3$, compute $c = a b + a$ and its gradients $\partial c/\partial a$ and $\partial c/\partial b$ the way the engine would: forward pass, then nodes in reverse topological order.
+step: Forward: $p = ab = -6$ and $c = p + a = -4$. The nodes in topological order are $a$, $b$, $p$, $c$.
+step: Seed $c.\text{grad} = 1$. Node $c$ is a sum, so $p.\text{grad} \mathrel{+}= 1$ and $a.\text{grad} \mathrel{+}= 1$.
+step: Node $p$ is a product: $a.\text{grad} \mathrel{+}= b \cdot p.\text{grad} = -3$, making $a.\text{grad} = 1 - 3 = -2$, and $b.\text{grad} \mathrel{+}= a \cdot p.\text{grad} = 2$.
+step: Check with algebra: $c = a(b + 1)$, so $\partial c/\partial a = b + 1 = -2$ and $\partial c/\partial b = a = 2$.
+answer: $\partial c/\partial a = -2$ and $\partial c/\partial b = 2$.
+
+@example
+title: Adding exp to the engine
+problem: Give the local backward rule for $\exp$ in the engine and use it to differentiate $y = e^{x}\cdot x$ at $x = 1$.
+step: For $\text{out} = e^{s}$ the local derivative is $e^{s} = \text{out.data}$, so the rule is `self.grad += out.data * out.grad`.
+step: Forward at $x = 1$: $u = e^{1} \approx 2.7183$ and $y = u \cdot x \approx 2.7183$.
+step: Backward: seed $y.\text{grad} = 1$. Product: $u.\text{grad} = x \cdot 1 = 1$ and $x.\text{grad} \mathrel{+}= u \cdot 1 = 2.7183$.
+step: The exp node sends $x.\text{grad} \mathrel{+}= u \cdot u.\text{grad} = 2.7183$, so $x.\text{grad} = 5.4366$. Algebra agrees: $dy/dx = e^{x}(x + 1) = 2e$.
+answer: $dy/dx = 2e \approx 5.4366$.
+
+@mistakes
+- Visiting nodes in the wrong order (for example, from the inputs toward the output, or a depth-first search that lists a node before its parents) so that a node's `_backward` runs before all its contributions have arrived; reverse topological order prevents this.
+- Calling `backward` a second time without resetting the gradients, so the new gradients are added to the old ones.
+- Using the output's local derivative formula with the wrong value: the local derivative of $\tanh$ is $1 - t^2$ with $t$ the output, and for a product it uses the *other* operand's `data`.
+- Thinking backpropagation is an approximation or a symbolic algebra system: it computes exact derivatives (up to floating-point rounding) numerically.
+
+@practice num
+prompt: A loss is $L = (z - t)^2$ with $z = w_1 x_1 + w_2 x_2$. For $w = (1, -2)$, $x = (3, 1)$ and $t = 2$, what is $\partial L/\partial w_1$?
+answer: -6
+check: nderiv(lambda w1: (w1 * 3 + (-2) * 1 - 2) ** 2, 1)
+hint: Compute $z$ first; the backward pass gives $\partial L/\partial z = 2(z - t)$, and $\partial z/\partial w_1 = x_1$.
+solution: Forward: $z = 3 - 2 = 1$. Backward: $\partial L/\partial z = 2(1 - 2) = -2$, and $\partial L/\partial w_1 = -2 \cdot x_1 = -6$.
+
+@practice mc
+prompt: A network has 10 million parameters and a scalar loss. Why is reverse-mode autodiff the standard way to compute the gradient?
+choice*: One backward pass yields the derivative of the scalar loss with respect to every parameter at a cost comparable to a few forward passes.
+choice: It produces a symbolic formula for the gradient that can be simplified before evaluation.
+choice: It needs no memory, because it never stores intermediate values.
+choice: It gives only an approximation, which is cheaper than an exact gradient.
+hint: Compare the number of sweeps needed by forward mode and by reverse mode when there are many inputs and one output.
+solution: Reverse mode carries gradients from the single output back to all inputs in one sweep. It stores the forward values (so it uses extra memory), builds no formula, and is exact up to rounding, not approximate.
+
+@practice code
+prompt: Write `topo_order(root)` that returns a list of all nodes reachable from `root` through their `.parents` attributes (each node's `.parents` is a tuple or list of nodes), in a topological order: every node appears exactly once, after all of its parents, so `root` is last. Nodes are compared by identity. Do not use recursion: the graph may be a chain of several thousand nodes, deeper than Python's recursion limit, so use an explicit stack. For example, if `c.parents == (a, b)` and `a` and `b` have no parents, a valid result is `[a, b, c]`.
+starter:
+```python
+def topo_order(root):
+    return []
+```
+tests:
+```python
+class N:
+    def __init__(self, *parents):
+        self.parents = parents
+
+a, b = N(), N()
+c = N(a, b)
+d = N(c, a)
+e = N(d, c)
+order = topo_order(e)
+assert len(order) == 5 and order[-1] is e
+assert {id(v) for v in order} == {id(v) for v in (a, b, c, d, e)}
+pos = {id(v): i for i, v in enumerate(order)}
+for v in (c, d, e):
+    assert all(pos[id(p)] < pos[id(v)] for p in v.parents)
+single = N()
+assert topo_order(single) == [single]
+chain = [N()]
+for _ in range(3000):
+    chain.append(N(chain[-1]))
+order = topo_order(chain[-1])
+assert len(order) == 3001 and all(u is v for u, v in zip(order, chain))
+```
+model:
+```python
+def topo_order(root):
+    """Iterative depth-first topological order: parents first, root last."""
+    order, seen = [], {id(root)}
+    stack = [(root, iter(root.parents))]
+    while stack:
+        node, it = stack[-1]
+        for p in it:
+            if id(p) not in seen:
+                seen.add(id(p))
+                stack.append((p, iter(p.parents)))
+                break
+        else:
+            order.append(node)
+            stack.pop()
+    return order
+```
+hint: Keep a stack of (node, iterator over its parents); advance the top iterator, push an unseen parent, and append a node to the result only when its iterator is exhausted.
+solution: This is the same depth-first search as the recursive one, with the call stack replaced by an explicit stack so that deep graphs cannot overflow it. A node is appended only after all of its parents have been appended, and the `seen` set (by `id`) lists shared nodes once. The 3000-node chain would exceed CPython's default recursion limit with a recursive version.
+
+@practice code
+prompt: The class `Value` below supports `+` and `*` and records, in each result, a `_backward` function that adds the gradient contributions to its parents. Implement `backward(self)` so that it can be called more than once on the same graph with the same result: first set `grad = 0.0` on every node reachable from `self`, then set `self.grad = 1.0` and call `_backward()` on every node of the graph in reverse topological order, so that every gradient accumulates correctly. For example, with `a = Value(2.0)`, `b = Value(-3.0)` and `c = a * b + a`, calling `c.backward()` (even twice) gives `a.grad == -2.0` and `b.grad == 2.0`.
+starter:
+```python
+class Value:
+    def __init__(self, data, parents=()):
+        self.data = data
+        self.grad = 0.0
+        self.parents = parents
+        self._backward = lambda: None
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other))
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other))
+        def _backward():
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def backward(self):
+        pass
+```
+tests:
+```python
+a, b = Value(2.0), Value(-3.0)
+c = a * b + a
+c.backward()
+assert abs(a.grad + 2.0) < 1e-9 and abs(b.grad - 2.0) < 1e-9
+x = Value(3.0)
+y = x * x * x
+y.backward()
+assert abs(x.grad - 27.0) < 1e-9
+u, v = Value(1.5), Value(-0.5)
+p = u * v
+q = p + u
+r = q * q + p
+r.backward()
+want_u = 2 * q.data * (v.data + 1) + v.data
+want_v = 2 * q.data * u.data + u.data
+assert abs(u.grad - want_u) < 1e-9 and abs(v.grad - want_v) < 1e-9
+z = Value(5.0)
+z.backward()
+assert z.grad == 1.0
+c.backward()
+c.backward()
+assert abs(a.grad + 2.0) < 1e-9 and abs(b.grad - 2.0) < 1e-9
+r.backward()
+assert abs(u.grad - want_u) < 1e-9 and abs(v.grad - want_v) < 1e-9
+```
+model:
+```python
+class Value:
+    def __init__(self, data, parents=()):
+        self.data = data
+        self.grad = 0.0
+        self.parents = parents
+        self._backward = lambda: None
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other))
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other))
+        def _backward():
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def backward(self):
+        order, seen = [], set()
+
+        def visit(node):
+            if id(node) not in seen:
+                seen.add(id(node))
+                for p in node.parents:
+                    visit(p)
+                order.append(node)
+
+        visit(self)
+        for node in order:
+            node.grad = 0.0
+        self.grad = 1.0
+        for node in reversed(order):
+            node._backward()
+```
+hint: Build a topological order with a depth-first search (parents before the node), set every gradient in it to 0, set the root's gradient to 1, and loop over the reversed order calling `_backward()`.
+solution: Reversing a topological order guarantees that when a node's `_backward` runs, every node that uses it has already added its contribution. The tests include a node used several times (`x * x * x`, and `u` and `p` in the last graph), which fails if gradients are assigned instead of accumulated or if the order is wrong; the repeated calls fail if the gradients are not reset first.
+
+@practice num
+prompt: A central finite difference with step $\epsilon = 0.1$ estimates the derivative of $f(x) = x^3$ at $x = 2$. What value does it give? Give your answer to three decimal places.
+answer: 12.01
+tol: 0.001
+check: ((2 + 0.1) ** 3 - (2 - 0.1) ** 3) / (2 * 0.1)
+hint: Compute $f(2.1) = 9.261$ and $f(1.9)$, subtract, and divide by $2\epsilon$.
+solution: $f(2.1) = 9.261$ and $f(1.9) = 6.859$, so the estimate is $2.402/0.2 = 12.01$. The exact derivative is $3x^2 = 12$; the error $\epsilon^2 f'''/6 = 0.01$ shrinks quadratically with $\epsilon$.
+
+@quiz text
+prompt: What does this program print?
+```python
+a, b = 1.0, 4.0
+p = a * b
+q = p + a
+r = q * q
+grad_q = 2 * q
+grad_p = grad_q
+grad_a = grad_q
+grad_a += b * grad_p
+grad_b = a * grad_p
+print(grad_a + grad_b)
+```
+answer: 60.0
+check: run("a, b = 1.0, 4.0\np = a * b\nq = p + a\nr = q * q\ngrad_q = 2 * q\ngrad_p = grad_q\ngrad_a = grad_q\ngrad_a += b * grad_p\ngrad_b = a * grad_p\nprint(grad_a + grad_b)")
+hint: Here $p = 4$ and $q = 5$, so `grad_q` is 10; `a` gets a direct contribution and one through `p`.
+solution: `grad_q = 2 * 5 = 10`, `grad_p = 10`, and `grad_a` is the direct 10 plus $b \cdot 10 = 40$, i.e. 50; `grad_b = a * 10 = 10`. The sum is 60.0.
+
+@quiz code
+prompt: The class `Value` below is a working scalar autograd engine for `+` and `*`. Add four methods: `__neg__` (returns $-x$), `__sub__(self, other)` (returns $x - \text{other}$, where `other` may be a `Value` or a number), `__pow__(self, k)` (returns $x^k$ for a constant number `k`) and `exp(self)` (returns $e^x$). Each must record a `_backward` that accumulates the correct local derivative with `+=`. For example, `(Value(3.0) ** 2)` has `data` 9.0 and after `backward()` its input's `grad` is 6.0.
+starter:
+```python
+import math
+
+class Value:
+    def __init__(self, data, parents=()):
+        self.data = data
+        self.grad = 0.0
+        self.parents = parents
+        self._backward = lambda: None
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other))
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other))
+        def _backward():
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def backward(self):
+        order, seen = [], set()
+        def visit(v):
+            if id(v) not in seen:
+                seen.add(id(v))
+                for p in v.parents:
+                    visit(p)
+                order.append(v)
+        visit(self)
+        self.grad = 1.0
+        for v in reversed(order):
+            v._backward()
+
+    def __neg__(self):
+        pass
+
+    def __sub__(self, other):
+        pass
+
+    def __pow__(self, k):
+        pass
+
+    def exp(self):
+        pass
+```
+tests:
+```python
+x = Value(3.0)
+y = x ** 2
+y.backward()
+assert abs(y.data - 9.0) < 1e-9 and abs(x.grad - 6.0) < 1e-9
+a, b = Value(1.5), Value(0.5)
+c = a - b
+c.backward()
+assert abs(c.data - 1.0) < 1e-9 and a.grad == 1.0 and b.grad == -1.0
+n = Value(2.0)
+m = -n
+m.backward()
+assert m.data == -2.0 and n.grad == -1.0
+s = Value(0.5)
+t = s.exp()
+t.backward()
+assert abs(t.data - math.exp(0.5)) < 1e-9 and abs(s.grad - math.exp(0.5)) < 1e-9
+x = Value(0.75)
+sig = (Value(1.0) + (-x).exp()) ** -1
+sig.backward()
+p = 1 / (1 + math.exp(-0.75))
+assert abs(sig.data - p) < 1e-9 and abs(x.grad - p * (1 - p)) < 1e-9
+w = Value(4.0)
+q = w ** 0.5
+q.backward()
+assert abs(q.data - 2.0) < 1e-9 and abs(w.grad - 0.25) < 1e-9
+```
+model:
+```python
+import math
+
+class Value:
+    def __init__(self, data, parents=()):
+        self.data = data
+        self.grad = 0.0
+        self.parents = parents
+        self._backward = lambda: None
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other))
+        def _backward():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other))
+        def _backward():
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def backward(self):
+        order, seen = [], set()
+        def visit(v):
+            if id(v) not in seen:
+                seen.add(id(v))
+                for p in v.parents:
+                    visit(p)
+                order.append(v)
+        visit(self)
+        self.grad = 1.0
+        for v in reversed(order):
+            v._backward()
+
+    def __neg__(self):
+        return self * -1.0
+
+    def __sub__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        return self + (-other)
+
+    def __pow__(self, k):
+        out = Value(self.data ** k, (self,))
+        def _backward():
+            self.grad += k * self.data ** (k - 1) * out.grad
+        out._backward = _backward
+        return out
+
+    def exp(self):
+        out = Value(math.exp(self.data), (self,))
+        def _backward():
+            self.grad += out.data * out.grad
+        out._backward = _backward
+        return out
+```
+hint: For each new operation, create the output `Value` with `self` as parent and write `_backward` as (local derivative) times `out.grad`, added to `self.grad`. For subtraction, build it from addition and negation.
+solution: The local derivatives are $-1$ for negation, $k x^{k-1}$ for the power and $e^x = $ `out.data` for the exponential; subtraction composes `+` and negation so it needs no new rule. The sigmoid test builds $\sigma(x) = (1 + e^{-x})^{-1}$ out of the new operations and checks the known derivative $\sigma(1 - \sigma)$, which is how composite functions get their gradients for free.
+
+@quiz self
+prompt: Explain, in a short paragraph, how you would validate a newly written autograd engine on a new operation. State what you compute, what you compare, what tolerance you would expect, and name one bug the check would catch that a single forward-pass test would not.
+hint: Think about the gradient check of Week 3 and what a forward-only test can and cannot reveal.
+solution: I would build a small expression using the new operation together with older ones, run the engine's backward pass to get `grad` for every input, and compute a central finite difference of the forward value for each input with $\epsilon$ around $10^{-5}$ (copying the inputs and perturbing one at a time). The two should agree to about six significant digits, so a relative error near $10^{-6}$ to $10^{-7}$ is a pass, while an error of order 1 is a bug. A forward-pass test only compares values, so it cannot detect a wrong local derivative, a missing accumulation (`=` instead of `+=`) or a wrong traversal order; the gradient check catches all three, because each changes the gradient but not the output value.
+rubric: Compares engine gradients with central finite differences of the forward computation, input by input.
+rubric: Gives a sensible tolerance (relative error roughly $10^{-6}$ to $10^{-5}$) and $\epsilon$ near $10^{-5}$.
+rubric: Names a bug visible only to the gradient check, such as a wrong local derivative or `=` instead of `+=`.

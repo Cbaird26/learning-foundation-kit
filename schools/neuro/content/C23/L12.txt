@@ -1,0 +1,274 @@
+@lesson
+title: Deep learning frameworks: tensors, modules and automatic differentiation
+summary: Map each piece of your from-scratch network (values, layers, loss, optimizer, training loop) onto the tensors, modules and autograd of a framework such as PyTorch, and write the batched operations by hand.
+objective: Describe a tensor by its shape and compute the shapes and parameter counts of a stack of layers.
+objective: Write a batched linear layer with the matrix convention that frameworks use.
+objective: Explain what a module, an optimizer and `zero_grad` do, and map a from-scratch training loop onto a framework training loop.
+reading: Understanding Deep Learning (Prince), the notebooks and the chapter on fitting models; the official PyTorch tutorials on tensors, autograd and building a neural network (look up "Learn the Basics" and "Autograd").
+@article
+You have now built every part of a deep learning system in plain Python: a scalar autograd engine (Week 4), layers and a loss (Weeks 1 and 2), initialization (Week 6), optimizers (Week 7), regularization and normalization (Weeks 8 and 9). A framework such as PyTorch contains exactly these ideas. What it adds is **speed** (vectorized code that runs on GPUs), **convenience** (a large library of layers, losses and optimizers) and **bookkeeping** (parameters, saving and loading). This lesson is a dictionary between your code and theirs.
+
+### Tensors
+
+A **tensor** is a multidimensional array: a scalar has shape `()`, a vector of length $n$ has shape `(n,)`, a matrix with $m$ rows and $n$ columns has shape `(m, n)`, and a batch of 32 grayscale 28-by-28 images has shape `(32, 28, 28)`. In this course a tensor was a nested list; the shape is the tuple of lengths at each nesting level. A tensor also has a **dtype** (usually 32-bit floating point). Operations act on whole tensors at once, and **broadcasting** extends a smaller tensor across a larger one: adding a bias of shape `(k,)` to a batch of shape `(B, k)` adds it to every row.
+
+`torch.nn.Linear` stores the weights of a layer as a matrix of shape (outputs, inputs), one row per neuron as in Week 1, and computes $\mathbf{X}\mathbf{W}^\top + \mathbf{b}$; many texts instead write the weights with shape (inputs, outputs). What matters is to keep the convention straight. With one example per row, a batch $\mathbf{X}$ of shape $(B, d_{\text{in}})$ and weights $\mathbf{W}$ of shape $(d_{\text{in}}, d_{\text{out}})$ give
+
+$$\mathbf{Y} = \mathbf{X}\mathbf{W} + \mathbf{b}, \qquad \mathbf{Y} \text{ of shape } (B, d_{\text{out}}),$$
+
+where $Y_{ik} = \sum_j X_{ij}W_{jk} + b_k$. The work is $B\,d_{\text{in}}\,d_{\text{out}}$ multiply-adds; a batch of 32 examples through a 784-to-128 layer needs $32 \cdot 784 \cdot 128 = 3{,}211{,}264$ of them. One big matrix product is far faster than $B$ separate matrix-vector products, which is the main reason for batching.
+
+### Autograd
+
+The framework's `Tensor` plays the role of your `Value`: each operation on a tensor with `requires_grad=True` records a node in a graph (a `grad_fn`), and `loss.backward()` runs reverse-mode differentiation in reverse topological order, *accumulating* gradients into each parameter's `.grad`. Because gradients accumulate, the training loop must clear them before the next backward pass with `optimizer.zero_grad()`. The context `torch.no_grad()` turns recording off for evaluation, which saves memory.
+
+### Modules and optimizers
+
+A **module** (`torch.nn.Module`) is an object that holds parameters and defines a `forward` method. `Linear(d_in, d_out)` holds a weight and a bias; `Sequential` chains modules; `module.parameters()` collects every parameter of every submodule so that an optimizer can update them all. An **optimizer** (`SGD`, `Adam`, `AdamW`) is constructed with the parameters and a learning rate; `step()` applies the update rule (Week 7) using the stored gradients. The model's `train()` and `eval()` methods switch dropout and batch normalization between their training and inference behavior (Weeks 8 and 9). A model with layer sizes $784 \to 128 \to 10$ has $784 \cdot 128 + 128 + 128 \cdot 10 + 10 = 101{,}770$ parameters, by the counting formula of Week 1.
+
+### The dictionary
+
+| your from-scratch code | in a framework |
+|---|---|
+| nested lists of floats, a matrix as a list of rows | `Tensor`, with a shape and dtype |
+| `Value` with `data`, `grad` and `_backward` | a `Tensor` with `requires_grad=True`, `.grad`, `grad_fn` |
+| `c.backward()` with a topological sort | `loss.backward()` |
+| a list of weight matrices and biases | `nn.Linear` layers held by an `nn.Module` |
+| a list of all parameters | `model.parameters()` |
+| `He` or `Xavier` initialization function | `torch.nn.init.kaiming_normal_`, `xavier_uniform_` |
+| the cross-entropy function on logits | `torch.nn.functional.cross_entropy` (takes logits, applies a stable log-softmax) |
+| `momentum_step`, `adam_step` | `torch.optim.SGD(momentum=...)`, `torch.optim.Adam` |
+| shuffled mini-batches by slicing | `DataLoader(dataset, batch_size, shuffle=True)` |
+| set gradients to zero by rebuilding the graph | `optimizer.zero_grad()` |
+
+A training loop in PyTorch (shown for reference; it does not run in the browser) is the same loop you wrote:
+
+```text
+model = torch.nn.Sequential(
+    torch.nn.Linear(784, 128), torch.nn.ReLU(), torch.nn.Linear(128, 10))
+opt = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+for epoch in range(10):
+    for X, y in loader:                  # shuffled mini-batches
+        logits = model(X)                # forward pass
+        loss = torch.nn.functional.cross_entropy(logits, y)
+        opt.zero_grad()                  # clear accumulated gradients
+        loss.backward()                  # reverse-mode autodiff
+        opt.step()                       # parameter update
+```
+
+Frameworks differ in style (some build the graph while running, as PyTorch does, while others trace and compile functions), but all of them implement reverse-mode automatic differentiation over tensors. What you gain from knowing the internals is the ability to debug: a shape mismatch, a forgotten `zero_grad`, a model left in training mode during evaluation, or a loss given probabilities when it expects logits all become easy to spot.
+
+### In code
+
+```python
+def shape(t):
+    s = []
+    while isinstance(t, list):
+        s.append(len(t))
+        t = t[0] if t else None
+    return tuple(s)
+
+def linear_batch(X, W, b):
+    return [[sum(x * W[j][k] for j, x in enumerate(row)) + b[k]
+             for k in range(len(b))] for row in X]
+
+X = [[1.0, 2.0], [3.0, 4.0]]
+W = [[1.0, 0.0, -1.0], [0.0, 1.0, 1.0]]
+print(shape(linear_batch(X, W, [0.0, 0.0, 0.0])))
+```
+
+This prints `(2, 3)`: a batch of 2 examples with 2 inputs each, through a layer with 3 outputs.
+
+@example
+title: Shapes and parameters of a small model
+problem: A model takes batches of flattened 8-by-8 images, so $\mathbf{X}$ has shape $(16, 64)$, and applies Linear(64, 32), ReLU, Linear(32, 5). What are the shapes of every intermediate tensor and the total number of parameters?
+step: Flattened input: $(16, 64)$. First linear layer: weights $(64, 32)$, bias $(32,)$, output $(16, 32)$.
+step: ReLU keeps the shape $(16, 32)$. Second linear layer: weights $(32, 5)$, bias $(5,)$, output $(16, 5)$: one row of 5 logits per example.
+step: Parameters: $64 \cdot 32 + 32 + 32 \cdot 5 + 5 = 2048 + 32 + 160 + 5 = 2245$.
+answer: Shapes $(16,64) \to (16,32) \to (16,32) \to (16,5)$; 2245 parameters.
+
+@example
+title: Why gradients must be cleared
+problem: A parameter has `grad = 0.4` after the first backward pass. Without clearing, a second backward pass on a batch whose true gradient is $0.3$ is run. What is `grad`, and what would a plain SGD step with learning rate 0.5 do?
+step: Backward passes accumulate: `grad = 0.4 + 0.3 = 0.7`.
+step: The step moves the parameter by $-0.5 \cdot 0.7 = -0.35$, instead of the correct $-0.5 \cdot 0.3 = -0.15$.
+step: The fix is `optimizer.zero_grad()` before each backward pass, which sets every `grad` to zero.
+answer: `grad` is 0.7, and the update is more than twice too large (−0.35 instead of −0.15).
+
+@mistakes
+- Forgetting `optimizer.zero_grad()`: gradients from earlier batches accumulate, and the effective gradient is a sum over all previous batches.
+- Giving `cross_entropy` softmax probabilities when it expects logits (it applies the log-softmax itself), which makes the loss wrong and training slow.
+- Evaluating the model without `model.eval()` and `torch.no_grad()`: dropout stays active, batch normalization uses batch statistics, and memory is wasted on a graph that is never used.
+- Mixing up the matrix convention: `X @ W` needs the inner sizes to match, `(B, d_in) @ (d_in, d_out)`; a transposed weight gives a shape error or, worse for square matrices, a silently wrong answer.
+
+@practice num
+prompt: A fully connected network has layer sizes $256 \to 64 \to 10$ (two linear layers with biases, and a ReLU between them with no parameters). How many parameters does it have?
+answer: 17098
+check: 256 * 64 + 64 + 64 * 10 + 10
+hint: Each linear layer from $a$ inputs to $b$ outputs has $ab$ weights and $b$ biases.
+solution: The first layer has $256 \cdot 64 + 64 = 16{,}448$ parameters, the second $64 \cdot 10 + 10 = 650$, for a total of $17{,}098$.
+
+@practice num
+prompt: A batch of 64 examples passes through a linear layer from 100 inputs to 50 outputs as one matrix product $\mathbf{X}\mathbf{W}$ with $\mathbf{X}$ of shape $(64, 100)$ and $\mathbf{W}$ of shape $(100, 50)$. How many multiply-adds does the product need (ignoring the bias)?
+answer: 320000
+check: 64 * 100 * 50
+hint: Each of the $64 \times 50$ output entries is a dot product of length 100.
+solution: There are $64 \cdot 50 = 3200$ output entries, each needing 100 multiply-adds, so $320{,}000$ in total.
+
+@practice mc
+prompt: In a PyTorch training loop, what does `optimizer.zero_grad()` do, and why is it needed before `loss.backward()`?
+choice*: It sets every parameter's stored gradient to zero, because `backward()` adds new gradients to whatever is already stored.
+choice: It sets every parameter to zero to restart training.
+choice: It stops the model from computing gradients during evaluation.
+choice: It normalizes the gradients to have norm one.
+hint: Recall that the autograd engine accumulates gradients with `+=`.
+solution: Gradients accumulate across backward calls, so without clearing, each step would use the sum of the gradients of all previous batches. Clearing is not a reset of the parameters, not the evaluation switch (that is `no_grad` and `eval`), and not normalization (that would be gradient clipping).
+
+@practice code
+prompt: Write `broadcast_shape(a, b)` that takes two shapes (tuples of positive ints) and returns the shape that results from broadcasting two tensors of those shapes against each other. Line the shapes up from the right, treating a missing leading dimension as 1; two dimensions are compatible if they are equal or one of them is 1, and the result dimension is the larger of the two. If any pair is incompatible, raise `ValueError`. For example, `broadcast_shape((32, 10), (10,))` returns `(32, 10)`, and `broadcast_shape((2, 3), (2,))` raises `ValueError`.
+starter:
+```python
+def broadcast_shape(a, b):
+    return a
+```
+tests:
+```python
+assert broadcast_shape((32, 10), (10,)) == (32, 10)
+assert broadcast_shape((5, 1), (1, 4)) == (5, 4)
+assert broadcast_shape((), (3,)) == (3,)
+assert broadcast_shape((4, 1, 3), (5, 1)) == (4, 5, 3)
+assert broadcast_shape((2, 3), (2, 3)) == (2, 3)
+assert broadcast_shape((7,), (2, 1, 7)) == (2, 1, 7)
+assert raises(ValueError, broadcast_shape, (2, 3), (2,))
+assert raises(ValueError, broadcast_shape, (4, 3), (5, 3))
+```
+model:
+```python
+def broadcast_shape(a, b):
+    """Shape of the broadcast of two tensors with shapes a and b."""
+    n = max(len(a), len(b))
+    a = (1,) * (n - len(a)) + tuple(a)
+    b = (1,) * (n - len(b)) + tuple(b)
+    out = []
+    for x, y in zip(a, b):
+        if x != y and x != 1 and y != 1:
+            raise ValueError('shapes %s and %s do not broadcast' % (a, b))
+        out.append(max(x, y))
+    return tuple(out)
+```
+hint: Pad the shorter shape with 1s on the left, then compare the two shapes dimension by dimension.
+solution: Padding on the left implements "line up from the right". A pair of dimensions is fine if they are equal or either is 1, and then the result takes the larger one; any other pair is an error. The test with `(2, 3)` and `(2,)` shows why bias vectors must match the last dimension, not the first.
+
+@practice code
+prompt: Write `linear_batch_t(X, W, b)` for the convention of `torch.nn.Linear`, where the weight matrix `W` has shape `(d_out, d_in)` (a list of `d_out` rows, one per output unit, each of length `d_in`). `X` is a batch of shape `(B, d_in)` (a list of `B` rows) and `b` is a bias list of length `d_out`. Return the list of `B` output rows, where `out[i][k] = sum_j X[i][j] * W[k][j] + b[k]`. For example, `linear_batch_t([[1.0, 2.0]], [[1.0, 1.0]], [0.5])` returns `[[3.5]]`.
+starter:
+```python
+def linear_batch_t(X, W, b):
+    return X
+```
+tests:
+```python
+assert linear_batch_t([[1.0, 2.0]], [[1.0, 1.0]], [0.5]) == [[3.5]]
+X = [[1.0, 2.0], [3.0, 4.0]]
+W = [[1.0, 0.0], [0.0, 1.0], [-1.0, 1.0]]
+out = linear_batch_t(X, W, [0.5, 0.0, -0.5])
+want = [[1.5, 2.0, 0.5], [3.5, 4.0, 0.5]]
+assert all(abs(a - c) < 1e-9 for r, w in zip(out, want) for a, c in zip(r, w))
+assert len(out) == 2 and len(out[0]) == 3
+assert linear_batch_t([[0.0, 0.0]], W, [1.0, 2.0, 3.0]) == [[1.0, 2.0, 3.0]]
+assert linear_batch_t([], W, [1.0, 2.0, 3.0]) == []
+out = linear_batch_t([[2.0, -1.0, 0.5]], [[1.0, 2.0, 4.0], [0.0, 1.0, 0.0]], [0.0, 1.0])
+assert abs(out[0][0] - 2.0) < 1e-9 and abs(out[0][1] - 0.0) < 1e-9
+```
+model:
+```python
+def linear_batch_t(X, W, b):
+    """Batched affine map Y = X W^T + b with W stored as (d_out, d_in)."""
+    return [[sum(x * w for x, w in zip(row, W[k])) + b[k]
+             for k in range(len(b))] for row in X]
+```
+hint: Row `k` of `W` holds the weights of output unit `k`, so output `k` of an example is the dot product of the example's row with `W[k]`, plus `b[k]`.
+solution: With this convention each output is a dot product of the example with a row of `W`, which is the same computation as a neuron from Week 1 applied to every example. Using `W[j][k]` (the other convention) gives wrong numbers, or an index error, for the non-square matrices in the tests.
+
+@quiz text
+prompt: What does this program print?
+```python
+class P:
+    def __init__(self, data):
+        self.data = data
+        self.grad = 0.0
+
+p = P(1.0)
+for g in [0.5, 0.25]:
+    p.grad += g
+p.data -= 0.1 * p.grad
+print(round(p.data, 3), p.grad)
+```
+answer: 0.925 0.75
+check: run("class P:\n    def __init__(self, data):\n        self.data = data\n        self.grad = 0.0\n\np = P(1.0)\nfor g in [0.5, 0.25]:\n    p.grad += g\np.data -= 0.1 * p.grad\nprint(round(p.data, 3), p.grad)")
+hint: The gradient accumulates both contributions before the single update.
+solution: The accumulated gradient is $0.5 + 0.25 = 0.75$, and the update gives $1.0 - 0.1 \cdot 0.75 = 0.925$. Because the gradient was never cleared, it is still 0.75 when printed.
+
+@quiz code
+prompt: Write a class `SGD` that mimics a framework optimizer. `SGD(params, lr)` stores a list of parameter objects, each having a float attribute `data` and a float attribute `grad`. Its method `step()` updates every parameter with `p.data -= lr * p.grad` and does not touch `grad`. Its method `zero_grad()` sets every parameter's `grad` to `0.0`. For example, with one parameter `p` with `data = 1.0` and `grad = 2.0`, `SGD([p], 0.1).step()` makes `p.data` equal to `0.8`.
+starter:
+```python
+class SGD:
+    def __init__(self, params, lr):
+        pass
+
+    def step(self):
+        pass
+
+    def zero_grad(self):
+        pass
+```
+tests:
+```python
+class P:
+    def __init__(self, data, grad=0.0):
+        self.data = data
+        self.grad = grad
+
+a, b = P(1.0, 2.0), P(2.0, -1.0)
+opt = SGD([a, b], 0.1)
+opt.step()
+assert abs(a.data - 0.8) < 1e-9 and abs(b.data - 2.1) < 1e-9
+assert a.grad == 2.0 and b.grad == -1.0
+opt.step()
+assert abs(a.data - 0.6) < 1e-9 and abs(b.data - 2.2) < 1e-9
+opt.zero_grad()
+assert a.grad == 0.0 and b.grad == 0.0
+opt.step()
+assert abs(a.data - 0.6) < 1e-9
+c = P(5.0, 1.0)
+SGD([c], 0.0).step()
+assert c.data == 5.0
+```
+model:
+```python
+class SGD:
+    """A minimal stochastic gradient descent optimizer."""
+
+    def __init__(self, params, lr):
+        self.params = list(params)
+        self.lr = lr
+
+    def step(self):
+        for p in self.params:
+            p.data -= self.lr * p.grad
+
+    def zero_grad(self):
+        for p in self.params:
+            p.grad = 0.0
+```
+hint: Store the parameters and the learning rate in `__init__`; `step` and `zero_grad` each loop over the stored parameters.
+solution: `step` reads the stored gradients but leaves them alone, which is why the second `step` in the test moves the parameters again by the same amount, and why `zero_grad` has to be called explicitly between batches.
+
+@quiz self
+prompt: Describe how the from-scratch network you built in this course (a scalar autograd engine with layers, a cross-entropy loss, an optimizer and a training loop) maps onto a PyTorch implementation. For each of the five parts (values and gradients, a layer, the loss, the parameter update, the training loop) say what the framework object or function is, and name two things that the framework does that your code did not.
+hint: Use the dictionary table: `Tensor`, `nn.Linear` and `nn.Module`, `cross_entropy`, `torch.optim`, and the loop with `zero_grad`, `backward` and `step`. For the extras, think about speed, devices and bookkeeping.
+solution: Values and gradients: each scalar `Value` becomes an element of a `Tensor` with `requires_grad=True`; `.grad` holds the gradient and `grad_fn` records the operation, and `loss.backward()` does the reverse topological sweep. A layer: my weight matrix and bias with a function that computes the affine map become an `nn.Linear` module, collected with an activation in `nn.Sequential`, and `model.parameters()` returns all parameters. The loss: my softmax cross-entropy becomes `torch.nn.functional.cross_entropy`, which takes logits and class indices and computes a stable log-softmax internally. The parameter update: my `momentum_step` or `adam_step` becomes `torch.optim.SGD(momentum=...)` or `torch.optim.Adam`, with `step()` and `zero_grad()`. The training loop: batches from a `DataLoader`, then the sequence forward, loss, `zero_grad`, `backward`, `step`. Extras the framework provides beyond my code: vectorized tensor operations that run on a GPU (my version processed one scalar at a time), and a large library of tested layers and initializers plus saving and loading of parameters (`state_dict`), automatic handling of batches and broadcasting, and `train()` and `eval()` modes for dropout and normalization.
+rubric: Maps all five parts to the correct framework objects (Tensor with autograd, nn.Linear or Module, cross_entropy on logits, torch.optim, the loop with zero_grad, backward, step).
+rubric: Mentions that the loss takes logits and the optimizer needs gradients cleared between steps.
+rubric: Names two real extras, such as vectorization and GPU execution, a library of layers and initializers, saving and loading, or train and eval modes.

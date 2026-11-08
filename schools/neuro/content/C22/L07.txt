@@ -1,0 +1,204 @@
+@lesson
+title: Nearest neighbors and decision trees
+summary: Predict with the labels of the closest training points or with a tree of axis-aligned questions, and compute Gini impurity and the best split by hand and in code.
+objective: Classify a point with $k$-nearest neighbors and explain the role of $k$ and of feature scaling.
+objective: Compute Gini impurity and entropy and choose the best split of a node.
+objective: Describe how tree depth and $k$ control overfitting.
+reading: An Introduction to Statistical Learning (Python edition), Chapter 4 section 4.7.6 on $K$-nearest neighbors, and Chapter 8 "Tree-Based Methods", section 8.1 "The Basics of Decision Trees".
+@article
+So far each model has been a formula with a few parameters. This week brings two **non-parametric** methods: they keep (or build from) the data itself, and their complexity grows with the data.
+
+### $k$-nearest neighbors
+
+To predict for a query point, find the $k$ training points closest to it and combine their labels. For classification take the **majority vote**; for regression take the average target. The usual distance is Euclidean,
+$$d(a, b) = \sqrt{\sum_{j=1}^{d}(a_j - b_j)^2}.$$
+There is no training step: all the work happens at prediction time, and a naive query costs $O(nd)$ distance computations plus selecting the $k$ smallest.
+
+The number $k$ is a hyperparameter that controls flexibility. With $k = 1$ the decision regions are jagged and every training point is classified correctly (it is its own nearest neighbor), so training error is 0 and says nothing about generalization: low bias, high variance. A large $k$ gives smooth regions; with $k = n$ the model always predicts the majority class: high bias, low variance. Choose $k$ by validation (week 6).
+
+Distance treats all features equally, so **features must be scaled**: with income in dollars and age in years, income alone decides the neighbors. Standardize first. In high dimensions, distances between points become nearly equal and "nearest" loses meaning (the **curse of dimensionality**), so $k$-NN works best with few, informative features.
+
+### Decision trees
+
+A **decision tree** predicts with a sequence of yes/no questions of the form "is feature $j$ at most $t$?". Each internal node asks one question; each leaf holds a prediction (the majority class, or the mean target for a **regression tree**). A tree splits the feature space into axis-aligned rectangles and handles mixed feature types and interactions without scaling. It is easy to read.
+
+### Choosing a split
+
+A node with class proportions $p_1, \dots, p_K$ has impurity measured by the **Gini index** or the **entropy**:
+$$G = 1 - \sum_{k} p_k^2, \qquad H = -\sum_{k} p_k \log_2 p_k.$$
+Both are 0 for a pure node. For two classes, $G$ is largest ($0.5$) at $p = 0.5$, where $H$ is $1$ bit. A candidate split sends $n_L$ of the node's $n$ examples left and $n_R$ right; its quality is the **weighted impurity**
+$$\frac{n_L}{n}G_L + \frac{n_R}{n}G_R.$$
+The tree-building algorithm is **greedy**: it picks the split with the lowest weighted impurity (the largest impurity decrease), then recurses on each child. For a numeric feature the candidate thresholds are the midpoints between consecutive distinct sorted values. The recursion stops when a node is pure, has too few examples, or reaches a maximum depth. This greedy search is not guaranteed to find the best tree.
+
+An unrestricted tree keeps splitting until every leaf is pure, which memorizes the training data: low bias, high variance. Small changes in the data can change the tree completely. Controls include a maximum depth, a minimum leaf size, and **pruning** (growing a large tree and cutting back branches that do not pay for themselves). Next week's ensembles attack the variance directly.
+
+```python
+def gini(labels):
+    n = len(labels)
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+```
+
+@example
+title: Classifying with $k$ nearest neighbors
+problem: Training points: $(1,1)$ red, $(2,1)$ red, $(4,4)$ blue, $(5,4)$ blue, $(5,5)$ blue. Classify the query $(3,3)$ with $k = 3$.
+step: Compute squared distances to $(3,3)$ (the order of distances is the same as the order of squared distances): $(1,1)$: $4+4 = 8$; $(2,1)$: $1+4 = 5$; $(4,4)$: $1+1 = 2$; $(5,4)$: $4+1 = 5$; $(5,5)$: $4+4 = 8$.
+step: The three smallest are $2$ (blue at $(4,4)$) and the two values $5$ (red at $(2,1)$ and blue at $(5,4)$).
+step: The votes are blue, red, blue: two blue and one red.
+step: The prediction is blue. With $k = 1$ it is also blue; with $k = 5$ the vote is three blue to two red, so blue again.
+answer: blue.
+
+@example
+title: Finding the best split by hand
+problem: A feature takes values $x = (1, 2, 3, 4, 5, 6)$ with labels $y = (0, 0, 1, 0, 1, 1)$. Which threshold gives the lowest weighted Gini impurity?
+step: The candidate thresholds are $1.5, 2.5, 3.5, 4.5, 5.5$.
+step: At $2.5$: left $\{0,0\}$ has $G = 0$; right $\{1,0,1,1\}$ has $p_1 = 0.75$ and $G = 1 - (0.5625 + 0.0625) = 0.375$. Weighted: $\frac{2}{6}(0) + \frac{4}{6}(0.375) = 0.25$.
+step: At $3.5$: left $\{0,0,1\}$ and right $\{0,1,1\}$ each have $G = 4/9$, so the weighted value is $4/9 \approx 0.444$.
+step: At $4.5$: left $\{0,0,1,0\}$ has $G = 0.375$, right $\{1,1\}$ has $G = 0$, so the weighted value is $\frac{4}{6}(0.375) = 0.25$.
+step: At $1.5$ and $5.5$ the weighted values are $0.40$ each. The minimum $0.25$ is reached at both $2.5$ and $4.5$; the node itself had $G = 0.5$.
+answer: $2.5$ or $4.5$ (weighted Gini $0.25$); a tie is usually broken by taking the first.
+
+@mistakes
+- Using $k$-NN on unscaled features, so the feature with the largest numeric range decides the neighbors.
+- Choosing $k = 1$ because its training error is 0, instead of choosing $k$ on held-out data.
+- Computing the weighted impurity without weighting the children by their sizes, so a tiny pure leaf looks as good as a large one.
+- Letting a tree grow until every leaf is pure and trusting its training accuracy.
+
+@practice num
+prompt: A node contains 3 examples of class A and 1 example of class B. What is its Gini impurity? Give an exact value.
+answer: 3/8
+check: 1 - (Fraction(3, 4) ** 2 + Fraction(1, 4) ** 2)
+hint: $G = 1 - \sum p_k^2$ with $p_A = 3/4$ and $p_B = 1/4$.
+solution: $G = 1 - (9/16 + 1/16) = 1 - 10/16 = 6/16 = 3/8$.
+
+@practice mc
+prompt: A $k$-NN classifier predicts whether a customer will buy, using two features: annual income in dollars (range 20,000 to 200,000) and age in years (range 18 to 80). The features are used as they are. What is the main problem?
+choice: The classifier will overfit because $k$-NN has too many parameters.
+choice*: Income differences are numerically far larger than age differences, so the distance, and therefore the neighbors, is determined almost entirely by income.
+choice: Euclidean distance cannot be computed for two features with different units.
+choice: The classifier must be trained for longer before it can be used.
+hint: Compare a typical difference of income between two customers with a typical difference of age.
+solution: A difference of a few thousand dollars dwarfs a difference of several years in the Euclidean distance, so age is effectively ignored. Standardizing both features gives them comparable influence. $k$-NN has no training phase and no fitted parameters.
+
+@practice code
+prompt: Write `knn_predict(points, labels, query, k)` where `points` is a list of equal-length tuples of numbers, `labels` the matching list of integer labels, and `query` a tuple. Choose the `k` points with the smallest Euclidean distance to `query` (break distance ties by lower index in `points`) and return the most common label among them; if labels tie, return the **smaller** label. Assume `1 <= k <= len(points)`. Example: with the points below, `knn_predict(pts, [0, 0, 1, 1, 1], (3, 3), 3)` is `1`, where `pts = [(1, 1), (2, 1), (4, 4), (5, 4), (5, 5)]`.
+starter:
+```python
+def knn_predict(points, labels, query, k):
+    pass
+```
+tests:
+```python
+pts = [(1, 1), (2, 1), (4, 4), (5, 4), (5, 5)]
+lab = [0, 0, 1, 1, 1]
+assert knn_predict(pts, lab, (3, 3), 3) == 1
+assert knn_predict(pts, lab, (3, 3), 1) == 1
+assert knn_predict(pts, lab, (1, 2), 3) == 0
+assert knn_predict(pts, lab, (3, 3), 2) == 0
+assert knn_predict(pts, lab, (3, 3), 5) == 1
+assert knn_predict([(0,), (10,)], ["a", "b"], (9,), 1) == "b"
+```
+model:
+```python
+def knn_predict(points, labels, query, k):
+    order = sorted(
+        range(len(points)),
+        key=lambda i: (sum((a - b) ** 2 for a, b in zip(points[i], query)), i),
+    )
+    counts = {}
+    for i in order[:k]:
+        counts[labels[i]] = counts.get(labels[i], 0) + 1
+    best = max(counts.values())
+    return min(label for label, c in counts.items() if c == best)
+```
+hint: Squared distances give the same order as distances, so you can skip the square root.
+hint: Sort the indices by `(squared distance, index)`, take the first `k`, and count labels in a dictionary. Among labels with the top count return the smallest.
+solution: Sorting by `(distance, index)` makes the choice of neighbors deterministic. Count the labels of the first `k`, find the top count, and return the smallest label with that count, which is the specified tie rule.
+
+@practice code
+prompt: Write `gini(labels)` that returns the Gini impurity $1 - \sum_k p_k^2$ of a list of class labels, where $p_k$ is the fraction of labels equal to class $k$. For an empty list return `0.0`. Example: `gini([0, 1])` is `0.5`.
+starter:
+```python
+def gini(labels):
+    pass
+```
+tests:
+```python
+assert gini([0, 1]) == 0.5
+assert gini([1, 1, 1]) == 0.0
+assert gini([]) == 0.0
+assert gini([1, 1, 1, 0]) == 0.375
+assert round(gini(["a", "b", "c"]), 6) == 0.666667
+```
+model:
+```python
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    counts = {}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    return 1 - sum((c / n) ** 2 for c in counts.values())
+```
+hint: Count each class, convert counts to fractions of `n`, then square and sum them.
+solution: Count the labels, square each class fraction, sum, and subtract from 1. A pure node gives exactly 0, and the empty case is handled first so that there is no division by zero.
+
+@practice code
+prompt: Write `best_split(xs, ys)` for one numeric feature `xs` and class labels `ys`. Consider thresholds at the midpoints between consecutive **distinct** sorted values of `xs`; an example goes left when `x <= threshold`. Return `(threshold, weighted_gini)` for the threshold with the lowest weighted Gini impurity $\frac{n_L}{n}G_L + \frac{n_R}{n}G_R$; on ties return the smallest threshold. If `xs` has fewer than two distinct values return `None`. Example: `best_split([1, 2, 3, 4], [0, 0, 1, 1])` is `(2.5, 0.0)`.
+starter:
+```python
+def best_split(xs, ys):
+    pass
+```
+tests:
+```python
+assert best_split([1, 2, 3, 4], [0, 0, 1, 1]) == (2.5, 0.0)
+assert best_split([3, 1, 2], [1, 0, 0]) == (2.5, 0.0)
+t, g = best_split([10, 20, 30, 40], [0, 1, 0, 1])
+assert (t, round(g, 6)) == (15.0, 0.333333)
+assert best_split([5, 5, 5], [0, 1, 0]) is None
+t, g = best_split([1, 2, 3, 4, 5, 6], [0, 0, 1, 0, 1, 1])
+assert t == 2.5 and abs(g - 0.25) < 1e-9
+```
+model:
+```python
+def best_split(xs, ys):
+    def gini(labels):
+        n = len(labels)
+        counts = {}
+        for label in labels:
+            counts[label] = counts.get(label, 0) + 1
+        return 1 - sum((c / n) ** 2 for c in counts.values())
+
+    values = sorted(set(xs))
+    best = None
+    n = len(xs)
+    for a, b in zip(values, values[1:]):
+        t = (a + b) / 2
+        left = [y for x, y in zip(xs, ys) if x <= t]
+        right = [y for x, y in zip(xs, ys) if x > t]
+        score = len(left) / n * gini(left) + len(right) / n * gini(right)
+        if best is None or score < best[1]:
+            best = (t, score)
+    return best
+```
+hint: Sort the distinct values; the candidate thresholds are the midpoints of neighboring values.
+hint: For each threshold build the left and right label lists, compute the weighted Gini, and keep a candidate only if it is strictly better than the best so far (that keeps the smallest threshold on ties).
+solution: Loop over the midpoints in increasing order, compute the weighted impurity of the two sides, and replace the best only when the score is strictly lower, so the first (smallest) threshold wins ties. Fewer than two distinct values gives no thresholds and the loop never runs, so `None` is returned.
+
+@quiz num
+prompt: A node has one example of class A and three of class B. What is its entropy in bits? Give a decimal rounded to four places.
+answer: 0.8113
+tol: 0.0005
+check: -(0.25 * log2(0.25) + 0.75 * log2(0.75))
+hint: $H = -\sum p_k\log_2 p_k$ with $p = 0.25$ and $0.75$.
+solution: $H = -(0.25\log_2 0.25 + 0.75\log_2 0.75) = 0.5 + 0.75 \cdot 0.415 \approx 0.8113$ bits.
+
+@quiz mc
+prompt: A 1-nearest-neighbor classifier is trained on a data set in which all feature vectors are distinct, and then evaluated on the same data. What is its accuracy there, and what does that tell you?
+choice: Accuracy is 50%, because one neighbor gives a random guess.
+choice*: Accuracy is 100%, because each point is its own nearest neighbor, so it says nothing about performance on new data.
+choice: Accuracy is 100%, which proves that the model generalizes perfectly.
+choice: Accuracy equals the majority-class share, because 1-NN ignores the features.
+hint: Which training point is closest to a training point?
+solution: A training point has distance 0 to itself, so its own label is returned and training accuracy is 100%. This is the extreme of overfitting: only held-out data can reveal how well 1-NN generalizes.

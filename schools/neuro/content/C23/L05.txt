@@ -1,0 +1,266 @@
+@lesson
+title: Training a network: mini-batches, epochs and learning rates
+summary: Write a from-scratch training loop with shuffled mini-batches, count its updates, and explain how batch size and learning rate shape the learning curve.
+objective: Compute the mini-batch gradient and one stochastic gradient descent update by hand.
+objective: Count the updates in an epoch and in a training run for a given data set size and batch size.
+objective: Write a training loop in plain Python and read a learning curve to compare learning rates and batch sizes.
+reading: Understanding Deep Learning (Prince), the chapter on fitting models: stochastic gradient descent, mini-batches and epochs.
+@article
+Gradient descent as you met it in the machine learning course (C22) computes the gradient over the whole data set before every step. With a million examples that is a million forward and backward passes for one small move. But the data set is a sample from a distribution, so a gradient computed on a random handful of examples is already a decent guide. Taking many cheap, noisy steps is usually much faster than taking a few exact ones. That is **stochastic gradient descent** (SGD), the workhorse of deep learning.
+
+### Mini-batches and epochs
+
+Let the loss be an average over $n$ examples, $L(\boldsymbol{\theta}) = \frac{1}{n}\sum_{i=1}^{n} \ell_i(\boldsymbol{\theta})$. A **mini-batch** $\mathcal{B}$ of $B$ examples gives the estimate
+
+$$\mathbf{g}_{\mathcal{B}} = \frac{1}{B}\sum_{i \in \mathcal{B}} \nabla_{\boldsymbol{\theta}}\, \ell_i(\boldsymbol{\theta}), \qquad \boldsymbol{\theta} \leftarrow \boldsymbol{\theta} - \eta\, \mathbf{g}_{\mathcal{B}}.$$
+
+If the batch is a uniformly random sample, $\mathbb{E}[\mathbf{g}_{\mathcal{B}}] = \nabla L(\boldsymbol{\theta})$: the estimate is unbiased, and its variance shrinks roughly like $1/B$. One pass through all the data is an **epoch**. In practice the examples are shuffled at the start of each epoch and cut into consecutive batches, so every example is used exactly once per epoch. With $n$ examples and batch size $B$ there are $\lceil n/B \rceil$ updates per epoch, the last batch being smaller when $B$ does not divide $n$: with $n = 10$ and $B = 4$ the batches have sizes $4, 4, 2$. Batch size 1 is online SGD, and $B = n$ is full-batch gradient descent.
+
+### One epoch by hand
+
+Take a one-input logistic model $p = \sigma(wx + b)$ with binary cross-entropy. Week 2's result gives the gradient per example: $\partial\ell/\partial z = p - y$, so $\partial \ell/\partial w = (p - y)x$ and $\partial \ell/\partial b = p - y$. The data are $(-1, 0), (0, 0), (1, 1), (2, 1)$, with $w = b = 0$, $\eta = 0.5$ and batch size 2 (no shuffling, for reproducibility).
+
+Batch 1 is $\{(-1,0),(0,0)\}$. Every $p = 0.5$, so $g_w = \frac{1}{2}\big(0.5 \cdot (-1) + 0.5 \cdot 0\big) = -0.25$ and $g_b = \frac{1}{2}(0.5 + 0.5) = 0.5$. The update gives $w = 0.125$ and $b = -0.25$.
+
+Batch 2 is $\{(1,1),(2,1)\}$. Now $p_1 = \sigma(0.125 - 0.25) = 0.4688$ and $p_2 = \sigma(0.25 - 0.25) = 0.5$, so $g_w = \frac{1}{2}\big((-0.5312)(1) + (-0.5)(2)\big) = -0.7656$ and $g_b = -0.5156$. The update gives $w = 0.5078$ and $b = 0.0078$. The mean loss over all four points fell from $\log 2 = 0.6931$ to $0.4866$ in one epoch (two updates).
+
+### The learning rate
+
+The step size $\eta$ matters more than any other hyperparameter. Mean loss over the four points after epochs 1, 5, 10 and 20 with full-batch gradient descent:
+
+| $\eta$ | epoch 1 | epoch 5 | epoch 10 | epoch 20 |
+|---|---|---|---|---|
+| 0.01 | 0.6907 | 0.6809 | 0.6690 | 0.6466 |
+| 0.5 | 0.5798 | 0.3751 | 0.2795 | 0.1985 |
+| 3.0 | 0.2861 | 0.1438 | 0.0979 | 0.0620 |
+
+A rate that is too small barely moves; too large a rate overshoots the valley and the loss bounces or diverges (on this easy, separable data even 3.0 is still stable, but not on harder problems; the largest stable rate is tied to the curvature of the loss). Mini-batch size changes the picture as well: at $\eta = 0.5$ the mean loss after epoch 5 is 0.1932 for $B = 1$, 0.2705 for $B = 2$ and 0.3751 for $B = 4$. Smaller batches make more updates per epoch, and each is noisier. With a fixed learning rate, the noise keeps the parameters jittering around a minimum instead of settling, which is why practitioners decay the learning rate over training.
+
+### In code
+
+```python
+import math
+
+def sigmoid(z):
+    return 1 / (1 + math.exp(-z))
+
+def run_epoch(w, b, data, lr, batch_size):
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i + batch_size]
+        gw = sum((sigmoid(w * x + b) - y) * x for x, y in batch) / len(batch)
+        gb = sum(sigmoid(w * x + b) - y for x, y in batch) / len(batch)
+        w, b = w - lr * gw, b - lr * gb
+    return w, b
+
+data = [(-1, 0), (0, 0), (1, 1), (2, 1)]
+w = b = 0.0
+for epoch in range(1, 3):
+    w, b = run_epoch(w, b, data, 0.5, 2)
+    print(epoch, round(w, 4), round(b, 4))
+```
+
+This prints `1 0.5078 0.0078` and `2 0.8383 -0.0435`. In PyTorch the same structure is a `DataLoader` that shuffles and batches, an optimizer such as `torch.optim.SGD`, and the three calls `loss.backward()`, `optimizer.step()` and `optimizer.zero_grad()` inside the loop.
+
+@example
+title: One mini-batch update
+problem: A logistic model $p = \sigma(wx + b)$ with binary cross-entropy has $w = 1$, $b = 0$. A mini-batch contains $(2, 1)$ and $(-1, 1)$, and the learning rate is $\eta = 0.5$. Compute the updated $w$ and $b$.
+step: Predictions: $p_1 = \sigma(2) = 0.8808$ and $p_2 = \sigma(-1) = 0.2689$.
+step: Per-example errors $p - y$: $-0.1192$ and $-0.7311$.
+step: Averages: $g_w = \frac{1}{2}\big((-0.1192)(2) + (-0.7311)(-1)\big) = \frac{1}{2}(0.4927) = 0.2464$ and $g_b = \frac{1}{2}(-0.1192 - 0.7311) = -0.4251$.
+step: Update: $w = 1 - 0.5 \cdot 0.2464 = 0.8768$ and $b = 0 - 0.5\cdot(-0.4251) = 0.2126$.
+answer: $w \approx 0.877$ and $b \approx 0.213$.
+
+@example
+title: Counting updates
+problem: A data set has $n = 2{,}500$ examples and is trained for 8 epochs with batch size 64. How many parameter updates are made, and what is the size of the last batch of each epoch?
+step: Updates per epoch: $\lceil 2500/64 \rceil = \lceil 39.06 \rceil = 40$.
+step: Total updates: $8 \times 40 = 320$.
+step: The first 39 batches hold $39 \times 64 = 2496$ examples, so the last batch holds $2500 - 2496 = 4$ examples.
+answer: 320 updates; the last batch of each epoch has 4 examples.
+
+@mistakes
+- Summing the per-example gradients instead of averaging them: the update then scales with the batch size, and a learning rate tuned for one batch size breaks for another.
+- Forgetting to shuffle between epochs, so every epoch sees the same batches in the same order and the batches can be correlated with the data's order (for example sorted by class).
+- Computing the number of updates per epoch as $n/B$ rounded down: the final partial batch is still used (unless you deliberately drop it).
+- Judging the learning rate from one noisy update rather than from the trend of the loss over several epochs.
+
+@practice num
+prompt: A data set has 1,050 examples and a network is trained for 5 epochs with batch size 100, keeping the final partial batch each epoch. How many parameter updates are made in total?
+answer: 55
+check: ceil(1050 / 100) * 5
+hint: One epoch has $\lceil 1050/100 \rceil$ batches; multiply by the number of epochs.
+solution: $\lceil 10.5 \rceil = 11$ batches per epoch (ten of size 100 and one of size 50), and $11 \times 5 = 55$ updates.
+
+@practice mc
+prompt: A mini-batch of $B$ examples is drawn uniformly at random from the training set, and $\mathbf{g}_{\mathcal{B}}$ is the average of their gradients. Which statement is correct?
+choice*: Its expected value equals the full-data gradient, and its variance decreases as $B$ grows.
+choice: It equals the full-data gradient exactly, for any $B$.
+choice: It is biased toward the examples in the earlier batches of the epoch.
+choice: Its variance does not depend on $B$, so a larger batch only costs more compute.
+hint: Think of $\mathbf{g}_{\mathcal{B}}$ as a sample mean of per-example gradients.
+solution: A uniform random sample mean is unbiased for the population mean, and its variance falls like $1/B$. It is not exact for $B < n$, and a larger batch does reduce the noise (at higher cost per step).
+
+@practice num
+prompt: A logistic model $p = \sigma(wx + b)$ with binary cross-entropy has $w = 0.5$ and $b = -0.5$. One mini-batch holds the examples $(2, 1)$, $(1, 0)$ and $(-1, 1)$, and the learning rate is $0.8$. What is $w$ after one SGD update on this batch? Give your answer to three decimal places.
+answer: 0.373
+tol: 0.001
+check: 0.5 - 0.8 * sum((1 / (1 + exp(-(0.5 * x - 0.5))) - y) * x for x, y in [(2, 1), (1, 0), (-1, 1)]) / 3
+hint: The predictions are $\sigma(0.5)$, $\sigma(0)$ and $\sigma(-1)$; average $(p - y)x$ over the three examples.
+solution: The predictions are $0.6225$, $0.5$ and $0.2689$, so the errors $p - y$ are $-0.3775$, $0.5$ and $-0.7311$. Then $g_w = \frac{1}{3}\big((-0.3775)(2) + (0.5)(1) + (-0.7311)(-1)\big) = \frac{1}{3}(0.4761) = 0.1587$ and $w = 0.5 - 0.8 \cdot 0.1587 = 0.3731$.
+
+@practice code
+prompt: Write `make_batches(data, batch_size, rng)` that shuffles a copy of `data` (a list of examples) using the `random.Random` instance `rng` (call `rng.shuffle` on the copy) and returns a list of consecutive batches of `batch_size` examples; the last batch may be smaller. The original list must not change. For example, with 5 examples and `batch_size=2` the batch sizes are `[2, 2, 1]`.
+starter:
+```python
+import random
+
+def make_batches(data, batch_size, rng):
+    return []
+```
+tests:
+```python
+import random
+data = list(range(10))
+rng = random.Random(0)
+bs = make_batches(data, 4, rng)
+assert [len(b) for b in bs] == [4, 4, 2]
+assert sorted(x for b in bs for x in b) == list(range(10))
+assert data == list(range(10))
+bs = make_batches(data, 10, random.Random(1))
+assert len(bs) == 1 and sorted(bs[0]) == data
+bs = make_batches(data, 3, random.Random(2))
+assert [len(b) for b in bs] == [3, 3, 3, 1]
+a = make_batches(data, 5, random.Random(7))
+b = make_batches(data, 5, random.Random(7))
+assert a == b
+```
+model:
+```python
+import random
+
+def make_batches(data, batch_size, rng):
+    """Shuffle a copy of data and split it into consecutive batches."""
+    items = list(data)
+    rng.shuffle(items)
+    return [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+```
+hint: Copy the list first, shuffle the copy with `rng.shuffle`, then slice it with a step of `batch_size`.
+solution: Shuffling a copy leaves the caller's data untouched, and slicing `items[i:i + batch_size]` over `range(0, n, batch_size)` yields full batches followed by one smaller batch when the size does not divide $n$. The test with a fixed seed checks reproducibility without checking any particular order.
+
+@practice code
+prompt: Write `sgd_epoch(w, b, data, lr, batch_size, drop_last=False)` for the logistic model $p = \sigma(wx + b)$ with binary cross-entropy. `data` is a list of `(x, y)` pairs with $y \in \{0, 1\}$. Process the data in the given order (no shuffling) in consecutive batches of `batch_size` (the last may be smaller); for each batch compute the average gradient and update `w` and `b`. If `drop_last` is true, a final batch smaller than `batch_size` is skipped and makes no update. Return the new pair `(w, b)`. For example, one epoch on `[(1.0, 1)]` from `(0.0, 0.0)` with `lr=1.0` returns `(0.5, 0.5)`.
+starter:
+```python
+import math
+
+def sgd_epoch(w, b, data, lr, batch_size, drop_last=False):
+    return w, b
+```
+tests:
+```python
+d = [(0.5, 0), (1.5, 1), (-1.0, 0), (2.0, 1), (0.0, 1)]
+w, b = sgd_epoch(0.0, 0.0, d, 1.0, 5)
+assert abs(w - 0.4) < 1e-9 and abs(b - 0.1) < 1e-9
+w, b = sgd_epoch(0.0, 0.0, d, 1.0, 2)
+assert abs(w - 0.8464524184) < 1e-6 and abs(b - 0.4773933681) < 1e-6
+w, b = sgd_epoch(0.0, 0.0, d, 1.0, 1)
+assert abs(w - 1.3660622462) < 1e-6 and abs(b - 0.4654635139) < 1e-6
+w, b = sgd_epoch(0.0, 0.0, [(1.0, 1)], 1.0, 1)
+assert abs(w - 0.5) < 1e-9 and abs(b - 0.5) < 1e-9
+assert sgd_epoch(2.0, -1.0, d, 0.0, 2) == (2.0, -1.0)
+w, b = sgd_epoch(0.0, 0.0, d, 1.0, 2, drop_last=True)
+assert abs(w - 0.8464524184) < 1e-6 and abs(b + 0.0301414152) < 1e-6
+w, b = sgd_epoch(0.0, 0.0, d, 1.0, 3, drop_last=True)
+assert abs(w - 0.3333333333) < 1e-6 and abs(b + 0.1666666667) < 1e-6
+assert sgd_epoch(0.5, 0.25, d, 1.0, 6, drop_last=True) == (0.5, 0.25)
+```
+model:
+```python
+import math
+
+def sgd_epoch(w, b, data, lr, batch_size, drop_last=False):
+    """One epoch of mini-batch SGD for logistic regression (no shuffling)."""
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i + batch_size]
+        if drop_last and len(batch) < batch_size:
+            break
+        gw = gb = 0.0
+        for x, y in batch:
+            err = 1 / (1 + math.exp(-(w * x + b))) - y
+            gw += err * x
+            gb += err
+        w -= lr * gw / len(batch)
+        b -= lr * gb / len(batch)
+    return w, b
+```
+hint: Inside the loop over batches, compute the predictions with the current `w` and `b`, average the errors times $x$ and the errors alone, then update both parameters before the next batch.
+solution: Each batch updates the parameters, and the next batch uses the updated values; this differs from full-batch descent, which is the first test (batch size 5 equals the whole data set). Dividing by `len(batch)` (not `batch_size`) matters for the partial last batch, and with `drop_last` that batch is skipped altogether.
+
+@quiz text
+prompt: What does this program print?
+```python
+data = list(range(10))
+B = 4
+print([len(data[i:i + B]) for i in range(0, len(data), B)])
+```
+answer: [4, 4, 2]
+check: run("data = list(range(10))\nB = 4\nprint([len(data[i:i + B]) for i in range(0, len(data), B)])")
+hint: The slices start at positions 0, 4 and 8.
+solution: The slices are `data[0:4]`, `data[4:8]` and `data[8:12]`, which has only the two remaining elements, so the program prints `[4, 4, 2]`.
+
+@quiz code
+prompt: Write `train_logistic(data, lr, batch_size, epochs)` for the logistic model $p = \sigma(wx + b)$ with binary cross-entropy. Start from `w = b = 0.0` and run `epochs` epochs of mini-batch SGD over `data` (a list of `(x, y)` pairs, in the given order, no shuffling; the last batch may be smaller). After each epoch, record the mean cross-entropy loss (natural logarithm) over the whole data set. Return `(w, b, losses)` where `losses` is the list of the recorded values, one per epoch.
+starter:
+```python
+import math
+
+def train_logistic(data, lr, batch_size, epochs):
+    return 0.0, 0.0, []
+```
+tests:
+```python
+d = [(-2.0, 0), (-1.0, 0), (-0.5, 1), (0.5, 0), (1.0, 1), (2.0, 1)]
+w, b, L = train_logistic(d, 0.4, 2, 3)
+assert abs(w - 0.8982777411) < 1e-6 and abs(b - 0.0306118825) < 1e-6
+assert all(abs(a - c) < 1e-6 for a, c in zip(L, [0.5439337276, 0.4977176099, 0.4793690285]))
+w, b, L = train_logistic(d, 0.4, 6, 3)
+assert abs(w - 0.4190744061) < 1e-6 and abs(b) < 1e-9
+assert len(L) == 3 and L[0] > L[1] > L[2]
+w, b, L = train_logistic(d, 0.4, 2, 0)
+assert (w, b, L) == (0.0, 0.0, [])
+assert abs(train_logistic(d, 0.0, 3, 1)[2][0] - math.log(2)) < 1e-9
+```
+model:
+```python
+import math
+
+def train_logistic(data, lr, batch_size, epochs):
+    """Mini-batch SGD for one-input logistic regression; returns the loss curve."""
+    def sig(z):
+        return 1 / (1 + math.exp(-z))
+
+    w = b = 0.0
+    losses = []
+    for _ in range(epochs):
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i + batch_size]
+            gw = sum((sig(w * x + b) - y) * x for x, y in batch) / len(batch)
+            gb = sum(sig(w * x + b) - y for x, y in batch) / len(batch)
+            w, b = w - lr * gw, b - lr * gb
+        total = 0.0
+        for x, y in data:
+            p = sig(w * x + b)
+            total -= y * math.log(p) + (1 - y) * math.log(1 - p)
+        losses.append(total / len(data))
+    return w, b, losses
+```
+hint: Wrap the batch loop from `sgd_epoch` in a loop over epochs, and after each epoch compute the loss on the whole data set with the updated parameters.
+solution: The loss is recorded on all the data after the epoch's updates, not on the batches seen during it. With a learning rate of 0 nothing changes and the loss stays at $\log 2$, which is one of the tests.
+
+@quiz self
+prompt: Three runs of the same network differ only in learning rate. Mean training loss at epochs 1, 5, 10 and 20: run A ($\eta = 0.001$): 2.30, 2.29, 2.27, 2.24. Run B ($\eta = 0.1$): 2.30, 1.10, 0.62, 0.35. Run C ($\eta = 5$): 2.30, 8.7, 41.2, then `nan`. Describe what each curve shows, which learning rate you would keep, and one more experiment you would try.
+hint: Compare how fast each loss falls, and look for growth in the loss.
+solution: Run A decreases but extremely slowly: after 20 epochs it has barely moved, so the rate is too small for the training budget. Run C diverges: the loss grows from the first epochs and then overflows to `nan`, the signature of a step size above the stable range for this loss surface. Run B falls steadily and quickly, so I would keep $\eta = 0.1$. As a follow-up I would try a rate between 0.1 and 5 (say 0.5 or 1) to see whether the loss falls even faster before it destabilizes, or keep 0.1 and add a decay schedule to reduce the late-training noise; I would also watch the validation loss, not just the training loss, before declaring a winner.
+rubric: Identifies run A as too slow and run C as divergent, with evidence from the numbers.
+rubric: Selects the learning rate of run B with a reason.
+rubric: Proposes a sensible further experiment (a rate between 0.1 and 5, a decay schedule, or checking validation loss).

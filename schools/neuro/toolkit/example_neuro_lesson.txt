@@ -1,0 +1,201 @@
+@lesson
+title: The leaky integrate-and-fire neuron
+summary: Model a neuron as a leaky capacitor with a threshold, predict when it fires from its equation, and simulate it in Python.
+objective: Write the membrane equation of the leaky integrate-and-fire model and find its steady-state voltage.
+objective: Compute the rheobase, the time to the first spike and the firing rate for a constant input current.
+objective: Simulate the model with Euler steps and explain how the time step affects the result.
+reading: Neuronal Dynamics, the chapter introducing neurons and mathematics: the passive membrane and the leaky integrate-and-fire model.
+
+@article
+Inject a steady current into a neuron and it starts to fire, regularly, like a metronome. A stronger current makes it fire faster, and below a certain current it does not fire at all. Can a single equation predict all of this? The **leaky integrate-and-fire** (LIF) model, whose idea goes back to Lapicque (1907), does it with a few lines of algebra.
+
+### The membrane as a leaky capacitor
+
+The cell membrane separates charge, like a **capacitor** with capacitance $C_m$, and lets some current leak through ion channels, like a **resistor** with resistance $R$. Without input, the voltage settles at the **resting potential** $E_L$. With an input current $I$, the membrane potential $V(t)$ obeys
+
+$$\tau_m \frac{dV}{dt} = -(V - E_L) + R I, \qquad \tau_m = R\,C_m .$$
+
+The **membrane time constant** $\tau_m$ sets how fast the voltage changes. Units fit together neatly: a resistance in megaohms (MΩ) times a current in nanoamperes (nA) gives millivolts (mV).
+
+### Below threshold: exponential approach
+
+Setting $dV/dt = 0$ gives the **steady-state voltage** $V_\infty = E_L + R I$. Starting from $V_0$, the solution approaches it exponentially:
+
+$$V(t) = V_\infty + (V_0 - V_\infty)\, e^{-t/\tau_m} .$$
+
+After one time constant the voltage has covered $1 - e^{-1} \approx 63\%$ of the distance to $V_\infty$.
+
+### Threshold and reset
+
+The model adds one rule: when $V$ reaches the **threshold** $V_{\text{th}}$, the neuron fires a spike, and $V$ is reset to $V_{\text{reset}}$. The spike's shape is not modeled, only its time. Take $E_L = -70$ mV, $R = 10$ MΩ, $\tau_m = 10$ ms, $V_{\text{th}} = -55$ mV and $V_{\text{reset}} = -70$ mV. The neuron can fire only if $V_\infty > V_{\text{th}}$, that is, if $I$ exceeds the **rheobase** $I_{\text{rh}} = (V_{\text{th}} - E_L)/R = 15/10 = 1.5$ nA. Below it the leak wins and the voltage stalls below threshold.
+
+Solving $V(T) = V_{\text{th}}$ for the time $T$ to reach threshold from $V_{\text{reset}}$ gives
+
+$$T = \tau_m \ln \frac{V_\infty - V_{\text{reset}}}{V_\infty - V_{\text{th}}}, \qquad f = \frac{1}{T},$$
+
+the firing rate $f$ for a constant current (in hertz when $T$ is in seconds; with $T$ in ms, $f = 1000/T$).
+
+| current $I$ (nA) | $V_\infty$ (mV) | interval $T$ (ms) | rate $f$ (Hz) |
+|---|---|---|---|
+| 1.5 | −55 | never fires | 0 |
+| 2.0 | −50 | 13.86 | 72.1 |
+| 3.0 | −40 | 6.93 | 144.3 |
+| 5.0 | −20 | 3.57 | 280.4 |
+
+This firing rate against current is the model's **f–I curve**: zero up to the rheobase, then rising steeply. Real neurons cannot fire arbitrarily fast; adding an **absolute refractory period** $t_{\text{ref}}$ after each spike, during which $V$ is held at reset, gives $f = 1/(t_{\text{ref}} + T)$.
+
+### In code
+
+The **Euler method** steps the equation forward by a small time step $\Delta t$: $V \leftarrow V + \frac{\Delta t}{\tau_m}\big(-(V - E_L) + R I\big)$.
+
+```python
+def simulate_lif(I, t_max, dt=0.1):
+    """Spike times (ms) of an LIF neuron with constant current I (nA)."""
+    tau, R, E_L, V_th, V_reset = 10.0, 10.0, -70.0, -55.0, -70.0
+    V, spikes = E_L, []
+    for k in range(int(round(t_max / dt))):
+        V += dt / tau * (-(V - E_L) + R * I)
+        if V >= V_th:
+            spikes.append(round((k + 1) * dt, 10))
+            V = V_reset
+    return spikes
+
+print(simulate_lif(2.0, 100.0))
+```
+
+This prints `[13.8, 27.6, 41.4, 55.2, 69.0, 82.8, 96.6]`: seven spikes about 13.8 ms apart, close to the exact 13.86 ms. The small difference comes from the time step; Euler steps are accurate only when $\Delta t$ is much smaller than $\tau_m$. Simulators such as Brian or NEST run the same model for thousands of neurons at once.
+
+@example
+title: Time to the first spike
+problem: The neuron in the article ($E_L = -70$ mV, $R = 10$ MΩ, $\tau_m = 10$ ms, $V_{\text{th}} = -55$ mV) starts at rest, and a current of $2.5$ nA is switched on. When does it fire its first spike?
+step: Find the steady state: $V_\infty = -70 + 10 \times 2.5 = -45$ mV, which is above threshold, so the neuron will fire.
+step: Measure the distances from the steady state: the start is $-45 - (-70) = 25$ mV away, and the threshold is $-45 - (-55) = 10$ mV away.
+step: Apply $T = \tau_m \ln(25/10) = 10 \ln 2.5 \approx 9.16$ ms.
+step: Check with the solution: $V(9.16) = -45 + (-70 + 45)\,e^{-0.916} \approx -45 - 25 \times 0.400 = -55$ mV, the threshold.
+answer: About $9.16$ ms after the current is switched on.
+
+@mistakes
+- Forgetting the leak: a perfect integrator ($\tau_m\,dV/dt = R I$) fires for any positive current, while the leaky model needs a current above the rheobase.
+- Mixing units: megaohms times nanoamperes gives millivolts, and an interval in milliseconds gives a rate of $1000/T$ hertz, not $1/T$.
+- Using a time step that is too large: Euler steps need $\Delta t \ll \tau_m$; with $\Delta t$ near $\tau_m$ the simulated voltage overshoots, and above $2\tau_m$ it oscillates and blows up.
+
+@practice num
+prompt: A leaky integrate-and-fire neuron has resting potential $E_L = -65$ mV and membrane resistance $R = 20$ MΩ. A constant current of $0.5$ nA is injected. What is the steady-state voltage $V_\infty$, in millivolts?
+answer: -55
+unit: mV
+check: -65 + 20 * 0.5
+hint: Use $V_\infty = E_L + R I$; megaohms times nanoamperes gives millivolts.
+solution: $V_\infty = -65 + 20 \times 0.5 = -65 + 10 = -55$ mV.
+
+@practice num
+prompt: A leaky integrate-and-fire neuron has $E_L = -68$ mV, threshold $V_{\text{th}} = -50$ mV and $R = 15$ MΩ. What is its rheobase, the smallest constant current that makes it fire, in nanoamperes?
+answer: 1.2
+unit: nA
+check: (-50 - (-68)) / 15
+hint: The neuron fires only if $V_\infty = E_L + R I$ exceeds the threshold.
+solution: The current must lift the steady state by $V_{\text{th}} - E_L = 18$ mV, so $I_{\text{rh}} = 18/15 = 1.2$ nA.
+
+@practice mc
+prompt: In a leaky integrate-and-fire neuron with no refractory period, the membrane time constant $\tau_m$ is doubled while $R$, the thresholds and the input current stay the same. What happens to the firing rate for a current above the rheobase?
+choice*: It halves, because every interval scales with $\tau_m$ while $V_\infty$ does not change.
+choice: It doubles, because a slower membrane integrates more input.
+choice: It stays the same, because $V_\infty = E_L + R I$ does not depend on $\tau_m$.
+choice: It drops to zero, because the rheobase doubles.
+hint: Look at where $\tau_m$ appears in $T = \tau_m \ln\big((V_\infty - V_{\text{reset}})/(V_\infty - V_{\text{th}})\big)$.
+solution: The logarithm depends only on voltages, which do not involve $\tau_m$, so $T$ doubles and $f = 1/T$ halves. The steady state and the rheobase are unchanged; only the speed of approach changes.
+
+@practice code
+prompt: Write `time_to_spike(I, tau, R, E_L, V_th, V0)` that returns the time in milliseconds for a leaky integrate-and-fire neuron starting at voltage `V0` (mV) to reach the threshold `V_th` (mV) under a constant current `I` (nA), with membrane time constant `tau` (ms), resistance `R` (MΩ) and resting potential `E_L` (mV). Return `0.0` if `V0` is already at or above threshold, and `None` if the neuron never reaches threshold (when $V_\infty = E_L + R I$ is at or below `V_th`). For example, `time_to_spike(1.0, 20.0, 30.0, -65.0, -50.0, -65.0)` returns about `13.863`.
+starter:
+```python
+def time_to_spike(I, tau, R, E_L, V_th, V0):
+    pass
+```
+tests:
+```python
+assert abs(time_to_spike(1.0, 20.0, 30.0, -65.0, -50.0, -65.0) - 13.862944) < 1e-5
+assert time_to_spike(0.4, 10.0, 25.0, -70.0, -55.0, -70.0) is None
+assert time_to_spike(0.5, 10.0, 30.0, -70.0, -55.0, -70.0) is None
+assert abs(time_to_spike(2.0, 10.0, 10.0, -70.0, -55.0, -60.0) - 6.931472) < 1e-5
+assert time_to_spike(2.0, 10.0, 10.0, -70.0, -55.0, -54.0) == 0.0
+```
+model:
+```python
+import math
+
+
+def time_to_spike(I, tau, R, E_L, V_th, V0):
+    """Time (ms) for an LIF neuron to reach threshold from V0, or None."""
+    if V0 >= V_th:
+        return 0.0
+    V_inf = E_L + R * I
+    if V_inf <= V_th:
+        return None
+    return tau * math.log((V_inf - V0) / (V_inf - V_th))
+```
+hint: Compute $V_\infty$ first. If it does not exceed the threshold, the voltage only approaches it from below and never reaches it.
+solution: Solving $V_\infty + (V_0 - V_\infty)e^{-T/\tau} = V_{\text{th}}$ gives $T = \tau \ln\big((V_\infty - V_0)/(V_\infty - V_{\text{th}})\big)$. The third test has $V_\infty$ exactly at threshold, which a strict `<` comparison gets wrong, and the fourth starts above reset, so the start voltage must be `V0`, not $E_L$.
+
+@practice code
+prompt: Write `count_spikes(I, t_max, t_ref, dt=0.1)` that simulates the article's neuron ($\tau_m = 10$ ms, $R = 10$ MΩ, $E_L = -70$ mV, $V_{\text{th}} = -55$ mV, $V_{\text{reset}} = -70$ mV), starting at $E_L$, with Euler steps of `dt` ms for `int(round(t_max / dt))` steps under a constant current `I` (nA), and returns the number of spikes. In each step, update $V$ and fire if $V \ge V_{\text{th}}$, resetting $V$ to $V_{\text{reset}}$. After a spike, add an absolute refractory period: skip the next `int(round(t_ref / dt))` steps entirely, holding $V$ at reset. For example, `count_spikes(1.4, 100.0, 2.0)` returns `0`.
+starter:
+```python
+def count_spikes(I, t_max, t_ref, dt=0.1):
+    return 0
+```
+tests:
+```python
+assert count_spikes(3.0, 100.0, 2.0) == 11
+assert count_spikes(3.0, 100.0, 0.0) == 14
+assert count_spikes(1.4, 100.0, 2.0) == 0
+assert count_spikes(5.0, 50.0, 5.0) == 6
+```
+model:
+```python
+def count_spikes(I, t_max, t_ref, dt=0.1):
+    """Number of spikes of an LIF neuron with an absolute refractory period."""
+    tau, R, E_L, V_th, V_reset = 10.0, 10.0, -70.0, -55.0, -70.0
+    V, n, hold = E_L, 0, 0
+    for _ in range(int(round(t_max / dt))):
+        if hold > 0:
+            hold -= 1
+            continue
+        V += dt / tau * (-(V - E_L) + R * I)
+        if V >= V_th:
+            n += 1
+            V = V_reset
+            hold = int(round(t_ref / dt))
+    return n
+```
+hint: Keep a counter of steps still to skip. While it is positive, decrease it and leave $V$ alone; otherwise take an Euler step and check the threshold.
+solution: The refractory counter freezes the voltage at reset for `t_ref` milliseconds after each spike, which lengthens every interval to about $t_{\text{ref}} + T$. Comparing the first two tests shows the effect: the same current gives 14 spikes without a refractory period and 11 with 2 ms.
+
+@quiz text
+prompt: What does this program print?
+```python
+V = -70.0
+for _ in range(3):
+    V = V + 0.5 / 10 * (-(V + 70) + 10 * 3.0)
+print(round(V, 3))
+```
+answer: -65.721
+check: run("V = -70.0\nfor _ in range(3):\n    V = V + 0.5 / 10 * (-(V + 70) + 10 * 3.0)\nprint(round(V, 3))")
+hint: Each step adds $0.05$ times the distance from $V$ to the steady state $-40$ mV.
+solution: The steady state is $-70 + 30 = -40$ mV. Each Euler step closes 5% of the remaining gap: $-70 \to -68.5 \to -67.075 \to -65.72125$, which rounds to $-65.721$.
+
+@quiz num
+prompt: A leaky integrate-and-fire neuron has $\tau_m = 20$ ms, $R = 5$ MΩ, $E_L = -65$ mV, $V_{\text{th}} = -50$ mV, $V_{\text{reset}} = -65$ mV and no refractory period. What is its firing rate for a constant current of $3.6$ nA? Give your answer in hertz to one decimal place.
+answer: 27.9
+tol: 0.1
+unit: Hz
+check: 1000 / (20 * log((-65 + 5 * 3.6 + 65) / (-65 + 5 * 3.6 + 50)))
+hint: Find $V_\infty$, then the interval $T = \tau_m \ln\big((V_\infty - V_{\text{reset}})/(V_\infty - V_{\text{th}})\big)$ in ms, then $f = 1000/T$.
+solution: $V_\infty = -65 + 18 = -47$ mV, so $T = 20 \ln(18/3) = 20 \ln 6 \approx 35.84$ ms and $f = 1000/35.84 \approx 27.9$ Hz.
+
+@quiz self
+prompt: A classmate says that a neuron that fires for any positive input current, however small, must lack a leak. Explain why the leaky integrate-and-fire model has a smallest current that makes it fire, what a perfect integrator would do instead, and describe a current-injection experiment that tells the two apart.
+hint: Compare the steady-state voltage with the threshold in each model.
+solution: In the leaky model the voltage approaches $V_\infty = E_L + R I$ and never passes it, so a current with $V_\infty \le V_{\text{th}}$ never produces a spike: the rheobase is $(V_{\text{th}} - E_L)/R$. A perfect integrator has no restoring term, so any positive current raises the voltage without limit and eventually reaches threshold, and its rate grows in proportion to the current, $f = I/(C_m (V_{\text{th}} - V_{\text{reset}}))$. To tell them apart, inject a series of constant currents of increasing size and record the rate: a leaky membrane shows no spikes below a clear rheobase and then a steep, curved rise, while a perfect integrator fires at low rates for small currents with a straight-line f–I curve. Measuring how the subthreshold voltage settles after a small current step, with a time constant $\tau_m = R C_m$, confirms the leak directly.
+rubric: Explains the rheobase from the comparison of $V_\infty$ with the threshold.
+rubric: States that a perfect integrator fires for any positive current, with a rate proportional to it.
+rubric: Proposes a current-step or f–I experiment and says what result would distinguish the models.

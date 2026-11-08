@@ -1,0 +1,241 @@
+@lesson
+title: Initialization: why scale matters
+summary: Explain why zero or badly scaled initial weights stop learning, and choose the Xavier or He scale so that signals keep a stable size through the layers.
+objective: Explain why identical initial weights prevent hidden units from learning different features.
+objective: Derive how the variance of activations changes from layer to layer and the weight scales it implies.
+objective: Choose between LeCun, Xavier (Glorot) and He initialization and implement them in plain Python.
+reading: Understanding Deep Learning (Prince), the chapter on initialization (within the chapter on measuring performance and training deep networks).
+@article
+Suppose you start a network with every weight equal to 0.5. Two hidden units then compute exactly the same thing, receive exactly the same gradient, and so make exactly the same update, forever: your wide layer is secretly one unit. And suppose you start with random weights that are too small: the signal shrinks a little at each layer and after ten layers is a thousandth of its original size, so the gradients that flow back are tiny too. Initialization decides whether training can even start.
+
+### Breaking the symmetry
+
+Consider a layer whose units have identical incoming weights, identical biases and identical outgoing weights. Their activations are equal, so by the chain rule their gradients are equal, so after any update they are still identical. The units can never specialize. The cure is to start from **random** weights, which breaks the symmetry. (Biases can start at zero: the weights already differ.)
+
+### How scale propagates
+
+Take one linear unit $z = \sum_{i=1}^{n} w_i x_i$ with $n$ inputs. Assume the weights are independent with mean 0 and variance $\sigma^2$, independent of the inputs, and the inputs are independent with second moment $\mathbb{E}[x_i^2] = q$. Then $\mathbb{E}[z] = 0$ and
+
+$$\operatorname{Var}(z) = \mathbb{E}[z^2] = \sum_{i=1}^{n} \mathbb{E}[w_i^2]\,\mathbb{E}[x_i^2] = n\,\sigma^2 q .$$
+
+So each linear layer multiplies the second moment of its signal by $n\sigma^2$, where $n$ is the **fan-in** (the number of inputs). After $L$ such layers the second moment is $(n\sigma^2)^L q_0$. For width $n = 100$ and $L = 10$:
+
+| weight std $\sigma$ | factor per layer $n\sigma^2$ | after 10 layers |
+|---|---|---|
+| 0.05 | 0.25 | $9.5 \times 10^{-7}$ |
+| 0.10 | 1.00 | 1 |
+| 0.15 | 2.25 | 3325 |
+
+The signal vanishes or explodes geometrically unless $n\sigma^2 \approx 1$. The same argument applies to the backward pass, with the **fan-out** (number of outputs) in place of the fan-in.
+
+### The standard schemes
+
+- **LeCun initialization:** $\sigma^2 = 1/n_{\text{in}}$, which keeps the forward second moment constant for linear or tanh-like units near zero.
+- **Xavier (Glorot) initialization** (Glorot and Bengio, 2010): $\sigma^2 = 2/(n_{\text{in}} + n_{\text{out}})$, a compromise between keeping the forward signal ($1/n_{\text{in}}$) and the backward gradient ($1/n_{\text{out}}$) stable. The uniform version draws from $[-a, a]$ with $a = \sqrt{6/(n_{\text{in}} + n_{\text{out}})}$, since a uniform variable on $[-a, a]$ has variance $a^2/3$.
+- **He initialization** (He and colleagues, 2015): $\sigma^2 = 2/n_{\text{in}}$ for ReLU layers. ReLU zeroes about half of a symmetric pre-activation, which halves the second moment: $\mathbb{E}[h^2] = \tfrac{1}{2}\operatorname{Var}(z)$. The factor per layer becomes $n\sigma^2/2$, and $\sigma^2 = 2/n$ restores it to 1.
+
+For fan-in 50 the He standard deviation is $\sqrt{2/50} = 0.2$. For a layer with 30 inputs and 20 outputs the Glorot uniform limit is $a = \sqrt{6/50} = 0.3464$.
+
+### Why the exact scale matters in practice
+
+For sigmoid or tanh units, weights that are too large push the pre-activations into the flat tails where the derivative is nearly 0 (**saturation**), so gradients vanish even though the forward signal looked healthy; weights that are too small keep the activations near the linear region but shrink the signal. For ReLU networks, using the Xavier scale instead of He's shrinks the signal by $1/\sqrt{2}$ per layer, which compounds with depth. Modern frameworks apply a sensible default per layer type, but knowing the derivation tells you what to change when a custom architecture trains poorly. Later layers of a residual network (Week 11) and normalization layers (Week 9) reduce, but do not remove, this sensitivity.
+
+### In code
+
+```python
+import random
+
+def init_matrix(n_out, n_in, std, rng):
+    return [[rng.gauss(0.0, std) for _ in range(n_in)] for _ in range(n_out)]
+
+def second_moment(q0, width, std, layers, relu=False):
+    factor = width * std ** 2 * (0.5 if relu else 1.0)
+    return q0 * factor ** layers
+
+print(second_moment(1.0, 100, 0.05, 10))
+print(second_moment(1.0, 100, 0.15, 10, relu=True))
+```
+
+This prints about `9.5e-07` and `3.247`: with ReLU the per-layer factor is $2.25/2 = 1.125$. In PyTorch, `torch.nn.init.kaiming_normal_` implements He initialization and `torch.nn.init.xavier_uniform_` implements the Glorot uniform version.
+
+@example
+title: Choosing the initial scale
+problem: A ReLU network has hidden layers of width 200 (fan-in 200). What weight standard deviation should you use, and what happens to the second moment after 5 layers if you use $\sigma = 0.05$ instead?
+step: He initialization uses $\sigma^2 = 2/n_{\text{in}} = 2/200 = 0.01$, so $\sigma = 0.1$.
+step: With $\sigma = 0.05$ the factor per layer is $n\sigma^2/2 = 200 \cdot 0.0025/2 = 0.25$.
+step: After 5 layers the second moment is multiplied by $0.25^5 = 0.000977$, about a thousandth.
+answer: Use $\sigma = 0.1$; with $\sigma = 0.05$ the signal's second moment shrinks to about $0.001$ of its input value after 5 layers.
+
+@example
+title: Symmetric weights stay symmetric
+problem: A 2-2-1 network has all weights equal to $c$ in the hidden layer (both rows $(c, c)$, biases 0) and output weights $(v, v)$. Show that the two hidden units receive identical gradients.
+step: For input $(x_1, x_2)$ both hidden units compute $z = c(x_1 + x_2)$ and so $h_1 = h_2 = h$.
+step: The loss depends on the output $y = v h_1 + v h_2$. The gradient to $h_1$ is $\partial L/\partial y \cdot v$, and to $h_2$ it is the same, $\partial L/\partial y \cdot v$.
+step: Both units therefore get the same upstream gradient and have the same local derivative (same $z$), so their weights receive identical gradients and take identical steps.
+answer: The units remain identical after every update; random initialization is needed to break the symmetry.
+
+@mistakes
+- Initializing all weights to the same constant, including zero: hidden units never differentiate, so the layer behaves like a single unit.
+- Using the He scale (or any fixed constant) without checking the fan-in: the correct standard deviation depends on the layer width, so a wide layer needs a smaller $\sigma$.
+- Confusing variance and standard deviation: the formulas are for $\sigma^2$, so the weight standard deviation is the square root, such as $\sqrt{2/n_{\text{in}}}$.
+- Assuming initialization stops mattering once training starts: a network that starts with vanishing gradients may never leave the flat region at all.
+
+@practice num
+prompt: A ReLU layer has fan-in 128. What standard deviation does He initialization use for its weights? Give your answer to three decimal places.
+answer: 0.125
+tol: 0.001
+check: sqrt(2 / 128)
+hint: He initialization sets the variance to $2/n_{\text{in}}$; take the square root.
+solution: $\sigma^2 = 2/128 = 0.015625$, so $\sigma = 0.125$.
+
+@practice num
+prompt: A layer has 80 inputs and 20 outputs and uses the Glorot (Xavier) uniform initialization $U[-a, a]$ with $\sigma^2 = 2/(n_{\text{in}} + n_{\text{out}})$. What is $a$? Give your answer to three decimal places.
+answer: 0.245
+tol: 0.001
+check: sqrt(6 / (80 + 20))
+hint: A uniform variable on $[-a, a]$ has variance $a^2/3$; set it equal to $2/100$.
+solution: $a^2/3 = 2/100 = 0.02$, so $a^2 = 0.06$ and $a = \sqrt{0.06} \approx 0.2449$.
+
+@practice mc
+prompt: Every hidden-layer weight of a 3-4-1 tanh network is initialized to the same nonzero constant 0.5 (biases 0, output weights also all 0.5). Which statement is correct?
+choice*: The four hidden units get identical gradients at every step, so they stay identical and the hidden layer acts like one unit.
+choice: Training works as usual, since the gradients adjust each weight independently.
+choice: The gradients are exactly zero for every parameter, so no parameter ever changes.
+choice: The network diverges because the activations are zero.
+hint: Check what the units compute and what gradient reaches each of them from the output layer.
+solution: With identical incoming weights the hidden units compute the same values and receive the same upstream gradient (the output weights are equal too), so every update changes them identically and they remain copies of one another. The gradients are not zero, training does not diverge, and the units are never adjusted independently.
+
+@practice code
+prompt: Write `second_moment_stack(q0, fan_ins, stds, relu=False)` that returns the expected second moment of the activations after a stack of layers whose widths differ. Layer $k$ has `fan_ins[k]` inputs and independent zero-mean weights of standard deviation `stds[k]`; the two lists have the same length. A linear layer multiplies the second moment by `fan_in * std ** 2`; with `relu=True` each layer multiplies it by half that amount. An empty stack returns `q0`. For example, `second_moment_stack(1.0, [100, 100], [0.1, 0.05])` returns `0.25` (up to rounding).
+starter:
+```python
+def second_moment_stack(q0, fan_ins, stds, relu=False):
+    return q0
+```
+tests:
+```python
+assert abs(second_moment_stack(1.0, [100, 100], [0.1, 0.05]) - 0.25) < 1e-9
+assert abs(second_moment_stack(2.0, [100, 50, 200], [0.1, 0.1, 0.05]) - 0.5) < 1e-9
+assert abs(second_moment_stack(1.0, [100, 50, 200], [0.1, 0.1, 0.05], relu=True) - 0.03125) < 1e-9
+assert abs(second_moment_stack(1.0, [256] * 3, [0.0625] * 3, relu=True) - 0.125) < 1e-9
+assert second_moment_stack(3.0, [], []) == 3.0
+```
+model:
+```python
+def second_moment_stack(q0, fan_ins, stds, relu=False):
+    """Second moment of the activations after layers of different widths."""
+    q = q0
+    for n, std in zip(fan_ins, stds):
+        factor = n * std ** 2
+        if relu:
+            factor *= 0.5
+        q *= factor
+    return q
+```
+hint: Each layer has its own factor `fan_in * std ** 2` (halved for ReLU); multiply the running second moment by each factor in turn.
+solution: The layers multiply the second moment independently, so loop over the pairs of fan-in and standard deviation and multiply by each layer's factor, squaring the standard deviation and halving once per layer when `relu` is true. Dropping the halving, or forgetting to square `std`, fails the tests, which also include an empty stack.
+
+@practice code
+prompt: Write `init_layer(n_out, n_in, scheme, rng)` that returns a weight matrix with `n_out` rows and `n_in` columns (a list of rows), with every entry drawn from `rng.gauss(0.0, std)`, where `rng` is a `random.Random` instance and `std` depends on `scheme`: `'lecun'` uses $\sqrt{1/n_{\text{in}}}$, `'xavier'` uses $\sqrt{2/(n_{\text{in}} + n_{\text{out}})}$ and `'he'` uses $\sqrt{2/n_{\text{in}}}$.
+starter:
+```python
+import math
+
+def init_layer(n_out, n_in, scheme, rng):
+    return []
+```
+tests:
+```python
+import math
+import random
+
+def sample_std(W):
+    vals = [v for row in W for v in row]
+    m = sum(vals) / len(vals)
+    return math.sqrt(sum((v - m) ** 2 for v in vals) / len(vals))
+
+W = init_layer(40, 50, 'he', random.Random(0))
+assert len(W) == 40 and all(len(r) == 50 for r in W)
+assert abs(sample_std(W) / math.sqrt(2 / 50) - 1) < 0.15
+W = init_layer(60, 40, 'xavier', random.Random(1))
+assert abs(sample_std(W) / math.sqrt(2 / 100) - 1) < 0.15
+W = init_layer(50, 100, 'lecun', random.Random(2))
+assert abs(sample_std(W) / math.sqrt(1 / 100) - 1) < 0.15
+a = init_layer(3, 4, 'he', random.Random(5))
+b = init_layer(3, 4, 'he', random.Random(5))
+assert a == b and len(set(v for r in a for v in r)) > 1
+```
+model:
+```python
+import math
+
+def init_layer(n_out, n_in, scheme, rng):
+    """Gaussian weight matrix with the standard deviation of a named scheme."""
+    if scheme == 'lecun':
+        std = math.sqrt(1 / n_in)
+    elif scheme == 'xavier':
+        std = math.sqrt(2 / (n_in + n_out))
+    else:
+        std = math.sqrt(2 / n_in)
+    return [[rng.gauss(0.0, std) for _ in range(n_in)] for _ in range(n_out)]
+```
+hint: Compute `std` from the scheme name first, then build the list of rows with a nested comprehension that calls `rng.gauss(0.0, std)`.
+solution: The three schemes differ only in the standard deviation, so choose it by name and then fill the matrix; one row per output unit, with `n_in` weights per row. The tests check the empirical standard deviation of a few thousand samples against the intended one, plus reproducibility for a fixed seed.
+
+@quiz text
+prompt: What does this program print?
+```python
+n, std = 64, 0.1
+factor = n * std ** 2
+q = 1.0
+count = 0
+while q >= 0.001:
+    q *= factor
+    count += 1
+print(count)
+```
+answer: 16
+check: run("n, std = 64, 0.1\nfactor = n * std ** 2\nq = 1.0\ncount = 0\nwhile q >= 0.001:\n    q *= factor\n    count += 1\nprint(count)")
+hint: The factor is $64 \cdot 0.01 = 0.64$; find the smallest $k$ with $0.64^k < 0.001$.
+solution: Since $\ln 0.001/\ln 0.64 \approx 15.5$, the smallest integer $k$ with $0.64^k < 0.001$ is 16 ($0.64^{15} \approx 0.00123$ and $0.64^{16} \approx 0.00079$), so the loop runs 16 times and the program prints 16.
+
+@quiz code
+prompt: Write `layers_until_below(width, std, threshold)` that returns the smallest number of layers $L \ge 1$ after which the second moment of a unit-second-moment input, $(\text{width} \cdot \text{std}^2)^L$, is below `threshold` (a positive number less than 1). If the per-layer factor $\text{width} \cdot \text{std}^2$ is at least 1, the signal never falls below the threshold, so return `None`. For example, `layers_until_below(64, 0.1, 0.001)` returns `16`.
+starter:
+```python
+def layers_until_below(width, std, threshold):
+    return 0
+```
+tests:
+```python
+assert layers_until_below(64, 0.1, 0.001) == 16
+assert layers_until_below(100, 0.05, 1e-6) == 10
+assert layers_until_below(100, 0.05, 0.3) == 1
+assert layers_until_below(100, 0.12, 0.5) is None
+assert layers_until_below(100, 0.15, 0.5) is None
+assert layers_until_below(20, 0.1, 0.01) == 3
+```
+model:
+```python
+def layers_until_below(width, std, threshold):
+    """Layers needed for the signal's second moment to drop below threshold."""
+    factor = width * std ** 2
+    if factor >= 1:
+        return None
+    q = 1.0
+    layers = 0
+    while q >= threshold:
+        q *= factor
+        layers += 1
+    return layers
+```
+hint: First handle the case where the factor is at least 1. Otherwise multiply a running value by the factor in a loop and count the steps until it drops below the threshold.
+solution: The per-layer factor decides everything: if it is 1 or more the second moment never decreases, so there is no answer, and without that check the loop would never end. Otherwise a loop that multiplies and counts terminates; the tests cover a first-layer answer, factors above 1, and a factor of 0.2 that needs 3 layers to get under 0.01.
+
+@quiz self
+prompt: A 12-layer ReLU network of width 256 is initialized with weights drawn with standard deviation 0.05 in every layer. The loss at the first step is huge and the gradients of the early layers are almost zero. Using the variance argument, estimate what happens, name the fix, and explain why the fix works.
+hint: Compute the per-layer factor $n\sigma^2/2$ for ReLU and raise it to a power of the depth; compare it with the He standard deviation $\sqrt{2/256}$.
+solution: For ReLU the second moment is multiplied per layer by $n\sigma^2/2 = 256 \cdot 0.0025/2 = 0.32$, so after 12 layers the signal's second moment is $0.32^{12} \approx 1.2 \times 10^{-6}$ of its input value: the forward signal has nearly vanished, and the same shrinking applies to the gradients flowing back, which explains the near-zero gradients in the early layers. The fix is He initialization, $\sigma = \sqrt{2/256} \approx 0.088$, which makes the per-layer factor exactly 1, so the second moment and the gradient scale stay roughly constant with depth. (The loss can still be large for other reasons, such as the output scale; checking the loss at initialization against $\log K$ for $K$ classes is a useful diagnostic.)
+rubric: Computes the per-layer factor (about 0.32) and its compounding over 12 layers.
+rubric: Links the vanishing forward signal to vanishing backward gradients.
+rubric: Names He initialization with the correct scale and explains that it makes the per-layer factor 1.

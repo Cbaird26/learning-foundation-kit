@@ -25,11 +25,7 @@ A school of artificial intelligence and machine learning: 66 courses from kinder
 | 7. Publish as `ai-learning-foundation` (owner's yes first) | done (approved; live on GitHub Pages) |
 | 8. Add to the hub | done |
 
-How to continue step 3: for each course without 13 files, write it exactly as `schools/ai/toolkit/BRIEF.md` says, using
-`schools/ai/toolkit/courses/<CODE>.json` and the example `schools/ai/toolkit/example_ml_lesson.txt`, then run
-`python3 schools/ai/toolkit/validate.py <CODE>` until it reports 0 errors. `schools/ai/work/WRITERS.md` has the writer
-prompt, per-course notes and the log. Step 4 uses `schools/ai/toolkit/REVIEW.md`; record each review in
-`schools/ai/work/review_log.txt`.
+The AI school's writer prompt, per-course notes and log are in `schools/ai/work/WRITERS.md`.
 
 Decisions so far:
 - Python runs in the page (Brython), as in Coding, Finance and Metaphysics. Brython has no NumPy, so graded exercises
@@ -37,7 +33,6 @@ Decisions so far:
 - Laws and policy are taught only from the verified "current facts" in the BRIEF (EU AI Act with the 2026 Digital
   Omnibus dates, US executive orders, California SB 53, NIST AI RMF), with a reminder to check the current text.
 
-<!-- ai-table -->
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
 | C11 | Numerical computing in Python for machine learning | 13/13 | yes | yes |
@@ -60,12 +55,72 @@ Decisions so far:
 | P4 | Interpretability and AI alignment | 13/13 | yes | yes |
 | P5 | Research methods in machine learning | 13/13 | yes | yes |
 | P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
-<!-- /ai-table -->
+
+## In progress: Neuroscience Learning Foundation (`schools/neuro`)
+
+Neuroscience and cognitive science, from kindergarten to graduate research and qualifying exams, with Python in the
+page for data analysis and modeling (owner's choices, Nov 7: "Neuro + cog sci to PhD prep" and "Yes, for data and
+modeling"). 70 courses in five stages: K–12 from the AI school (with its programming track; J10 and H15 left out),
+college sciences from the Med school (C1–C7 and the clinical electives C28–C29), mathematics and machine learning
+from the AI school (C8–C10, C22, C23), philosophy of mind from the Metaphysics school (C21), and 21 new courses
+(C11–C20, C24–C27, C30, P1–P6). Storage prefix `nlf`; site file `neuroscience-learning-foundation.html`; repo to be
+`neuroscience-learning-foundation`.
+
+| Step | State |
+| --- | --- |
+| 1. Curriculum (`schools/neuro/work/curriculum.py`) and course files | done |
+| 2. Brief, review template, validated example lesson (`example_neuro_lesson.txt`), rebranded app | in progress |
+| 3. Write the 21 new courses | not started |
+| 4. Independent review of each course | not started |
+| 5. Integrate and build | not started |
+| 6. Test the page | not started |
+| 7. Publish as `neuroscience-learning-foundation` (owner's yes first) | not started |
+| 8. Add to the hub | not started |
+
+How to continue step 3: for each course without 13 files, write it exactly as `schools/neuro/toolkit/BRIEF.md` says,
+using `schools/neuro/toolkit/courses/<CODE>.json` and the example `schools/neuro/toolkit/example_neuro_lesson.txt`,
+then run `python3 schools/neuro/toolkit/validate.py <CODE>` until it reports 0 errors, then
+`python3 schools/neuro/toolkit/retype_check.py <CODE>`. `schools/neuro/work/WRITERS.md` has the writer prompt,
+per-course notes and the log. Step 4 uses `schools/neuro/toolkit/REVIEW.md`; record each review in
+`schools/neuro/work/review_log.txt`.
+
+Rules specific to this school (in the BRIEF): neuroscience units and notation; laws on neural data, research ethics and
+classifications taught only from the verified "current facts" (UNESCO 2025 recommendation, Chile 2021 and 2023, the four
+US state laws and the federal MIND Act bill, the Declaration of Helsinki 2024, the Common Rule, DSM-5-TR and ICD-11);
+contested questions (consciousness, free will, nature and nurture, animal research, enhancement) presented fairly;
+no group-difference claims; drugs and stimulation only at the textbook level; projects with people use only low-risk
+tasks with volunteers who agree, and no project involves animals.
+
+<!-- course-table -->
+| Course | Title | Files | Validates | Reviewed |
+| --- | --- | --- | --- | --- |
+| C11 | Introduction to neuroscience: brain and behavior | 0/13 |  |  |
+| C12 | Cellular and molecular neuroscience | 0/13 |  |  |
+| C13 | Neuroanatomy and functional systems | 0/13 |  |  |
+| C14 | Cognitive psychology | 0/13 |  |  |
+| C15 | Statistics and experimental design for brain and behavioral science | 0/13 |  |  |
+| C16 | Sensation, perception and psychophysics | 0/13 |  |  |
+| C17 | Learning, memory and plasticity | 0/13 |  |  |
+| C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 0/13 |  |  |
+| C19 | Cognitive neuroscience | 0/13 |  |  |
+| C20 | Language and cognitive development | 0/13 |  |  |
+| C24 | Neural data analysis | 0/13 |  |  |
+| C25 | Computational neuroscience | 0/13 |  |  |
+| C26 | Computational cognitive modeling | 0/13 |  |  |
+| C27 | Neuroimaging methods: fMRI, EEG and MEG | 0/13 |  |  |
+| C30 | Neuroethics and neurotechnology | 0/13 |  |  |
+| P1 | Theoretical neuroscience | 0/13 |  |  |
+| P2 | Circuits and systems neuroscience: methods and causal evidence | 0/13 |  |  |
+| P3 | Consciousness and the science of the mind | 0/13 |  |  |
+| P4 | Brains and machines: neural networks as models of the brain | 0/13 |  |  |
+| P5 | Research methods and reproducibility in the brain and behavioral sciences | 0/13 |  |  |
+| P6 | Research apprenticeship and qualifying exams | 0/13 |  |  |
+<!-- /course-table -->
 
 ## Queue of future schools (one at a time, in this order)
 
 1. AI and machine learning (done, live)
-2. Neuroscience and cognitive science (to neuroscience PhD prep) (next)
+2. Neuroscience and cognitive science (to neuroscience PhD prep) (in progress)
 3. Mathematics (to math PhD qualifying exams)
 4. Economics (to economics PhD prep)
 5. Electrical and computer engineering (to the FE and PE exams)
@@ -109,3 +164,4 @@ Decisions so far:
 - 2026-11-07: P6 reviewed; 65 of 66 courses reviewed, P4 in review; owner approved publishing when the final build and tests pass
 - 2026-11-07: All 66 courses written and reviewed; full validation, final build and browser tests next, then publish (approved)
 - 2026-11-07: AI Learning Foundation published at https://cbaird26.github.io/ai-learning-foundation/ (66 courses, 0 errors, browser tests pass) and added to the hub; next school in the queue: Neuroscience and cognitive science
+- 2026-11-07: Neuroscience Learning Foundation set up: 70 courses (49 reused, 21 new), brief, review template, validated example lesson, rebranded app, trial build passes; next: write the 21 new courses

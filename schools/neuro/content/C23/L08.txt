@@ -1,0 +1,244 @@
+@lesson
+title: Regularization: weight decay, dropout and early stopping
+summary: Apply weight decay, inverted dropout and early stopping, and compare training with and without regularization using training and validation losses.
+objective: Derive the weight decay update from an L2 penalty and apply it by hand and in code.
+objective: Implement inverted dropout and explain why its output is rescaled by $1/(1-p)$.
+objective: Choose the stopping epoch from a validation curve and compare regularized and unregularized training.
+reading: Understanding Deep Learning (Prince), the chapter on regularization.
+@article
+A network with enough parameters can memorize a small training set, driving the training loss to nearly zero while the loss on new data climbs. This is **overfitting** (the bias-variance trade-off from the machine learning course, C22). **Regularization** is any change to training that trades a bit of training loss for better generalization. Three methods are in nearly every deep learning recipe.
+
+### Weight decay
+
+Add to the loss an L2 penalty on the weights, $L_{\text{reg}}(\boldsymbol{\theta}) = L(\boldsymbol{\theta}) + \frac{\lambda}{2}\lVert \boldsymbol{\theta} \rVert_2^2$. The gradient of the penalty is $\lambda\boldsymbol{\theta}$, so a gradient step becomes
+
+$$\boldsymbol{\theta} \leftarrow \boldsymbol{\theta} - \eta\big(\mathbf{g} + \lambda \boldsymbol{\theta}\big) = (1 - \eta\lambda)\,\boldsymbol{\theta} - \eta\,\mathbf{g}.$$
+
+Every step first *decays* the weights by the factor $1 - \eta\lambda$ and then takes the usual gradient step, hence the name **weight decay**. It keeps weights small, which makes the function smoother. For $\boldsymbol{\theta} = (2, -1)$, $\mathbf{g} = (0.5, 0.3)$, $\eta = 0.1$ and $\lambda = 0.1$ the decay factor is $0.99$ and the result is $(1.98 - 0.05,\ -0.99 - 0.03) = (1.93, -1.02)$. Weight decay is usually applied to weights, not biases. For plain SGD, an L2 penalty and weight decay are the same thing; for adaptive optimizers such as Adam they are not, because the penalty's gradient is rescaled by Adam's denominator. Decoupling the decay from the gradient step (the AdamW variant) restores the intended behavior.
+
+For a one-weight model $\hat{y} = wx$ with loss $\frac{1}{n}\sum (wx_i - y_i)^2 + \frac{\lambda}{2}w^2$, setting the derivative to zero gives $w^\star = \frac{(2/n)\sum x_i y_i}{(2/n)\sum x_i^2 + \lambda}$: the penalty shrinks the unregularized solution toward zero (this is ridge regression, C10).
+
+### Dropout
+
+**Dropout** (Srivastava and colleagues, 2014) randomly sets each hidden activation to zero with probability $p$ during training. The network cannot rely on any single unit, which discourages units from co-adapting. The **inverted** version rescales the survivors so that the expected activation is unchanged:
+
+$$\tilde{h}_j = \frac{m_j}{1 - p}\,h_j, \qquad m_j \sim \text{Bernoulli}(1 - p).$$
+
+Since $\mathbb{E}[m_j] = 1 - p$, we get $\mathbb{E}[\tilde{h}_j] = h_j$. At test time dropout is switched off and the network is used as it is, with no rescaling needed. Example with $p = 0.5$: activations $(0.5, 1.0, 2.0, 1.5)$ and mask $(1, 0, 1, 0)$ give $(1.0, 0, 4.0, 0)$. Dropout's gradient flows only through the surviving units, with the same scaling. Forgetting to turn it off at evaluation time is a classic bug: predictions become noisy and the validation loss looks worse than it is (frameworks provide `model.train()` and `model.eval()`).
+
+### Early stopping
+
+Track the loss on a held-out **validation set** after every epoch. Training loss keeps falling; validation loss typically falls, bottoms out, then rises as the model starts to memorize. **Early stopping** keeps the parameters from the epoch with the lowest validation loss. In practice you stop after the validation loss has failed to improve for `patience` epochs and restore the best saved parameters. An illustrative run:
+
+| epoch | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| training loss | 0.90 | 0.60 | 0.42 | 0.30 | 0.21 | 0.15 | 0.10 | 0.07 |
+| validation loss | 0.95 | 0.72 | 0.60 | 0.55 | 0.57 | 0.62 | 0.70 | 0.80 |
+
+The best epoch is 4. With patience 2, the run is stopped after epoch 6, and the model returned is the one from epoch 4. The validation set is used for this choice, so the final unbiased estimate of performance must come from a separate test set (C10).
+
+### Comparing with and without regularization
+
+The honest comparison trains twice, identically except for the regularizer, and reports training and validation loss for both. An unregularized run typically shows a lower training loss and a higher validation loss; a well-tuned regularized run shows a smaller gap and often a better validation loss. The strength ($\lambda$, $p$, the patience) is a hyperparameter chosen by validation performance, not by training loss.
+
+### In code
+
+```python
+import random
+
+def dropout(h, p, rng):
+    keep = 1.0 - p
+    mask = [1.0 if rng.random() < keep else 0.0 for _ in h]
+    return [m * x / keep for m, x in zip(mask, h)], mask
+
+def decay_step(w, g, lr, lam):
+    return [(1 - lr * lam) * wi - lr * gi for wi, gi in zip(w, g)]
+
+print([round(v, 2) for v in decay_step([2.0, -1.0], [0.5, 0.3], 0.1, 0.1)])
+```
+
+This prints `[1.93, -1.02]`. In PyTorch, dropout is `torch.nn.Dropout(p)` and weight decay is the `weight_decay` argument of the optimizer (or `torch.optim.AdamW`).
+
+@example
+title: Weight decay on a one-weight model
+problem: Fit $\hat{y} = wx$ to the points $(1, 1)$ and $(2, 3)$ with the loss $\frac{1}{n}\sum (wx_i - y_i)^2 + \frac{\lambda}{2}w^2$ and $\lambda = 2$. Find the minimizing $w$ with and without the penalty.
+step: Here $n = 2$, $\sum x_i y_i = 1 + 6 = 7$ and $\sum x_i^2 = 1 + 4 = 5$.
+step: Without the penalty: $w^\star = \sum x_i y_i/\sum x_i^2 = 7/5 = 1.4$.
+step: With the penalty, $w^\star = \frac{(2/n)\sum x_i y_i}{(2/n)\sum x_i^2 + \lambda} = \frac{7}{5 + 2} = 1.0$.
+step: The penalty shrinks the weight from 1.4 toward 0.
+answer: $w^\star = 1.4$ without and $w^\star = 1.0$ with $\lambda = 2$.
+
+@example
+title: Inverted dropout and its expectation
+problem: A hidden layer outputs $\mathbf{h} = (1.2, 0.6, 0.0, 2.4)$ and dropout with $p = 0.25$ draws the mask $(1, 0, 1, 1)$. Compute the dropout output, and the expected value of the first output over the random mask.
+step: The keep probability is $1 - p = 0.75$, so surviving entries are multiplied by $1/0.75 = 4/3$.
+step: Output: $(1.2 \cdot 4/3,\ 0,\ 0 \cdot 4/3,\ 2.4 \cdot 4/3) = (1.6, 0, 0, 3.2)$.
+step: The first output equals $1.6$ with probability $0.75$ and 0 with probability $0.25$, so its expectation is $0.75 \cdot 1.6 = 1.2$, the original activation.
+answer: Output $(1.6, 0, 0, 3.2)$, and the expected output equals the input, $1.2$ for the first unit.
+
+@mistakes
+- Evaluating the validation or test loss with dropout still active: the predictions are noisy and the measured loss is too high.
+- Choosing $\lambda$ or the stopping epoch by training loss: training loss always prefers less regularization, so these choices must use validation loss.
+- Dropping the $1/(1-p)$ rescaling in training and also not compensating at test time: the activations then have a different scale at test time than the network was trained on.
+- Using early stopping and then reporting the validation loss at the best epoch as the final performance: that number was selected to be the lowest, so it is optimistic; report test-set performance.
+
+@practice num
+prompt: A weight $w = 2.0$ has gradient $g = 0.5$. One SGD step with weight decay uses learning rate $\eta = 0.1$ and decay coefficient $\lambda = 0.01$, with the update $w \leftarrow w - \eta(g + \lambda w)$. What is the new $w$? Give your answer to four decimal places.
+answer: 1.948
+tol: 0.0001
+check: 2.0 - 0.1 * (0.5 + 0.01 * 2.0)
+hint: Compute $g + \lambda w$ first, then subtract $\eta$ times it.
+solution: $g + \lambda w = 0.5 + 0.02 = 0.52$, so $w = 2.0 - 0.052 = 1.948$. Equivalently $(1 - 0.001)\cdot 2.0 - 0.05 = 1.948$.
+
+@practice num
+prompt: Inverted dropout with drop probability $p = 0.2$ is applied to the activations $(1.0, 2.0, 3.0, 4.0)$ with the mask $(1, 1, 0, 1)$ (1 means kept). What is the sum of the output values?
+answer: 8.75
+check: sum(m * h / (1 - 0.2) for m, h in zip([1, 1, 0, 1], [1.0, 2.0, 3.0, 4.0]))
+hint: Each kept activation is divided by the keep probability $1 - p = 0.8$.
+solution: The kept activations $1, 2, 4$ become $1.25, 2.5, 5$, and the dropped one is 0. The sum is $8.75$.
+
+@practice mc
+prompt: Why does inverted dropout divide the surviving activations by $1 - p$ during training?
+choice*: So that the expected value of each activation during training equals its value without dropout, and no rescaling is needed at test time.
+choice: So that the gradient is guaranteed to be zero for dropped units.
+choice: So that the number of parameters is reduced by a factor $1 - p$.
+choice: So that the training loss is always lower than the validation loss.
+hint: Compute the expected value of $m_j h_j/(1-p)$ when $m_j$ is 1 with probability $1 - p$.
+solution: $\mathbb{E}[m_j h_j/(1 - p)] = (1-p) h_j/(1-p) = h_j$. The rescaling keeps the scale of activations consistent, so at test time the network is used unchanged. It does not change the parameter count or guarantee any loss ordering.
+
+@practice code
+prompt: Write `decay_step_masked(w, g, lr, lam, decay)` where `w` and `g` are lists of equal length (parameters and gradient) and `decay` is a list of booleans of the same length: true for a weight that should be decayed and false for a parameter (such as a bias) that should not. Return a new list after one SGD step: a decayed entry becomes `w_i - lr * (g_i + lam * w_i)` and any other entry becomes `w_i - lr * g_i`. Do not modify the inputs. For example, `decay_step_masked([2.0, 2.0], [0.5, 0.5], 0.1, 0.5, [True, False])` returns `[1.85, 1.95]` (up to rounding).
+starter:
+```python
+def decay_step_masked(w, g, lr, lam, decay):
+    return w
+```
+tests:
+```python
+w = decay_step_masked([2.0, 2.0], [0.5, 0.5], 0.1, 0.5, [True, False])
+assert abs(w[0] - 1.85) < 1e-9 and abs(w[1] - 1.95) < 1e-9
+w = decay_step_masked([4.0, -4.0, 1.0], [0.0, 0.0, 0.0], 0.5, 0.2, [True, True, False])
+assert all(abs(a - b) < 1e-9 for a, b in zip(w, [3.6, -3.6, 1.0]))
+w0 = [1.0, 2.0]
+decay_step_masked(w0, [1.0, 1.0], 0.1, 0.5, [True, True])
+assert w0 == [1.0, 2.0]
+w = decay_step_masked([3.0, -1.0], [1.0, 2.0], 0.1, 0.0, [True, True])
+assert abs(w[0] - 2.9) < 1e-9 and abs(w[1] + 1.2) < 1e-9
+w = decay_step_masked([3.0, -1.0], [1.0, 2.0], 0.1, 0.7, [False, False])
+assert abs(w[0] - 2.9) < 1e-9 and abs(w[1] + 1.2) < 1e-9
+```
+model:
+```python
+def decay_step_masked(w, g, lr, lam, decay):
+    """One SGD step with L2 weight decay applied only where decay is true."""
+    return [wi - lr * (gi + (lam * wi if d else 0.0))
+            for wi, gi, d in zip(w, g, decay)]
+```
+hint: The decay term `lam * w_i` is added to the gradient only for entries whose flag is true.
+solution: The penalty contributes `lam * w_i` to the partial derivative of a decayed entry and nothing to the others, so the masked entries follow plain SGD. The second test has zero gradients, so decayed weights just shrink by the factor $1 - \eta\lambda = 0.9$ while the unmasked one stays put; the last test checks that nothing is decayed when every flag is false.
+
+@practice code
+prompt: Write `dropout_backward(upstream, mask, p)` for inverted dropout with drop probability `p` ($0 \le p < 1$). The forward pass computed `out[j] = mask[j] * h[j] / (1 - p)`, where `mask[j]` is 1.0 for a kept unit and 0.0 for a dropped one. Given `upstream[j]`, the gradient of the loss with respect to `out[j]`, return the list of gradients of the loss with respect to `h[j]`. For example, `dropout_backward([1.0, 2.0], [1.0, 0.0], 0.5)` returns `[2.0, 0.0]`.
+starter:
+```python
+def dropout_backward(upstream, mask, p):
+    return list(upstream)
+```
+tests:
+```python
+g = dropout_backward([1.0, 2.0, 3.0, 4.0], [1.0, 0.0, 1.0, 0.0], 0.5)
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, [2.0, 0.0, 6.0, 0.0]))
+g = dropout_backward([0.3, 0.6, 0.9], [1.0, 1.0, 0.0], 0.25)
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, [0.4, 0.8, 0.0]))
+assert dropout_backward([1.5, -2.0], [1.0, 1.0], 0.0) == [1.5, -2.0]
+assert dropout_backward([], [], 0.3) == []
+up = [1.0, 2.0]
+dropout_backward(up, [1.0, 0.0], 0.5)
+assert up == [1.0, 2.0]
+```
+model:
+```python
+def dropout_backward(upstream, mask, p):
+    """Gradient through inverted dropout: only kept units, scaled by 1/(1-p)."""
+    return [u * m / (1.0 - p) for u, m in zip(upstream, mask)]
+```
+hint: The forward map is linear in `h[j]` with slope `mask[j] / (1 - p)`, so the local derivative is that slope.
+solution: Each output depends on its own input through the factor `mask[j] / (1 - p)`, so the chain rule multiplies the upstream gradient by that same factor: dropped units receive zero gradient and kept units receive the scaled gradient. A solution that forgets the rescaling fails the first two tests, and one that passes gradients to dropped units fails because of the zeros.
+
+@quiz code
+prompt: Write `early_stopping_epoch(val_losses, patience)` that simulates early stopping on a list of validation losses, one per epoch (epochs numbered from 0). Track the best (lowest) loss so far, counting an epoch as an improvement only if its loss is strictly lower than the best so far. Stop as soon as `patience` consecutive epochs have passed without improvement, and return the index of the best epoch seen up to that point. If the run never stops early, return the index of the best epoch overall. For example, `early_stopping_epoch([1.0, 0.8, 0.9, 0.95, 0.5], 2)` returns `1`.
+starter:
+```python
+def early_stopping_epoch(val_losses, patience):
+    return 0
+```
+tests:
+```python
+v = [1.0, 0.8, 0.7, 0.72, 0.71, 0.73, 0.6]
+assert early_stopping_epoch(v, 2) == 2
+assert early_stopping_epoch(v, 3) == 2
+assert early_stopping_epoch(v, 4) == 6
+assert early_stopping_epoch([1.0, 0.8, 0.9, 0.95, 0.5], 2) == 1
+assert early_stopping_epoch([0.5, 0.4, 0.3], 1) == 2
+assert early_stopping_epoch([0.5, 0.5, 0.5], 5) == 0
+```
+model:
+```python
+def early_stopping_epoch(val_losses, patience):
+    """Index of the best epoch when training stops after `patience` bad epochs."""
+    best = float('inf')
+    best_epoch = 0
+    bad = 0
+    for epoch, loss in enumerate(val_losses):
+        if loss < best:
+            best = loss
+            best_epoch = epoch
+            bad = 0
+        else:
+            bad += 1
+            if bad >= patience:
+                break
+    return best_epoch
+```
+hint: Keep the best loss, its epoch and a counter of epochs since the last improvement; reset the counter on an improvement and stop when it reaches `patience`.
+solution: The counter of non-improving epochs decides when to stop, so a late improvement that comes after the stopping point (the final 0.6 in the first tests) is never seen unless the patience is long enough. The strict comparison matters for the all-equal test, where the first epoch stays the best.
+
+@quiz code
+prompt: Write `fit_with_decay(data, lr, lam, steps)` for the model $\hat{y} = wx$ with the loss $L(w) = \frac{1}{n}\sum_i (wx_i - y_i)^2 + \frac{\lambda}{2}w^2$. Starting from `w = 0.0`, run `steps` steps of full-batch gradient descent with learning rate `lr` and return `w`. `data` is a nonempty list of `(x, y)` pairs. For example, with `data = [(1, 2), (2, 4)]` and `lam = 0`, a long run approaches `2.0`.
+starter:
+```python
+def fit_with_decay(data, lr, lam, steps):
+    return 0.0
+```
+tests:
+```python
+d = [(1, 2), (2, 4), (3, 7)]
+assert abs(fit_with_decay(d, 0.05, 0.0, 400) - 31 / 14) < 1e-6
+assert abs(fit_with_decay(d, 0.05, 1.0, 400) - 2.0) < 1e-6
+assert fit_with_decay(d, 0.05, 0.0, 0) == 0.0
+w0 = fit_with_decay(d, 0.05, 0.0, 400)
+w1 = fit_with_decay(d, 0.05, 0.5, 400)
+w2 = fit_with_decay(d, 0.05, 2.0, 400)
+assert w0 > w1 > w2 > 0
+```
+model:
+```python
+def fit_with_decay(data, lr, lam, steps):
+    """Gradient descent on MSE plus an L2 penalty for y_hat = w * x."""
+    n = len(data)
+    w = 0.0
+    for _ in range(steps):
+        grad = 2 / n * sum((w * x - y) * x for x, y in data) + lam * w
+        w -= lr * grad
+    return w
+```
+hint: The gradient is the usual MSE gradient $\frac{2}{n}\sum(wx_i - y_i)x_i$ plus $\lambda w$.
+solution: The penalty adds $\lambda w$ to the gradient, moving the minimizer from $31/14 \approx 2.214$ to $(2/3 \cdot 31)/(2/3 \cdot 14 + 1) = 2.0$ for $\lambda = 1$. The last test shows the shrinkage is monotone in $\lambda$: more decay, smaller weight.
+
+@quiz self
+prompt: Two runs of the same network on a small data set end with these losses. Run X (no regularization): training 0.02, validation 0.85. Run Y (weight decay 0.01 and dropout 0.3): training 0.31, validation 0.52. A colleague says Run X is better because its training loss is 15 times lower. Respond, and explain what each of weight decay and dropout does to make the numbers look this way. Then say what you would still check before choosing Y.
+hint: Which loss measures generalization? Then think about how each regularizer limits the model's ability to fit the training set.
+solution: The training loss measures how well the model fits data it has seen; generalization is measured by the validation loss, and Run Y's is clearly lower (0.52 against 0.85). Run X's large train-validation gap (0.02 against 0.85) is the signature of overfitting: it has memorized the training set. Weight decay penalizes large weights, which restricts the function to be smoother, and dropout prevents units from co-adapting by randomly removing them during training, so neither can fit the training data as tightly; that is why Run Y's training loss is higher, and why its training and validation losses are closer. Before choosing Y I would confirm the training loss in Run Y was computed in evaluation mode (dropout off) for a fair comparison, check that the hyperparameters were selected on validation data only, and measure the final performance of the chosen configuration on a separate test set, since validation data was used for selection.
+rubric: Argues that validation (not training) loss measures generalization and identifies overfitting in Run X.
+rubric: Explains what weight decay (smaller weights) and dropout (no co-adaptation) do to training loss and the gap.
+rubric: Names a further check such as the test set, evaluation mode for dropout, or selection on validation data only.

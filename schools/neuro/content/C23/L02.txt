@@ -1,0 +1,242 @@
+@lesson
+title: Loss functions: squared error and cross-entropy
+summary: Compute squared-error, binary cross-entropy and softmax cross-entropy losses and their gradients with respect to the network's output, and explain why classification uses cross-entropy.
+objective: Compute the mean squared error of a network's predictions.
+objective: Compute the softmax, the cross-entropy loss and its gradient $\mathbf{p} - \mathbf{y}$ for a classification example.
+objective: Explain why cross-entropy trains better than squared error when a sigmoid or softmax output is badly wrong.
+reading: Understanding Deep Learning (Prince), the chapter on loss functions.
+@article
+A network predicts a probability of 0.018 that an image is a cat, and it is a cat. How wrong is that, and how hard should the weights be pushed? A **loss function** turns "how wrong" into one number that training can reduce. Which loss we choose decides both the number and the size of the push.
+
+### Squared error for regression
+
+For a real-valued target $y$ and prediction $\hat{y}$, the squared error is $\ell(\hat{y}, y) = (\hat{y} - y)^2$, and the **mean squared error** over $n$ examples is $L = \frac{1}{n}\sum_i (\hat{y}_i - y_i)^2$. Its derivative with respect to the prediction is $\partial \ell / \partial \hat{y} = 2(\hat{y} - y)$. Minimizing it estimates the conditional mean of $y$, and it is the right loss when the noise in $y$ is roughly Gaussian.
+
+### Cross-entropy for classification
+
+For classification we want the network to output probabilities. For two classes, a sigmoid output $p = \sigma(z)$ is read as $P(y = 1 \mid \mathbf{x})$, and the **binary cross-entropy** (negative log-likelihood of the label) is
+
+$$\ell(p, y) = -\,y \log p - (1 - y)\log(1 - p).$$
+
+For $y = 1$ this is $-\log p$: the loss is 0 at $p = 1$ and grows without bound as $p \to 0$. With $p = 0.8$ and $y = 1$, the loss is $-\log 0.8 \approx 0.2231$ nats.
+
+For $K$ classes the network produces $K$ real numbers $\mathbf{z}$, the **logits**, and the **softmax** turns them into a probability vector:
+
+$$p_k = \operatorname{softmax}(\mathbf{z})_k = \frac{e^{z_k}}{\sum_j e^{z_j}}.$$
+
+For the logits $(2, 1, 0.1)$ the softmax is $(0.6590, 0.2424, 0.0986)$, which sums to 1. With a one-hot label $\mathbf{y}$ (a 1 at the true class $c$), the **softmax cross-entropy** is
+
+$$\ell(\mathbf{z}, \mathbf{y}) = -\sum_k y_k \log p_k = -\log p_c .$$
+
+If class 0 is true, the loss is $-\log 0.6590 \approx 0.4170$. Minimizing it over a data set is maximum likelihood estimation of a categorical model.
+
+### The gradient is $\mathbf{p} - \mathbf{y}$
+
+Differentiate $\ell = -z_c + \log\sum_j e^{z_j}$ with respect to $z_k$. The first term gives $-1$ if $k = c$ and 0 otherwise, which is $-y_k$; the second gives $e^{z_k}/\sum_j e^{z_j} = p_k$. So
+
+$$\frac{\partial \ell}{\partial z_k} = p_k - y_k .$$
+
+For logits $(0.5, -0.5, 1.5)$ and true class 2 the softmax is $(0.2447, 0.0900, 0.6652)$ and the gradient is $(0.2447, 0.0900, -0.3348)$. The gradient pushes down the logits of wrong classes in proportion to their probability and pushes up the true class's logit by the missing probability. The same result holds for the sigmoid with binary cross-entropy: $\partial \ell/\partial z = p - y$.
+
+### Why not squared error for classification?
+
+Take a sigmoid output with $z = -4$ and label $y = 1$, so $p = 0.0180$, a confident mistake. With cross-entropy, $\partial \ell/\partial z = p - y = -0.982$, a large corrective push. With squared error $(p - y)^2$, the chain rule gives $2(p - y)\,p(1 - p) = -0.0347$: the factor $p(1-p)$ is the sigmoid's slope, which is nearly zero when the unit is saturated, so the more wrong the network is, the less it learns. The logarithm in cross-entropy exactly cancels that factor. This is why cross-entropy is the standard loss for classification.
+
+### Computing it stably
+
+Computing $e^{z}$ overflows for large logits (`math.exp(1000)` raises an error). Subtracting $m = \max_j z_j$ from every logit leaves the softmax unchanged, because the factor $e^{-m}$ cancels, and keeps every exponent at most 0. Cross-entropy is then $\log\sum_j e^{z_j} - z_c$ with the **log-sum-exp** computed as $m + \log\sum_j e^{z_j - m}$.
+
+```python
+import math
+
+def softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) for v in z]
+    s = sum(e)
+    return [v / s for v in e]
+
+def cross_entropy(z, c):
+    return -math.log(softmax(z)[c])
+
+p = softmax([0.5, -0.5, 1.5])
+grad = [pk - (1 if k == 2 else 0) for k, pk in enumerate(p)]
+print([round(v, 4) for v in grad], round(cross_entropy([0.5, -0.5, 1.5], 2), 4))
+```
+
+This prints `[0.2447, 0.09, -0.3348] 0.4076`. Frameworks provide the fused, stable version as a single function (`torch.nn.functional.cross_entropy` takes logits and class indices).
+
+@example
+title: Cross-entropy and its gradient for three classes
+problem: A classifier outputs the logits $\mathbf{z} = (1, 2, 3)$ and the true class is class 0 (the first). Compute the softmax, the loss and the gradient with respect to the logits.
+step: Exponentiate: $e^{1} \approx 2.718$, $e^{2} \approx 7.389$, $e^{3} \approx 20.086$, with sum $30.193$.
+step: The softmax is $(0.0900, 0.2447, 0.6652)$.
+step: The loss is $-\log p_0 = -\log 0.0900 \approx 2.4076$ nats.
+step: The gradient is $\mathbf{p} - \mathbf{y} = (0.0900 - 1,\ 0.2447 - 0,\ 0.6652 - 0) = (-0.9100, 0.2447, 0.6652)$, and its entries sum to 0.
+answer: Loss $\approx 2.408$ nats; gradient $\approx (-0.910, 0.245, 0.665)$.
+
+@example
+title: Mean squared error and binary cross-entropy on three examples
+problem: A network predicts $(2.5, 0, 2)$ for targets $(3, -0.5, 2)$. Separately, a sigmoid classifier outputs $p = (0.9, 0.2, 0.6)$ for labels $(1, 0, 1)$. Compute the mean squared error of the first and the mean binary cross-entropy of the second.
+step: Squared errors: $(-0.5)^2 = 0.25$, $0.5^2 = 0.25$, $0^2 = 0$, so $\text{MSE} = 0.5/3 \approx 0.1667$.
+step: Per-example cross-entropy: $-\log 0.9 = 0.1054$; for $y = 0$ the loss is $-\log(1 - 0.2) = 0.2231$; and $-\log 0.6 = 0.5108$.
+step: The mean is $(0.1054 + 0.2231 + 0.5108)/3 \approx 0.2798$.
+answer: MSE $\approx 0.1667$; mean cross-entropy $\approx 0.2798$ nats.
+
+@mistakes
+- Applying softmax and then feeding the probabilities to a loss that expects logits (or applying softmax twice): frameworks' cross-entropy functions take raw logits.
+- Using $\log_2$ in one place and the natural logarithm in another: in this course $\log$ is natural, so the loss is in nats, and a value in bits differs by a factor $\ln 2$.
+- Writing the binary cross-entropy for $y = 0$ as $-\log p$; for a negative example the loss is $-\log(1 - p)$.
+- Computing softmax without subtracting the maximum logit, which overflows for logits in the hundreds.
+
+@practice num
+prompt: A regression network predicts $(1, 4, 2, 5)$ for the targets $(2, 4, 0, 6)$. What is the mean squared error?
+answer: 1.5
+check: sum((p - t) ** 2 for p, t in zip([1, 4, 2, 5], [2, 4, 0, 6])) / 4
+hint: The errors are $-1$, $0$, $2$ and $-1$; square them and divide by 4.
+solution: The squared errors are 1, 0, 4 and 1, which add up to 6; dividing by $n = 4$ gives 1.5.
+
+@practice num
+prompt: A classifier with three classes outputs equal logits $(0, 0, 0)$ for an example. What is its cross-entropy loss in nats, whatever the true class? Give your answer to three decimal places.
+answer: 1.099
+tol: 0.001
+check: -log(1 / 3)
+hint: Equal logits give equal probabilities, and the loss is $-\log$ of the true class's probability.
+solution: The softmax of equal logits is $(1/3, 1/3, 1/3)$, so the loss is $-\log(1/3) = \log 3 \approx 1.0986$. This is the loss of a model that knows nothing about $K$ classes: $\log K$.
+
+@practice num
+prompt: A classifier outputs the logits $(3, 3, 0)$ and the true class is class 1 (the second). What is the cross-entropy loss in nats? Give your answer to three decimal places.
+answer: 0.718
+tol: 0.001
+check: -log(exp(3) / (exp(3) + exp(3) + exp(0)))
+hint: Compute $p_1 = e^{3}/(e^{3} + e^{3} + e^{0})$ and take $-\log p_1$.
+solution: The softmax is $(0.4879, 0.4879, 0.0243)$, so the loss is $-\log 0.4879 \approx 0.7177$.
+
+@practice mc
+prompt: A sigmoid output has $z = -6$ for a positive example ($y = 1$). Why does training with squared error $(p - y)^2$ learn slowly from this mistake, while cross-entropy does not?
+choice*: The squared-error gradient with respect to $z$ contains the factor $p(1 - p)$, which is nearly 0 when the sigmoid is saturated; in cross-entropy that factor cancels.
+choice: Squared error is not differentiable when $p$ is near 0.
+choice: Cross-entropy has a smaller loss value at $p \approx 0$, so it is easier to reduce.
+choice: Squared error cannot be computed for probabilities.
+hint: Apply the chain rule from the loss through $p = \sigma(z)$ to $z$, and compare the two results.
+solution: For squared error, $\partial \ell/\partial z = 2(p - y)\,p(1-p)$, and $p(1-p) \approx 0.0025$ at $z = -6$, so the gradient nearly vanishes. For cross-entropy, $\partial \ell/\partial z = p - y \approx -0.9975$. Cross-entropy's loss at $p \approx 0$ is actually larger, not smaller, and squared error is differentiable everywhere.
+
+@practice code
+prompt: Write `log_softmax(z)` that takes a list of logits and returns the list of the natural logarithms of the softmax probabilities, $\log p_k = z_k - \log\sum_j e^{z_j}$. It must work for large and very different logits: `log_softmax([1000.0, 0.0])` returns `[0.0, -1000.0]` (up to rounding) rather than raising an error, so you cannot take the logarithm of a computed softmax. For example, `log_softmax([0.0, 0.0])` returns `[-0.6931..., -0.6931...]`.
+starter:
+```python
+import math
+
+def log_softmax(z):
+    pass
+```
+tests:
+```python
+assert all(abs(a + math.log(2)) < 1e-9 for a in log_softmax([0.0, 0.0]))
+want = [-0.3715390319, -1.3715390319, -2.8715390319]
+assert all(abs(a - b) < 1e-6 for a, b in zip(log_softmax([1.5, 0.5, -1.0]), want))
+r = log_softmax([1000.0, 0.0])
+assert abs(r[0]) < 1e-9 and abs(r[1] + 1000.0) < 1e-6
+assert abs(sum(math.exp(v) for v in log_softmax([3.0, -1.0, 0.5, 2.0])) - 1.0) < 1e-9
+a = log_softmax([2.0, -1.0, 0.0])
+b = log_softmax([102.0, 99.0, 100.0])
+assert all(abs(x - y) < 1e-9 for x, y in zip(a, b))
+```
+model:
+```python
+import math
+
+def log_softmax(z):
+    """Stable log-softmax: z_k minus the log-sum-exp of all logits."""
+    m = max(z)
+    lse = m + math.log(sum(math.exp(v - m) for v in z))
+    return [v - lse for v in z]
+```
+hint: Compute the log-sum-exp after subtracting the largest logit, then subtract it from every logit.
+solution: The log of a softmax probability is the logit minus the log-sum-exp, so no probability is ever formed and nothing underflows to 0. Subtracting the maximum inside the sum keeps the exponents at most 0. The test with logits 1000 and 0 would fail for a solution that takes the log of a computed softmax, and the shift test checks invariance to adding a constant.
+
+@practice code
+prompt: Write `ce_loss_and_grad(z, c)` that takes a list of logits `z` and the index `c` of the true class and returns a pair `(loss, grad)`: the softmax cross-entropy loss in nats (natural logarithm) and the list of gradients of the loss with respect to each logit. For example, `ce_loss_and_grad([0.0, 0.0], 0)` returns `(0.6931..., [-0.5, 0.5])`. Use a numerically stable computation.
+starter:
+```python
+import math
+
+def ce_loss_and_grad(z, c):
+    return 0.0, [0.0 for _ in z]
+```
+tests:
+```python
+loss, g = ce_loss_and_grad([0.0, 0.0], 0)
+assert abs(loss - math.log(2)) < 1e-9
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, [-0.5, 0.5]))
+loss, g = ce_loss_and_grad([1.5, 0.5, -1.0], 1)
+assert abs(loss - 1.3715390319) < 1e-6
+assert all(abs(a - b) < 1e-6 for a, b in zip(g, [0.6896720861, -0.7462838184, 0.0566117322]))
+loss, g = ce_loss_and_grad([1000.0, 0.0], 0)
+assert abs(loss) < 1e-9 and abs(g[0]) < 1e-9
+assert abs(sum(ce_loss_and_grad([2.0, -1.0, 0.0], 2)[1])) < 1e-9
+```
+model:
+```python
+import math
+
+def ce_loss_and_grad(z, c):
+    """Softmax cross-entropy loss and its gradient p - y with respect to z."""
+    m = max(z)
+    e = [math.exp(v - m) for v in z]
+    s = sum(e)
+    p = [v / s for v in e]
+    loss = -math.log(p[c])
+    grad = [pk - (1.0 if k == c else 0.0) for k, pk in enumerate(p)]
+    return loss, grad
+```
+hint: Compute the stable softmax $\mathbf{p}$; the loss is $-\log p_c$ and the gradient is $\mathbf{p}$ with 1 subtracted from entry $c$.
+solution: The loss only involves the true class's probability, and the gradient is the probability vector minus the one-hot label. The gradient of any example sums to 0, which the last test checks, because the probabilities sum to 1 and the label sums to 1.
+
+@quiz num
+prompt: A binary classifier outputs $p = 0.25$ for an example whose true label is $y = 0$. What is the binary cross-entropy loss in nats? Give your answer to three decimal places.
+answer: 0.288
+tol: 0.001
+check: -log(1 - 0.25)
+hint: For $y = 0$ the loss is $-\log(1 - p)$.
+solution: The probability assigned to the true label 0 is $1 - 0.25 = 0.75$, so the loss is $-\log 0.75 \approx 0.2877$.
+
+@quiz code
+prompt: Write `mean_ce(logits_list, labels)` that returns the average softmax cross-entropy loss (natural logarithm) over a batch. `logits_list` is a list of logit lists, one per example, and `labels` is the list of true class indices. For example, `mean_ce([[0.0, 0.0], [0.0, 0.0]], [0, 1])` returns `0.6931...`. Use a numerically stable computation.
+starter:
+```python
+import math
+
+def mean_ce(logits_list, labels):
+    return 0.0
+```
+tests:
+```python
+assert abs(mean_ce([[0.0, 0.0], [0.0, 0.0]], [0, 1]) - math.log(2)) < 1e-9
+assert abs(mean_ce([[2.0, -1.0, 0.0]], [1]) - 3.1698460196) < 1e-6
+want = (1.3715390319 + 3.1698460196) / 2
+assert abs(mean_ce([[1.5, 0.5, -1.0], [2.0, -1.0, 0.0]], [1, 1]) - want) < 1e-6
+assert abs(mean_ce([[1000.0, 0.0]], [0])) < 1e-9
+```
+model:
+```python
+import math
+
+def mean_ce(logits_list, labels):
+    """Average stable softmax cross-entropy over a batch."""
+    total = 0.0
+    for z, c in zip(logits_list, labels):
+        m = max(z)
+        lse = m + math.log(sum(math.exp(v - m) for v in z))
+        total += lse - z[c]
+    return total / len(labels)
+```
+hint: For each example the loss is $\log\sum_j e^{z_j} - z_c$; compute the log-sum-exp after subtracting the maximum, then average.
+solution: Using $\ell = \text{logsumexp}(\mathbf{z}) - z_c$ avoids forming probabilities and stays stable for large logits. The last test would overflow in a naive implementation.
+
+@quiz self
+prompt: Derive $\partial \ell / \partial z_k = p_k - y_k$ for the softmax cross-entropy loss $\ell = -\sum_k y_k \log p_k$ with a one-hot label, where $p_k = e^{z_k}/\sum_j e^{z_j}$.
+hint: Write $\ell = -z_c + \log\sum_j e^{z_j}$ for the true class $c$, then differentiate each term.
+solution: Since $y$ is one-hot at $c$, $\ell = -\log p_c = -z_c + \log\sum_j e^{z_j}$. Differentiating the first term with respect to $z_k$ gives $-1$ when $k = c$ and 0 otherwise, which is $-y_k$. Differentiating the second term gives $\frac{e^{z_k}}{\sum_j e^{z_j}} = p_k$ by the chain rule for the logarithm. Adding the two gives $p_k - y_k$.
+rubric: Rewrites the loss as $-z_c + \log\sum_j e^{z_j}$ using the one-hot label.
+rubric: Differentiates the log-sum-exp term correctly to obtain $p_k$.
+rubric: Combines the terms into $p_k - y_k$ and handles the cases $k = c$ and $k \neq c$.
