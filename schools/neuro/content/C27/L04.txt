@@ -1,0 +1,249 @@
+@lesson
+title: Preprocessing: motion, slice timing, registration and smoothing
+summary: Explain what each preprocessing step does to fMRI data and implement motion measurement, slice-timing correction, alignment by a cost function, and Gaussian smoothing in plain Python.
+objective: Compute framewise displacement from six rigid-body motion parameters and use it to flag scans.
+objective: Correct slice timing by linear interpolation and align two signals by minimizing a cost.
+objective: Convert a smoothing kernel's FWHM to a standard deviation and smooth a signal with it, saying what is gained and lost.
+reading: Andy's Brain Book, the preprocessing chapters: look up realignment (motion correction), slice timing correction, coregistration and normalization, and spatial smoothing.
+@article
+A person lies in a scanner for ten minutes and nods off, shifting their head by one millimeter. In a voxel 3 mm wide that is a third of a voxel. A voxel at the edge of the brain now sometimes contains cortex and sometimes cerebrospinal fluid, and its time series jumps. A task effect is usually a change of one percent or less, so small artifacts like this can easily be larger than the signal. **Preprocessing** is the set of steps that clean the data before any model is fitted.
+
+### Motion
+
+The head is treated as a rigid body, described at each scan by six numbers: three translations (in millimeters, along $x$, $y$, $z$) and three rotations (in radians, about the three axes). **Realignment** estimates these parameters for each volume and resamples the volumes into the same position as a reference volume. Realignment cannot repair everything: motion also changes the magnetization in a way that leaves signal changes behind. So analyses also measure how much the head moved and either flag bad scans or include the motion parameters as regressors.
+
+A common summary is the **framewise displacement** (FD): the total change in the six parameters between scan $t-1$ and scan $t$, with rotations converted to millimeters on the surface of a sphere of radius $r = 50$ mm (about the size of a head):
+
+$$\text{FD}_t = |\Delta x_t| + |\Delta y_t| + |\Delta z_t| + r\big(|\Delta\alpha_t| + |\Delta\beta_t| + |\Delta\gamma_t|\big).$$
+
+Take three scans with parameters $(x, y, z, \alpha, \beta, \gamma)$ equal to $(0,0,0,0,0,0)$, then $(0.10, 0.05, 0, 0.001, 0, 0)$, then $(0.20, 0, 0.10, 0, 0.002, 0.001)$. Then $\text{FD}_1 = 0.10 + 0.05 + 50 \times 0.001 = 0.20$ mm and $\text{FD}_2 = 0.10 + 0.05 + 0.10 + 50 \times (0.001 + 0.002 + 0.001) = 0.45$ mm. A common practice is to flag (**censor**) scans whose FD exceeds a chosen threshold, such as 0.5 mm; the threshold is a judgment that depends on the population and the question.
+
+### Slice timing
+
+A volume is not acquired at one instant. Slices are collected one after another over the TR, so a slice read out late in the TR is sampled later than one read out early. The model of the HRF assumes all voxels share a clock, so we interpolate each slice's time series to a common reference time. If a slice is sampled $\delta$ seconds after the reference time $nT_R$, linear interpolation between its samples $y[n-1]$ and $y[n]$ estimates the value at $nT_R$:
+
+$$\tilde y[n] = \Big(1 - \frac{\delta}{T_R}\Big) y[n] + \frac{\delta}{T_R}\, y[n-1].$$
+
+Software usually uses sinc or spline interpolation, which is more accurate; the idea is the same. Slice-timing correction matters most when TR is long (above about 2 s) and the design is event-related.
+
+### Registration
+
+**Registration** aligns two images. Functional images are aligned to the same person's high-resolution anatomical image (coregistration), and the anatomical image is warped to a standard template (normalization) so that people can be compared in a common coordinate space. The recipe is always the same: choose a transformation (translation, rotation, scaling, or a flexible warp), a **cost function** that measures how badly the images match (the sum of squared differences when the images have similar contrast; mutual information when they do not), and an optimizer that searches for the transformation with the lowest cost. In one dimension with integer shifts $s$, the sum-of-squared-differences cost between a signal $y$ and a template $m$ is the mean of $(y[i+s] - m[i])^2$ over the samples that overlap.
+
+### Smoothing
+
+Finally, each volume is blurred with a Gaussian kernel. The width is stated as its **full width at half maximum** (FWHM) in millimeters. The standard deviation is
+
+$$\sigma = \frac{\text{FWHM}}{2\sqrt{2\ln 2}} \approx \frac{\text{FWHM}}{2.3548}.$$
+
+With 3 mm voxels and a 6 mm FWHM, $\sigma = 6/2.3548 = 2.548$ mm, or 0.849 voxels. A kernel with $\sigma = 1$ voxel, truncated at two voxels either side, has the normalized weights $[0.0545,\ 0.2442,\ 0.4026,\ 0.2442,\ 0.0545]$.
+
+Smoothing raises the signal-to-noise ratio because the noise in neighboring voxels is partly independent and averages out, while an activation spread over several voxels survives. It also makes the data closer to a smooth random field, which some statistical methods assume, and it reduces the effect of small differences in anatomy between people. The cost is spatial resolution: a small region is blurred together with its neighbors. A common rule is to choose a FWHM of about two to three times the voxel size.
+
+### In code
+
+```python
+import math
+
+def fwhm_to_sigma(fwhm):
+    """Standard deviation of a Gaussian with the given full width at half maximum."""
+    return fwhm / (2 * math.sqrt(2 * math.log(2)))
+
+print(round(fwhm_to_sigma(6.0) / 3.0, 3))
+```
+
+This prints `0.849`, the width in voxels of a 6 mm FWHM kernel for 3 mm voxels. Neuroimaging packages do all of these steps for you; the point of writing them from scratch is to know what they assume.
+
+@example
+title: Correcting the slice timing of one sample
+problem: A slice is read out $\delta = 0.5$ s after the reference time, with TR $=2$ s. Its raw samples are $y = [100, 110, 120, 130]$. Apply the linear interpolation formula to find the corrected sample $\tilde y[2]$.
+step: Find the weight: $\delta / T_R = 0.5/2 = 0.25$, so $y[2]$ gets weight $0.75$ and $y[1]$ gets weight $0.25$.
+step: Combine: $\tilde y[2] = 0.75 \times 120 + 0.25 \times 110$.
+step: Compute: $90 + 27.5 = 117.5$.
+step: Check: the corrected value should lie between the two samples and nearer to $y[2]$, which it does, because the slice was sampled only a quarter of a TR after the reference time.
+answer: $\tilde y[2] = 117.5$.
+
+@mistakes
+- Mixing rotation units: the six motion parameters have rotations in radians, which must be multiplied by a radius in millimeters before adding them to translations.
+- Treating FWHM as the standard deviation. A 6 mm FWHM has $\sigma$ of about 2.55 mm, not 6 mm.
+- Smoothing a data set and then reporting a small region's activation as if it were that exact region. Smoothing spreads signal in space, so the location of a peak is less precise and nearby regions are mixed together.
+- Believing that realignment removes all the effects of motion. The signal changes it causes persist, so motion parameters and censoring are still needed.
+
+@practice num
+prompt: A smoothing kernel has FWHM $= 8$ mm and the voxels are 2 mm wide. What is the standard deviation of the kernel in voxels, to two decimal places?
+answer: 1.70
+tol: 0.01
+unit: voxels
+check: 8 / (2 * sqrt(2 * log(2))) / 2
+hint: Convert FWHM to $\sigma$ in millimeters with $\sigma = \text{FWHM}/2.3548$, then divide by the voxel width.
+solution: $\sigma = 8/2.3548 = 3.397$ mm, which is $3.397/2 = 1.70$ voxels.
+
+@practice mc
+prompt: Why do most fMRI pipelines smooth the data spatially before fitting a model, and what does it cost?
+choice*: Averaging neighbors raises the signal-to-noise ratio for activations that extend over several voxels, at the cost of spatial resolution and a less precise location of small effects.
+choice: Smoothing removes head motion completely, at the cost of making the time series shorter.
+choice: Smoothing makes the HRF faster, at the cost of lowering the temporal resolution.
+choice: Smoothing makes statistical tests unnecessary, at the cost of needing a larger kernel for each voxel.
+hint: Think about what happens to independent noise and to a broad activation when you average neighbors.
+solution: Averaging neighboring voxels reduces independent noise while preserving broad signals, so the signal-to-noise ratio of extended activations rises. The price is blurring: peaks shift and small structures are mixed with their neighbors. Smoothing does not remove motion, does not change the HRF, and does not replace statistical testing.
+
+@practice code
+prompt: Write `framewise_displacement(params, radius=50.0)` that takes a list of scans, each a list of six numbers `[x, y, z, alpha, beta, gamma]` (translations in millimeters, rotations in radians), and returns a list of the same length as `params` where entry 0 is `0.0` and entry `t` is $|\Delta x| + |\Delta y| + |\Delta z| + \text{radius}\,(|\Delta\alpha| + |\Delta\beta| + |\Delta\gamma|)$ between scan `t-1` and scan `t`, in millimeters. For example, `framewise_displacement([[0, 0, 0, 0, 0, 0], [0.2, 0, 0, 0.01, 0, 0]], 40.0)` returns `[0.0, 0.6]`.
+starter:
+```python
+def framewise_displacement(params, radius=50.0):
+    pass
+```
+tests:
+```python
+def close(a, b):
+    return len(a) == len(b) and all(abs(u - v) < 1e-9 for u, v in zip(a, b))
+
+two = [[0, 0, 0, 0, 0, 0], [0.2, 0, 0, 0.01, 0, 0]]
+assert close(framewise_displacement(two, 40.0), [0.0, 0.6])
+assert close(framewise_displacement([[1, 2, 3, 0, 0, 0]]), [0.0])
+p = [[0, 0, 0, 0, 0, 0], [0.1, -0.1, 0.0, 0.0, 0.002, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+assert close(framewise_displacement(p), [0.0, 0.3, 0.3])
+assert close(framewise_displacement([[0.5] * 6, [0.5] * 6]), [0.0, 0.0])
+```
+model:
+```python
+def framewise_displacement(params, radius=50.0):
+    """Framewise displacement (mm) between consecutive scans."""
+    fd = [0.0]
+    for prev, cur in zip(params, params[1:]):
+        diffs = [abs(c - p) for p, c in zip(prev, cur)]
+        fd.append(sum(diffs[:3]) + radius * sum(diffs[3:]))
+    return fd
+```
+hint: Take absolute differences for each of the six parameters between consecutive scans; add the first three directly and multiply the last three by the radius.
+solution: Zip each scan with the next one, take absolute differences, and add translations plus radius times rotations. The third test moves and then returns to the start, so the second FD is nonzero even though the head ends at the starting position: FD measures movement between scans, not distance from the reference.
+
+@practice code
+prompt: Write `slice_time_correct(y, offset, tr)` that returns the slice-timing-corrected time series for a slice sampled `offset` seconds after the reference time of each TR (`0 <= offset < tr`, both in seconds): the first sample is unchanged, and for $n \ge 1$ the corrected sample is $(1 - \text{offset}/\text{tr})\,y[n] + (\text{offset}/\text{tr})\,y[n-1]$. For example, `slice_time_correct([100, 110, 120], 1.0, 2.0)` returns `[100.0, 105.0, 115.0]`.
+starter:
+```python
+def slice_time_correct(y, offset, tr):
+    pass
+```
+tests:
+```python
+def close(a, b):
+    return len(a) == len(b) and all(abs(u - v) < 1e-9 for u, v in zip(a, b))
+
+assert close(slice_time_correct([100, 110, 120], 1.0, 2.0), [100.0, 105.0, 115.0])
+assert close(slice_time_correct([5.0, 9.0, 1.0], 0.0, 2.0), [5.0, 9.0, 1.0])
+assert close(slice_time_correct([10.0, 20.0, 40.0], 0.5, 2.0), [10.0, 17.5, 35.0])
+assert slice_time_correct([], 0.5, 2.0) == []
+assert close(slice_time_correct([7.0], 0.5, 2.0), [7.0])
+```
+model:
+```python
+def slice_time_correct(y, offset, tr):
+    """Linear-interpolation slice-timing correction to the start of each TR."""
+    if not y:
+        return []
+    w = offset / tr
+    out = [float(y[0])]
+    for n in range(1, len(y)):
+        out.append((1 - w) * y[n] + w * y[n - 1])
+    return out
+```
+hint: Compute the weight `w = offset / tr` once, keep the first sample, and mix each later sample with the one before it.
+solution: Each corrected sample is a weighted average of the current sample and the previous one; the weight on the previous sample grows with the offset. With zero offset the series is unchanged, and an empty series needs its own guard.
+
+@practice code
+prompt: Write `smooth(signal, fwhm_mm, voxel_mm, radius)` that smooths a one-dimensional list of floats with a Gaussian kernel. Compute $\sigma = \text{fwhm\_mm}/(2\sqrt{2\ln 2})/\text{voxel\_mm}$ in voxels and weights $w_k = e^{-k^2/(2\sigma^2)}$ for $k = -\text{radius}, \dots, \text{radius}$. The output at index $i$ is the weighted average of `signal[i + k]` over the $k$ for which `i + k` is a valid index, dividing by the sum of the weights actually used (so a constant signal stays constant at the edges). For example, a spike of 10 at index 5 of an 8-sample signal of zeros, with `fwhm_mm=4.7096`, `voxel_mm=2.0` (so $\sigma \approx 1$ voxel) and `radius=1`, gives about `2.7407` at index 4 and `4.5186` at index 5.
+starter:
+```python
+def smooth(signal, fwhm_mm, voxel_mm, radius):
+    pass
+```
+tests:
+```python
+import math
+f = 2 * 2 * math.sqrt(2 * math.log(2))
+got = smooth([0, 0, 0, 0, 0, 10.0, 0, 0], f, 2.0, 1)
+want = [0.0, 0.0, 0.0, 0.0, 2.7406862, 4.5186276, 2.7406862, 0.0]
+assert all(abs(a - b) < 1e-5 for a, b in zip(got, want))
+got = smooth([0, 0, 1, 0, 0], f, 2.0, 2)
+want = [0.0776956, 0.2582744, 0.4026199, 0.2582744, 0.0776956]
+assert all(abs(a - b) < 1e-5 for a, b in zip(got, want))
+assert all(abs(a - 4.0) < 1e-9 for a in smooth([4, 4, 4], f, 2.0, 2))
+assert smooth([], f, 2.0, 2) == []
+```
+model:
+```python
+import math
+
+
+def smooth(signal, fwhm_mm, voxel_mm, radius):
+    """Gaussian smoothing with edge-renormalized weights."""
+    sigma = fwhm_mm / (2 * math.sqrt(2 * math.log(2))) / voxel_mm
+    weights = {k: math.exp(-k * k / (2 * sigma * sigma))
+               for k in range(-radius, radius + 1)}
+    out = []
+    for i in range(len(signal)):
+        num = 0.0
+        den = 0.0
+        for k, w in weights.items():
+            if 0 <= i + k < len(signal):
+                num += w * signal[i + k]
+                den += w
+        out.append(num / den)
+    return out
+```
+hint: Build the weights once. For each index, add up weight times value and the weight alone over the neighbors that exist, then divide.
+solution: Convert FWHM to $\sigma$ in voxels, build the weights, and for every output sample accumulate only over valid neighbors, normalizing by the weights used. Without that normalization the edge samples would be darkened, as if the signal were zero outside the data; the constant-signal test catches this.
+
+@quiz text
+prompt: What does this program print?
+```python
+fd = [0.0, 0.2, 0.7, 0.1, 0.6]
+bad = [t for t, v in enumerate(fd) if v > 0.5]
+print(bad, len(fd) - len(bad))
+```
+answer: [2, 4] 3
+check: run("fd = [0.0, 0.2, 0.7, 0.1, 0.6]\nbad = [t for t, v in enumerate(fd) if v > 0.5]\nprint(bad, len(fd) - len(bad))")
+hint: The scans with FD above 0.5 are at positions 2 and 4, counting from 0.
+solution: Scans 2 (0.7 mm) and 4 (0.6 mm) exceed 0.5 mm, so `bad` is `[2, 4]`, and $5 - 2 = 3$ scans remain.
+
+@quiz code
+prompt: Write `best_shift(signal, template, max_shift)` that returns the integer shift `s` in `range(-max_shift, max_shift + 1)` that minimizes the cost: the mean of `(signal[i + s] - template[i]) ** 2` over all indices `i` of `template` for which `0 <= i + s < len(signal)`. If two shifts tie exactly, return the one found first when scanning `s` from `-max_shift` upward. For example, with `template = [1, 1, 2, 4, 2, 1, 1, 1]` and `signal = [1, 1, 1, 1, 2, 4, 2, 1]`, `best_shift(signal, template, 3)` returns `2`.
+starter:
+```python
+def best_shift(signal, template, max_shift):
+    pass
+```
+tests:
+```python
+t = [1, 1, 2, 4, 2, 1, 1, 1]
+g = [1, 1, 1, 1, 2, 4, 2, 1]
+assert best_shift(g, t, 3) == 2
+assert best_shift(t, g, 3) == -2
+assert best_shift(t, t, 2) == 0
+assert best_shift([3, 7, 3, 2, 2, 2], [2, 3, 7, 3, 2, 2], 2) == -1
+```
+model:
+```python
+def best_shift(signal, template, max_shift):
+    """Integer shift that best aligns the signal to the template."""
+    best_s, best_cost = None, None
+    for s in range(-max_shift, max_shift + 1):
+        diffs = [(signal[i + s] - template[i]) ** 2
+                 for i in range(len(template)) if 0 <= i + s < len(signal)]
+        cost = sum(diffs) / len(diffs)
+        if best_cost is None or cost < best_cost:
+            best_s, best_cost = s, cost
+    return best_s
+```
+hint: For each candidate shift, compute the mean squared difference over the overlapping samples only, and keep the smallest.
+solution: Dividing by the number of overlapping samples makes shifts with different overlaps comparable. Only the exact alignment gives a cost of 0 in each test. This is the one-dimensional version of what registration software does with many more parameters and a smarter optimizer.
+
+@quiz self
+prompt: A student smooths an fMRI data set with a 12 mm FWHM kernel because the statistical map looks cleaner, and then reports that a region only 6 mm across, in a nucleus near a larger structure, was active. Explain what is wrong with this report and how the student should have chosen the kernel and described the result.
+hint: Compare the size of the kernel with the size of the structure.
+solution: A 12 mm FWHM kernel is wider than the 6 mm structure, so the activation in it is averaged with a large volume around it, the peak can move toward neighboring strong signals, and a response from the larger neighboring structure can leak in and be mistaken for activity in the small one. The cleaner appearance is a gain in signal-to-noise bought with spatial resolution. The student should choose the kernel from the size of the effects of interest (a rule of thumb is about two to three voxels, and smaller still for small structures, or none with an analysis in each person's own anatomy), justify it before looking at the results, and describe the finding as activity in the neighborhood of the nucleus unless an analysis at the native resolution supports a more specific claim, for example with a region defined in each participant's anatomical image.
+rubric: Explains that the kernel is larger than the structure, so signal from neighbors can leak in and the peak location is imprecise.
+rubric: Names the trade-off of signal-to-noise against resolution.
+rubric: Recommends choosing the smoothing from the expected effect size, in advance, and reporting localization with appropriate caution.

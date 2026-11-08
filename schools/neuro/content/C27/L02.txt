@@ -1,0 +1,231 @@
+@lesson
+title: The hemodynamic response and convolution
+summary: Describe the shape of the hemodynamic response function, state the formula used here, and predict a BOLD time series by convolving an event sequence with it.
+objective: Evaluate and sample the double-gamma hemodynamic response function and name its peak and undershoot.
+objective: Compute a predicted BOLD time series from events by convolution, by hand and in Python.
+objective: State the linearity assumption behind the convolution model and when it fails.
+reading: Andy's Brain Book, the section on the hemodynamic response function and on convolving a stimulus timing file with it.
+@article
+Show a person a flash of light for a fraction of a second and neurons in visual cortex respond within tens of milliseconds. The BOLD signal in the same patch does almost nothing for about two seconds, climbs to a maximum around five seconds after the flash, and then sinks slightly *below* baseline for ten seconds or more before recovering. The vascular system is a slow filter between neural activity and the signal. To predict what a voxel should do when a task has many events, we need a description of that filter. This is the **hemodynamic response function** (HRF).
+
+### The HRF as an impulse response
+
+Suppose the BOLD response to one brief event at time 0 is a function $h(t)$, in units of signal change per event. If the system is **linear and time-invariant**, two assumptions that we shall examine below, then the response to any sequence of events is the sum of shifted, scaled copies of $h$. Writing $x(t)$ for the neural input (for example 1 at each event and 0 otherwise), the predicted signal is the **convolution**
+
+$$y(t) = (x * h)(t) = \int_0^{t} x(s)\, h(t - s)\, ds, \qquad y[n] = \sum_{k=0}^{n} x[n-k]\, h[k]$$
+
+where the second form is for samples taken once per TR, with $h[k]$ the HRF sampled at $t = k \cdot \mathrm{TR}$.
+
+### The double-gamma HRF used in this course
+
+A common model of the HRF is the difference of two gamma densities, one for the positive peak and one for the undershoot. With $t$ in seconds,
+
+$$h(t) = \frac{t^{5} e^{-t}}{5!} - \frac{1}{6}\,\frac{t^{15} e^{-t}}{15!}, \qquad t \ge 0.$$
+
+The first term is a gamma density with shape 6 and scale 1 s; its maximum is at $t = 5$ s. The second is a gamma density with shape 16, scaled by $1/6$, and produces the undershoot. This is a standard canonical form; researchers also use other parameter values, and the true shape varies across people and brain regions. Sampled every 2 s, the formula gives:
+
+| $t$ (s) | 0 | 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16 |
+|---|---|---|---|---|---|---|---|---|---|
+| $h(t)$ | 0 | 0.036 | 0.156 | 0.160 | 0.090 | 0.032 | 0.001 | −0.013 | −0.016 |
+
+Check the table entries by evaluating the formula yourself. A finer grid shows the peak at $t = 5.00$ s (height 0.175) and the minimum of the undershoot near $t = 15.75$ s (height $-0.016$).
+
+### Convolution by hand
+
+Sample the HRF at TR $= 2$ s and round to three decimals: $h = [0,\ 0.036,\ 0.156,\ 0.160,\ 0.090,\ 0.032,\ 0.001,\ -0.013,\ -0.016,\ -0.013]$ (the first ten samples, $t = 0$ to $18$ s). Take two events, at scans 0 and 3. Then $x = [1, 0, 0, 1, 0, 0, \dots]$ and
+
+$$y[n] = h[n] + h[n-3].$$
+
+The result for $n = 0, \dots, 9$ is $[0,\ 0.036,\ 0.156,\ 0.160,\ 0.126,\ 0.188,\ 0.161,\ 0.077,\ 0.016,\ -0.012]$. The second response, shifted by three scans (6 s), lands on the falling flank of the first, so the two overlap and add; the maximum of $y$ (0.188) exceeds that of a single response (0.160 at this sampling).
+
+For a task that lasts several seconds, $x$ is a **boxcar**: 1 while the task is on, 0 otherwise. Convolving a boxcar with $h$ gives a smooth, delayed, rounded copy of it, which is exactly the regressor we will use in the general linear model.
+
+### When the model is wrong
+
+Linearity and time-invariance hold approximately for events spaced more than a few seconds apart, but not exactly. For events very close together (under about 2 seconds) the measured response is smaller than the sum of the single-event responses, so the linear model over-predicts. The HRF also differs between voxels, between people, and with caffeine, age and disease. A common remedy is to add the HRF's time derivative as a second regressor so the fit can absorb a small shift in the latency of the response.
+
+### In code
+
+```python
+import math
+
+def hrf(t):
+    """Double-gamma HRF, t in seconds, returned in arbitrary BOLD units."""
+    if t <= 0:
+        return 0.0
+    first = t ** 5 * math.exp(-t) / math.factorial(5)
+    second = t ** 15 * math.exp(-t) / math.factorial(15) / 6
+    return first - second
+
+h = [hrf(2 * k) for k in range(5)]
+print([round(v, 3) for v in h])
+```
+
+This prints `[0.0, 0.036, 0.156, 0.16, 0.09]`. In NumPy, researchers write the convolution as `np.convolve(x, h)[:len(x)]`; here you will write it yourself.
+
+@example
+title: The response at one scan from two events
+problem: Using the sampled HRF $h = [0,\ 0.036,\ 0.156,\ 0.160,\ 0.090,\ 0.032]$ at TR $=2$ s, events occur at scans 1 and 2 (so $x[1] = x[2] = 1$ and all other $x$ are 0). What is the predicted signal $y[5]$?
+step: Write the sum: $y[5] = \sum_k x[5-k]\,h[k]$. Only $x[1]$ and $x[2]$ are nonzero.
+step: The term from $x[1]$ has $5 - k = 1$, so $k = 4$ and contributes $h[4] = 0.090$.
+step: The term from $x[2]$ has $5 - k = 2$, so $k = 3$ and contributes $h[3] = 0.160$.
+step: Add: $y[5] = 0.090 + 0.160 = 0.250$.
+answer: $y[5] = 0.250$ in the same signal-change units as $h$.
+
+@mistakes
+- Treating the HRF as the neural response. It is the vascular filter: the BOLD signal peaks about five seconds after a brief event, long after the neural activity is over.
+- Forgetting to truncate or to align the convolution: the predicted series should have the same length as the scans, with the response to an event starting at that event's scan and not before it.
+- Assuming that the sum of responses always applies. For events closer than a couple of seconds, the real response saturates and the linear model over-predicts.
+
+@practice num
+prompt: A sampled HRF at TR $= 2$ s is $h = [0,\ 0.3,\ 0.6,\ 0.3,\ 0,\ -0.1]$ (arbitrary BOLD units). Events occur at scans 0, 1 and 4, so $x = [1, 1, 0, 0, 1, 0]$. What is the predicted signal $y[5] = \sum_k x[5-k]h[k]$?
+answer: 0.2
+tol: 0.001
+check: sum([1, 1, 0, 0, 1, 0][5 - k] * [0, 0.3, 0.6, 0.3, 0, -0.1][k] for k in range(6))
+hint: Which $x[5-k]$ are nonzero? They are at $5-k = 0, 1, 4$, so $k = 5, 4, 1$.
+solution: $y[5] = x[0]h[5] + x[1]h[4] + x[4]h[1] = -0.1 + 0 + 0.3 = 0.2$.
+
+@practice mc
+prompt: Which statement is an assumption of modeling a BOLD time series as the convolution of an event sequence with a fixed HRF?
+choice*: The response to two events is the sum of the responses to each event alone, shifted in time, and the shape of the response does not depend on when the event occurs.
+choice: The BOLD response is instantaneous, so it is aligned with the neural activity at every moment.
+choice: Every voxel in the brain has the same HRF, so no region can have a different delay.
+choice: The neural activity is the same for every event, regardless of how often the events occur.
+hint: Think of what "linear and time-invariant" means for a sum of two events.
+solution: Convolution assumes linearity (superposition) and time invariance. It does not assume an instantaneous response, and in practice HRFs do vary across regions and people, which is one of the model's known limits. Constant neural activity per event is a modeling choice, not the defining assumption of convolution.
+
+@practice code
+prompt: Write `convolve(x, h)` that returns the first `len(x)` samples of the discrete convolution of the event list `x` with the response list `h`, that is, $y[n] = \sum_{k} x[n-k]\,h[k]$ over all $k$ with $0 \le k < \mathrm{len}(h)$ and $0 \le n-k < \mathrm{len}(x)$. Both lists hold floats or ints; `h` may be shorter or longer than `x`. For example, `convolve([1, 0, 0, 1, 0], [0, 1, 2])` returns `[0, 1, 2, 0, 1]`.
+starter:
+```python
+def convolve(x, h):
+    pass
+```
+tests:
+```python
+assert convolve([1, 0, 0, 1, 0], [0, 1, 2]) == [0, 1, 2, 0, 1]
+got = convolve([2.0, 0.0, 1.0], [0.5, 0.25])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.0, 0.5, 0.5]))
+assert convolve([1.0], [1.0, 2.0, 3.0]) == [1.0]
+assert convolve([], [1.0, 2.0]) == []
+got = convolve([1, 1, 1], [1, -1])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1, 0, 0]))
+```
+model:
+```python
+def convolve(x, h):
+    """First len(x) samples of the convolution of x with h."""
+    y = []
+    for n in range(len(x)):
+        total = 0.0
+        for k in range(len(h)):
+            if 0 <= n - k < len(x):
+                total += x[n - k] * h[k]
+        y.append(total)
+    return y
+```
+hint: For each output index `n`, add up `x[n - k] * h[k]` over every `k` for which `n - k` is a valid index of `x`.
+solution: Loop over output samples, and for each one sum over the response lags, skipping lags that would reach before the start of the series. The output is truncated to the length of `x`, so a long response is cut off. In the last test a boxcar of length three convolved with a difference kernel leaves only the edge at the start.
+
+@practice code
+prompt: Write `predicted_bold(onsets, durations, tr, n_scans, h)` that builds a task regressor. `onsets` and `durations` are lists of event start times and lengths in seconds, `tr` is the repetition time in seconds, `n_scans` is the number of scans, and `h` is the HRF sampled once per TR. Build a boxcar of length `n_scans` where scan `n` (at time `n * tr`) has the value 1 if some event satisfies `onset <= n * tr < onset + duration` and 0 otherwise (overlapping events do not add; the value stays 1). Then return the first `n_scans` samples of the convolution of the boxcar with `h`. For example, `predicted_bold([0.0], [4.0], 2.0, 4, [1.0, 0.5])` returns `[1.0, 1.5, 0.5, 0.0]`.
+starter:
+```python
+def predicted_bold(onsets, durations, tr, n_scans, h):
+    pass
+```
+tests:
+```python
+def close(a, b):
+    return len(a) == len(b) and all(abs(u - v) < 1e-9 for u, v in zip(a, b))
+
+assert close(predicted_bold([0.0], [4.0], 2.0, 4, [1.0, 0.5]), [1.0, 1.5, 0.5, 0.0])
+assert close(predicted_bold([0.0, 8.0], [4.0, 4.0], 2.0, 8, [1.0, 0.5]),
+             [1.0, 1.5, 0.5, 0.0, 1.0, 1.5, 0.5, 0.0])
+assert close(predicted_bold([0.0, 2.0], [4.0, 4.0], 2.0, 4, [1.0]), [1.0, 1.0, 1.0, 0.0])
+assert close(predicted_bold([], [], 1.5, 3, [1.0, 2.0]), [0.0, 0.0, 0.0])
+assert close(predicted_bold([3.0], [1.0], 1.5, 4, [1.0]), [0.0, 0.0, 1.0, 0.0])
+```
+model:
+```python
+def convolve(x, h):
+    y = []
+    for n in range(len(x)):
+        total = 0.0
+        for k in range(len(h)):
+            if 0 <= n - k < len(x):
+                total += x[n - k] * h[k]
+        y.append(total)
+    return y
+
+
+def predicted_bold(onsets, durations, tr, n_scans, h):
+    """Boxcar from events at the scan times, convolved with the HRF."""
+    box = []
+    for n in range(n_scans):
+        t = n * tr
+        on = any(o <= t < o + d for o, d in zip(onsets, durations))
+        box.append(1.0 if on else 0.0)
+    return convolve(box, h)
+```
+hint: First decide for each scan time `n * tr` whether any event covers it; use `any(...)` so overlaps stay at 1. Then convolve.
+solution: Build the boxcar with a membership test at each scan time, then convolve. The third test has two overlapping events, where adding the events would give a value of 2 at the middle scan; the fifth has an event that starts exactly on a scan time (3.0 = 2 * 1.5), which counts because the test uses `<=` at the start and `<` at the end.
+
+@practice num
+prompt: A single-gamma response $g(t) = t^{a-1}e^{-t}/\Gamma(a)$ (with $t$ in seconds) has shape $a = 8$. At what time $t$, in seconds, does it peak?
+answer: 7
+tol: 0.01
+unit: s
+check: max(range(1, 3000), key=lambda k: (k / 100) ** 7 * exp(-k / 100)) / 100
+hint: Set the derivative of $(a-1)\ln t - t$ to zero.
+solution: $\frac{d}{dt}\big[(a-1)\ln t - t\big] = (a-1)/t - 1 = 0$ gives $t = a - 1 = 7$ s. The same reasoning shows that the shape-6 gamma in the article peaks at 5 s.
+
+@quiz text
+prompt: What does this program print?
+```python
+h = [0, 2, 1]
+x = [1, 0, 1, 0]
+y = [sum(x[n - k] * h[k] for k in range(len(h)) if n - k >= 0) for n in range(4)]
+print(y)
+```
+answer: [0, 2, 1, 2]
+check: run("h = [0, 2, 1]\nx = [1, 0, 1, 0]\ny = [sum(x[n - k] * h[k] for k in range(len(h)) if n - k >= 0) for n in range(4)]\nprint(y)")
+hint: Compute $y[n] = x[n]h[0] + x[n-1]h[1] + x[n-2]h[2]$ for each $n$.
+solution: With $h = [0, 2, 1]$: $y[0] = 0$; $y[1] = x[0]\cdot 2 = 2$; $y[2] = x[0]\cdot 1 + x[1]\cdot 2 + x[2]\cdot 0 = 1$; $y[3] = x[1]\cdot 1 + x[2]\cdot 2 + x[3]\cdot 0 = 2$.
+
+@quiz code
+prompt: Write `peak_ratio(h, k)` that returns how much two events add: the maximum of the response to events at scans 0 and `k` divided by the maximum of the response to one event at scan 0. Use the linear model $y[n] = h[n] + h[n-k]$ over $n = 0, \dots, \mathrm{len}(h) + k - 1$ (with out-of-range terms equal to 0). `h` is a list of floats with a positive maximum. For example, `peak_ratio([0.0, 1.0, 0.5, 0.0], 1)` returns `1.5`.
+starter:
+```python
+def peak_ratio(h, k):
+    pass
+```
+tests:
+```python
+assert abs(peak_ratio([0.0, 1.0, 0.5, 0.0], 1) - 1.5) < 1e-9
+assert abs(peak_ratio([0.0, 1.0, 0.5, 0.0], 2) - 1.0) < 1e-9
+assert abs(peak_ratio([1.0, -0.5], 1) - 1.0) < 1e-9
+assert abs(peak_ratio([0.0, 2.0, 2.0, 0.0], 1) - 2.0) < 1e-9
+```
+model:
+```python
+def peak_ratio(h, k):
+    """Peak of the two-event response relative to the single-event peak."""
+    n_out = len(h) + k
+    y = []
+    for n in range(n_out):
+        a = h[n] if n < len(h) else 0.0
+        b = h[n - k] if 0 <= n - k < len(h) else 0.0
+        y.append(a + b)
+    return max(y) / max(h)
+```
+hint: Build the output list sample by sample, adding `h[n]` when `n` is in range and `h[n - k]` when `n - k` is in range.
+solution: The two-event response is the single response plus a copy shifted by `k`. Where the two overlap near their peaks, the maximum grows (ratio 1.5 and 2.0 in the first and fourth tests); when the second copy arrives after the first has gone, the ratio is 1 (second test). A real HRF saturates for close events, so measured ratios are smaller than this linear model predicts.
+
+@quiz self
+prompt: A lab uses one fixed canonical HRF for every voxel in a study that compares young and older adults. Explain how this could bias a comparison of activation between the groups, and describe two analysis choices that would reduce the problem.
+hint: Think about what happens to the fitted amplitude when the true response is delayed or has a different width.
+solution: The fitted amplitude measures how well the data match the canonical shape. If one group has a response that is systematically delayed, wider or smaller in its undershoot, the same neural activity gives a poorer match and so a smaller fitted amplitude for that group, which can look like less activation when it is really a different hemodynamic response (a vascular difference, not a neural one). Two remedies: add the temporal and dispersion derivatives of the HRF as extra regressors, or use a flexible model (a finite impulse response basis) that estimates the shape for each person or region, so the amplitude and timing are separated. A third check is a control task or region whose neural response is expected to be equal between groups, to see whether the HRF itself differs.
+rubric: Explains that a shape mismatch lowers the fitted amplitude even when neural activity is equal.
+rubric: Names at least two reasonable remedies, such as derivative regressors, a flexible basis, or a control measure.
+rubric: Separates neural from vascular differences between groups.

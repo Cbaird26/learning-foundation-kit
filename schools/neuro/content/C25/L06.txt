@@ -1,0 +1,242 @@
+@lesson
+title: Networks of spiking neurons
+summary: Simulate a small network of integrate-and-fire neurons coupled by exponential synapses, and measure its activity with rasters, population rates and spike coincidences.
+objective: Write the equations of a current-based spiking network with a weight matrix, and estimate the effect of one presynaptic spike and of a presynaptic rate.
+objective: Simulate a network with Euler steps in a fixed update order, including a synaptic delay.
+objective: Summarize network activity with a population rate and a coincidence count, and explain how excitation and inhibition change spike timing in a pair of neurons.
+reading: Neuronal Dynamics, the chapter on networks of neurons: populations of integrate-and-fire neurons, synaptic input and spiking networks.
+@article
+Two neurons that fire regularly at slightly different rates drift in and out of step like two clocks. Couple them with a synapse and the result depends on the sign of the coupling: excitation pulls the spikes together, inhibition pushes them apart. Cortex has thousands of neurons per cubic millimeter, and the first step to understanding it is the smallest network, built from the neuron of lesson 2 and the synapse of lesson 5.
+
+### The network model
+
+Take $N$ integrate-and-fire neurons, $i = 1, \dots, N$, each with membrane time constant $\tau_m = 20$ ms, input resistance $R = 10$ MΩ, rest $E_L = -70$ mV, threshold $V_{\text{th}} = -50$ mV and reset $V_{\text{reset}} = -65$ mV. Each neuron receives an external current $I_i^{\text{ext}}$ (nA) and synaptic input from the others:
+
+$$\tau_m \frac{dV_i}{dt} = -(V_i - E_L) + R\Big(I_i^{\text{ext}} + \sum_j W_{ij}\, s_j\Big), \qquad \tau_s \frac{ds_j}{dt} = -s_j .$$
+
+The **weight matrix** $\mathbf{W}$ has entry $W_{ij}$ (nA) for the connection from neuron $j$ onto neuron $i$, so row $i$ lists the inputs to neuron $i$. Positive entries are excitatory, negative inhibitory. The variable $s_j$ is the synaptic trace of neuron $j$: it jumps by 1 when neuron $j$ spikes and decays with $\tau_s$ (ms). Each spike therefore delivers a pulse of current $W_{ij}\,e^{-t/\tau_s}$ with total charge $W_{ij}\tau_s$ (in pC, for nA and ms). The rheobase of an isolated neuron is $(V_{\text{th}} - E_L)/R = 2$ nA, so a current of $2.5$ nA gives a spike every $20\ln\big(20/5\big) = 27.7$ ms.
+
+### Two rules of thumb
+
+For a fast synapse ($\tau_s \ll \tau_m$) a presynaptic spike gives the membrane a charge $Q = W\tau_s$ on a capacitance $C = \tau_m/R$ (here 2 nF), so the voltage jumps by $\Delta V \approx R\,W\tau_s/\tau_m$. For a presynaptic neuron firing at a steady rate $f$, the trace averages $\bar s = f\tau_s$ (rate in spikes per ms), so the mean synaptic current is $W f \tau_s$ and the mean depolarization is $R W f \tau_s$. If the spikes arrive from many neurons, the means add. Mean-field estimates like these are the starting point for the rate models of the next lessons.
+
+### Simulating the network
+
+Because every neuron reads the synaptic traces from the start of the step, the order of updates matters and must be fixed: compute all voltages from the old traces, record which neurons fired, then decay all traces, then add the jumps. A time step of $\Delta t = 0.1$ ms is far below $\tau_s$.
+
+```python
+def simulate_network(W, I_ext, n_steps, dt, tau_s):
+    """Spike times (ms) of each neuron in a current-based LIF network."""
+    N = len(W)
+    tau, R, E_L, V_th, V_reset = 20.0, 10.0, -70.0, -50.0, -65.0
+    V, s = [E_L] * N, [0.0] * N
+    spikes = [[] for _ in range(N)]
+    for k in range(n_steps):
+        fired = []
+        for i in range(N):
+            I = I_ext[i] + sum(W[i][j] * s[j] for j in range(N))
+            V[i] += dt / tau * (-(V[i] - E_L) + R * I)
+            if V[i] >= V_th:
+                fired.append(i)
+                V[i] = V_reset
+        for j in range(N):
+            s[j] += dt * (-s[j] / tau_s)
+        for j in fired:
+            s[j] += 1.0
+            spikes[j].append(round((k + 1) * dt, 6))
+    return spikes
+```
+
+With $I^{\text{ext}} = (2.5, 2.3)$ nA, $\tau_s = 5$ ms and 300 ms of simulation, a pair of neurons gives (spike times in ms):
+
+| connection | neuron 1, first four spikes | neuron 2, first four spikes |
+|---|---|---|
+| none | 32.2, 59.9, 87.6, 115.3 | 40.7, 76.5, 112.3, 148.1 |
+| mutual excitation $W = 0.6$ nA | 32.2, 57.4, 82.1, 106.3 | 36.3, 65.7, 96.0, 127.7 |
+
+Excitation shortens the intervals of both neurons: neuron 1 fires 11 times in 300 ms instead of 10, neuron 2 nine times instead of eight, and the lag between their first spikes falls from 8.5 ms to 4.1 ms. With mutual inhibition $W = -1.5$ nA and currents $(2.6, 2.5)$ nA both neurons slow to about 8 spikes in 300 ms instead of 11 and 10 uncoupled, and their spikes interleave.
+
+### Measuring activity
+
+A **raster** lists the spike times of each neuron. The **population rate** counts spikes from all neurons in each time bin and divides by the bin width and the number of neurons, giving a rate in hertz per neuron. A **coincidence** count tallies how many spikes of one neuron have a spike of another within a window; it measures synchrony but depends on the rates, since two fast neurons coincide often by chance.
+
+Real cortical synapses have delays of a millisecond or more because of conduction and synaptic transmission. A delay can be added by scheduling each spike's jump a fixed number of steps later. Delays matter for oscillations and synchrony, which we treat in lesson 12.
+
+### Limits
+
+This network uses current-based synapses, so the postsynaptic current does not depend on the membrane potential, and identical neurons with no noise. Conductance-based synapses (lesson 5), heterogeneous neurons and noisy drive change the results quantitatively, and thousands of neurons require specialized simulators. But the small network already shows the main idea: coupling turns separate oscillators into a system with its own timing.
+
+@example
+title: Will a presynaptic partner make a silent neuron fire?
+problem: A neuron with $I^{\text{ext}} = 1.8$ nA ($R = 10$ MΩ, $E_L = -70$ mV, $V_{\text{th}} = -50$ mV) receives an excitatory synapse with $W = 0.6$ nA and $\tau_s = 5$ ms from a neuron that fires steadily at $36$ Hz. Estimate the mean membrane potential and say whether the neuron fires.
+step: The presynaptic rate is $0.036$ per ms, so the mean trace is $\bar s = 0.036 \times 5 = 0.18$.
+step: The mean synaptic current is $0.6 \times 0.18 = 0.108$ nA, and the mean total current is $1.8 + 0.108 = 1.908$ nA.
+step: The mean steady-state voltage is $V_\infty = -70 + 10 \times 1.908 = -50.92$ mV.
+step: This is below the threshold $-50$ mV, so the neuron stays silent on average. Fluctuations around this mean could still cause occasional spikes, but a deterministic simulation gives none.
+answer: The mean potential is about $-50.9$ mV, below threshold, so the neuron does not fire in the deterministic model.
+
+@mistakes
+- Reading $W_{ij}$ as the connection from $i$ to $j$: in this lesson row $i$ is the input to neuron $i$, and swapping the indices turns a feed-forward chain into a chain running backward.
+- Updating the voltages and the traces in one loop over neurons in an order that lets a neuron see a trace jump from the same step: compute all inputs from the old traces first.
+- Concluding that excitation always synchronizes: it pulls spike times together in this model, but with slow or strong coupling, or with delays, excitatory networks can also oscillate or burst.
+- Counting a spike on a bin edge twice, or dividing a population count by the bin width in milliseconds without converting to seconds: a rate in hertz needs the bin width in seconds.
+
+@practice num
+prompt: A neuron with $\tau_m = 20$ ms and $R = 10$ MΩ receives a presynaptic spike through a synapse with weight $W = 0.8$ nA and $\tau_s = 4$ ms. Using the fast-synapse approximation $\Delta V \approx R\,W\tau_s/\tau_m$, how large is the voltage jump in millivolts?
+answer: 1.6
+unit: mV
+check: 10 * 0.8 * 4 / 20
+hint: The charge is $W\tau_s = 3.2$ pC; the capacitance is $\tau_m/R = 2$ nF.
+solution: $Q = 0.8 \times 4 = 3.2$ pC on $C = 20/10 = 2$ nF $= 2000$ pF gives $\Delta V = 3.2\ \text{pC}/2000\ \text{pF} = 1.6$ mV; equivalently $10 \times 0.8 \times 4/20 = 1.6$ mV.
+
+@practice num
+prompt: A neuron receives synapses from 10 presynaptic neurons, each firing steadily at $40$ Hz, each with weight $W = 0.3$ nA and $\tau_s = 5$ ms. With $R = 10$ MΩ, what is the mean depolarization caused by the synaptic input, in millivolts? Use the mean trace $\bar s = f\tau_s$ with $f$ in spikes per ms.
+answer: 6
+unit: mV
+check: 10 * 10 * 0.3 * (40 / 1000) * 5
+hint: Each presynaptic neuron has $\bar s = 0.04 \times 5 = 0.2$; add the 10 contributions of $0.3 \bar s$ nA and multiply by $R$.
+solution: The mean current is $10 \times 0.3 \times 0.2 = 0.6$ nA, and $R \times 0.6 = 6$ mV.
+
+@practice mc
+prompt: In the pair of neurons of the article, both receive a constant external current and fire regularly when uncoupled. Mutual excitation with weight $0.6$ nA is added. What does the simulation show?
+choice*: Both neurons fire faster and the lag between their spike times shrinks, because each spike advances the partner's next spike.
+choice: Both neurons fire slower, because synaptic input always adds a leak to the membrane.
+choice: The neurons fire at exactly the same times, because coupling always produces perfect synchrony.
+choice: The firing rates are unchanged, because the synaptic trace averages to zero.
+hint: Compare the first four spike times of each neuron with and without coupling.
+solution: An excitatory pulse depolarizes the partner, so its next spike comes earlier; the intervals shorten and the neurons are pulled closer in time (lag 4.1 ms instead of 8.5 ms for the first spikes) but not to perfect synchrony. The trace has a positive mean, so rates rise, and in the current-based model the synapse adds no leak.
+
+@practice code
+prompt: Write `population_rate(spike_lists, t_max, bin_ms)` that returns the population firing rate in hertz per neuron, as a list with one value per bin. `spike_lists` is a list with one sorted list of spike times (ms) per neuron; there are `int(t_max // bin_ms)` bins of width `bin_ms`, bin `k` covering `[k * bin_ms, (k + 1) * bin_ms)`. A spike at time `t` falls into bin `int(t // bin_ms)`; spikes outside the bins are ignored. The rate in a bin is the number of spikes there, divided by the number of neurons, divided by the bin width in seconds. For example, `population_rate([[5], [15]], 20.0, 10.0)` returns `[50.0, 50.0]`.
+starter:
+```python
+def population_rate(spike_lists, t_max, bin_ms):
+    return []
+```
+tests:
+```python
+got = population_rate([[5, 12, 18, 31], [7, 14, 40], [16, 16.5]], 50.0, 10.0)
+want = [66.66667, 166.66667, 0.0, 33.33333, 33.33333]
+assert len(got) == 5 and all(abs(a - b) < 1e-4 for a, b in zip(got, want))
+assert population_rate([[5], [15]], 20.0, 10.0) == [50.0, 50.0]
+got = population_rate([[10.0, 20.0]], 30.0, 10.0)
+assert got == [0.0, 100.0, 100.0]
+assert population_rate([[55.0]], 50.0, 10.0) == [0.0] * 5
+assert all(abs(a - 250.0) < 1e-9 for a in population_rate([[1.0, 2.0], []], 4.0, 4.0))
+```
+model:
+```python
+def population_rate(spike_lists, t_max, bin_ms):
+    """Population rate (Hz per neuron) in consecutive bins of width bin_ms."""
+    n_bins = int(t_max // bin_ms)
+    counts = [0] * n_bins
+    for spikes in spike_lists:
+        for t in spikes:
+            k = int(t // bin_ms)
+            if 0 <= k < n_bins:
+                counts[k] += 1
+    return [c / len(spike_lists) / (bin_ms / 1000.0) for c in counts]
+```
+hint: Count the spikes of all neurons per bin first, then convert each count to hertz per neuron. Ignore spikes whose bin index is outside the range.
+solution: A spike exactly at 10.0 ms belongs to the bin that starts at 10 ms, so edges are counted once. Dividing by the bin width in seconds (`bin_ms / 1000`) gives hertz; dividing by the number of neurons gives a rate per neuron even when one neuron is silent.
+
+@practice code
+prompt: Write `simulate_delayed(W, I_ext, n_steps, dt, tau_s, delay_steps)` that extends the article's network simulation with a synaptic delay. The neuron parameters are $\tau_m = 20$ ms, $R = 10$ MΩ, $E_L = -70$ mV, $V_{\text{th}} = -50$ mV, $V_{\text{reset}} = -65$ mV. In step `k`: for every neuron, take an Euler step using the input $I_i^{\text{ext}} + \sum_j W_{ij} s_j$ (all from the old traces) and fire and reset if $V \ge V_{\text{th}}$; then decay every trace by `dt * (-s / tau_s)`; then record each spike time `(k + 1) * dt` and schedule its jump to the trace for the end of step `k + delay_steps`; finally add `1.0` to the traces of all spikes scheduled for step `k`, so a delay of zero reproduces the instantaneous case. Return the list of spike-time lists, one per neuron.
+starter:
+```python
+def simulate_delayed(W, I_ext, n_steps, dt, tau_s, delay_steps):
+    return [[] for _ in W]
+```
+tests:
+```python
+def same(a, b):
+    return len(a) == len(b) and all(abs(x - y) < 1e-6 for x, y in zip(a, b))
+
+
+W = [[0.0, 0.8], [0.8, 0.0]]
+r = simulate_delayed(W, [2.4, 2.2], 1500, 0.1, 4.0, 0)
+assert same(r[0], [35.8, 64.2, 91.7, 118.1, 148.5])
+assert same(r[1], [40.2, 73.7, 109.5, 148.2])
+r = simulate_delayed(W, [2.4, 2.2], 1500, 0.1, 4.0, 30)
+assert same(r[0], [35.8, 63.5, 90.2, 117.2, 147.6])
+assert same(r[1], [41.6, 74.6, 110.1, 148.5])
+r = simulate_delayed(W, [2.5, 2.3], 3000, 0.1, 5.0, 4000)
+assert same(r[0][:3], [32.2, 59.9, 87.6]) and same(r[1][:3], [40.7, 76.5, 112.3])
+r = simulate_delayed([[0.0]], [2.5], 600, 0.1, 5.0, 10)
+assert same(r[0], [32.2, 59.9])
+```
+model:
+```python
+def simulate_delayed(W, I_ext, n_steps, dt, tau_s, delay_steps):
+    """Spike times of a current-based LIF network with a synaptic delay."""
+    N = len(W)
+    tau, R, E_L, V_th, V_reset = 20.0, 10.0, -70.0, -50.0, -65.0
+    V, s = [E_L] * N, [0.0] * N
+    spikes = [[] for _ in range(N)]
+    due = {}
+    for k in range(n_steps):
+        fired = []
+        for i in range(N):
+            I = I_ext[i] + sum(W[i][j] * s[j] for j in range(N))
+            V[i] += dt / tau * (-(V[i] - E_L) + R * I)
+            if V[i] >= V_th:
+                fired.append(i)
+                V[i] = V_reset
+        for j in range(N):
+            s[j] += dt * (-s[j] / tau_s)
+        for j in fired:
+            spikes[j].append((k + 1) * dt)
+            due.setdefault(k + delay_steps, []).append(j)
+        for j in due.pop(k, []):
+            s[j] += 1.0
+    return spikes
+```
+hint: Keep a dictionary from step index to the list of neurons whose jump is due then. Schedule after recording the spike, and apply the jumps due at step `k` at the end of step `k`.
+solution: With a delay longer than the simulation no jump is ever applied, so the network behaves as uncoupled, which the third test uses; with a delay of zero the scheduled step is the current one and the jump is applied at once, which gives the article's behavior. A 3 ms delay shifts the interaction and changes the later spike times, as the second test shows.
+
+@quiz text
+prompt: What does this program print?
+```python
+s = 0.0
+for k in range(4):
+    s = s * 0.8
+    if k % 2 == 0:
+        s += 1.0
+print(round(s, 3))
+```
+answer: 1.312
+check: run("s = 0.0\nfor k in range(4):\n    s = s * 0.8\n    if k % 2 == 0:\n        s += 1.0\nprint(round(s, 3))")
+hint: The trace decays by a factor $0.8$ each step, and a spike (even `k`) adds 1 after the decay.
+solution: Step 0: $0 \to 1.0$. Step 1: $0.8$. Step 2: $0.64 + 1 = 1.64$. Step 3: $1.312$.
+
+@quiz code
+prompt: Write `coincidences(spikes_a, spikes_b, window)` that counts how many spikes in `spikes_a` have at least one spike of `spikes_b` within `window` ms (inclusive, in either direction). Each spike of `spikes_a` is counted at most once. For example, `coincidences([10, 20, 30, 40], [11, 25, 29.5], 1.0)` returns `2`.
+starter:
+```python
+def coincidences(spikes_a, spikes_b, window):
+    return 0
+```
+tests:
+```python
+assert coincidences([10, 20, 30, 40], [11, 25, 29.5], 1.0) == 2
+assert coincidences([10, 20], [], 1.0) == 0
+assert coincidences([5], [6.0], 1.0) == 1
+assert coincidences([10, 20, 30, 40], [11, 25, 29.5], 5.0) == 3
+assert coincidences([10, 10.5], [10.2], 0.5) == 2
+```
+model:
+```python
+def coincidences(spikes_a, spikes_b, window):
+    """Number of spikes in spikes_a with a partner in spikes_b within window."""
+    return sum(1 for t in spikes_a if any(abs(t - u) <= window for u in spikes_b))
+```
+hint: For each spike in the first list, ask whether any spike of the second list is within the window; count the spikes for which the answer is yes.
+solution: Counting per spike of `spikes_a` (not per pair) avoids counting a spike twice when two partners lie within the window, as in the last test. The inclusive comparison counts a partner exactly one window away, which the third test exercises.
+
+@quiz self
+prompt: A student simulates two identical neurons with a weak inhibitory coupling and finds that they fire in alternation, and with a weak excitatory coupling that they fire nearly together. A second student says that this proves that inhibition desynchronizes and excitation synchronizes in cortex. Explain why the claim does not follow, naming at least two features of the model that could change the result, and say which simulation you would run next.
+hint: Think about the synaptic time constant, the delay, the strength of coupling and the neuron model.
+solution: The simulation shows what this model does with these parameters, and the result depends on features that were fixed. The synaptic time constant and delay matter: slow inhibition can synchronize neurons by resetting them together after a shared inhibitory pulse, while fast excitation with a delay can produce alternation or bursting. The shape of the neuron's phase response (how a pulse shifts its next spike) decides whether excitation advances or delays the partner, and neurons with adaptation or resonance behave differently from integrate-and-fire neurons. Coupling strength matters, since strong coupling can overwhelm the intrinsic currents. A cortical network also has many neurons, heterogeneity and noise, which blur pairwise results. To test the claim, I would repeat the pair simulation over a grid of synaptic time constants, delays and weights, with both signs of coupling, record a synchrony measure for each, and see where the conclusion holds and where it reverses; then repeat it with a heterogeneous, noisy population.
+rubric: Notes that a result in one simulation with fixed parameters does not generalize.
+rubric: Names at least two relevant features, such as synaptic time constant, delay, coupling strength or neuron model.
+rubric: Proposes a parameter sweep with a synchrony measure as the next simulation.

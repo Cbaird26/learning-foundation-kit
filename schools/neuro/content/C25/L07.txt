@@ -1,0 +1,237 @@
+@lesson
+title: Rate models and recurrent networks
+summary: Write a threshold-linear firing-rate model, find its fixed points and test their stability from the eigenvalues of the connectivity matrix, and simulate it in Python.
+objective: State the firing-rate equation $\tau\,d\mathbf{r}/d\mathbf{t} = -\mathbf{r} + [\mathbf{W}\mathbf{r} + \mathbf{h}]_+$ with units, and say when it is a good approximation to a spiking network.
+objective: Compute fixed points of one- and two-unit networks, including those with rectified (silent) units, and decide their stability from the Jacobian.
+objective: Explain runaway excitation, winner-take-all competition and the slowing of dynamics near instability.
+reading: Neuronal Dynamics, the chapter on populations and rate models of neural activity; Theoretical Neuroscience (Dayan and Abbott), the chapter on network models: firing-rate models and recurrent networks.
+@article
+A spiking network of thousands of neurons is too big to analyze, but what a cortical area computes often depends only on how many spikes each group of neurons produces per second. Replacing spikes by **firing rates** turns the network into a small set of differential equations, and the tools of the phase plane (lesson 4) apply to it directly.
+
+### The rate model
+
+Let $r_i$ be the firing rate of unit $i$ in hertz (Hz) and $\tau$ a time constant in milliseconds (here $\tau = 10$ ms, standing for the time over which a unit's rate follows its input). The **firing-rate model** is
+
+$$\tau \frac{dr_i}{dt} = -r_i + F\Big(\sum_j W_{ij} r_j + h_i\Big), \qquad F(x) = [x]_+ = \max(0, x),$$
+
+with a **weight matrix** $\mathbf{W}$ (dimensionless: Hz of input per Hz of output), an external input $h_i$ expressed in Hz, and the **threshold-linear** transfer function $[x]_+$: zero below threshold and linear above it. The model is a good approximation when synaptic time constants are short compared with $\tau$ and neurons fire asynchronously, so that the population rate is smooth. Wilson and Cowan (1972) introduced equations of this form for excitatory and inhibitory populations.
+
+### One unit
+
+A single unit with self-excitation $w$ and input $h > 0$ has $\tau\,\dot r = -r + [w r + h]_+$. While active, the equation is linear: $\tau\,\dot r = -(1 - w)r + h$, with fixed point $r^* = h/(1 - w)$ and time constant $\tau/(1 - w)$. For $w < 1$ the fixed point is stable and feedback **amplifies** the input by $1/(1 - w)$ and slows the dynamics: with $w = 0.5$ and $h = 10$ Hz the unit settles at 20 Hz with time constant 20 ms. For $w > 1$ the rate grows without bound, because $[x]_+$ has no saturation; real populations are stopped by saturation, adaptation or inhibition.
+
+### Networks and stability
+
+For $N$ units that are all active, a fixed point satisfies $(\mathbf{I} - \mathbf{W})\mathbf{r}^* = \mathbf{h}$. Linearizing around it, the Jacobian is $\mathbf{J} = (\mathbf{W} - \mathbf{I})/\tau$, so its eigenvalues are $(\lambda_W - 1)/\tau$ where $\lambda_W$ are the eigenvalues of $\mathbf{W}$. The fixed point is stable when the real part of every $\lambda_W$ is below 1. For a $2\times 2$ matrix the eigenvalues follow from the trace $t$ and determinant $d$ of $\mathbf{W} - \mathbf{I}$: $\lambda = \tfrac12(t \pm \sqrt{t^2 - 4d})$.
+
+Units whose input is negative are silent, which changes the equations. A fixed point is **consistent** if every active unit has $r_i > 0$ satisfying the linear equation, and every silent unit has non-positive input. A network can have several consistent fixed points.
+
+### Competition: winner-take-all
+
+Two units inhibit each other with $\mathbf{W} = \begin{pmatrix} 0 & -2 \\ -2 & 0 \end{pmatrix}$ and receive inputs $\mathbf{h} = (20, 18)$ Hz. There are three consistent fixed points:
+
+| fixed point | $(r_1, r_2)$ (Hz) | silent unit's input | stable? |
+|---|---|---|---|
+| both active | (5.33, 7.33) | — | no (eigenvalues $-0.3$, $+0.1$ per ms) |
+| unit 1 wins | (20, 0) | $18 - 2\times 20 = -22$ | yes |
+| unit 2 wins | (0, 18) | $20 - 2 \times 18 = -16$ | yes |
+
+The coexistence state is a saddle: the eigenvalues of $\mathbf{W}$ are $\pm 2$, giving $(2-1)/10 = +0.1$ and $(-2-1)/10 = -0.3$ per ms. Any difference between the units grows until the stronger one silences the other. Starting from rest, the simulation below reaches $(7.7, 4.6)$ Hz at 10 ms and ends at $(20, 0)$ Hz. This is **winner-take-all** competition, a model of selection in decision and attention circuits; it is a consequence of mutual inhibition stronger than 1, and the unit with the larger input wins.
+
+### In code
+
+Euler steps with $\Delta t = 1$ ms ($\Delta t/\tau = 0.1$) are accurate enough here; every unit must be updated from the old rates:
+
+```python
+def simulate_rates(W, h, r0, tau, dt, n_steps):
+    """Euler trajectory of tau dr/dt = -r + [W r + h]_+ ; returns all rates."""
+    r, out, n = list(r0), [list(r0)], len(r0)
+    for _ in range(n_steps):
+        drive = [sum(W[i][j] * r[j] for j in range(n)) + h[i] for i in range(n)]
+        r = [r[i] + dt / tau * (-r[i] + max(0.0, drive[i])) for i in range(n)]
+        out.append(list(r))
+    return out
+```
+
+### Limits
+
+Rate models average over spike timing, so they miss synchrony and the effect of fluctuations, and the threshold-linear function is a simplification of the smooth input–output curves seen in noisy neurons. They are the language of the next lessons: inhibition-stabilized networks, attractors and working memory.
+
+@example
+title: Fixed point and speed of a two-unit network
+problem: Two excitatory units have $\mathbf{W} = \begin{pmatrix} 0.5 & 0.2 \\ 0.2 & 0.5 \end{pmatrix}$, inputs $\mathbf{h} = (6, 6)$ Hz and $\tau = 10$ ms. Find the fixed point and the slowest time constant.
+step: By symmetry $r_1 = r_2 = r$ and $r = 0.5 r + 0.2 r + 6$, so $r(1 - 0.7) = 6$ and $r^* = 20$ Hz, positive, so both are active.
+step: The eigenvalues of $\mathbf{W}$ are $0.5 + 0.2 = 0.7$ (for the pattern $(1, 1)$) and $0.5 - 0.2 = 0.3$ (for $(1, -1)$).
+step: The eigenvalues of $\mathbf{J}$ are $(0.7 - 1)/10 = -0.03$ and $(0.3 - 1)/10 = -0.07$ per ms, both negative, so the fixed point is stable.
+step: The slowest decay has time constant $1/0.03 = 33.3$ ms, three times the single-unit $\tau$: recurrent excitation slows the common (sum) mode.
+answer: The fixed point is $(20, 20)$ Hz, stable, with a slowest time constant of $33.3$ ms.
+
+@mistakes
+- Forgetting the rectification when solving $(\mathbf{I} - \mathbf{W})\mathbf{r} = \mathbf{h}$: the solution may have a negative rate, which is not a fixed point of the threshold-linear model; silence that unit and solve again.
+- Judging stability from the entries of $\mathbf{W}$ rather than its eigenvalues: a matrix with all entries below 1 can still have an eigenvalue above 1 (two units with $W_{12} = W_{21} = 0.8$ and $W_{11} = W_{22} = 0.5$ have $\lambda_W = 1.3$).
+- Forgetting that stability needs $\text{Re}(\lambda_W) < 1$, not $< 0$: the $-\mathbf{I}$ comes from the leak term $-r_i$.
+- Updating the rates one at a time with the already-updated values: use the old values of all units, as in the code above.
+
+@practice num
+prompt: A single threshold-linear unit with self-excitation $w = 0.6$ receives an external input $h = 12$ Hz. What is its steady-state firing rate in hertz?
+answer: 30
+unit: Hz
+check: 12 / (1 - 0.6)
+hint: While the unit is active, $r^* = h/(1 - w)$.
+solution: $r^* = 12/(1 - 0.6) = 12/0.4 = 30$ Hz, a gain of 2.5 over the input.
+
+@practice num
+prompt: Two excitatory units have $\mathbf{W} = \begin{pmatrix} 0.4 & 0.3 \\ 0.3 & 0.4 \end{pmatrix}$ and $\tau = 10$ ms. The eigenvalues of $\mathbf{W}$ are $0.7$ and $0.1$. What is the time constant, in milliseconds, of the slowest decaying mode near a fixed point where both units are active? Give your answer to one decimal place.
+answer: 33.3
+tol: 0.1
+unit: ms
+check: 10 / (1 - 0.7)
+hint: The Jacobian eigenvalues are $(\lambda_W - 1)/\tau$; the slowest is the one closest to zero.
+solution: The eigenvalues of $\mathbf{J}$ are $(0.7 - 1)/10 = -0.03$ and $(0.1 - 1)/10 = -0.09$ per ms. The slowest has time constant $1/0.03 = 33.3$ ms.
+
+@practice mc
+prompt: A threshold-linear excitatory population has self-connection $w = 1.2$ and a small positive external input, with no saturation, adaptation or inhibition in the model. What does the model do?
+choice*: The rate grows without bound, because the net feedback is positive: the linearized rate equation has a positive eigenvalue $(w - 1)/\tau > 0$.
+choice: The rate settles at $h/(1 - w)$, which is negative and so means silence.
+choice: The rate oscillates around $h/(1 - w)$, because the eigenvalue is complex.
+choice: The rate settles at $h/(1 + w)$, because the leak doubles the feedback.
+hint: Look at the sign of the eigenvalue $(w - 1)/\tau$ of the linearized equation.
+solution: For $w > 1$ the eigenvalue is positive, so deviations grow exponentially. The formula $h/(1 - w)$ is negative, but a negative rate is not a fixed point of the rectified model, and the real eigenvalue means no oscillation. Real networks are stabilized by saturation, adaptation or inhibition, which this model leaves out.
+
+@practice code
+prompt: Write `max_real_eig(W, tau)` that returns the largest real part, in 1/ms, of the eigenvalues of the Jacobian $\mathbf{J} = (\mathbf{W} - \mathbf{I})/\tau$ of a two-unit rate model, where `W` is a 2-by-2 list of lists and `tau` is in ms. Use the trace $t$ and determinant $d$ of $\mathbf{W} - \mathbf{I}$: if $t^2 - 4d \ge 0$ the eigenvalues are real, $(t \pm \sqrt{t^2 - 4d})/2$, and the largest is the plus sign; otherwise both have real part $t/2$. Divide by `tau` at the end. For example, `max_real_eig([[0.4, 0.3], [0.3, 0.4]], 10.0)` returns `-0.03`.
+starter:
+```python
+def max_real_eig(W, tau):
+    return 0.0
+```
+tests:
+```python
+assert abs(max_real_eig([[0.4, 0.3], [0.3, 0.4]], 10.0) - (-0.03)) < 1e-9
+assert abs(max_real_eig([[0.0, -2.0], [-2.0, 0.0]], 10.0) - 0.1) < 1e-9
+assert abs(max_real_eig([[0.5, -0.8], [0.6, -0.3]], 10.0) - (-0.09)) < 1e-9
+assert abs(max_real_eig([[0.8, -1.5], [1.5, 0.8]], 10.0) - (-0.02)) < 1e-9
+assert abs(max_real_eig([[1.2, -1.0], [1.0, -0.5]], 5.0) - (-0.13)) < 1e-9
+```
+model:
+```python
+import math
+
+
+def max_real_eig(W, tau):
+    """Largest real part of the eigenvalues of (W - I) / tau for 2 units."""
+    a, b = W[0][0] - 1.0, W[0][1]
+    c, d = W[1][0], W[1][1] - 1.0
+    tr, det = a + d, a * d - b * c
+    disc = tr * tr - 4.0 * det
+    if disc >= 0:
+        return (tr + math.sqrt(disc)) / 2.0 / tau
+    return tr / 2.0 / tau
+```
+hint: Subtract 1 from the diagonal of $\mathbf{W}$ first, then use the trace and determinant of that matrix; the complex case has real part $t/2$.
+solution: The eigenvalues of $\mathbf{W} - \mathbf{I}$ are those of $\mathbf{W}$ minus 1, so the model is stable exactly when this number is negative. The complex-eigenvalue cases (a rotation-like $\mathbf{W}$, as in the fourth test) have a real part equal to half the trace, and the first test shows that the symmetric excitatory pair is stable with the slowest mode at $-0.03$ per ms.
+
+@practice code
+prompt: Write `fixed_points_2d(W, h)` that returns all consistent fixed points of the two-unit threshold-linear model $r_i = [\sum_j W_{ij} r_j + h_i]_+$ as a list of `[r1, r2]` lists sorted in increasing order (by `r1`, then `r2`). Try the four sets of active units: both, only unit 1, only unit 2, none. For a set of active units solve the linear equations (both: the 2-by-2 system $(\mathbf{I} - \mathbf{W})\mathbf{r} = \mathbf{h}$, skipping it if its determinant is below `1e-12` in absolute value; one unit $i$: $r_i = h_i/(1 - W_{ii})$, skipping it if $W_{ii} = 1$). Accept a candidate if every active rate is greater than `1e-9` and every silent unit has total input (from the candidate rates plus its `h`) at most `1e-9`. For example, `fixed_points_2d([[0, 0], [0, 0]], [-1, -1])` returns `[[0.0, 0.0]]`.
+starter:
+```python
+def fixed_points_2d(W, h):
+    return []
+```
+tests:
+```python
+def close(a, b):
+    return len(a) == len(b) and all(
+        abs(x - y) < 1e-6 for p, q in zip(a, b) for x, y in zip(p, q))
+
+
+assert close(fixed_points_2d([[0, -2], [-2, 0]], [20, 18]),
+             [[0.0, 18.0], [5.333333, 7.333333], [20.0, 0.0]])
+assert close(fixed_points_2d([[0, -1.5], [-1.5, 0]], [12, 10]),
+             [[0.0, 10.0], [2.4, 6.4], [12.0, 0.0]])
+assert close(fixed_points_2d([[0.5, -0.8], [0.6, -0.3]], [10, 5]),
+             [[7.964602, 7.522124]])
+assert close(fixed_points_2d([[0.5, 0], [0, 0.5]], [-5, 8]), [[0.0, 16.0]])
+assert close(fixed_points_2d([[0.4, 0.3], [0.3, 0.4]], [0, 0]), [[0.0, 0.0]])
+```
+model:
+```python
+def fixed_points_2d(W, h):
+    """All consistent fixed points of a two-unit threshold-linear network."""
+    eps = 1e-9
+    found = []
+    for active in [(0, 1), (0,), (1,), ()]:
+        r = [0.0, 0.0]
+        if active == (0, 1):
+            a, b = 1.0 - W[0][0], -W[0][1]
+            c, d = -W[1][0], 1.0 - W[1][1]
+            det = a * d - b * c
+            if abs(det) < 1e-12:
+                continue
+            r = [(d * h[0] - b * h[1]) / det, (-c * h[0] + a * h[1]) / det]
+        elif len(active) == 1:
+            i = active[0]
+            if W[i][i] == 1:
+                continue
+            r[i] = h[i] / (1.0 - W[i][i])
+        ok = all(r[i] > eps for i in active)
+        for i in range(2):
+            if i not in active:
+                ok = ok and W[i][0] * r[0] + W[i][1] * r[1] + h[i] <= eps
+        if ok:
+            found.append(r)
+    return sorted(found)
+```
+hint: For each active set, solve the linear equations, then check two conditions: active rates positive, and silent units with non-positive input. Sort the survivors.
+solution: The winner-take-all network has three consistent fixed points (the coexistence point and two winners), and the code finds each one by assuming its active set and checking self-consistency. The fifth test has all inputs zero: the all-active solution is the zero vector, which fails the positivity requirement, and the silent solution passes, so the origin is counted once.
+
+@quiz text
+prompt: What does this program print?
+```python
+r = 10.0
+for _ in range(3):
+    r = r + 0.2 * (-r + max(0.0, 0.5 * r + 8.0))
+print(round(r, 3))
+```
+answer: 11.626
+check: run("r = 10.0\nfor _ in range(3):\n    r = r + 0.2 * (-r + max(0.0, 0.5 * r + 8.0))\nprint(round(r, 3))")
+hint: Each pass moves $r$ by 20% of the gap between $r$ and its drive $0.5 r + 8$.
+solution: $r$: $10 \to 10.6 \to 11.14 \to 11.626$. The fixed point is $8/(1 - 0.5) = 16$ Hz, which the rate approaches slowly because the feedback slows the dynamics.
+
+@quiz code
+prompt: Write `is_fixed_point(W, h, r, tol)` that returns `True` if the rate vector `r` is a fixed point of the threshold-linear network `r_i = max(0, sum_j W[i][j] * r[j] + h[i])` to within `tol`, meaning that for every unit $i$ the absolute difference between `r[i]` and the right-hand side is less than `tol`. `W` is a list of rows of any size. For example, `is_fixed_point([[0, -2], [-2, 0]], [20, 18], [20, 0], 1e-6)` returns `True`.
+starter:
+```python
+def is_fixed_point(W, h, r, tol):
+    return False
+```
+tests:
+```python
+W = [[0, -2], [-2, 0]]
+assert is_fixed_point(W, [20, 18], [20, 0], 1e-6)
+assert is_fixed_point(W, [20, 18], [0, 18], 1e-6)
+assert is_fixed_point(W, [20, 18], [5.3333, 7.3333], 1e-3)
+assert not is_fixed_point(W, [20, 18], [10, 5], 1e-3)
+assert not is_fixed_point(W, [20, 18], [0, 0], 1e-3)
+assert is_fixed_point([[0.5, 0, 0], [0, 0, 0], [1, 0, 0]], [4, -1, -3], [8, 0, 5], 1e-9)
+```
+model:
+```python
+def is_fixed_point(W, h, r, tol):
+    """True if r satisfies r_i = max(0, sum_j W_ij r_j + h_i) within tol."""
+    for i in range(len(r)):
+        drive = sum(W[i][j] * r[j] for j in range(len(r))) + h[i]
+        if abs(r[i] - max(0.0, drive)) >= tol:
+            return False
+    return True
+```
+hint: For each unit compute its drive, rectify it, and compare with the given rate; all units must agree.
+solution: Rectifying the drive is what lets a silent unit with negative input count as consistent: in the second test unit 1 has drive $20 - 36 = -16$ and rate 0. The origin fails because unit 1 would be driven to 20 Hz.
+
+@quiz self
+prompt: A colleague models a cortical area as an excitatory unit E and an inhibitory unit I with $\mathbf{W} = \begin{pmatrix} 0.5 & -0.8 \\ 0.6 & -0.3 \end{pmatrix}$ (row 1 is the input to E) and finds a stable fixed point. Another colleague says that raising the excitatory self-connection to $W_{EE} = 1.2$ must make the network run away, because self-excitation above 1 means growth without bound. Check this claim with the eigenvalues, say what is right and wrong in it, find the value of $W_{EE}$ at which the fixed point actually loses stability, and say what a real population adds that stops runaway.
+hint: Find the trace and the determinant of $\mathbf{W} - \mathbf{I}$ as functions of $W_{EE}$.
+solution: With $a = W_{EE} - 1$, the matrix $\mathbf{W} - \mathbf{I} = \begin{pmatrix} a & -0.8 \\ 0.6 & -1.3 \end{pmatrix}$ has trace $a - 1.3$ and determinant $-1.3a + 0.48$. At $W_{EE} = 0.5$ ($a = -0.5$) the trace is $-1.8$ and the determinant $1.13$: the discriminant is negative, so the eigenvalues are complex with real part $-0.9$ (in units of $1/\tau$), a stable spiral. At $W_{EE} = 1.2$ ($a = 0.2$) the trace is $-1.1$ and the determinant $0.22 > 0$, so both eigenvalues have negative real parts ($-0.26$ and $-0.84$): the network is still stable, because the inhibitory unit's feedback is strong enough to hold the excitatory unit down (an inhibition-stabilized regime). The colleague's claim is wrong because the stability of a recurrent network depends on all of $\mathbf{W}$, not on one entry. The determinant becomes negative, giving a real positive eigenvalue and runaway growth, when $-1.3a + 0.48 < 0$, that is $W_{EE} > 1 + 0.48/1.3 = 1.37$. In a real cortex, runaway activity is limited by saturation of firing rates, spike-frequency adaptation and synaptic depression, which a threshold-linear model omits.
+rubric: Computes the trace and determinant of $\mathbf{W} - \mathbf{I}$ for the two values of $W_{EE}$ and concludes that the network is still stable at 1.2.
+rubric: Finds the instability threshold $W_{EE} \approx 1.37$ from the sign of the determinant.
+rubric: Names saturation, adaptation or synaptic depression as what limits runaway activity.

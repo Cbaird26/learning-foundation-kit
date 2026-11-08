@@ -1,0 +1,235 @@
+@lesson
+title: Reinforcement learning models of choice
+summary: Implement a delta-rule learner with a softmax choice rule, compute the likelihood of choices given rewards, and fit its learning rate and inverse temperature by a grid search.
+objective: State the delta rule (Rescorla–Wagner) update with a stated initial value and say what the learning rate controls.
+objective: Compute the log-likelihood of a sequence of choices from the learner's trial-by-trial values and the softmax rule.
+objective: Fit the learning rate and inverse temperature by a grid search and simulate the learner with supplied random numbers.
+objective: Describe common extensions such as asymmetric learning rates, and the debate about what fitted parameters mean.
+reading: Probabilistic Models of Cognition: the material on learning and inference over time (look up how a model updates beliefs after each observation); a reinforcement learning chapter for the delta rule.
+
+@article
+In a two-armed bandit task you repeatedly choose between two options, each paying off with some hidden probability. You drift toward the option that has paid off recently, but not perfectly, and when the payoffs change you adapt. A model must say how past rewards shape the next choice. The simplest answer is the **delta rule**, the core of the Rescorla–Wagner model (1972) and of temporal-difference learning (Sutton, 1988).
+
+### The delta rule
+
+Each option $i$ has a value $Q_i$, starting at an initial value $Q_0$ (here $0.5$, the midpoint of rewards of 0 or 1). After choosing option $c_t$ on trial $t$ and receiving reward $r_t$, only the chosen option is updated:
+
+$$\delta_t = r_t - Q_{c_t}, \qquad Q_{c_t} \leftarrow Q_{c_t} + \alpha\,\delta_t, \qquad 0 \le \alpha \le 1.$$
+
+The **prediction error** $\delta_t$ is the difference between what happened and what was expected, and the **learning rate** $\alpha$ sets how far each error moves the value. With $\alpha = 1$ the value is just the last reward; with $\alpha$ near 0 it barely moves. The unchosen option keeps its value. Unrolling the rule shows that $Q$ is an exponentially weighted average of past rewards, with weights $\alpha(1-\alpha)^{j}$ for the reward $j$ choices ago. Schultz, Dayan and Montague (1997) proposed that the phasic firing of midbrain dopamine neurons resembles a temporal-difference prediction error; that proposal has strong support, and what these signals encode exactly is still studied and debated.
+
+### The choice rule and the likelihood
+
+Choices come from the softmax of last week's lesson: $p_t(1) = 1/\big(1 + e^{-\beta(Q_1 - Q_0)}\big)$, computed from the values **before** the trial's update. The model has two parameters, $\alpha$ and $\beta$. The likelihood of the data is the product of the probabilities of the actual choices, with values updated by the actual rewards:
+
+$$\log L(\alpha, \beta) = \sum_t \log p_t(c_t).$$
+
+Take twelve trials with choices $0,1,1,1,1,1,1,1,0,1,1,0$ and rewards $0,1,1,1,1,1,0,1,0,0,1,0$. On trial 1 both values are $0.5$, so $p(1) = 0.5$; the choice of 0 is rewarded with 0, so with $\alpha = 0.4$ the update gives $Q_0 = 0.5 + 0.4(0 - 0.5) = 0.3$.
+
+```python
+import math
+
+def q_learning_ll(choices, rewards, alpha, beta, q0=0.5):
+    q = [q0, q0]
+    total = 0.0
+    for c, r in zip(choices, rewards):
+        p1 = 1.0 / (1.0 + math.exp(-beta * (q[1] - q[0])))
+        total += math.log(p1 if c == 1 else 1.0 - p1)
+        q[c] += alpha * (r - q[c])
+    return total
+
+choices = [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0]
+rewards = [0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0]
+best = max(((q_learning_ll(choices, rewards, a / 10, b), a / 10, b)
+            for a in range(1, 10) for b in range(1, 11)))
+print(round(best[0], 4), best[1], best[2])
+```
+
+This prints `-6.1533 0.4 3`: on the grid $\alpha \in \{0.1, \dots, 0.9\}$, $\beta \in \{1, \dots, 10\}$, the best fit is $\hat\alpha = 0.4$, $\hat\beta = 3$. A well-chosen $\beta$ matters: at $\alpha = 0.4$, $\beta = 6$ the log-likelihood falls to $-7.2713$, because the learner would then be overconfident on the trials where she switched.
+
+### Extensions and cautions
+
+Common extensions: separate learning rates for positive and negative prediction errors ($\alpha_+$, $\alpha_-$); a perseveration (choice-history) term; a decay of unchosen values. Each adds parameters, and whether they earn their place is a model-comparison question (week 8). A caution: $\alpha$ and $\beta$ can trade off, because a slowly learning but decisive agent can resemble a fast-learning but noisy one over a short run; this is why researchers check parameter recovery (week 12). Parameters estimated from a model are descriptions of behavior under that model, and calling $\alpha$ "the dopamine learning rate" is an interpretation that needs independent evidence.
+
+@example
+title: Two delta-rule updates and a choice probability
+problem: Both values start at $Q_0 = 0.5$, with $\alpha = 0.4$ and $\beta = 3$. The agent chooses option 1 and gets reward 1, and then chooses option 1 again and gets reward 0. Find the values after each trial and the probability of choosing option 1 on the third trial.
+step: Trial 1: $\delta = 1 - 0.5 = 0.5$, so $Q_1 = 0.5 + 0.4 \times 0.5 = 0.70$. $Q_0$ is unchanged at $0.5$.
+step: Trial 2: $\delta = 0 - 0.70 = -0.70$, so $Q_1 = 0.70 + 0.4 \times (-0.70) = 0.42$.
+step: Trial 3: $Q_1 - Q_0 = 0.42 - 0.50 = -0.08$, so $p(1) = 1/(1 + e^{0.24}) = 0.440$.
+answer: $Q_1 = 0.70$ then $0.42$; the probability of choosing option 1 on trial 3 is about $0.440$.
+
+@mistakes
+- Updating both options after every choice: in this model only the chosen option's value changes.
+- Computing the choice probability after the update instead of before it: the choice on trial $t$ depends on the values left by trial $t-1$.
+- Forgetting the initial value $Q_0$: it affects the early trials and should be stated.
+- Interpreting a fitted $\alpha$ without checking that the fit is stable: $\alpha$ and $\beta$ can trade off.
+
+@practice num
+prompt: A delta-rule learner has value $Q = 0.62$ for the option she just chose, learning rate $\alpha = 0.25$, and receives reward $r = 0$. What is the updated value?
+answer: 0.465
+check: 0.62 + 0.25 * (0 - 0.62)
+hint: The prediction error is $r - Q$.
+solution: $\delta = 0 - 0.62 = -0.62$, so $Q = 0.62 + 0.25(-0.62) = 0.62 - 0.155 = 0.465$.
+
+@practice mc
+prompt: In the delta rule $Q \leftarrow Q + \alpha(r - Q)$ the learning rate is set to $\alpha = 1$. What does the value of the chosen option become after each trial?
+choice*: The reward just received, so earlier outcomes have no influence on the value.
+choice: The average of all rewards so far for that option.
+choice: Its previous value, because the update has no effect.
+choice: The previous value plus the reward, so it grows without bound.
+hint: Substitute $\alpha = 1$ into the update.
+solution: With $\alpha = 1$ the update is $Q \leftarrow Q + (r - Q) = r$. The learner remembers only the last outcome. The average of all rewards would need $\alpha = 1/n$.
+
+@practice code
+prompt: Write `asym_delta_trace(rewards, alpha_pos, alpha_neg, q0)` for a single option with asymmetric learning rates. Starting from `q0`, on each reward compute `delta = r - q`; use the rate `alpha_pos` if `delta > 0` and `alpha_neg` otherwise; update `q += rate * delta`. Return the list of values after each update (empty for no rewards). For example, `asym_delta_trace([1, 0, 0, 1], 0.5, 0.2, 0.5)` returns `[0.75, 0.6, 0.48, 0.74]`.
+starter:
+```python
+def asym_delta_trace(rewards, alpha_pos, alpha_neg, q0):
+    pass
+```
+tests:
+```python
+def _close(a, b):
+    return len(a) == len(b) and all(abs(x - y) < 1e-9 for x, y in zip(a, b))
+assert _close(asym_delta_trace([1, 0, 0, 1], 0.5, 0.2, 0.5), [0.75, 0.6, 0.48, 0.74])
+assert _close(asym_delta_trace([1, 1, 1], 0.3, 0.1, 0.0), [0.3, 0.51, 0.657])
+assert asym_delta_trace([], 0.3, 0.1, 0.5) == []
+assert _close(asym_delta_trace([0, 0], 0.3, 0.4, 1.0), [0.6, 0.36])
+```
+model:
+```python
+def asym_delta_trace(rewards, alpha_pos, alpha_neg, q0):
+    """Values after each update with separate rates for gains and losses."""
+    q = q0
+    out = []
+    for r in rewards:
+        delta = r - q
+        rate = alpha_pos if delta > 0 else alpha_neg
+        q += rate * delta
+        out.append(q)
+    return out
+```
+hint: Compute the prediction error first, pick the rate from its sign, then update and record the new value.
+solution: An optimistic learner has `alpha_pos > alpha_neg` and ends with values biased upward; here the 0.3 and 0.1 rates give a slow, steadily rising trace. With a single rate for both signs the model reduces to the ordinary delta rule.
+
+@practice text
+prompt: What does this program print?
+```python
+q = [0.5, 0.5]
+for c, r in [(1, 1), (1, 0), (0, 1)]:
+    q[c] += 0.4 * (r - q[c])
+print([round(x, 3) for x in q])
+```
+answer: [0.7, 0.42]
+check: run("q = [0.5, 0.5]\nfor c, r in [(1, 1), (1, 0), (0, 1)]:\n    q[c] += 0.4 * (r - q[c])\nprint([round(x, 3) for x in q])")
+hint: Option 1 is updated twice and option 0 once; trace $q[1]$ through $0.7$ and $0.42$.
+solution: Trial 1 moves $q[1]$ to $0.7$, trial 2 to $0.42$, and trial 3 moves $q[0]$ from $0.5$ to $0.7$. The list is `[0.7, 0.42]`.
+
+@practice code
+prompt: Write `fit_q_learning(choices, rewards, alpha_grid, beta_grid, q0=0.5)` that returns the tuple `(alpha, beta, log_lik)` with the largest log-likelihood over all pairs (loop `alpha` outside; first found wins ties). The model: both values start at `q0`; on each trial, $p(1) = 1/(1+e^{-\beta(Q_1 - Q_0)})$ from the values before the trial, the log-likelihood adds the log of the probability of the actual choice, and then the chosen option's value is updated by $Q \leftarrow Q + \alpha(r - Q)$. For example, with `choices = [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]`, `rewards = [1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1]`, `alpha_grid` of `0.1, ..., 0.9` and `beta_grid` of `1, ..., 10`, the answer is `(0.4, 6, -6.3647)`.
+starter:
+```python
+import math
+
+
+def fit_q_learning(choices, rewards, alpha_grid, beta_grid, q0=0.5):
+    pass
+```
+tests:
+```python
+_c = [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]
+_r = [1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1]
+_ag = [round(0.1 * i, 1) for i in range(1, 10)]
+_a, _b, _ll = fit_q_learning(_c, _r, _ag, list(range(1, 11)))
+assert _a == 0.4 and _b == 6 and abs(_ll - (-6.364669)) < 1e-5
+_a, _b, _ll = fit_q_learning(_c, _r, [0.4], [6])
+assert abs(_ll - (-6.364669)) < 1e-5
+_a, _b, _ll = fit_q_learning([0, 0], [1, 1], [0.5], [0, 2])
+assert _b == 2 and abs(_ll - (-0.693147 - 0.474077)) < 1e-4
+assert fit_q_learning([1], [1], [0.3, 0.6], [1.0])[0] == 0.3
+```
+model:
+```python
+import math
+
+
+def fit_q_learning(choices, rewards, alpha_grid, beta_grid, q0=0.5):
+    """Grid-search maximum likelihood for the delta-rule softmax learner."""
+    def log_lik(alpha, beta):
+        q = [q0, q0]
+        total = 0.0
+        for c, r in zip(choices, rewards):
+            p1 = 1.0 / (1.0 + math.exp(-beta * (q[1] - q[0])))
+            total += math.log(p1 if c == 1 else 1.0 - p1)
+            q[c] += alpha * (r - q[c])
+        return total
+
+    best = None
+    for alpha in alpha_grid:
+        for beta in beta_grid:
+            ll = log_lik(alpha, beta)
+            if best is None or ll > best[2]:
+                best = (alpha, beta, ll)
+    return best
+```
+hint: Write an inner function that returns the log-likelihood for one `(alpha, beta)` pair, then keep the best triple over the two nested loops.
+solution: The values must be recomputed from `q0` for every parameter pair, because they depend on both parameters through the history. The third test is a hand-checkable case: trial 1 has $p = 0.5$, and after the reward the repeat choice of 0 on trial 2 with $\beta = 2$ and $\alpha = 0.5$ has probability about $0.62$, so $\beta = 2$ beats $\beta = 0$.
+
+@quiz code
+prompt: Write `simulate_q_learner(reward_table, us, alpha, beta, q0)` that generates behavior from the delta-rule softmax learner. `reward_table[t][i]` is the reward option `i` would pay on trial `t`, and `us[t]` is a supplied uniform random number in $[0, 1)$. On each trial compute $p(1) = 1/(1+e^{-\beta(Q_1 - Q_0)})$ from the current values, choose `1` if `us[t] < p1` and `0` otherwise, receive `reward_table[t][choice]`, and update only the chosen value by $Q \leftarrow Q + \alpha(r - Q)$. Return the tuple `(choices, q)` where `q` is the final list of the two values. For example, with `reward_table = [[0, 1], [1, 0], [0, 1], [0, 1], [1, 1], [0, 0]]` and `us = [0.9, 0.2, 0.4, 0.7, 0.5, 0.1]`, `alpha = 0.5`, `beta = 2.0` and `q0 = 0.5`, the choices are `[0, 1, 1, 0, 1, 1]`.
+starter:
+```python
+import math
+
+
+def simulate_q_learner(reward_table, us, alpha, beta, q0):
+    pass
+```
+tests:
+```python
+_rt = [[0, 1], [1, 0], [0, 1], [0, 1], [1, 1], [0, 0]]
+_us = [0.9, 0.2, 0.4, 0.7, 0.5, 0.1]
+_c, _q = simulate_q_learner(_rt, _us, 0.5, 2.0, 0.5)
+assert _c == [0, 1, 1, 0, 1, 1]
+assert abs(_q[0] - 0.125) < 1e-9 and abs(_q[1] - 0.40625) < 1e-9
+_c, _q = simulate_q_learner(_rt, _us, 0.0, 2.0, 0.5)
+assert _c == [0, 1, 1, 0, 0, 1] and _q == [0.5, 0.5]
+_c, _q = simulate_q_learner(_rt, _us, 1.0, 20.0, 0.5)
+assert _c == [0, 1, 1, 1, 1, 1] and abs(_q[0]) < 1e-9 and abs(_q[1]) < 1e-9
+assert simulate_q_learner([], [], 0.5, 1.0, 0.5) == ([], [0.5, 0.5])
+```
+model:
+```python
+import math
+
+
+def simulate_q_learner(reward_table, us, alpha, beta, q0):
+    """Generate choices from a delta-rule softmax learner and supplied uniforms."""
+    q = [q0, q0]
+    choices = []
+    for row, u in zip(reward_table, us):
+        p1 = 1.0 / (1.0 + math.exp(-beta * (q[1] - q[0])))
+        c = 1 if u < p1 else 0
+        choices.append(c)
+        q[c] += alpha * (row[c] - q[c])
+    return choices, q
+```
+hint: Draw each choice by comparing the supplied uniform number with `p1`, then update only the chosen option with its reward from the table.
+solution: Supplying the uniform numbers makes the stochastic simulation deterministic. With `alpha = 0` the values never move and each choice only depends on `u < 0.5`; with `alpha = 1` and a large `beta` the learner locks onto whichever option last paid its reward.
+
+@quiz num
+prompt: A learner has values $Q_0 = 0.62$ and $Q_1 = 0.40$ and inverse temperature $\beta = 5$. What is the probability that she chooses option 1 on the next trial, to three decimal places?
+answer: 0.250
+tol: 0.001
+check: 1 / (1 + exp(-5 * (0.40 - 0.62)))
+hint: The value difference is $Q_1 - Q_0 = -0.22$.
+solution: $\beta(Q_1 - Q_0) = -1.1$, so $p(1) = 1/(1 + e^{1.1}) = 1/4.004 = 0.2497 \approx 0.250$.
+
+@quiz self
+prompt: A student fits the delta-rule softmax model to a participant and reports $\hat\alpha = 0.4$ and $\hat\beta = 3$, concluding that the participant "has a learning rate of 0.4 in her dopamine system." Evaluate the claim: say what the fitted values do and do not tell us, give one reason the estimates might be unreliable, and say what additional evidence would be needed for the claim about dopamine.
+hint: Separate a parameter of a behavioral model from a claim about neurons, and think about how $\alpha$ and $\beta$ can trade off.
+solution: The fitted values describe the participant's behavior under one model: how strongly recent rewards shifted her choices ($\alpha$) and how deterministically she followed the learned values ($\beta$). They do not show that the model is right, nor which neural process produced the behavior. Estimates may be unreliable because with few trials $\alpha$ and $\beta$ trade off (a slow, decisive learner and a fast, noisy one can look alike), because the likelihood may be flat, and because a different model (with asymmetric rates, perseveration or Bayesian updating) may fit as well or better. Parameter recovery on simulated data and a comparison with rival models address this. A claim about dopamine needs independent evidence, for instance recordings or imaging of dopamine-related activity whose trial-by-trial size tracks the model's prediction errors, or a manipulation that changes $\alpha$ in the predicted way; even then it would support a link rather than identity.
+rubric: States that the parameters describe behavior under the model, not a neural quantity by themselves.
+rubric: Gives a reason for unreliable estimates such as trade-off between $\alpha$ and $\beta$, few trials or a model mismatch.
+rubric: Names independent evidence needed to link the parameter to dopamine, such as neural data or a manipulation.

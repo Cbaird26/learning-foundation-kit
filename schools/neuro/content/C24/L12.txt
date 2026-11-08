@@ -1,0 +1,268 @@
+@lesson
+title: Reproducible analysis pipelines
+summary: Structure an analysis as parameterized functions from data file to result, validate inputs, control randomness, report uncertainty with a bootstrap, and summarize a population recording end to end.
+objective: Parse spike data from text, validate it, and compute results with all parameters in one place.
+objective: Control randomness with supplied random numbers or a seeded generator, and compute a bootstrap percentile interval with stated conventions.
+objective: Write an end-to-end function from raw text to a population summary, and list what a reproducible report must record.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies that end by summarizing a result with its uncertainty; for good practice in scientific computing, look up the topic "reproducible research" in the Python scientific-computing documentation.
+
+@article
+A colleague sends you her spike times and asks for the tuning curve. Six months later a reviewer asks how the bins were chosen, and nobody, including you, can say which version of the script produced Figure 3. Analysis that cannot be rerun is analysis that cannot be checked. This lesson turns the pieces of the course into a **pipeline** that anyone can rerun and trust.
+
+### Stages and parameters
+
+A good pipeline has four stages, each a function with explicit inputs and outputs.
+
+1. **Load** raw data from a file into a simple structure (a list of trials, each a dictionary).
+2. **Validate**: check what must be true (spike times sorted, within the trial window, units consistent) and report problems instead of silently continuing.
+3. **Analyze**: compute counts, rates, tuning curves, decoders, using parameters (window, bin width, number of iterations) read from **one dictionary** and never buried inside functions.
+4. **Report**: return numbers with their uncertainty, the parameters used and a fingerprint of the data.
+
+Functions should take their inputs as arguments and return results; they should not change global variables or their arguments. Name units in variable names (`t_stop_s`, `bin_ms`). A small function with a docstring and a few asserts is a test you can run after every change; the exercises in this course are exactly such tests.
+
+### Loading and validating
+
+Spike data are often stored as text, with one trial per line. Suppose the file has a header `trial,stimulus,spike_times` and lines like `3,90,0.05 0.15 0.25 0.95`, where the spike times (seconds) are separated by spaces and may be empty. A loader splits each line on commas, converts the fields and returns a dictionary per trial. Validation then checks each trial: the spike times should equal their sorted version and every time should satisfy $0 \le t < t_{\max}$.
+
+```python
+def run_analysis(trials, params):
+    """Mean rate (Hz) and Fano factor of counts in [t_start, t_stop)."""
+    t0, t1 = params["t_start"], params["t_stop"]
+    counts = [sum(1 for t in tr["spikes"] if t0 <= t < t1) for tr in trials]
+    n = len(counts)
+    mean = sum(counts) / n
+    var = sum((c - mean) ** 2 for c in counts) / (n - 1) if n > 1 else None
+    return {
+        "n_trials": n,
+        "rate_hz": mean / (t1 - t0),
+        "fano": None if var is None or mean == 0 else var / mean,
+        "params": dict(params),
+    }
+```
+
+For three trials with spike counts $3, 2, 4$ in $[0, 1)$, the function returns a mean rate of $3$ Hz and a Fano factor of $1/3$. The `dict(params)` copy stores the settings with the result.
+
+### Randomness
+
+Simulations and resampling use random numbers. A reproducible analysis either takes the random numbers as an argument (as we did for Poisson spikes) or creates a `random.Random(seed)` generator with a **recorded seed**. Tests of random functions should check properties (right length, values in range, same output from the same seed), not particular values, because different Python versions and implementations can produce different numbers from the same seed.
+
+### Uncertainty by the bootstrap
+
+Every result should carry an uncertainty. The **bootstrap** estimates it from the data: **resample trials** with replacement (draw $n$ trial indices from $n$ trials), recompute the statistic, repeat $B$ times, and read an interval from the spread. Here the resampling index lists are supplied, so the result is a deterministic function. For each index list the statistic is the mean rate of the chosen trials, $\sum_{i}\text{count}_i / (n\,T)$. Sort the $B$ rates $r_{(0)} \le \dots \le r_{(B-1)}$. For a confidence level `level`, let $k = \lfloor B(1 - \text{level})/2 + 10^{-9} \rfloor$ (the tiny term guards against floating-point error). The **percentile interval** is $[r_{(k)},\ r_{(B-1-k)}]$. Bootstrapping over trials respects the trial as the unit of replication; resampling bins or spikes within a trial would understate the uncertainty because they are not independent.
+
+### What a report records
+
+State each result with its uncertainty, the units, the number of trials and neurons, the parameters, the seed or random numbers, the data fingerprint (for example the number of spikes and a checksum), and the version of the code. State the limits: what the analysis does and does not show. For a population recording the same discipline applies: load the matrix, check it, compute the covariance, run PCA with a stated number of iterations and report the fraction of variance in the top component, together with the number of samples, since a dimensionality estimate from 20 time bins is not the same as one from 2000.
+
+@example
+title: A bootstrap interval by hand
+problem: Spike counts $(4, 6, 8)$ from three trials over a window of $T = 1$ s give resampling index lists $[0,0,1]$, $[2,2,2]$, $[1,2,0]$, $[0,1,1]$, $[2,1,2]$. Compute the $60\%$ percentile interval for the mean rate.
+step: Each resample's mean rate is the mean of the chosen counts divided by $T = 1$: $[0,0,1] \to (4+4+6)/3 = 4.67$; $[2,2,2] \to 8$; $[1,2,0] \to (6+8+4)/3 = 6$; $[0,1,1] \to (4+6+6)/3 = 5.33$; $[2,1,2] \to (8+6+8)/3 = 7.33$ Hz.
+step: Sort them: $4.67, 5.33, 6, 7.33, 8$, so $B = 5$.
+step: The index is $k = \lfloor 5(1 - 0.6)/2 + 10^{-9} \rfloor = \lfloor 1.000000001 \rfloor = 1$, so the interval runs from $r_{(1)}$ to $r_{(B - 1 - k)} = r_{(3)}$.
+step: That gives $[5.33, 7.33]$ Hz. With only five resamples this is a rough interval; real analyses use thousands.
+answer: $[5.33, 7.33]$ Hz.
+
+@mistakes
+- Hiding parameters inside functions (a bin width typed in three places), so that a change in one place silently makes the results inconsistent.
+- Changing the input data in place (sorting or filtering a trial list that the caller still needs), which makes results depend on the order of calls.
+- Testing random code against specific random values rather than properties, or not recording the seed.
+- Bootstrapping spikes or bins instead of trials, which understates uncertainty when spikes within a trial are correlated.
+
+@practice num
+prompt: A bootstrap with $B = 200$ resamples gives a 95% percentile interval. Using $k = \lfloor B(1 - \text{level})/2 + 10^{-9} \rfloor$ and the interval $[r_{(k)}, r_{(B-1-k)}]$ of the sorted rates, what is the index $k$ of the lower end?
+answer: 5
+check: int(200 * (1 - 0.95) / 2 + 1e-9)
+hint: Compute $200 \times 0.05/2$.
+solution: $200 \times 0.05 / 2 = 5$, so the lower end is the sixth smallest rate, $r_{(5)}$ counting from 0, and the upper end is $r_{(194)}$.
+
+@practice mc
+prompt: Which practice most improves the reproducibility of a spike-train analysis?
+choice*: Keep all parameters in one recorded dictionary, use seeded or supplied random numbers, and store the parameters, seed and a data fingerprint with the result.
+choice: Run the script once and keep the final figure.
+choice: Use the global random generator without a seed so that each run is independent.
+choice: Edit the raw data file in place when a problem is found, without noting it.
+hint: A reader should be able to rerun the analysis and get the same numbers.
+solution: Recording parameters, randomness and the data version means someone else (or you, later) can regenerate the result and check it. A single run, an unseeded generator and silent edits to raw data each make the result impossible to reproduce or audit.
+
+@practice code
+prompt: Write `parse_trials(text)` for text whose first line is the header `trial,stimulus,spike_times`, followed by one trial per line like `3,90,0.05 0.15 0.25 0.95`: an integer trial number, an integer stimulus, and spike times in seconds separated by spaces (possibly empty). Return a list of dictionaries `{"trial": int, "stimulus": int, "spikes": [float, ...]}` in file order. Skip the header and any blank lines, and strip spaces around each field. For example, a line `4,90,` gives `spikes` equal to `[]`.
+starter:
+```python
+def parse_trials(text):
+    pass
+```
+tests:
+```python
+text = "trial,stimulus,spike_times\n1,0,0.10 0.35 0.80\n2,0,0.20 0.45\n3,90,0.05 0.15 0.25 0.95\n"
+got = parse_trials(text)
+assert [g["trial"] for g in got] == [1, 2, 3]
+assert [g["stimulus"] for g in got] == [0, 0, 90]
+assert got[0]["spikes"] == [0.10, 0.35, 0.80]
+assert got[2]["spikes"] == [0.05, 0.15, 0.25, 0.95]
+got = parse_trials("trial,stimulus,spike_times\n\n4,90,\n 5 , 45 , 0.5  0.7 \n")
+assert got == [{"trial": 4, "stimulus": 90, "spikes": []},
+               {"trial": 5, "stimulus": 45, "spikes": [0.5, 0.7]}]
+assert parse_trials("trial,stimulus,spike_times\n") == []
+```
+model:
+```python
+def parse_trials(text):
+    """Parse the trial text format into a list of dictionaries."""
+    trials = []
+    for line in text.splitlines()[1:]:
+        if not line.strip():
+            continue
+        parts = line.split(",")
+        trials.append({
+            "trial": int(parts[0].strip()),
+            "stimulus": int(parts[1].strip()),
+            "spikes": [float(x) for x in parts[2].split()],
+        })
+    return trials
+```
+hint: Skip the first line, split every other line on commas, convert the first two fields to integers, and split the third on whitespace.
+solution: `str.split()` with no argument splits on any run of spaces and returns an empty list for an empty or all-space field, which handles trials with no spikes, and `int` accepts spaces around the digits. Skipping blank lines keeps a trailing newline from causing an error.
+
+@practice code
+prompt: Write `validate_trials(trials, t_max)` for a list of trial dictionaries with keys `"trial"` and `"spikes"` (spike times in seconds). Return a list of `(trial_number, problem)` pairs in trial order. For each trial, first add `"unsorted"` if the spike list differs from its sorted version, then add `"out_of_range"` if any spike satisfies `t < 0` or `t >= t_max`. A trial with no problems adds nothing. The function must not change the trials. For example, a trial `{"trial": 2, "spikes": [0.5, 0.2]}` with `t_max = 1.0` gives `(2, "unsorted")`.
+starter:
+```python
+def validate_trials(trials, t_max):
+    pass
+```
+tests:
+```python
+trials = [
+    {"trial": 1, "spikes": [0.1, 0.4]},
+    {"trial": 2, "spikes": [0.5, 0.2]},
+    {"trial": 3, "spikes": [0.3, 1.0]},
+    {"trial": 4, "spikes": [1.2, -0.1]},
+    {"trial": 5, "spikes": []},
+]
+got = validate_trials(trials, 1.0)
+assert got == [(2, "unsorted"), (3, "out_of_range"), (4, "unsorted"), (4, "out_of_range")]
+assert trials[1]["spikes"] == [0.5, 0.2]
+assert validate_trials([], 1.0) == []
+assert validate_trials([{"trial": 9, "spikes": [0.0, 0.999]}], 1.0) == []
+```
+model:
+```python
+def validate_trials(trials, t_max):
+    """Report unsorted or out-of-range spike times, without changing data."""
+    problems = []
+    for tr in trials:
+        spikes = tr["spikes"]
+        if spikes != sorted(spikes):
+            problems.append((tr["trial"], "unsorted"))
+        if any(t < 0 or t >= t_max for t in spikes):
+            problems.append((tr["trial"], "out_of_range"))
+    return problems
+```
+hint: Compare each spike list with `sorted(spikes)` (which makes a copy), and test every time against the half-open range from 0 to `t_max`.
+solution: `sorted` returns a new list, so the trials are not changed (calling `spikes.sort()` would modify the caller's data). A spike exactly at `t_max` is out of range because the analysis windows are half-open, and trial 4 has both problems, listed in the stated order.
+
+@practice text
+prompt: What does this program print?
+```python
+counts = [4, 6, 8]
+for idx in [[0, 0, 1], [2, 2, 2]]:
+    print(round(sum(counts[i] for i in idx) / len(idx), 2))
+```
+answer:
+```
+4.67
+8.0
+```
+check: run("counts = [4, 6, 8]\nfor idx in [[0, 0, 1], [2, 2, 2]]:\n    print(round(sum(counts[i] for i in idx) / len(idx), 2))")
+hint: Each index list picks counts with replacement; average them.
+solution: The first resample is $(4 + 4 + 6)/3 = 4.67$ and the second is $(8 + 8 + 8)/3 = 8.0$, so the program prints two lines, `4.67` and `8.0`.
+
+@quiz code
+prompt: Write `bootstrap_rate_ci(counts, T, index_lists, level)`. `counts` holds per-trial spike counts in windows of `T` seconds; each list in `index_lists` holds trial indices (with repeats) for one resample. For each resample compute the mean rate in hertz: the sum of the chosen counts divided by `len(idx) * T`. Sort the $B$ rates and return the pair `(lower, upper)` $= (r_{(k)}, r_{(B-1-k)})$ with $k = \lfloor B(1 - \text{level})/2 + 10^{-9}\rfloor$, using `int(B * (1 - level) / 2 + 1e-9)`. For example, with ten resamples and `level = 0.8`, $k = 1$.
+starter:
+```python
+def bootstrap_rate_ci(counts, T, index_lists, level):
+    pass
+```
+tests:
+```python
+counts = [2, 4, 6, 8]
+idxs = [[0, 1, 2, 3], [0, 0, 0, 0], [3, 3, 3, 3], [1, 1, 2, 2], [0, 3, 0, 3],
+        [2, 2, 2, 2], [1, 3, 1, 3], [0, 0, 1, 1], [2, 3, 2, 3], [1, 2, 3, 0]]
+lo, hi = bootstrap_rate_ci(counts, 0.5, idxs, 0.8)
+assert abs(lo - 6.0) < 1e-9 and abs(hi - 14.0) < 1e-9
+lo, hi = bootstrap_rate_ci(counts, 0.5, idxs, 0.6)
+assert abs(lo - 10.0) < 1e-9 and abs(hi - 12.0) < 1e-9
+lo, hi = bootstrap_rate_ci(counts, 0.5, idxs, 1.0)
+assert abs(lo - 4.0) < 1e-9 and abs(hi - 16.0) < 1e-9
+assert idxs[0] == [0, 1, 2, 3]
+```
+model:
+```python
+def bootstrap_rate_ci(counts, T, index_lists, level):
+    """Percentile interval of resampled mean rates (Hz)."""
+    rates = sorted(sum(counts[i] for i in idx) / (len(idx) * T) for idx in index_lists)
+    b = len(rates)
+    k = int(b * (1 - level) / 2 + 1e-9)
+    return rates[k], rates[b - 1 - k]
+```
+hint: Compute one rate per index list, sort the list of rates, and read the entries at positions $k$ and $B - 1 - k$.
+solution: The ten rates sorted are $4, 6, 10, 10, 10, 10, 12, 12, 14, 16$. With level 0.8, $k = 1$ gives $(6, 14)$; with 0.6, $k = 2$ gives $(10, 12)$; with level 1, $k = 0$ gives the full range $(4, 16)$.
+
+@quiz code
+prompt: Write `population_summary(text, iters)` for text with one time bin per line and the neurons' counts as comma-separated numbers (for example `3,1` for two neurons). Skip blank lines. Return a dictionary with keys `"n_bins"`, `"n_neurons"` and `"pc1_fraction"`, where `pc1_fraction` is the top eigenvalue of the sample covariance matrix of the columns (divisor $n - 1$) divided by its trace. Find the top eigenvalue by power iteration from the start vector $(1, 2, \dots, d)$, with `iters` steps of multiplying by the matrix and rescaling to unit length, taking the eigenvalue as $\mathbf{v}^\top\mathbf{C}\mathbf{v}$. If the trace is 0, `pc1_fraction` is `0.0`. For example, `population_summary("3,1\n1,3\n5,5\n3,3", 100)` has `pc1_fraction` about `0.75`.
+starter:
+```python
+def population_summary(text, iters):
+    pass
+```
+tests:
+```python
+r = population_summary("3,1\n1,3\n5,5\n3,3\n", 100)
+assert r["n_bins"] == 4 and r["n_neurons"] == 2
+assert abs(r["pc1_fraction"] - 0.75) < 1e-6
+r = population_summary("1,2\n3,2\n5,6\n7,6", 200)
+assert abs(r["pc1_fraction"] - 0.9479032) < 1e-6
+r = population_summary("2,4,3\n3,6,1\n\n6,12,2\n1,2,3\n5,10,1\n3,6,2", 200)
+assert r["n_bins"] == 6 and r["n_neurons"] == 3
+assert abs(r["pc1_fraction"] - 0.9722655) < 1e-6
+r = population_summary("5,5\n5,5\n5,5", 50)
+assert r["pc1_fraction"] == 0.0
+```
+model:
+```python
+import math
+
+
+def population_summary(text, iters):
+    """Fraction of variance in PC1 for a recording given as comma-separated rows."""
+    X = [[float(x) for x in line.split(",")] for line in text.splitlines() if line.strip()]
+    n, d = len(X), len(X[0])
+    mean = [sum(row[j] for row in X) / n for j in range(d)]
+    C = [[sum((row[i] - mean[i]) * (row[j] - mean[j]) for row in X) / (n - 1)
+          for j in range(d)] for i in range(d)]
+    trace = sum(C[i][i] for i in range(d))
+    result = {"n_bins": n, "n_neurons": d, "pc1_fraction": 0.0}
+    if trace == 0:
+        return result
+    v = [float(j + 1) for j in range(d)]
+    for _ in range(iters):
+        w = [sum(C[i][j] * v[j] for j in range(d)) for i in range(d)]
+        norm = math.sqrt(sum(x * x for x in w))
+        v = [x / norm for x in w]
+    lam = sum(v[i] * C[i][j] * v[j] for i in range(d) for j in range(d))
+    result["pc1_fraction"] = lam / trace
+    return result
+```
+hint: Parse the rows into numbers, center the columns, build the covariance with divisor $n - 1$, run power iteration, and divide the Rayleigh quotient by the trace.
+solution: A constant recording has zero variance, so the trace is 0 and the fraction is defined as 0.0 before any division. The three-neuron recording has two neurons that move together, so PC1 explains about $97\%$ of the variance; the same helper functions would give the result for a real recording with hundreds of neurons, with a larger `iters` when the top eigenvalues are close.
+
+@quiz mc
+prompt: Your bootstrap interval for a mean firing rate is computed by resampling individual spikes from the pooled data instead of resampling trials. What is wrong with that?
+choice*: Spikes within a trial are not independent replicates, so resampling them understates the uncertainty; the trial is the unit of replication.
+choice: Resampling spikes gives a wider interval than resampling trials, so it is too conservative.
+choice: Nothing; spikes and trials are interchangeable for a bootstrap.
+choice: Bootstrap intervals cannot be computed for firing rates.
+hint: Ask what was repeated independently in the experiment: spikes, or trials?
+solution: Trial-to-trial fluctuations in the rate (arousal, adaptation, slow drift) are shared by all the spikes of a trial, so the independent units are trials. Resampling spikes ignores that variation and gives an interval that is too narrow.
