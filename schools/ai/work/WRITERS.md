@@ -44,3 +44,5 @@ Log:
 - C16 done (0 errors, 10 long-line warnings, 97; extra attributions DBSCAN, isolation forest, LOF, t-SNE, UMAP, silhouette, Rand, ARI, Viterbi; reading lines checked against Murphy PML1's table of contents, which has no UMAP, anomaly-detection, HMM or Bayesian-network sections); review started C16
 - C19 done (0 errors, 4 long-line warnings, 96; Bolukbasi 2016, Caliskan 2017, model cards 2019, Levy-Goldberg 2014, Holtzman 2019; Austen and Dickens openings checked); review started C19
 - C15 reviewed (27 fixes, mostly code items that re-typed article functions turned into variants; tree-isolation wording, calibration wording, AP of random scores 'close to' prevalence); follow-up by me: L09 boosting history (Friedman, Hastie and Tibshirani 2000 for AdaBoost's exponential loss; Friedman 2001 for gradient boosting)
+- C18 reviewed (24 fixes: items and tests moved off article and example data, residual and dilated-receptive-field variants, beam-search example values corrected (0.06 and 0.03), transposed Jacobian, analogy test catches dot-product choice, project train/test pairs separated)
+- started C23
