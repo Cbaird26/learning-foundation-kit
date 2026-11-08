@@ -1,0 +1,194 @@
+@lesson
+title: Tokenization and pretraining data
+summary: Run byte-pair encoding by hand and in code, count what a vocabulary costs in parameters and sequence length, and describe how pretraining text is collected, filtered and deduplicated.
+objective: Carry out the byte-pair encoding algorithm: count pairs, merge, and encode new words with a learned merge list.
+objective: Compute vocabulary size and embedding parameters and explain the trade-off between vocabulary size and sequence length.
+objective: Describe the stages of a pretraining data pipeline and the open questions about data quality, memorization and rights.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the lectures on tokenization and on data collection, filtering and deduplication.
+
+@article
+A language model never sees text. It sees integers, and the map from text to integers is chosen before training and never learned by gradient descent. That choice decides how long every sequence is, how many parameters sit in the embedding, which words are cheap and which are expensive, and which strings the model cannot even represent. Treat the tokenizer as part of the model.
+
+### Why not words or characters
+
+A word-level vocabulary is short per text but cannot represent a word it has not seen, so rare words, names and typos become a single "unknown" symbol. A character-level vocabulary represents everything, but sequences become long, and attention costs grow with the square of length. **Subword** tokenization sits between them: frequent strings become single tokens, rare strings are spelled out from pieces.
+
+### Byte-pair encoding
+
+Byte-pair encoding (BPE) was adapted to subword units for translation by Sennrich, Haddow and Birch (2016). Training on a corpus of word counts:
+
+1. Start with each word as a sequence of single symbols (characters, or bytes).
+2. Count every adjacent pair of symbols, weighting each occurrence by its word's frequency.
+3. Merge the most frequent pair into a new symbol, and record the merge.
+4. Repeat until the vocabulary has the wanted size.
+
+To encode new text, apply the recorded merges **in the order they were learned**. Take the words cat (6 occurrences), cats (3), cart (4), car (6) and art (2):
+
+| step | pair counts (top) | merge |
+|---|---|---|
+| 1 | (c,a) 19; (a,r) 12; (a,t) 9; (r,t) 6; (t,s) 3 | c + a → ca |
+| 2 | (ca,r) 10; (ca,t) 9; (r,t) 6; (t,s) 3; (a,r) 2 | ca + r → car |
+| 3 | (ca,t) 9; (car,t) 4; (t,s) 3; (a,r) 2; (r,t) 2 | ca + t → cat |
+
+The count 19 is $6+3+4+6$: the pair (c,a) occurs once in each of those four words, weighted by frequency. In code:
+
+```python
+from collections import Counter
+
+def count_pairs(words):
+    """words maps a tuple of symbols to its corpus frequency."""
+    counts = Counter()
+    for symbols, freq in words.items():
+        for pair in zip(symbols, symbols[1:]):
+            counts[pair] += freq
+    return counts
+
+def merge_pair(words, pair):
+    """Replace each adjacent occurrence of pair by one merged symbol."""
+    merged = {}
+    for symbols, freq in words.items():
+        out, i = [], 0
+        while i < len(symbols):
+            if i + 1 < len(symbols) and (symbols[i], symbols[i + 1]) == pair:
+                out.append(symbols[i] + symbols[i + 1])
+                i += 2
+            else:
+                out.append(symbols[i])
+                i += 1
+        merged[tuple(out)] = freq
+    return merged
+```
+
+Variants exist: WordPiece (used by BERT, Devlin and colleagues, 2018) chooses merges by a likelihood criterion; the unigram language-model tokenizer and the SentencePiece library (Kudo, 2018; Kudo and Richardson, 2018) work on raw text without pre-splitting into words. **Byte-level** BPE starts from the 256 byte values, so any string can be encoded and nothing is "unknown"; it was used by the GPT-2 line of models (Radford and colleagues, 2019).
+
+### What a vocabulary costs
+
+A vocabulary of size $V$ costs $Vd$ embedding parameters (twice that if the output matrix is untied) and makes the final softmax wider. A larger $V$ shortens sequences, since more strings are one token. The compression is measured in characters (or bytes) per token. If a tokenizer lifts it from 3.6 to 3.9 characters per token, the same text has $1 - 3.6/3.9 \approx 7.7\%$ fewer tokens, and attention score matrices shrink by about 15 percent, since they scale with $n^2$. Against that, going from $V = 32{,}000$ to $64{,}000$ at $d = 1024$ adds 32,768,000 parameters. There is no formula for the best size; it is an empirical trade-off that interacts with model size.
+
+Tokenization has consequences that look like model behavior. A tokenizer trained mostly on one language splits other languages into more tokens per word, so the same context window holds less text and each word costs more to process. Numbers may split inconsistently, and leading spaces change token identity. Per-token loss is not comparable across tokenizers, a point we use in lesson 3.
+
+### Pretraining data
+
+A typical pipeline has these stages: collect text (web crawls, books, code, reference text), extract text from markup, identify language, filter for quality with heuristics or learned classifiers, remove personal data and unwanted content, and **deduplicate**. Exact deduplication hashes documents; near-duplicate detection, often with MinHash, finds documents that differ slightly. Lee and colleagues (2021) reported that deduplicating training data reduced verbatim memorization and improved models, and extraction of memorized training sequences from language models was shown by Carlini and colleagues (2021).
+
+Open questions are many. What makes data "high quality" is defined by the filter, and a filter built on what a reference corpus looks like embeds that corpus's biases. How much repetition of data is harmful, how to mix sources, and how data affects abilities are studied but not settled. Whether and when training on copyrighted text is permitted is contested and differs across jurisdictions; this is a legal and policy question that research cannot answer by itself. Finally, because evaluation sets are also text on the web, pretraining data and benchmarks can overlap, which returns in lesson 12.
+
+@example
+title: Three merges by hand
+problem: Run byte-pair encoding on the word counts nap (5), nab (3), tab (6) and tap (2), each starting as single characters. List the first three merges.
+step: Count pairs, weighting by frequency: (a,b) occurs in nab and tab, $3+6 = 9$; (n,a) in nap and nab, $5+3 = 8$; (t,a) in tab and tap, $6+2 = 8$; (a,p) in nap and tap, $5+2 = 7$. Merge (a,b) into ab.
+step: The words are now n+a+p (5), n+ab (3), t+ab (6), t+a+p (2). The pair (a,p) has count $5+2 = 7$ and (t,ab) has 6, (n,a) has 5, so merge (a,p) into ap.
+step: The words are n+ap (5), n+ab (3), t+ab (6), t+ap (2). Now (t,ab) has 6, (n,ap) 5, (n,ab) 3, (t,ap) 2, so the third merge is (t,ab), giving the whole word tab as one symbol.
+answer: The merges are a+b, a+p, then t+ab.
+
+@example
+title: The price of a bigger vocabulary
+problem: A tokenizer with $V = 32{,}000$ gives 3.6 characters per token. Another with $V = 64{,}000$ gives 3.9. The model has $d = 1024$ with tied embeddings. For a 10,000-character document, how many more embedding parameters does the larger tokenizer need, and how many fewer tokens does the document have?
+step: Extra parameters: $(64{,}000 - 32{,}000) \times 1024 = 32{,}768{,}000$.
+step: Tokens: $10{,}000/3.6 \approx 2778$ and $10{,}000/3.9 \approx 2564$.
+step: The difference is about 214 tokens, or 7.7 percent. Whether that is worth 32.8 million parameters depends on how large the whole model is and how it will be used.
+answer: About 32.8 million more parameters, and about 214 fewer tokens (7.7 percent).
+
+@mistakes
+- Counting each pair once per word type instead of weighting by the word's frequency: the most frequent pair in the corpus is not the pair in the most word types.
+- Encoding new text by repeatedly merging whichever pair seems best: encoding must replay the learned merges in training order.
+- Comparing perplexity across models with different tokenizers: a token of one tokenizer is not a token of another.
+- Treating deduplication as one step: exact copies and near-copies are different problems with different tools.
+
+@practice num
+prompt: A byte-level BPE tokenizer starts from the 256 byte values, learns 30,000 merges, and adds 3 special tokens (such as an end-of-text marker). What is its vocabulary size?
+answer: 30259
+unit: tokens
+check: 256 + 30000 + 3
+hint: Each merge adds one new symbol to the vocabulary.
+solution: The base alphabet has 256 symbols, each of the 30,000 merges adds one, and the special tokens add 3, so $256 + 30{,}000 + 3 = 30{,}259$.
+
+@practice num
+prompt: A decoder-only transformer has $d = 1024$, $L = 12$, $d_{\text{ff}} = 4096$, learned positions with $n_{\text{ctx}} = 2048$, tied embeddings, and a tokenizer with $V = 50{,}000$. Count weight matrices only (no biases or layer norms). How many parameters does it have?
+answer: 204292096
+unit: parameters
+check: 50000 * 1024 + 2048 * 1024 + 12 * (4 * 1024 ** 2 + 2 * 1024 * 4096)
+hint: Embeddings are $Vd + n_{\text{ctx}} d$; each block has $4d^2 + 2 d\, d_{\text{ff}}$ weights.
+solution: Token embeddings: $50{,}000 \cdot 1024 = 51{,}200{,}000$. Positions: $2048 \cdot 1024 = 2{,}097{,}152$. One block: $4 \cdot 1024^2 = 4{,}194{,}304$ plus $2 \cdot 1024 \cdot 4096 = 8{,}388{,}608$, which is 12,582,912; twelve blocks give 150,994,944. The total is 204,292,096.
+
+@practice mc
+prompt: Byte-pair encoding is trained on the word counts dog (8), dot (1), got (1) and gob (1), each as single characters. Which pair is merged first?
+choice*: (d, o)
+choice: (o, g)
+choice: (o, t)
+choice: (g, o)
+hint: Weight every occurrence of a pair by the frequency of the word that contains it, then add up.
+solution: The pair (d, o) occurs in dog (8) and dot (1), for a count of 9. The pair (o, g) has 8, while (o, t) and (g, o) each have 2. So (d, o) is merged first.
+
+@practice ms
+prompt: Which statements about tokenizers and pretraining data are true? Select all that apply.
+choice*: Byte-level BPE can encode any string, because every string is a sequence of bytes.
+choice*: Per-token perplexity cannot be compared across models whose tokenizers differ.
+choice*: Near-duplicate detection finds documents that differ from one another slightly, which exact hashing misses.
+choice: A larger vocabulary always lowers the loss per byte of text.
+choice: BPE merges are learned by gradient descent along with the model weights.
+hint: BPE is a counting algorithm run before training; its output is a fixed table.
+solution: Byte-level BPE starts from all 256 byte values, so nothing is unrepresentable. Models with different tokenizers divide the same total information over different numbers of tokens, so per-token numbers are not comparable. Exact hashing misses documents that differ by a few characters. A larger vocabulary has costs and benefits and no guaranteed gain, and BPE merges come from counting, not gradient descent.
+
+@practice code
+prompt: Write `encode(word, merges)` for a trained BPE tokenizer. `word` is a string and `merges` is a list of pairs of strings in the order they were learned, such as `[("c", "a"), ("ca", "t")]`. Start from the list of single characters of `word`; then, for each merge in order, scan left to right and replace every non-overlapping adjacent occurrence of the pair by the concatenated symbol. Return the list of symbols. For example, `encode("cats", [("c", "a"), ("ca", "t")])` returns `["cat", "s"]`.
+starter:
+```python
+def encode(word, merges):
+    return []
+```
+tests:
+```python
+assert encode("cats", [("c", "a"), ("ca", "t")]) == ["cat", "s"]
+assert encode("cart", [("c", "a"), ("ca", "t")]) == ["ca", "r", "t"]
+assert encode("", [("a", "b")]) == []
+assert encode("abc", [("a", "b"), ("b", "c")]) == ["ab", "c"]
+assert encode("abc", [("b", "c"), ("a", "b")]) == ["a", "bc"]
+assert encode("aaa", [("a", "a")]) == ["aa", "a"]
+```
+model:
+```python
+def encode(word, merges):
+    """Apply BPE merges, in learned order, to the characters of word."""
+    symbols = list(word)
+    for left, right in merges:
+        out = []
+        i = 0
+        while i < len(symbols):
+            if (i + 1 < len(symbols) and symbols[i] == left
+                    and symbols[i + 1] == right):
+                out.append(left + right)
+                i += 2
+            else:
+                out.append(symbols[i])
+                i += 1
+        symbols = out
+    return symbols
+```
+hint: Loop over merges in the given order; inside, rebuild the symbol list with a while loop that jumps two positions after a merge.
+solution: Order matters: with merges a+b then b+c, the word abc becomes ab, c, but with the order reversed it becomes a, bc. Jumping two positions after a merge gives non-overlapping merges left to right, so aaa becomes aa, a.
+
+@quiz num
+prompt: A document of 8000 characters is tokenized by tokenizer A at 3.2 characters per token and by tokenizer B at 4.0 characters per token. Attention scores per head and layer scale as $n^2$ in the number of tokens $n$. By what factor does tokenizer A have more score entries than tokenizer B? Give the factor to three decimal places.
+answer: 1.5625
+tol: 0.001
+check: (8000 / 3.2) ** 2 / (8000 / 4.0) ** 2
+hint: Find the token counts $n_A$ and $n_B$, then divide $n_A^2$ by $n_B^2$.
+solution: Tokenizer A gives $8000/3.2 = 2500$ tokens and B gives $2000$. The ratio of squares is $(2500/2000)^2 = 1.25^2 = 1.5625$.
+
+@quiz mc
+prompt: A tokenizer was trained on mostly English text. What is the most direct consequence for a language that is rare in its training text?
+choice*: Text in that language is split into more tokens per word, so a fixed context window holds less of it and each word costs more to process.
+choice: The model cannot represent any text in that language, even with byte-level BPE.
+choice: The embedding matrix gains extra rows for that language during training.
+choice: The tokenizer's merges are automatically updated when it meets the new language.
+hint: Merges are fixed after training; what happens to strings the merges do not cover?
+solution: Merges reflect the training text, so strings from a rare language are covered by few merges and are spelled out in short pieces, giving more tokens per word. Byte-level BPE can still represent them, the vocabulary does not change after training, and merges are not updated at encoding time.
+
+@quiz self
+prompt: You are asked to filter a web crawl before pretraining. Propose three stages of the pipeline, and then defend one choice that involves a real trade-off, naming what could go wrong with it.
+hint: Think about what a quality classifier is trained on and what it will therefore prefer.
+solution: Stages: first, extract text and identify language, discarding documents too short or mostly markup; second, exact and near-duplicate removal, so that repeated pages do not dominate and verbatim memorization falls; third, a quality filter that scores documents. The quality filter has a real trade-off. A classifier trained to separate reference-like text from random crawl text raises the average polish of the data and may help downstream scores, but it prefers the style and topics of its reference set, so it can remove dialects, informal registers and subjects that the reference underrepresents, and it can push the model's coverage in one direction. One defense is to measure what each filter removes by topic and dialect and to keep a small unfiltered sample as a control. Whether the gain in measured quality is worth the narrowing is an empirical question for the intended use, and it is not settled in general.
+rubric: Names three plausible, distinct pipeline stages.
+rubric: Identifies a specific trade-off, such as a filter's bias toward its reference corpus, and a concrete failure it can cause.
+rubric: Proposes a way to measure or mitigate the effect, and does not claim the question is settled.

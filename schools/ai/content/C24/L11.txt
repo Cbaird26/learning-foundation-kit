@@ -1,0 +1,212 @@
+@lesson
+title: Experiments in production: shadow tests, canaries and A/B tests
+summary: Roll out a new model safely with shadow deployments, canaries and A/B tests, and write the decision rules and sample-size arithmetic behind them.
+objective: Explain what shadow, canary and A/B deployments each test and what risk each removes.
+objective: Run a two-proportion z-test and compute the sample size needed to detect a given difference.
+objective: Assign users to variants deterministically and write a canary decision rule that promotes, continues or rolls back.
+reading: Made With ML, the lessons on testing and deployment strategies; look up "canary release", "shadow deployment" and "A/B testing" in the course index.
+@article
+Offline evaluation on a held-out set says a new model is better. Production says whether it is better where it matters: with live inputs, on the real system, for real users. Replacing the old model for everyone at once bets the whole product on the offline number. Safer rollout strategies expose the new model gradually, and each answers a different question.
+
+### Three strategies
+
+| strategy | what happens | what it tells you | risk to users |
+|---|---|---|---|
+| shadow | the new model receives live inputs and its outputs are logged, not used | does it run, how fast, how do its outputs compare with the old model's? | none |
+| canary | a small share (say 5%) of traffic is served by the new model | do error rates, latency and guardrail metrics hold up? | small |
+| A/B test | users are randomly split between old and new, and an outcome metric is compared | is the new model better for the business metric, and by how much? | moderate |
+
+A typical path is shadow, then canary, then a larger A/B test. In a shadow test you can compute, for example, the fraction of requests where the two models' scores differ by more than a tolerance and the latency percentiles of the new model under real load, with no risk, but you learn nothing about user response. A **canary** is judged mostly by safety metrics, the **guardrail metrics** (errors, latency, complaints) that must not get worse. An **A/B test** measures the effect on the **primary metric** (clicks, conversions, losses).
+
+### Randomization
+
+For an A/B test to support a causal claim, assignment must be random with respect to everything that affects the outcome, and stable: a user should see the same variant every time. A common method hashes the user identifier together with an experiment name (a salt) and takes the remainder modulo 100 as a bucket; users in buckets below the treatment percentage get the new model. Changing the salt for a new experiment reshuffles users, so that one experiment's groups do not correlate with the next one's.
+
+### The two-proportion z-test
+
+Suppose variant A has $x_1$ successes among $n_1$ users and variant B has $x_2$ among $n_2$. Under the null hypothesis that both have the same rate, estimate that common rate by the pooled proportion $\hat{p} = (x_1 + x_2)/(n_1 + n_2)$. The test statistic is
+
+$$z = \frac{\hat{p}_2 - \hat{p}_1}{\sqrt{\hat{p}(1 - \hat{p})\left(\frac{1}{n_1} + \frac{1}{n_2}\right)}},$$
+
+where $\hat{p}_i = x_i/n_i$. For a two-sided test at the 5% level, reject the null when $|z| > 1.96$. For a canary that should only be rolled back if it is worse, use a one-sided test and a critical value such as 1.645.
+
+```python
+import math
+
+def two_prop_z(x1, n1, x2, n2):
+    """z statistic for the difference in rates of two groups."""
+    p1, p2 = x1 / n1, x2 / n2
+    pooled = (x1 + x2) / (n1 + n2)
+    se = math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2))
+    return (p2 - p1) / se
+
+print(round(two_prop_z(500, 5000, 560, 5000), 3))   # 1.949
+```
+
+### How many users?
+
+Before the test, decide the smallest effect worth detecting. To detect an absolute difference $\delta$ from a baseline rate $p$ with a two-sided 5% test and 80% power, a standard approximation gives, per group,
+
+$$n \approx \frac{2\,(z_{\alpha/2} + z_{\beta})^2\, p(1 - p)}{\delta^2}, \qquad z_{\alpha/2} = 1.96,\ z_\beta = 0.84 .$$
+
+For $p = 0.10$ and $\delta = 0.01$: $n \approx 2(2.8)^2(0.09)/0.0001 = 14{,}112$ users per group. Halving $\delta$ quadruples $n$.
+
+### Pitfalls
+
+**Peeking**: checking the result every day and stopping at the first $|z| > 1.96$ makes false positives far more frequent than 5%; fix the sample size in advance or use a method designed for sequential looks. **Many metrics**: with 20 independent metrics, one will look significant by chance, so name one primary metric first. **Interference and novelty**: users in the two groups may affect each other, and a new model may get attention only because it is new, so run long enough to see stable behavior. **Statistical and practical significance** differ: a significant 0.01% gain may not justify the cost of a new model.
+@example
+title: Reading an A/B test
+problem: Variant A (the old model) converts 500 of 5,000 users and variant B (the new model) converts 560 of 5,000. Compute the z statistic and decide at the two-sided 5% level.
+step: The rates are $\hat{p}_1 = 500/5000 = 0.100$ and $\hat{p}_2 = 560/5000 = 0.112$, so the difference is $0.012$.
+step: The pooled proportion is $\hat{p} = 1060/10000 = 0.106$.
+step: The standard error is $\sqrt{0.106 \times 0.894 \times (1/5000 + 1/5000)} = \sqrt{0.094764 \times 0.0004} = \sqrt{3.79 \times 10^{-5}} \approx 0.00616$.
+step: Then $z = 0.012/0.00616 \approx 1.95$.
+step: The critical value is 1.96 and $1.95 < 1.96$, so the result is just short of significance. Neither declare a win nor a tie: the sample size was planned for a larger effect; collect the pre-planned amount of data rather than stopping now.
+answer: $z \approx 1.95$, not significant at the 5% level; the evidence is inconclusive.
+@mistakes
+- Stopping an A/B test as soon as the result looks significant; the false-positive rate is then well above the nominal 5%.
+- Letting users choose their variant or assigning by an attribute such as region, so that the groups differ in more than the model.
+- Testing a dozen metrics and reporting the one that moved; choose the primary metric before the test.
+- Skipping the shadow and canary stages and discovering a crash or latency problem when half of the users are on the new model.
+@practice num
+prompt: A baseline conversion rate is $p = 0.20$. Using $n \approx 2(1.96 + 0.84)^2\, p(1 - p)/\delta^2$ per group, how many users per group are needed to detect an absolute difference of $\delta = 0.02$?
+answer: 6272
+unit: users
+tol: 1
+check: 2 * (1.96 + 0.84) ** 2 * 0.2 * 0.8 / 0.02 ** 2
+hint: Compute $2 \times 2.8^2 = 15.68$, multiply by $p(1 - p) = 0.16$, and divide by $\delta^2 = 0.0004$.
+solution: $2(2.8)^2 = 15.68$ and $15.68 \times 0.16 = 2.5088$. Dividing by $0.0004$ gives $6{,}272$ users per group.
+@practice mc
+prompt: A new model is deployed in shadow mode. What is true of it?
+choice*: It receives live inputs and its predictions are logged and compared with the old model's, but users never see them.
+choice: It serves a small random share of users and its predictions are shown to them.
+choice: It is trained on the live traffic of the old model and replaces it at midnight.
+choice: It is evaluated only on the held-out test set, without live inputs.
+hint: The word "shadow" says that the new model follows the live traffic without acting on it.
+solution: A shadow deployment runs the new model on real inputs without using its outputs, so it carries no user risk and reveals runtime problems and output differences, but not user response. Serving a share of users is a canary, and test-set evaluation is offline.
+@practice ms
+prompt: Which of these practices make an A/B test result unreliable? Select all that apply.
+choice*: Stopping the test on the first day that the p-value falls below 0.05.
+choice*: Letting each user pick whether to try the new model.
+choice*: Reporting whichever of 20 metrics shows a significant difference.
+choice: Fixing the sample size and the primary metric before the test starts.
+hint: Which practices let chance or self-selection, instead of the model, produce the difference?
+solution: Stopping at the first significant look inflates false positives; self-selection makes the groups differ in more than the model; reporting the best of many metrics finds noise. Fixing the sample size and the primary metric in advance is exactly what makes the result trustworthy.
+@practice code
+prompt: Write `canary_decision(canary_errors, canary_n, base_errors, base_n, z_crit, min_n)`. Let `p1 = base_errors / base_n`, `p2 = canary_errors / canary_n` and the pooled rate `p = (base_errors + canary_errors) / (base_n + canary_n)`; then `z = (p2 - p1) / sqrt(p * (1 - p) * (1 / base_n + 1 / canary_n))`, taking `z = 0` if `p` is 0 or 1. Return `"rollback"` if `z > z_crit` (the canary's error rate is significantly higher), otherwise `"promote"` if `canary_n >= min_n`, otherwise `"continue"`. For example, `canary_decision(0, 100, 0, 100, 1.645, 50)` returns `"promote"`.
+starter:
+```python
+import math
+
+def canary_decision(canary_errors, canary_n, base_errors, base_n, z_crit, min_n):
+    pass
+```
+tests:
+```python
+assert canary_decision(14, 2000, 190, 38000, 1.645, 1000) == "promote"
+assert canary_decision(30, 2000, 190, 38000, 1.645, 1000) == "rollback"
+assert canary_decision(3, 500, 190, 38000, 1.645, 1000) == "continue"
+assert canary_decision(0, 100, 0, 100, 1.645, 50) == "promote"
+assert canary_decision(1, 500, 190, 38000, 1.645, 1000) == "continue"
+assert canary_decision(40, 400, 190, 38000, 1.645, 1000) == "rollback"
+```
+model:
+```python
+import math
+
+def canary_decision(canary_errors, canary_n, base_errors, base_n, z_crit, min_n):
+    """Roll back on a significantly higher error rate, else promote when enough data."""
+    p1 = base_errors / base_n
+    p2 = canary_errors / canary_n
+    pooled = (base_errors + canary_errors) / (base_n + canary_n)
+    if pooled in (0, 1):
+        z = 0.0
+    else:
+        se = math.sqrt(pooled * (1 - pooled) * (1 / base_n + 1 / canary_n))
+        z = (p2 - p1) / se
+    if z > z_crit:
+        return "rollback"
+    if canary_n >= min_n:
+        return "promote"
+    return "continue"
+```
+hint: Compute the z statistic with the guard for a pooled rate of 0 or 1, then test for rollback first, then for enough data to promote.
+solution: Rollback is checked first, so a clearly worse canary is stopped even before it has `min_n` requests (the last test). Without a significant increase, the canary is promoted only after enough traffic; a small canary with too little data keeps running (the third and fifth tests). Zero errors in both groups would otherwise divide by zero, which the fourth test covers.
+@practice code
+prompt: Write `in_treatment(user_id, salt, percent)` for stable assignment to an experiment. Build the text `salt + ":" + str(user_id)`, compute `h = 0` and, for each character `ch`, `h = (h * 31 + ord(ch)) % 1000003`, take `bucket = h % 100`, and return `True` when `bucket < percent`. For example, with salt `"exp1"` the users 0 to 6 have buckets 83 to 89, so `in_treatment(0, "exp1", 90)` is `True`, while user 7 has bucket 90 and `in_treatment(7, "exp1", 90)` is `False`.
+starter:
+```python
+def in_treatment(user_id, salt, percent):
+    pass
+```
+tests:
+```python
+assert in_treatment(0, "exp1", 90) is True
+assert in_treatment(7, "exp1", 90) is False
+assert [i for i in range(10) if in_treatment(i, "exp1", 90)] == [0, 1, 2, 3, 4, 5, 6]
+assert [i for i in range(10) if in_treatment(i, "exp2", 50)] == [0, 1, 2, 3, 4, 5]
+assert not any(in_treatment(i, "exp1", 0) for i in range(50))
+assert all(in_treatment(i, "exp1", 100) for i in range(50))
+frac = sum(in_treatment(i, "exp1", 20) for i in range(2000)) / 2000
+assert abs(frac - 0.2) < 0.03
+assert in_treatment(1234, "x", 37) == in_treatment(1234, "x", 37)
+```
+model:
+```python
+def in_treatment(user_id, salt, percent):
+    """Deterministic assignment: the same user and salt always give the same answer."""
+    text = salt + ":" + str(user_id)
+    h = 0
+    for ch in text:
+        h = (h * 31 + ord(ch)) % 1000003
+    return h % 100 < percent
+```
+hint: Compute the rolling checksum of the text exactly as described, then compare the bucket with `percent`.
+solution: Hashing the identifier with the salt gives each user a fixed pseudo-random bucket, so assignment is stable across requests and roughly uniform, and a different salt gives a different split. Using `bucket < percent` makes 0 percent select nobody and 100 percent select everybody, as the tests check.
+@quiz code
+prompt: Write `shadow_report(old_scores, new_scores, tol)` for two equal-length, nonempty lists of model scores logged on the same requests. Return the tuple `(agree_fraction, mean_abs_diff, max_abs_diff)`: the fraction of requests whose scores differ by at most `tol`, the mean absolute difference, and the largest absolute difference. Raise `ValueError` if the lists are empty or have different lengths. For example, `shadow_report([0.5], [0.7], 0.1)` returns `(0.0, 0.2, 0.2)` (up to floating-point error).
+starter:
+```python
+def shadow_report(old_scores, new_scores, tol):
+    pass
+```
+tests:
+```python
+agree, mean_d, max_d = shadow_report([0.2, 0.8, 0.5, 0.9], [0.25, 0.7, 0.5, 0.95], 0.06)
+assert abs(agree - 0.75) < 1e-9
+assert abs(mean_d - 0.05) < 1e-9
+assert abs(max_d - 0.1) < 1e-9
+agree, mean_d, max_d = shadow_report([0.5], [0.7], 0.1)
+assert agree == 0.0 and abs(mean_d - 0.2) < 1e-9 and abs(max_d - 0.2) < 1e-9
+agree, mean_d, max_d = shadow_report([0.1, 0.2], [0.1, 0.2], 0.0)
+assert agree == 1.0 and mean_d == 0.0 and max_d == 0.0
+assert raises(ValueError, shadow_report, [], [], 0.1)
+assert raises(ValueError, shadow_report, [0.1], [0.1, 0.2], 0.1)
+```
+model:
+```python
+def shadow_report(old_scores, new_scores, tol):
+    """Agreement and difference statistics between two logged score lists."""
+    if not old_scores or len(old_scores) != len(new_scores):
+        raise ValueError("need two nonempty lists of equal length")
+    diffs = [abs(a - b) for a, b in zip(old_scores, new_scores)]
+    agree = sum(1 for d in diffs if d <= tol) / len(diffs)
+    mean_d = sum(diffs) / len(diffs)
+    return agree, mean_d, max(diffs)
+```
+hint: Compute the list of absolute differences first; the three results are all simple summaries of it.
+solution: All three numbers come from the list of absolute differences: the share at or below the tolerance, the mean, and the maximum. A shadow test lets you check them on live traffic with no user impact, and large disagreement on a few requests is a reason to inspect those inputs.
+@quiz num
+prompt: In an A/B test, A has 40 conversions out of 1,000 users and B has 60 out of 1,000. What is the z statistic of the two-proportion test (pooled), to two decimal places?
+answer: 2.05
+tol: 0.01
+check: (60 / 1000 - 40 / 1000) / (0.05 * 0.95 * (2 / 1000)) ** 0.5
+hint: The pooled proportion is $100/2000 = 0.05$; the difference of rates is $0.02$.
+solution: The standard error is $\sqrt{0.05 \times 0.95 \times 0.002} = \sqrt{9.5 \times 10^{-5}} \approx 0.00975$, so $z = 0.02/0.00975 \approx 2.05$, which exceeds 1.96.
+@quiz self
+prompt: Your team has a new ranking model that beat the old one offline. Plan its rollout in three stages, saying for each stage what you measure, what result would make you stop, and why you would not simply replace the old model for everyone.
+hint: Match each stage (shadow, canary, A/B test) to the risk it removes.
+solution: Stage 1, shadow: run the new model on live requests without showing results; measure latency percentiles, error rate and how often its scores or rankings differ from the old model's; stop if it crashes, is too slow or disagrees wildly on inputs that should be easy. Stage 2, canary: serve about 5% of traffic; watch guardrail metrics (errors, latency, complaints) against the baseline with a one-sided test; roll back if a guardrail is significantly worse, promote when enough traffic has passed without one. Stage 3, A/B test: randomize users stably with a salted hash, fix the sample size from the smallest effect worth detecting, name one primary metric (for example clicks or purchases) plus guardrails, and decide only at the planned sample size to avoid peeking. Replacing the model for everyone at once bets the whole product on an offline estimate that may not match live inputs or user behavior, and removes the control group that makes the effect measurable and the rollback easy.
+rubric: Describes shadow, canary and A/B stages with the right purpose and the metrics for each.
+rubric: States a stopping or rollback condition for at least the canary stage.
+rubric: Mentions random stable assignment, a pre-chosen primary metric and sample size, and avoiding peeking.

@@ -1,0 +1,206 @@
+@lesson
+title: Efficient models: quantization, pruning and distillation
+summary: Shrink a model by quantizing its weights, pruning small weights and distilling it into a smaller student, and measure the memory saved and the error introduced.
+objective: Quantize weights to a small integer format with a scale factor, and compute the rounding error.
+objective: Prune weights by magnitude and explain the difference between unstructured and structured sparsity.
+objective: Compute temperature-softened probabilities for distillation and explain what the student learns from them.
+reading: Made With ML, the lessons on optimization of models for serving; look up "quantization", "pruning" and "knowledge distillation" in the documentation of a deep learning library.
+@article
+A model with 7 billion parameters needs 14 GB in 16-bit precision just for its weights, more than many devices have. Three standard techniques make models smaller and faster: **quantization** stores numbers with fewer bits, **pruning** removes weights, and **distillation** trains a small model to imitate a large one. Each saves resources and each costs some accuracy, so each must be measured.
+
+### Quantization
+
+Memory scales with bits per parameter. Taking 1 GB as $10^9$ bytes, a model with $7 \times 10^9$ parameters needs 28 GB in fp32 (4 bytes), 14 GB in fp16 (2 bytes), 7 GB in int8 (1 byte) and 3.5 GB at 4 bits (0.5 byte), plus a small overhead for scale factors.
+
+**Symmetric quantization** maps real weights to signed integers with one **scale** $s$ per tensor (or per row or channel). With $b$ bits the integers run from $-q_{\max}$ to $q_{\max}$, where $q_{\max} = 2^{b-1} - 1$ (127 for 8 bits, 7 for 4 bits). Choose $s = \max_i |w_i| / q_{\max}$, so the largest weight maps to $\pm q_{\max}$, and store
+
+$$q_i = \operatorname{round}(w_i / s), \qquad \hat{w}_i = s\, q_i .$$
+
+Rounding to the nearest integer moves each weight by at most $s/2$, so the **quantization error** satisfies $|w_i - \hat{w}_i| \le s/2$. With weights $0.5, -0.3, 0.05, -1.6$ and $b = 8$: $s = 1.6/127 \approx 0.0126$, the integers are $40, -24, 4, -127$, and the largest error is on $0.5$, which becomes $0.5039$, an error of $0.0039 \le s/2 = 0.0063$.
+
+```python
+def quantize(weights, bits=8):
+    """Symmetric quantization; returns (integers, scale)."""
+    qmax = 2 ** (bits - 1) - 1
+    scale = max(abs(w) for w in weights) / qmax
+    q = [max(-qmax, min(qmax, round(w / scale))) for w in weights]
+    return q, scale
+
+def dequantize(q, scale):
+    return [v * scale for v in q]
+
+q, s = quantize([0.5, -0.3, 0.05, -1.6])
+print(q, round(s, 4))          # [40, -24, 4, -127] 0.0126
+```
+
+Two caveats follow from the formula. One large outlier weight raises $s$ and so raises the error for all the other weights, which is why per-channel scales help. And fewer bits mean a larger $s$: going from 8 bits to 4 multiplies $s$ by $127/7 \approx 18$. **Asymmetric quantization** adds a **zero point** to represent ranges that are not centered at zero, such as activations after a ReLU. Quantization after training (**post-training quantization**) needs no retraining; **quantization-aware training** simulates rounding during training to recover accuracy at very low bit widths.
+
+### Pruning
+
+**Magnitude pruning** sets the smallest-magnitude weights to zero, on the heuristic that they matter least; a model is usually fine-tuned afterwards. The **sparsity** is the fraction of weights that are zero. **Unstructured** pruning zeros individual weights, which saves storage in a sparse format but, on typical dense hardware, does not by itself make a matrix multiplication faster, since the zeros are still multiplied unless sparse kernels are used. **Structured** pruning removes whole rows, channels, attention heads or layers, which shrinks the dense matrices and speeds up ordinary hardware, usually at a larger accuracy cost for the same number of parameters removed.
+
+### Distillation
+
+In **knowledge distillation** (Hinton, Vinyals and Dean, 2015) a small **student** is trained on the outputs of a large **teacher**. The teacher's logits $z_i$ are turned into soft targets with a **temperature** $T$:
+
+$$p_i = \frac{e^{z_i / T}}{\sum_j e^{z_j / T}} .$$
+
+With $T = 1$ this is the usual softmax. A higher $T$ flattens the distribution and reveals which wrong classes the teacher finds similar to the right one, information a hard label does not carry. For logits $(2, 1, 0)$ the probabilities are $(0.665, 0.245, 0.090)$ at $T = 1$ and $(0.506, 0.307, 0.186)$ at $T = 2$. The student is trained on a mix of the cross-entropy to the soft targets (scaled by $T^2$ to keep gradient sizes comparable) and the ordinary cross-entropy to the true labels.
+
+### Measure everything
+
+Compare each compressed model with the original on held-out data, and also on latency and memory on the target hardware: a smaller model that is not faster in practice has not solved the problem.
+@example
+title: Four-bit quantization and its error
+problem: Quantize the weights $0.62, -0.2, 0.34, -1.4$ symmetrically to 4 bits. Give the scale, the integers, the dequantized weights, the largest error and the mean squared error.
+step: With $b = 4$, $q_{\max} = 2^3 - 1 = 7$. The largest magnitude is $1.4$, so $s = 1.4/7 = 0.2$.
+step: Integers: $0.62/0.2 = 3.1 \to 3$; $-0.2/0.2 = -1$; $0.34/0.2 = 1.7 \to 2$; $-1.4/0.2 = -7$.
+step: Dequantized values $s q_i$: $0.6, -0.2, 0.4, -1.4$.
+step: Errors $|w_i - \hat{w}_i|$: $0.02, 0, 0.06, 0$. The largest is $0.06$, which is below the bound $s/2 = 0.1$.
+step: Mean squared error: $(0.02^2 + 0 + 0.06^2 + 0)/4 = (0.0004 + 0.0036)/4 = 0.001$.
+answer: Scale 0.2, integers $3, -1, 2, -7$, largest error 0.06, mean squared error 0.001.
+@mistakes
+- Quantizing with a scale chosen from the data you later test on, or using a scale computed per batch at serving time without checking it matches calibration.
+- Letting one outlier weight set the scale for a whole tensor, which wastes most of the integer range; use per-channel scales or clip outliers.
+- Expecting unstructured pruning to speed up dense matrix multiplication; zeros are still multiplied unless the hardware and library use sparse kernels.
+- Reporting only accuracy for a compressed model and not measuring latency and memory on the target hardware.
+@practice num
+prompt: A model has $13 \times 10^9$ parameters stored at 4 bits each (0.5 byte), ignoring the memory for scale factors. How much memory do the weights need, in GB, taking 1 GB to be $10^9$ bytes?
+answer: 6.5
+unit: GB
+check: 13e9 * 0.5 / 1e9
+hint: Multiply the parameter count by 0.5 byte, then divide by $10^9$.
+solution: $13 \times 10^9 \times 0.5 = 6.5 \times 10^9$ bytes, which is 6.5 GB.
+@practice num
+prompt: Weights in a tensor have a largest magnitude of 3.81. They are quantized symmetrically to 8 bits (integers from $-127$ to $127$). What value does the weight 1.0 have after quantizing and dequantizing? Give two decimal places.
+answer: 0.99
+tol: 0.005
+check: round(1.0 / (3.81 / 127)) * (3.81 / 127)
+hint: The scale is $3.81/127$; round $1.0/s$ to an integer and multiply back by $s$.
+solution: The scale is $s = 3.81/127 = 0.03$. Then $1.0/0.03 = 33.33$ rounds to 33, and $33 \times 0.03 = 0.99$.
+@practice mc
+prompt: Half of the weights of a dense layer are set to zero by unstructured magnitude pruning, but the layer is still stored as an ordinary dense matrix and multiplied with an ordinary dense kernel. What happens to the cost of the multiplication?
+choice*: It stays about the same, because the zeros are still stored and multiplied; gains need a sparse format with sparse kernels or structured pruning.
+choice: It halves, because multiplying by zero is free on all hardware.
+choice: It doubles, because zeros must be tracked in a separate mask.
+choice: It drops to zero for the pruned weights, since the optimizer skips them.
+hint: A dense kernel does not look at the values in the matrix when it decides what to multiply.
+solution: Dense kernels perform the same operations whether an entry is zero or not, so the time and memory are unchanged. Real savings need a sparse storage format with kernels that use it, or structured pruning that shrinks the dense matrices.
+@practice code
+prompt: Write `quant_error(weights, bits)` that quantizes a nonempty list of floats symmetrically with `bits` bits (`qmax = 2 ** (bits - 1) - 1`, `scale = max(abs(w)) / qmax`, integers `round(w / scale)` clipped to `[-qmax, qmax]`), dequantizes them, and returns the tuple `(max_abs_error, mse)`: the largest absolute error and the mean squared error. If all weights are zero return `(0.0, 0.0)`. For example, `quant_error([0.3, 0.3], 8)` returns `(0.0, 0.0)`.
+starter:
+```python
+def quant_error(weights, bits):
+    pass
+```
+tests:
+```python
+w = [0.42, -0.91, 0.07, 0.65]
+mx, mse = quant_error(w, 8)
+assert abs(mx - 0.0027559) < 1e-6 and abs(mse - 3.6301e-6) < 1e-9
+mx, mse = quant_error(w, 4)
+assert abs(mx - 0.06) < 1e-9 and abs(mse - 0.001125) < 1e-9
+mx, mse = quant_error(w, 2)
+assert abs(mx - 0.42) < 1e-9 and abs(mse - 0.062225) < 1e-9
+assert quant_error([0.3, 0.3], 8) == (0.0, 0.0)
+assert quant_error([0.0, 0.0], 8) == (0.0, 0.0)
+```
+model:
+```python
+def quant_error(weights, bits):
+    """Max absolute error and mean squared error of symmetric quantization."""
+    qmax = 2 ** (bits - 1) - 1
+    biggest = max(abs(w) for w in weights)
+    if biggest == 0:
+        return 0.0, 0.0
+    scale = biggest / qmax
+    max_err = 0.0
+    total = 0.0
+    for w in weights:
+        q = max(-qmax, min(qmax, round(w / scale)))
+        err = abs(w - q * scale)
+        max_err = max(max_err, err)
+        total += err * err
+    return max_err, total / len(weights)
+```
+hint: Compute the scale from the largest magnitude, quantize and dequantize each weight, and keep the largest error and the sum of squared errors in a loop.
+solution: The scale makes the largest weight map exactly to the top integer, so its error is zero; every other weight is off by at most half a scale step. Fewer bits mean a larger scale and larger errors, which the 8-, 4- and 2-bit tests show; the all-zero case needs a guard because the scale would be zero.
+@practice code
+prompt: Write `prune_magnitude(weights, sparsity)` that returns a new list in which the `k = int(sparsity * len(weights))` entries with the smallest absolute value are set to `0.0` and all other entries are unchanged. Break ties in absolute value by lower index (the earlier entry is pruned first). Do not modify the input list. For example, `prune_magnitude([0.5, -0.1, 0.3, -0.2], 0.5)` returns `[0.5, 0.0, 0.3, 0.0]`.
+starter:
+```python
+def prune_magnitude(weights, sparsity):
+    pass
+```
+tests:
+```python
+assert prune_magnitude([0.5, -0.1, 0.3, -0.2], 0.5) == [0.5, 0.0, 0.3, 0.0]
+assert prune_magnitude([1.0, -1.0, 1.0, -1.0], 0.5) == [0.0, 0.0, 1.0, -1.0]
+w = [3.0, -0.5, 2.0, 0.25, -4.0, 1.0, 0.75, -0.1]
+assert prune_magnitude(w, 0.25) == [3.0, -0.5, 2.0, 0.0, -4.0, 1.0, 0.75, 0.0]
+assert w[0] == 3.0 and w[7] == -0.1
+assert prune_magnitude([1.0, 2.0], 0.0) == [1.0, 2.0]
+assert prune_magnitude([1.0, -2.0, 3.0], 1.0) == [0.0, 0.0, 0.0]
+```
+model:
+```python
+def prune_magnitude(weights, sparsity):
+    """Zero the smallest-magnitude weights; ties are pruned by lower index."""
+    k = int(sparsity * len(weights))
+    order = sorted(range(len(weights)), key=lambda i: abs(weights[i]))
+    pruned = set(order[:k])
+    return [0.0 if i in pruned else w for i, w in enumerate(weights)]
+```
+hint: Sort the indices by absolute value (Python's sort is stable, so ties keep index order), and zero the first `k` of them.
+solution: A stable sort of the indices by `abs(weight)` puts the smallest entries first and keeps lower indices ahead on ties, so zeroing the first `k` implements the rule; the second test checks the tie rule. Building a new list leaves the input untouched.
+@quiz code
+prompt: Write `soft_targets(logits, temperature)` that returns the list of probabilities $e^{z_i/T} / \sum_j e^{z_j/T}$. Subtract the largest logit before exponentiating so that large logits do not overflow. For example, `soft_targets([2.0, 1.0, 0.0], 1.0)` is about `[0.6652, 0.2447, 0.0900]`.
+starter:
+```python
+import math
+
+def soft_targets(logits, temperature):
+    pass
+```
+tests:
+```python
+got = soft_targets([2.0, 1.0, 0.0], 1.0)
+assert all(abs(a - b) < 1e-4 for a, b in zip(got, [0.6652, 0.2447, 0.0900]))
+got = soft_targets([2.0, 1.0, 0.0], 2.0)
+assert all(abs(a - b) < 1e-4 for a, b in zip(got, [0.5065, 0.3072, 0.1863]))
+got = soft_targets([1000.0, 1001.0], 1.0)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.268941, 0.731059]))
+got = soft_targets([3.0, 3.0, 3.0], 5.0)
+assert all(abs(a - 1 / 3) < 1e-9 for a in got)
+got = soft_targets([4.0, 0.0], 4.0)
+assert abs(got[0] - 0.731059) < 1e-6 and abs(sum(got) - 1.0) < 1e-9
+```
+model:
+```python
+import math
+
+def soft_targets(logits, temperature):
+    """Temperature softmax with the maximum subtracted for stability."""
+    top = max(logits)
+    exps = [math.exp((z - top) / temperature) for z in logits]
+    total = 0.0
+    for e in exps:
+        total += e
+    return [e / total for e in exps]
+```
+hint: Divide each shifted logit by the temperature inside `exp`, then divide each exponential by their sum.
+solution: Subtracting the largest logit changes no probability (it cancels in the ratio) but keeps every exponent at or below zero, so a logit of 1000 does not overflow, which the third test checks. A higher temperature divides the gaps between logits, flattening the distribution, as the second test shows.
+@quiz num
+prompt: A tensor with largest weight magnitude 6.35 is quantized symmetrically to 8 bits. By the rounding rule, what is the largest possible absolute error for any single weight (that is, $s/2$)?
+answer: 0.025
+tol: 0.0005
+check: 6.35 / 127 / 2
+hint: First find the scale $s = 6.35/127$, then halve it.
+solution: $s = 6.35/127 = 0.05$, and rounding to the nearest integer moves a weight by at most half a step, $0.05/2 = 0.025$.
+@quiz self
+prompt: You have a trained classifier and need to cut its memory by about 4 times and its latency on a given device. Compare quantization to 8 bits, unstructured magnitude pruning, and distillation into a smaller student as ways to do this, and describe what you would measure to decide.
+hint: Consider what each method changes (bits, zeros, architecture) and which of them is guaranteed to reduce dense computation.
+solution: Quantizing from fp32 to int8 cuts weight memory by 4 times with no change in architecture, usually with small accuracy loss, and speeds up inference if the hardware has fast integer kernels; it is the lowest-effort option. Unstructured pruning needs about 75% sparsity for a 4 times reduction in a sparse format, and gives no latency gain on dense hardware without sparse kernels, so it helps memory more than speed. Distillation into a student with fewer layers or smaller width reduces both memory and computation on any hardware, but needs a training run and a teacher, and the student may lose accuracy. To decide, measure on a held-out set the accuracy (and per-slice accuracy) of the original and each compressed model, plus memory and latency percentiles on the target device with realistic batch sizes. A reasonable plan is to try 8-bit quantization first and distill if the latency target is still missed.
+rubric: States correctly the memory effect of each method (4 times from fp32 to int8; sparsity fraction for pruning; smaller architecture for distillation).
+rubric: Notes that unstructured pruning does not by itself speed up dense hardware.
+rubric: Names accuracy, memory and latency on the target hardware as the quantities to measure.

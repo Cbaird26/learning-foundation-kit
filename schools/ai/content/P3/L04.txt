@@ -1,0 +1,220 @@
+@lesson
+title: Scaling laws and compute-optimal training
+summary: Fit a power law to loss measurements, use a parametric loss in parameters and tokens to split a compute budget, and say what scaling laws do and do not license you to conclude.
+objective: State the power-law and parametric forms of language-model scaling laws and fit a power law by regression in log-log space.
+objective: Use training compute of about 6 times parameters times tokens to find the compute-optimal model size and token count for a stated loss form.
+objective: Explain the main findings of Kaplan and colleagues (2020) and Hoffmann and colleagues (2022), and the limits of extrapolating a fit.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the lectures on scaling laws and on how compute budgets are allocated between model size and data.
+
+@article
+You have a training budget and must choose two numbers before the first step: how many parameters and how many tokens. If you choose badly, you spend the budget and end with a worse model than you could have had. Scaling laws are the empirical tool for choosing, and they changed the field's habits twice in three years. Here we treat them as what they are: fitted curves, with a form, a range over which they were measured, and an extrapolation risk.
+
+### Power laws
+
+Kaplan and colleagues (2020) trained many transformer language models and reported that the test loss falls as a **power law** in the number of non-embedding parameters $N$, the number of training tokens $D$ and the training compute $C$, over several orders of magnitude, when the other factors are not the bottleneck. A power law has the form $y = a\,x^{-b}$, which is a straight line in log-log space, $\log y = \log a - b \log x$, so the exponent $b$ is the negative slope and can be fitted by linear regression:
+
+```python
+import math
+
+def fit_power_law(xs, ys):
+    """Least-squares fit of log y = log a - b log x. Returns (a, b)."""
+    lx = [math.log(x) for x in xs]
+    ly = [math.log(y) for y in ys]
+    n = len(xs)
+    mx = sum(lx) / n
+    my = sum(ly) / n
+    sxx = sum((u - mx) ** 2 for u in lx)
+    sxy = sum((u - mx) * (v - my) for u, v in zip(lx, ly))
+    slope = sxy / sxx
+    return math.exp(my - slope * mx), -slope
+```
+
+Two measurements already show it: if $y = 3.0$ at $x = 10^3$ and $y = 0.9487$ at $x = 10^5$, then $b = \ln(3.0/0.9487)/\ln(100) \approx 0.25$, and the line predicts $y = 0.3$ at $x = 10^7$. Real losses have an **irreducible** part (the entropy of text), so one fits the reducible part $y = L - E$, and a power law with an offset is not a straight line until the offset is subtracted.
+
+### Compute
+
+Training compute is counted in floating-point operations. For a dense transformer, the forward pass costs about $2N$ FLOPs per token and the backward pass about twice that, so
+
+$$C \approx 6\,N D .$$
+
+This is an **approximation**: it ignores the attention-score FLOPs, which grow with context length, and the embedding parameters, and it assumes dense layers. Training $N = 2.5\times 10^{9}$ parameters on $D = 5 \times 10^{10}$ tokens costs about $7.5 \times 10^{20}$ FLOPs.
+
+### A parametric loss and the compute-optimal split
+
+Hoffmann and colleagues (2022) trained over four hundred models of different sizes on different amounts of data and modeled the loss as
+
+$$L(N, D) = E + \frac{A}{N^{\alpha}} + \frac{B}{D^{\beta}} ,$$
+
+an irreducible term plus a penalty for too few parameters plus a penalty for too little data. The constants below are **invented for teaching** and are not fitted values from any paper: you will always be given the constants you need.
+
+Given a budget $C$ and the constraint $D = C/(6N)$, minimize over $N$. Substituting, $L(N) = E + A N^{-\alpha} + B (C/6)^{-\beta} N^{\beta}$. Setting the derivative to zero gives $\alpha A N^{-\alpha-1} = \beta B (C/6)^{-\beta} N^{\beta-1}$, so
+
+$$N_{\text{opt}} = \Big(\frac{\alpha A}{\beta B}\Big)^{\frac{1}{\alpha+\beta}} \Big(\frac{C}{6}\Big)^{\frac{\beta}{\alpha+\beta}}, \qquad D_{\text{opt}} = \frac{C}{6 N_{\text{opt}}}.$$
+
+Both grow as a power of $C$, with exponents $\beta/(\alpha+\beta)$ and $\alpha/(\alpha+\beta)$ that sum to 1. With $E=1.5$, $A=B=400$, $\alpha=\beta=0.3$ and $C = 6\times 10^{18}$, $N_{\text{opt}} = D_{\text{opt}} = 10^{9}$ and $L = 3.096$. Putting the same compute into $N = 4\times 10^9$ and $D = 2.5\times 10^{8}$ gives $L = 3.236$: worse, though the model is four times larger.
+
+### What was found
+
+Kaplan and colleagues reported that, at fixed compute, loss is improved most by growing the model quickly and training it on comparatively little data, and that larger models are more sample-efficient. Hoffmann and colleagues reached a different allocation: model size and tokens should grow in roughly equal proportion, and they showed that a smaller model trained on more tokens outperformed a much larger model trained with the same compute. A ratio of about 20 tokens per parameter is often quoted from their fits; it is a summary of one fit and depends on the details of data and fitting. Later analyses have argued that differences in how parameters were counted and how learning-rate schedules were set explain much of the gap between the two papers; treat the exact exponents as uncertain and the form of the analysis as the lasting lesson.
+
+### Limits
+
+First, the laws describe loss on a distribution of text, not any particular ability; what loss implies for downstream tasks is the subject of the next lesson. Second, the fits are measured over a finite range, and extrapolating several orders of magnitude beyond it assumes the form keeps holding. Third, compute-optimal for training is not optimal for use: a model that will serve many requests may deserve more training tokens than the training-only optimum, because inference cost grows with $N$. Fourth, the fits assume fresh tokens; when data must be repeated, or its quality varies, the formulas change. Whether power-law scaling continues indefinitely, and what the curves would be for other modalities and data regimes, are open questions.
+
+@example
+title: Choosing a model size for a budget
+problem: Use $L(N,D) = E + A N^{-\alpha} + B D^{-\beta}$ with $E = 1.5$, $A = B = 400$, $\alpha = \beta = 0.3$ and $C = 6 N D$. For $C = 2.4 \times 10^{19}$ FLOPs, find $N_{\text{opt}}$, $D_{\text{opt}}$ and the loss.
+step: Since $\alpha = \beta$ and $A = B$, $\alpha A/(\beta B) = 1$, so $N_{\text{opt}} = (C/6)^{1/2}$.
+step: $C/6 = 4 \times 10^{18}$, so $N_{\text{opt}} = 2 \times 10^{9}$ and $D_{\text{opt}} = 4\times10^{18}/(2\times10^{9}) = 2\times 10^{9}$.
+step: Loss: $(2\times 10^9)^{-0.3} \approx 1.6207 \times 10^{-3}$, so each of the two terms is $400 \times 0.0016207 = 0.6483$, and the sum is $1.5 + 0.6483 + 0.6483 \approx 2.797$.
+step: Check against a neighbor: $N = 4 \times 10^9$, $D = 1 \times 10^9$ gives $1.5 + 400(4\times10^{9})^{-0.3} + 400(10^{9})^{-0.3} \approx 2.825$, which is higher.
+answer: $N_{\text{opt}} = D_{\text{opt}} = 2\times 10^{9}$, loss about 2.797.
+
+@example
+title: Fitting an exponent from three points
+problem: Reducible loss is measured at $N = 10^{6}, 10^{7}, 10^{8}$ as $2.0, 1.0, 0.5$. Fit $y = a N^{-b}$.
+step: Each factor of 10 in $N$ halves $y$, so $10^{-b} = 1/2$.
+step: Then $b = \log_{10} 2 \approx 0.301$.
+step: Solve for $a$ at $N = 10^6$: $a = 2.0 \times (10^{6})^{0.301} = 2.0 \times 10^{1.806} \approx 128$.
+answer: $b \approx 0.301$ and $a \approx 128$; the prediction at $N = 10^{9}$ is $0.25$.
+
+@mistakes
+- Fitting a power law to the total loss when the loss has an irreducible floor: subtract the offset first or fit it as a parameter.
+- Treating $C = 6ND$ as exact: it is an approximation that drops attention-score FLOPs and embeddings.
+- Equating compute-optimal with best for deployment: serving cost depends on $N$, so training-optimal is not use-optimal.
+- Extrapolating a fit far beyond the range in which it was measured, and then reading the result as a prediction of abilities rather than of loss.
+
+@practice num
+prompt: A model has $N = 2.0\times 10^{9}$ non-embedding parameters and is trained on $D = 4.0\times 10^{11}$ tokens. Using the approximation $C \approx 6ND$, how many FLOPs does training take?
+answer: 4.8e21
+unit: FLOPs
+tol: 1%
+check: 6 * 2.0e9 * 4.0e11
+hint: Multiply 6, the parameters, and the tokens. Remember that this is an approximation.
+solution: $6 \times 2.0\times10^{9} \times 4.0\times10^{11} = 4.8\times 10^{21}$ FLOPs, ignoring attention-score and embedding costs.
+
+@practice num
+prompt: Take $L(N,D) = E + A N^{-\alpha} + B D^{-\beta}$ with $E = 1.5$, $A = B = 400$ and $\alpha = \beta = 0.3$ (invented constants). What is $L$ for $N = 10^{8}$ and $D = 10^{10}$? Give the answer to two decimal places.
+answer: 3.49
+tol: 0.01
+check: 1.5 + 400 / (1e8) ** 0.3 + 400 / (1e10) ** 0.3
+hint: $(10^{8})^{0.3} = 10^{2.4}$ and $(10^{10})^{0.3} = 10^{3} = 1000$.
+solution: $10^{2.4} \approx 251.2$, so the parameter term is $400/251.2 = 1.592$; the data term is $400/1000 = 0.4$. The sum is $1.5 + 1.592 + 0.4 \approx 3.49$.
+
+@practice num
+prompt: A team has $C = 1.2\times10^{21}$ FLOPs, with $C = 6ND$. Their loss model is $L = E + A N^{-\alpha} + B D^{-\beta}$ with the invented constants $E = 1.6$, $A = 500$, $\alpha = 0.35$, $B = 800$, $\beta = 0.30$. What is the compute-optimal $N$, in billions of parameters? Give the answer to two decimal places.
+answer: 1.44
+tol: 0.01
+unit: billion parameters
+check: ((0.35 * 500) / (0.30 * 800)) ** (1 / 0.65) * (1.2e21 / 6) ** (0.30 / 0.65) / 1e9
+hint: Use $N_{\text{opt}} = (\alpha A/(\beta B))^{1/(\alpha+\beta)} (C/6)^{\beta/(\alpha+\beta)}$ with $\alpha + \beta = 0.65$.
+solution: The first factor is $(175/240)^{1/0.65} = 0.7292^{1.538} \approx 0.6153$. The second is $(2\times10^{20})^{0.4615} \approx 2.34\times 10^{9}$. Their product is about $1.44\times 10^{9}$, so $N_{\text{opt}} \approx 1.44$ billion parameters, and $D_{\text{opt}} = C/(6N) \approx 1.39\times10^{11}$ tokens.
+
+@practice mc
+prompt: Which statement correctly summarizes the main conclusion of Hoffmann and colleagues (2022) about allocating a fixed training-compute budget?
+choice*: Model size and the number of training tokens should be increased in roughly equal proportion as the budget grows.
+choice: Model size should grow much faster than the number of tokens, which can stay nearly fixed.
+choice: Only the number of parameters matters; the number of tokens has no effect on loss.
+choice: The number of tokens should grow while the model size stays fixed at the smallest size that fits in memory.
+hint: Recall what they found about a smaller model trained on more tokens versus a larger model at the same compute.
+solution: Their fits implied that, for compute-optimal training, parameters and tokens should scale together in roughly equal proportion, and that many earlier large models were undertrained for their size. The allocation that favors model size much more than data is the one reported by Kaplan and colleagues (2020).
+
+@practice ms
+prompt: Which statements about scaling laws are true? Select all that apply.
+choice*: A power law $y = a x^{-b}$ is a straight line of slope $-b$ when $\log y$ is plotted against $\log x$.
+choice*: A fit measured over a limited range of model sizes may fail outside that range, so extrapolation is a risk.
+choice*: The compute-optimal model size for training need not be the best choice if the model will be used for a great deal of inference.
+choice: Because $C \approx 6ND$ is exact, a fitted law never needs an irreducible-loss term.
+choice: A scaling law for loss tells you exactly at which scale each downstream ability appears.
+hint: Consider what each law was fitted to and over what range.
+solution: Taking logs of $y = a x^{-b}$ gives a line with slope $-b$. Fits are only supported where data exist. Serving cost grows with $N$, so a larger-data, smaller-model choice can be cheaper to use. The $6ND$ rule is an approximation, and the loss has an irreducible floor. Losses on text do not by themselves tell where particular abilities appear; that is the subject of lesson 5.
+
+@practice code
+prompt: Write `best_split(C, A, alpha, B, beta, grid, E=0.0)` that evaluates the loss $L(N, D) = E + A N^{-\alpha} + B D^{-\beta}$ for each model size `N` in the list `grid`, with $D = C/(6N)$, and returns the pair `(N, D)` with the smallest loss. If two sizes tie, return the smaller `N`. For example, with $C = 6\times10^{18}$, $A = B = 400$, $\alpha = \beta = 0.3$ and `grid = [1e8, 3e8, 1e9, 3e9]` the answer is `(1e9, 1e9)`.
+starter:
+```python
+def best_split(C, A, alpha, B, beta, grid, E=0.0):
+    return None
+```
+tests:
+```python
+n, d = best_split(6e18, 400, 0.3, 400, 0.3, [1e8, 3e8, 1e9, 3e9])
+assert n == 1e9 and abs(d - 1e9) < 1
+n, d = best_split(1.2e21, 500, 0.35, 800, 0.30, [5e8, 1e9, 1.5e9, 2e9, 4e9], 1.6)
+assert n == 1.5e9 and abs(d / 1.2e21 * 6 * n - 1) < 1e-9
+n, d = best_split(1.2e21, 500, 0.35, 800, 0.30, [1e10, 2e10], 1.6)
+assert n == 1e10
+n, d = best_split(6e18, 400, 0.3, 400, 0.3, [3e9, 1e9])
+assert n == 1e9
+```
+model:
+```python
+def best_split(C, A, alpha, B, beta, grid, E=0.0):
+    """Return (N, D) from grid minimizing E + A/N**alpha + B/D**beta."""
+    best = None
+    for n in sorted(grid):
+        d = C / (6 * n)
+        loss = E + A / n ** alpha + B / d ** beta
+        if best is None or loss < best[0]:
+            best = (loss, n, d)
+    return best[1], best[2]
+```
+hint: Loop over the sizes in increasing order, compute `D = C / (6 * N)` for each, and keep the first size that achieves a new minimum.
+solution: Computing `D` from the budget for each candidate makes every candidate cost the same compute. Looping in increasing order and updating only on a strictly smaller loss returns the smaller size on a tie. The last test passes the grid out of order, which catches a version that scans the list as given.
+
+@quiz num
+prompt: Reducible loss $y$ follows $y = a N^{-b}$. It is $5.0$ at $N = 10^{2}$ and $2.0$ at $N = 10^{4}$. What is $b$? Give the answer to three decimal places.
+answer: 0.199
+tol: 0.001
+check: log(5.0 / 2.0) / log(1e4 / 1e2)
+hint: Take the logarithm of the ratio of the two losses and divide by the logarithm of the ratio of the sizes.
+solution: $b = \ln(5.0/2.0)/\ln(10^{4}/10^{2}) = 0.9163/4.6052 \approx 0.199$.
+
+@quiz code
+prompt: Write `extrapolate(xs, ys, E, x_new)` for losses of the form $y = E + a x^{-b}$ with a known offset `E`. Fit $\log(y - E)$ against $\log x$ by least squares on the lists `xs` and `ys` (all $y > E$), and return the predicted $y$ at `x_new`.
+starter:
+```python
+def extrapolate(xs, ys, E, x_new):
+    return 0.0
+```
+tests:
+```python
+import math
+xs = [1e3, 1e4, 1e5, 1e6]
+ys = [1.2 + 30 * x ** -0.4 for x in xs]
+want = 1.2 + 30 * 1e8 ** -0.4
+assert abs(extrapolate(xs, ys, 1.2, 1e8) - want) < 1e-6
+assert abs(extrapolate(xs, ys, 1.2, 1e4) - ys[1]) < 1e-6
+ys2 = [2.0 + 5 * x ** -0.25 for x in [10.0, 100.0, 1000.0]]
+assert abs(extrapolate([10.0, 100.0, 1000.0], ys2, 2.0, 1e5) - (2.0 + 5 * 1e5 ** -0.25)) < 1e-6
+assert extrapolate(xs, ys, 1.2, 1e8) > 1.2
+```
+model:
+```python
+import math
+
+
+def extrapolate(xs, ys, E, x_new):
+    """Fit y = E + a * x**-b in log space and predict y at x_new."""
+    lx = [math.log(x) for x in xs]
+    ly = [math.log(y - E) for y in ys]
+    n = len(xs)
+    mx = sum(lx) / n
+    my = sum(ly) / n
+    sxx = sum((u - mx) ** 2 for u in lx)
+    sxy = sum((u - mx) * (v - my) for u, v in zip(lx, ly))
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    return E + math.exp(intercept + slope * math.log(x_new))
+```
+hint: Subtract `E` before taking logs; then fit a line of log-reducible-loss against log-size and evaluate it at `log(x_new)`.
+solution: After subtracting the offset, the reducible loss is an exact power law in the test data, so the regression recovers it and extrapolation is exact; with the offset left in, the fit would be biased. The final step adds `E` back to the predicted reducible loss.
+
+@quiz self
+prompt: A group fits a power law to the loss of models up to $10^{9}$ parameters and announces that a model of $10^{12}$ parameters "will" have a loss of a stated value, hence will "master" a particular task. Write a short critique naming at least three distinct problems with this inference.
+hint: Separate the range of the data, the fitted form, and the link from loss to the task.
+solution: First, the claim extrapolates three orders of magnitude beyond the measured range; a fit says what the curve did where it was measured and a different term can start to matter outside it. Second, the form is itself a choice: a power law with an offset, a different offset, or a bend would fit the measured points about equally well and diverge when extrapolated, and the stated uncertainty should come from comparing fits, not from the best one. Third, the fit is for loss on a text distribution, and a threshold for a task such as "mastering" it depends on the metric and on how loss on that task's text relates to task success, which is itself the open question of the next lesson; a loss number does not translate to a task claim without a measured link. Fourth, the loss law assumes the data, the training recipe and the tokens per parameter stay compatible with the fit, and a run at $10^{12}$ parameters may be data-limited or may use different settings. A better statement is a prediction with an interval, validated by predicting a held-out larger run before claiming the extrapolation.
+rubric: Notes the extrapolation beyond the measured range.
+rubric: Notes that the functional form or offset is a modeling choice that changes the extrapolation.
+rubric: Notes that the link from loss to a specific task ability is not given by the loss law.
+rubric: Suggests a way to check the claim, such as predicting a held-out larger run with an interval.

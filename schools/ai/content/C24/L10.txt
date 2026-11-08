@@ -1,0 +1,217 @@
+@lesson
+title: Detecting data drift and concept drift
+summary: Distinguish covariate shift, label shift and concept drift, and detect distribution change with the population stability index and the Kolmogorov-Smirnov statistic.
+objective: Define data drift (covariate and label shift) and concept drift and give an example of each.
+objective: Compute the population stability index from binned proportions and interpret it with the usual rules of thumb.
+objective: Bin samples with baseline edges and compute a two-sample Kolmogorov-Smirnov statistic.
+reading: Made With ML, the lesson on monitoring and drift; look up "data drift" and "concept drift" in the documentation of a monitoring tool or a machine learning textbook chapter on distribution shift.
+@article
+A model learns the world as it was in its training data. The world moves on: a new phone model changes the camera images, a recession changes spending, a competitor changes what customers buy. **Drift** is any change between the data a model was trained on and the data it now sees. Detecting it early is the point of monitoring.
+
+### Kinds of drift
+
+Write the joint distribution of inputs $\mathbf{x}$ and labels $y$ as $p(\mathbf{x}, y) = p(\mathbf{x})\, p(y \mid \mathbf{x})$. Three kinds of change matter.
+
+| kind | what changes | example |
+|---|---|---|
+| covariate shift (data drift) | $p(\mathbf{x})$, while $p(y \mid \mathbf{x})$ stays | applicants' incomes rise, but the link between income and default is unchanged |
+| label shift (prior shift) | $p(y)$ | a disease becomes more common, while its symptoms look the same |
+| concept drift | $p(y \mid \mathbf{x})$ | after a rule change, the same transaction that was safe is now fraud |
+
+Covariate shift and label shift are visible without labels, from inputs or from the distribution of predictions. Concept drift changes the right answer for the same input, so it can be confirmed only with labels (or a proxy for them). Drift can be **sudden**, **gradual** or **seasonal**; a baseline that ignores seasons will raise false alarms every winter.
+
+### The population stability index
+
+To compare a baseline sample with a current one for a numeric feature, cut the baseline into bins (often deciles, so each baseline bin holds the same share), then count how many current values fall in each bin. Let $e_i$ be the baseline proportion and $a_i$ the current proportion in bin $i$. The **population stability index** (PSI) is
+
+$$\text{PSI} = \sum_{i} (a_i - e_i) \ln \frac{a_i}{e_i} .$$
+
+Each term is nonnegative, because $a_i - e_i$ and $\ln(a_i/e_i)$ have the same sign, so $\text{PSI} \ge 0$, and it is $0$ exactly when the two distributions agree on every bin. It is also symmetric: swapping $a$ and $e$ gives the same value. For four equal baseline bins, $e = (0.25, 0.25, 0.25, 0.25)$, and current proportions $a = (0.10, 0.20, 0.30, 0.40)$:
+
+$$\text{PSI} = (-0.15)\ln 0.4 + (-0.05)\ln 0.8 + (0.05)\ln 1.2 + (0.15)\ln 1.6 \approx 0.137 + 0.011 + 0.009 + 0.071 = 0.228 .$$
+
+A widely used rule of thumb from credit-scoring practice treats PSI below 0.1 as stable, 0.1 to 0.25 as a moderate shift to investigate, and above 0.25 as a large shift. These cutoffs are conventions, not laws of statistics. A bin that is empty in one sample makes $\ln(a_i/e_i)$ infinite, so floor every proportion at a small value such as $10^{-4}$.
+
+```python
+from math import log
+
+def psi_counts(expected_counts, actual_counts, eps=1e-4):
+    """PSI from bin counts; proportions below eps are raised to eps."""
+    e_total, a_total = sum(expected_counts), sum(actual_counts)
+    total = 0.0
+    for ec, ac in zip(expected_counts, actual_counts):
+        e = max(ec / e_total, eps)
+        a = max(ac / a_total, eps)
+        total += (a - e) * log(a / e)
+    return total
+
+print(round(psi_counts([25, 25, 25, 25], [10, 20, 30, 40]), 4))   # 0.2282
+```
+
+### The Kolmogorov-Smirnov statistic
+
+The **two-sample Kolmogorov-Smirnov** (KS) statistic needs no bins. With empirical cumulative distribution functions $F_a$ and $F_b$ (the fraction of each sample at or below $x$), it is $D = \max_x |F_a(x) - F_b(x)|$, the largest vertical gap between the two curves, between 0 (identical samples) and 1 (no overlap). For categorical features compare category proportions, for example with PSI over the categories.
+
+### What a drift alert means
+
+A drift score says the inputs changed, not that the model got worse; the change may be in a feature the model ignores. Conversely a model can degrade through concept drift with no input change. Treat a drift alert as a reason to look: check upstream pipelines for a changed feature, compare performance on recently labeled data, look at segments, and then decide whether to retrain on fresher data, fix the pipeline or roll back. With huge samples even tiny shifts are statistically detectable, so choose thresholds by their usefulness, not by significance alone.
+@example
+title: PSI from bin counts
+problem: A feature's baseline sample of 1,000 values falls into four bins with counts $200, 300, 300, 200$. This week's 1,000 values fall into the same bins with counts $100, 250, 350, 300$. Compute the PSI and interpret it.
+step: Baseline proportions: $e = (0.2, 0.3, 0.3, 0.2)$. Current proportions: $a = (0.1, 0.25, 0.35, 0.3)$.
+step: Term by term: $(0.1 - 0.2)\ln(0.5) = 0.0693$; $(0.25 - 0.3)\ln(0.8333) = 0.0091$; $(0.35 - 0.3)\ln(1.1667) = 0.0077$; $(0.3 - 0.2)\ln(1.5) = 0.0405$.
+step: The sum is $0.0693 + 0.0091 + 0.0077 + 0.0405 = 0.1267$.
+step: By the rule of thumb, a PSI between 0.1 and 0.25 is a moderate shift: investigate, mostly because of the move of mass from the lowest bin to the highest, but it is not an emergency. Check the segments and the labeled performance before acting.
+answer: PSI $\approx 0.127$, a moderate shift.
+@mistakes
+- Treating a high PSI as proof that the model is worse; it shows the inputs changed, and the model may not depend on that feature.
+- Defining bins from the current sample instead of the baseline, which makes the baseline proportions change with every comparison.
+- Leaving empty bins unhandled, which gives an infinite or undefined PSI; floor the proportions.
+- Using a baseline with no seasonal cycle, so that the normal swing between summer and winter looks like drift.
+@practice num
+prompt: A feature has two bins. The baseline proportions are $e = (0.5, 0.5)$ and the current proportions are $a = (0.7, 0.3)$. What is the PSI, to three decimal places? (Use natural logarithms.)
+answer: 0.169
+tol: 0.001
+check: (0.7 - 0.5) * log(0.7 / 0.5) + (0.3 - 0.5) * log(0.3 / 0.5)
+hint: Compute $(a_i - e_i)\ln(a_i / e_i)$ for each bin and add the two terms.
+solution: The terms are $0.2 \ln 1.4 = 0.0673$ and $(-0.2)\ln 0.6 = 0.1022$, so $\text{PSI} \approx 0.169$, a moderate shift.
+@practice mc
+prompt: A lender's applicants become wealthier on average, but the relationship between an applicant's income and whether they repay stays the same. What kind of change is this?
+choice*: Covariate shift: the distribution of inputs changes while the conditional distribution of the label given the inputs does not.
+choice: Concept drift: the relationship between inputs and labels changes.
+choice: Label shift: only the overall proportion of defaults changes.
+choice: Data leakage: information from the future reaches the model.
+hint: Which of $p(\mathbf{x})$, $p(y)$ and $p(y \mid \mathbf{x})$ changes in the story?
+solution: The incomes, that is the distribution of the inputs $p(\mathbf{x})$, change, and $p(y \mid \mathbf{x})$ is stated to be unchanged: covariate shift. Concept drift would change the repayment relationship, and leakage is a training-time problem, not a change over time.
+@practice ms
+prompt: Which of these statements about the population stability index (PSI) are true? Select all that apply.
+choice*: It is 0 when the baseline and current proportions agree in every bin.
+choice*: Swapping the baseline and current proportions gives the same value.
+choice*: Its value depends on how the bins are chosen.
+choice: A high PSI proves that the model's accuracy has fallen.
+hint: Write one term, $(a - e)\ln(a/e)$, and swap $a$ and $e$ to see what changes.
+solution: Equal proportions make every $\ln(a_i/e_i)$ zero. Swapping $a$ and $e$ leaves $(a - e)\ln(a/e)$ unchanged. Different bins give different proportions and so different PSI. A high PSI shows that the input distribution moved, not that accuracy fell.
+@practice code
+prompt: Write `bin_counts(values, edges)` for increasing interior `edges`. Return a list of `len(edges) + 1` counts: bin 0 holds values less than `edges[0]`, bin `i` holds values with `edges[i-1] <= v < edges[i]`, and the last bin holds values at or above `edges[-1]`. With no edges there is a single bin holding everything. For example, `bin_counts([0.1, 0.5, 0.9], [0.5])` returns `[1, 2]`.
+starter:
+```python
+def bin_counts(values, edges):
+    pass
+```
+tests:
+```python
+assert bin_counts([0.1, 0.5, 0.9], [0.5]) == [1, 2]
+assert bin_counts([5, 10, 15, 20, 25, 19.9], [10, 20]) == [1, 3, 2]
+assert bin_counts([], [10, 20]) == [0, 0, 0]
+assert bin_counts([3, 1, 2], []) == [3]
+assert bin_counts([-5, 100], [0, 1, 2]) == [1, 0, 0, 1]
+```
+model:
+```python
+def bin_counts(values, edges):
+    """Count values per bin; an edge value belongs to the bin on its right."""
+    counts = [0] * (len(edges) + 1)
+    for v in values:
+        i = 0
+        while i < len(edges) and v >= edges[i]:
+            i += 1
+        counts[i] += 1
+    return counts
+```
+hint: For each value, move right past every edge that is less than or equal to it, and add one to the count at the position where you stop.
+solution: The loop advances past each edge that the value reaches, so the stopping index is the number of edges at or below the value, which is exactly its bin; a value equal to an edge goes to the bin on the right (second and first tests). With no edges the loop does not run and everything lands in bin 0.
+@practice code
+prompt: Write `ks_statistic(a, b)` for two nonempty lists of numbers. Return the largest absolute difference between their empirical cumulative distribution functions, $\max_x |F_a(x) - F_b(x)|$, where $F(x)$ is the fraction of the sample that is less than or equal to $x$. It is enough to check the values that occur in either sample. For example, `ks_statistic([1, 2, 3], [4, 5, 6])` returns `1.0`.
+starter:
+```python
+def ks_statistic(a, b):
+    pass
+```
+tests:
+```python
+assert abs(ks_statistic([1, 2, 3], [4, 5, 6]) - 1.0) < 1e-9
+assert abs(ks_statistic([1, 2, 3], [3, 2, 1])) < 1e-9
+assert abs(ks_statistic([1, 3, 5], [2, 4, 6]) - 1 / 3) < 1e-9
+assert abs(ks_statistic([1, 2, 3, 4], [3, 4, 5, 6]) - 0.5) < 1e-9
+assert abs(ks_statistic([1, 2], [1.5, 3, 4, 5]) - 0.75) < 1e-9
+```
+model:
+```python
+def ks_statistic(a, b):
+    """Two-sample Kolmogorov-Smirnov statistic."""
+    best = 0.0
+    for x in set(a) | set(b):
+        fa = sum(1 for v in a if v <= x) / len(a)
+        fb = sum(1 for v in b if v <= x) / len(b)
+        best = max(best, abs(fa - fb))
+    return best
+```
+hint: At each value that occurs in either sample, compute the fraction of each sample at or below it, and keep the largest gap.
+solution: Both empirical CDFs are step functions that change only at sample values, so their largest gap occurs at one of those values. Dividing by each sample's own length handles unequal sizes, which the last test uses (the gap is 0.75 at the value 2).
+@quiz code
+prompt: Write `psi_samples(baseline, current, edges, eps)`. Put each sample into bins defined by increasing interior `edges` (bin 0 holds values below `edges[0]`; bin `i` holds `edges[i-1] <= v < edges[i]`; the last bin holds values at or above `edges[-1]`), convert counts to proportions, raise any proportion below `eps` to `eps`, and return $\sum_i (a_i - e_i)\ln(a_i/e_i)$, where $e_i$ are the baseline and $a_i$ the current proportions. For example, with edges `[10, 20]`, baseline `[5, 12, 15, 25]` and current `[8, 9, 11, 22]`, the result is about `0.3466`.
+starter:
+```python
+import math
+
+def psi_samples(baseline, current, edges, eps):
+    pass
+```
+tests:
+```python
+edges = [10, 20]
+base = [5, 12, 15, 25]
+assert abs(psi_samples(base, [8, 9, 11, 22], edges, 1e-4) - 0.3465736) < 1e-6
+assert abs(psi_samples(base, base, edges, 1e-4)) < 1e-12
+assert abs(psi_samples(base, [5, 6, 7, 8], edges, 1e-4) - 7.2526947) < 1e-5
+assert abs(psi_samples(base, [8, 9, 11, 22], edges, 1e-4)
+           - psi_samples([8, 9, 11, 22], base, edges, 1e-4)) < 1e-12
+assert abs(psi_samples([1, 2, 3, 4], [1, 2, 3, 4, 1, 2, 3, 4], [2.5], 1e-4)) < 1e-12
+```
+model:
+```python
+import math
+
+def psi_samples(baseline, current, edges, eps):
+    """PSI between two samples using bins defined by the given edges."""
+    def proportions(values):
+        counts = [0] * (len(edges) + 1)
+        for v in values:
+            i = 0
+            while i < len(edges) and v >= edges[i]:
+                i += 1
+            counts[i] += 1
+        return [max(c / len(values), eps) for c in counts]
+
+    e = proportions(baseline)
+    a = proportions(current)
+    total = 0.0
+    for ei, ai in zip(e, a):
+        total += (ai - ei) * math.log(ai / ei)
+    return total
+```
+hint: Write a helper that turns a sample into floored proportions, apply it to both samples, and add up the terms.
+solution: Using the baseline edges for both samples makes the bins identical, so proportions are comparable. Flooring at `eps` keeps the logarithm finite for empty bins (the third test), identical samples give zero, and swapping the samples leaves the value unchanged because each term is symmetric.
+@quiz text
+prompt: What does this program print?
+```python
+edges = [10, 20]
+counts = [0, 0, 0]
+for v in [5, 10, 15, 20, 25, 19.9]:
+    i = 0
+    while i < len(edges) and v >= edges[i]:
+        i += 1
+    counts[i] += 1
+print(counts)
+```
+answer: [1, 3, 2]
+check: run("edges = [10, 20]\ncounts = [0, 0, 0]\nfor v in [5, 10, 15, 20, 25, 19.9]:\n    i = 0\n    while i < len(edges) and v >= edges[i]:\n        i += 1\n    counts[i] += 1\nprint(counts)")
+hint: A value equal to an edge goes to the bin on its right.
+solution: The value 5 is below 10 (bin 0). The values 10, 15 and 19.9 are at least 10 and below 20 (bin 1). The values 20 and 25 are at least 20 (bin 2). So the program prints `[1, 3, 2]`.
+@quiz self
+prompt: A fraud model's input features show a PSI below 0.05 for every feature for three months, yet the share of confirmed fraud among flagged transactions falls from 40% to 22%. Name the most likely kind of drift, explain why the drift monitor missed it, and say what you would do next.
+hint: PSI compares input distributions only; what does the fall in precision say about $p(y \mid \mathbf{x})$?
+solution: The likely cause is concept drift: fraudsters changed their behavior, so transactions that look like the old fraud (the same inputs) are now often legitimate, and new fraud looks like ordinary transactions. The relationship $p(y \mid \mathbf{x})$ changed while $p(\mathbf{x})$ barely did, and PSI looks only at inputs, so it stayed small. This is why label-based performance must be monitored as well, by cohort when labels are delayed. Next steps: confirm with recent labeled data and look at segments for where precision fell, check that labels and the definition of fraud have not changed, and retrain with recent data, possibly with new features that capture the new behavior, while considering a temporary change to the threshold or a rule-based fallback.
+rubric: Identifies concept drift, a change in $p(y \mid \mathbf{x})$, rather than covariate shift.
+rubric: Explains that PSI on inputs cannot detect a change in the input-label relationship.
+rubric: Proposes using labeled performance and segments to confirm, then retraining or another mitigation.

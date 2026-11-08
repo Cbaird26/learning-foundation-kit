@@ -1,0 +1,168 @@
+@lesson
+title: Efficient inference: caching, quantization and decoding
+summary: Compute the memory of weights and a key-value cache at stated precisions, quantize weights to integers, and implement and compare decoding methods.
+objective: Explain why generation splits into a prefill phase and a sequential decode phase, and why the key-value cache is exact.
+objective: Compute the memory of weights and of a key-value cache from a configuration at a stated precision, and a memory-bound speed limit.
+objective: Apply integer quantization, temperature, top-k and top-p filtering, and state what speculative decoding guarantees.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the material on inference: the key-value cache, quantization, and the memory-bound nature of decoding.
+
+@article
+Training a model is a one-time cost. Serving it is a cost paid per token, forever, and it is dominated by something different from training: memory. When a model generates one token, it multiplies a vector by every weight matrix, which uses each weight once; the arithmetic is tiny compared with the effort of moving the weights from memory to the processor. Almost every efficiency technique in this lesson is a way to move fewer bytes.
+
+### Two phases
+
+Generating from a prompt has a **prefill** phase, which processes all prompt tokens in parallel (as in training, with the causal mask), and a **decode** phase, which produces one token at a time, each depending on the last. Prefill is typically limited by arithmetic; decode at small batch sizes is typically limited by **memory bandwidth**, because each step reads all the weights (and the cache, below) to produce a single token per sequence. If the weights occupy $W$ bytes and the memory bandwidth is $B$ bytes per second, one decode step takes at least $W/B$ seconds, so a single sequence cannot exceed $B/W$ tokens per second. For $W = 14$ GB and a hypothetical accelerator with $B = 1000$ GB/s that is about $71$ tokens per second; batching several sequences shares the weight reads among them.
+
+### The key-value cache
+
+In a causal transformer, the keys and values of earlier positions do not change when new tokens are appended: position $a$'s keys and values depend only on tokens up to $a$. So at each step we store them and compute the query, key and value only for the new token, attending over the stored keys and values. This **key-value cache** (KV cache) gives **exactly** the same outputs as recomputing everything, because no approximation is made, and it removes the repeated work of reprocessing the whole prefix at each step. Its price is memory. For $L$ layers, $n_{\text{kv}}$ key-value heads of width $d_{\text{head}}$, a sequence of $s$ tokens, a batch of $b$ sequences and $q$ bytes per number,
+
+$$\text{KV bytes} = 2 \cdot L \cdot n_{\text{kv}} \cdot d_{\text{head}} \cdot s \cdot b \cdot q ,$$
+
+where the 2 is for keys and values. With $L = 32$, $n_{\text{kv}} = 32$, $d_{\text{head}} = 128$, $s = 4096$, $b = 1$ and 16-bit numbers ($q = 2$) this is $2\,147\,483\,648$ bytes, that is 2 GiB ($1\text{ GiB} = 2^{30}$ bytes), or 0.5 MiB per token. The cache grows linearly with sequence length and batch size and can exceed the weights. Sharing keys and values among groups of query heads reduces it: multi-query attention (Shazeer, 2019) uses a single key-value head, and grouped-query attention (Ainslie and colleagues, 2023) uses an intermediate number; with 8 key-value heads instead of 32 the example above needs 0.5 GiB. Exact attention can also be computed without storing the full score matrix by an IO-aware algorithm (FlashAttention, Dao and colleagues, 2022).
+
+### Quantization
+
+Weights in 16-bit formats take $2$ bytes each, so $7\times 10^{9}$ parameters need $14$ GB; with 8-bit integers, 7 GB, and with 4-bit, 3.5 GB (ignoring the small cost of scales). **Symmetric integer quantization** stores, for a tensor $\mathbf{w}$, a scale $s = \max_i |w_i| / 127$ and integers $q_i = \operatorname{round}(w_i / s)$, and reconstructs $\hat w_i = s\, q_i$. The rounding error of each weight is at most $s/2$.
+
+```python
+def quantize_int8(w):
+    """Symmetric per-tensor quantization of a list of floats."""
+    scale = max(abs(x) for x in w) / 127
+    q = [round(x / scale) for x in w]
+    return q, scale
+
+def dequantize(q, scale):
+    return [scale * v for v in q]
+```
+
+A single outlier makes $s$ large and every other weight coarse, so practical methods use a scale per small group of weights, calibration data, or treat outliers separately. Quantization trades quality for memory, and how much quality is lost depends on the model, the bit width and the method; measure it on your task.
+
+### Decoding
+
+At each step the model gives logits $\mathbf{z}$ and the decoder picks a token. **Greedy** decoding takes the largest. **Temperature** $T$ samples from $\operatorname{softmax}(\mathbf{z}/T)$: $T < 1$ sharpens and $T > 1$ flattens. **Top-$k$** keeps the $k$ most probable tokens, renormalizes and samples. **Top-$p$** or **nucleus** sampling (Holtzman and colleagues, 2019) keeps the smallest set of tokens whose cumulative probability reaches $p$, so the number of candidates adapts to the model's confidence. **Beam search** keeps the $b$ most probable partial sequences. For open-ended text, the highest-likelihood sequences are often dull and repetitive, which motivated sampling methods; for tasks with one right answer, such as translation or code, likelihood-based search often works well. No decoding rule is best for all tasks.
+
+**Speculative decoding** (Leviathan and colleagues, 2022; Chen and colleagues, 2023) uses a small draft model to propose $\gamma$ tokens, then the large model scores all of them in one pass and accepts a prefix by a rejection rule that leaves the output distribution **exactly equal** to that of the large model. If each proposed token is accepted with probability $\alpha$, independently, one large-model pass yields on average $(1 - \alpha^{\gamma+1})/(1 - \alpha)$ tokens; for $\alpha = 0.8$ and $\gamma = 4$ that is $3.36$.
+
+@example
+title: Memory of a key-value cache
+problem: A model has $L = 40$ layers, 8 key-value heads of width 128, and runs a batch of 4 sequences of 2,048 tokens in 16-bit precision. How large is the KV cache in GiB?
+step: Per token, keys and values: $2 \times 40 \times 8 \times 128 \times 2$ bytes $= 163{,}840$ bytes.
+step: Tokens in the batch: $4 \times 2048 = 8192$.
+step: Total: $163{,}840 \times 8192 = 1{,}342{,}177{,}280$ bytes; dividing by $2^{30}$ gives $1.25$ GiB.
+answer: 1.25 GiB.
+
+@example
+title: Quantizing three weights
+problem: Quantize $\mathbf{w} = (0.534, -2.54, 1.322)$ with symmetric 8-bit quantization and give the reconstruction.
+step: The scale is $s = 2.54/127 = 0.02$.
+step: The integers are $0.534/0.02 = 26.7 \to 27$, $-2.54/0.02 = -127$, and $1.322/0.02 = 66.1 \to 66$.
+step: Reconstruction: $(0.54, -2.54, 1.32)$. The errors are $0.006$, $0$ and $0.002$, all below $s/2 = 0.01$.
+answer: $q = (27, -127, 66)$ with scale $0.02$, reconstructed as $(0.54, -2.54, 1.32)$.
+
+@mistakes
+- Believing the KV cache approximates attention: it is exact, since earlier keys and values do not change under a causal mask.
+- Ignoring the cache in memory planning: for long sequences and large batches it can exceed the weights.
+- Mixing GB and GiB: $10^9$ bytes and $2^{30}$ bytes differ by about 7 percent, so state which you use.
+- Assuming top-$p$ always keeps the same number of tokens: the size of the nucleus depends on how peaked the distribution is.
+
+@practice num
+prompt: A model has 24 layers, 8 key-value heads of width 64, and serves a batch of 4 sequences of 8,192 tokens, with 16-bit (2 byte) keys and values. How large is the KV cache in GiB ($2^{30}$ bytes)? Give the answer to two decimal places.
+answer: 1.5
+tol: 0.01
+unit: GiB
+check: 2 * 24 * 8 * 64 * 8192 * 4 * 2 / 2 ** 30
+hint: Use $2\,L\,n_{\text{kv}}\,d_{\text{head}}\,s\,b\,q$ bytes, then divide by $2^{30}$.
+solution: Per token: $2 \cdot 24 \cdot 8 \cdot 64 \cdot 2 = 49{,}152$ bytes. Tokens: $4 \cdot 8192 = 32{,}768$. Total: $1{,}610{,}612{,}736$ bytes, which is exactly $1.5 \cdot 2^{30}$, so 1.5 GiB.
+
+@practice num
+prompt: A model has $13 \times 10^{9}$ parameters stored with 4 bits each (ignore the memory for scales and any layers kept at higher precision). How many GB do the weights occupy, with $1\text{ GB} = 10^{9}$ bytes?
+answer: 6.5
+tol: 0.01
+unit: GB
+check: 13e9 * 4 / 8 / 1e9
+hint: Four bits are half a byte.
+solution: $13 \times 10^{9} \times 0.5$ bytes $= 6.5 \times 10^{9}$ bytes, which is 6.5 GB; the same model in 16 bits would need 26 GB.
+
+@practice num
+prompt: Weights $\mathbf{w} = (0.62, -0.31, 1.80, -0.9)$ are quantized with symmetric 8-bit quantization, scale $s = \max|w_i|/127$. What is the reconstructed value of the first weight, $s \cdot \operatorname{round}(0.62/s)$? Give the answer to three decimal places.
+answer: 0.624
+tol: 0.001
+check: (1.80 / 127) * round(0.62 / (1.80 / 127))
+hint: The scale is $1.80/127 \approx 0.014173$. Divide $0.62$ by it, round to an integer, and multiply back.
+solution: $0.62/0.014173 = 43.74$, which rounds to 44, and $44 \times 0.014173 = 0.6236$, so $0.624$. The error is $0.004$, below $s/2 = 0.0071$.
+
+@practice mc
+prompt: Why does using a key-value cache not change the text a model generates?
+choice*: In a causal model the keys and values of earlier positions do not depend on later tokens, so storing and reusing them gives exactly the same computation.
+choice: The cache keeps only the most recent tokens, which are the only ones that matter.
+choice: The cache stores quantized keys and values, which changes the output only slightly.
+choice: The cache replaces attention by a fixed summary of the prefix.
+hint: What does position $a$'s key depend on?
+solution: With the causal mask, the key and value at position $a$ depend only on tokens up to $a$, so they are the same at every later step; reusing them is exact. Dropping old tokens, quantizing the cache, or summarizing the prefix are separate techniques that do change the computation.
+
+@practice code
+prompt: Write `top_p_filter(probs, p)`. `probs` is a list of probabilities summing to 1, and `0 < p <= 1`. Order the tokens from most to least probable (ties broken by lower index first), keep tokens in that order until their cumulative probability is at least `p` (always keeping at least one token), set all other probabilities to `0.0`, renormalize the kept ones to sum to 1, and return a list of the same length and order as `probs`. For example, `top_p_filter([0.1, 0.5, 0.1, 0.3], 0.75)` returns `[0.0, 0.625, 0.0, 0.375]`.
+starter:
+```python
+def top_p_filter(probs, p):
+    return list(probs)
+```
+tests:
+```python
+def close(a, b):
+    return len(a) == len(b) and all(abs(x - y) < 1e-9 for x, y in zip(a, b))
+
+assert close(top_p_filter([0.1, 0.5, 0.1, 0.3], 0.75), [0.0, 0.625, 0.0, 0.375])
+assert close(top_p_filter([0.5, 0.3, 0.1, 0.06, 0.04], 0.5), [1.0, 0.0, 0.0, 0.0, 0.0])
+assert close(top_p_filter([0.4, 0.4, 0.2], 0.5), [0.5, 0.5, 0.0])
+z = 0.96
+assert close(top_p_filter([0.5, 0.3, 0.1, 0.06, 0.04], 0.95),
+             [0.5 / z, 0.3 / z, 0.1 / z, 0.06 / z, 0.0])
+assert close(top_p_filter([0.25, 0.25, 0.5], 1.0), [0.25, 0.25, 0.5])
+```
+model:
+```python
+def top_p_filter(probs, p):
+    """Nucleus filtering: keep the smallest top set with mass >= p."""
+    order = sorted(range(len(probs)), key=lambda i: (-probs[i], i))
+    keep = []
+    mass = 0.0
+    for i in order:
+        keep.append(i)
+        mass += probs[i]
+        if mass >= p:
+            break
+    total = 0.0
+    for i in keep:
+        total += probs[i]
+    kept = set(keep)
+    return [probs[i] / total if i in kept else 0.0 for i in range(len(probs))]
+```
+hint: Sort indices by decreasing probability, accumulate until the running mass reaches `p`, and divide the kept probabilities by their sum.
+solution: Sorting indices, not values, lets you map the result back to the original order. The loop adds a token before testing the mass, so at least one token is always kept and the first token that reaches `p` is included. The tie test, where two tokens have probability 0.4, checks that the lower index goes first. The last test uses `p = 1.0` and must keep every token, including when floating-point sums fall just short of 1.
+
+@quiz num
+prompt: A model's weights occupy 14 GB ($10^9$ bytes each) and a hypothetical accelerator reads memory at 800 GB/s. Assuming decode is limited only by reading the weights once per token for one sequence, what is the maximum number of tokens per second? Give the answer to one decimal place.
+answer: 57.1
+tol: 0.1
+unit: tokens per second
+check: 800 / 14
+hint: One decode step takes at least weight bytes divided by bandwidth.
+solution: One step takes at least $14/800 = 0.0175$ s, so at most $800/14 \approx 57.1$ tokens per second for one sequence. Batching sequences shares the weight read, and quantizing the weights shortens the step.
+
+@quiz num
+prompt: In speculative decoding, a draft model proposes $\gamma = 3$ tokens per round, and each proposed token is accepted with probability $\alpha = 0.7$, independently. Using the expected number of tokens per large-model pass $(1 - \alpha^{\gamma+1})/(1 - \alpha)$, what is it? Give the answer to two decimal places.
+answer: 2.53
+tol: 0.01
+check: (1 - 0.7 ** 4) / (1 - 0.7)
+hint: Substitute $\alpha = 0.7$ and $\gamma + 1 = 4$.
+solution: $\alpha^{4} = 0.2401$, so the expected number is $(1 - 0.2401)/0.3 = 2.533$ tokens per large-model pass, which is why speculative decoding can speed up generation without changing the output distribution.
+
+@quiz self
+prompt: Choose a decoding method (greedy, temperature sampling, top-p, beam search) for each of: translating a sentence, writing a short story, and answering a question where you will run the sampling several times and take a majority vote. Justify each choice and say what could go wrong.
+hint: Ask whether the task has a single correct output or many acceptable ones, and what diversity is needed.
+solution: Translation: beam search or greedy, because a single best output exists and high-likelihood sequences are usually good; a risk is that beam search favors short or generic outputs, handled with length normalization. Story: top-p sampling with a moderate temperature, because many continuations are acceptable and likelihood-maximizing text tends to be bland and repetitive in open-ended generation; a risk is incoherence at high temperature or repeated phrases at low temperature, so I would tune both and inspect samples. Majority vote over several samples: temperature sampling (or top-p) at a temperature above zero, because the method needs different samples to vote, whereas greedy decoding would give identical answers every time; the risk is that the cost grows with the number of samples, and that a majority can be wrong if errors are correlated across samples. In every case I would choose the setting by measuring on held-out examples with the task's metric, since no decoding rule is best across tasks.
+rubric: Matches decoding to the structure of the task (one answer versus many acceptable outputs).
+rubric: Explains why voting needs diversity and so rules out greedy decoding.
+rubric: Names a realistic risk for each choice and says to tune on held-out data.

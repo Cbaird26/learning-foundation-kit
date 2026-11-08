@@ -1,0 +1,204 @@
+@lesson
+title: Boosting and its analysis
+summary: Define weak learning, state AdaBoost, prove that its training error decays exponentially in the number of rounds, and understand what the VC and margin analyses say about its generalization.
+objective: State AdaBoost with the exact weight and coefficient updates and prove the bound $\prod_t 2\sqrt{\epsilon_t(1-\epsilon_t)} \le e^{-2\sum_t \gamma_t^2}$ on its training error.
+objective: Compute AdaBoost rounds by hand and in code, and check the invariants of the reweighting.
+objective: Explain the VC-based generalization bound for boosted combinations and the margin-based explanation of why test error can keep falling after training error is zero, including the limits of that explanation.
+reading: Understanding Machine Learning (Shalev-Shwartz and Ben-David), the chapter "Boosting".
+
+@article
+Suppose you can only build classifiers that are barely better than guessing, say a decision stump that is right 55 percent of the time on any weighting of the data. Can you combine many of them into an arbitrarily accurate classifier? This is the **boosting question**, and the answer is yes: Schapire (1990) proved that weak and strong learnability are equivalent, and AdaBoost (Freund and Schapire, 1997) is the practical algorithm that realizes it.
+
+### Weak learning and the algorithm
+
+A learner is a **$\gamma$-weak learner** for $\mathcal{H}$ if, for every distribution over the examples (and realizable labeling), it returns with probability at least $1 - \delta$ a hypothesis with error at most $1/2 - \gamma$, given enough examples. AdaBoost never needs the distribution explicitly: it calls a weak learner on *weighted* data. Labels are $y_i \in \{-1, +1\}$.
+
+1. Initialize $D_1(i) = 1/m$.
+2. For $t = 1, \dots, T$: obtain $h_t$ from the weak learner on the weights $D_t$; compute its weighted error $\epsilon_t = \sum_{i : h_t(x_i) \ne y_i} D_t(i)$ and set $\alpha_t = \frac{1}{2}\ln\frac{1 - \epsilon_t}{\epsilon_t}$.
+3. Update $D_{t+1}(i) = D_t(i)\, e^{-\alpha_t y_i h_t(x_i)}/Z_t$, where $Z_t = \sum_i D_t(i)\, e^{-\alpha_t y_i h_t(x_i)}$ normalizes.
+4. Output $f_T(x) = \operatorname{sign}\big(\sum_{t=1}^{T}\alpha_t h_t(x)\big)$.
+
+Mistakes are upweighted and correct examples downweighted, and good rounds ($\epsilon_t$ small) get large coefficients. Write $\gamma_t = \frac{1}{2} - \epsilon_t$ for the **edge** of round $t$.
+
+```python
+from math import exp, log
+
+def adaboost_round(D, y, h):
+    """One round: weights D, labels y, predictions h (all +-1 lists).
+    Returns (alpha, new weights, Z)."""
+    eps = sum(d for d, yi, hi in zip(D, y, h) if yi != hi)
+    alpha = 0.5 * log((1 - eps) / eps)
+    w = [d * exp(-alpha * yi * hi) for d, yi, hi in zip(D, y, h)]
+    Z = sum(w)
+    return alpha, [x / Z for x in w], Z
+
+alpha, D2, Z = adaboost_round([0.25] * 4, [1, 1, -1, -1], [1, -1, -1, -1])
+print(round(alpha, 4), [round(d, 4) for d in D2], round(Z, 4))
+```
+
+The program prints `0.5493 [0.1667, 0.5, 0.1667, 0.1667] 0.866`.
+
+### Training error
+
+**Theorem 1.** Assume each $\epsilon_t < 1/2$. The training error of $f_T$ satisfies
+$$L_S(f_T) \le \prod_{t=1}^{T} Z_t = \prod_{t=1}^{T} 2\sqrt{\epsilon_t(1 - \epsilon_t)} \le \exp\Big(-2\sum_{t=1}^{T}\gamma_t^2\Big).$$
+In particular, if every round has edge $\gamma_t \ge \gamma$, then $L_S(f_T) \le e^{-2\gamma^2 T}$, and the training error is $0$ once $T > \ln(m)/(2\gamma^2)$ because an error rate below $1/m$ means no mistake. The proof is the first example. The assumption is that the weak learner has an edge on *every* weighting $D_t$ that arises, a stronger requirement than an edge on the original data.
+
+### Generalization: the VC view
+
+If the base class $\mathcal{B}$ has VC dimension $d$, the class of voting classifiers $\operatorname{sign}(\sum_{t \le T}\alpha_t h_t)$ with $h_t \in \mathcal{B}$ has VC dimension $O(dT\ln(dT))$ (the main reading gives an explicit bound). Plugging into the bounds of weeks 4 and 5 gives a gap of order $\sqrt{dT\ln(dT)/m}$, which *grows* with $T$ and predicts that boosting overfits when run for many rounds. In many experiments it does not: the test error often keeps decreasing for hundreds of rounds after the training error reaches zero.
+
+### Generalization: the margin view
+
+Schapire, Freund, Bartlett and Lee (1998) explained this through margins. Write $F_T = \sum_t \alpha_t h_t$ and define the **normalized margin** of an example as $y_i F_T(x_i)/\sum_t \alpha_t \in [-1, 1]$. They proved two things: a generalization bound for voting classifiers in terms of the fraction of training points with margin at most $\theta$ plus a term of order $\sqrt{d/(m\theta^2)}$ up to logarithmic factors, with no dependence on $T$; and that AdaBoost drives the fraction of small-margin points down. The second claim is the content of a margin version of Theorem 1: for all $\theta \in [0, 1)$,
+$$\frac{1}{m}\Big|\Big\{i : \frac{y_i F_T(x_i)}{\sum_t \alpha_t} \le \theta\Big\}\Big| \le \prod_{t=1}^{T} 2\sqrt{\epsilon_t^{\,1-\theta}(1 - \epsilon_t)^{1+\theta}},$$
+which the practice problems ask you to prove. The margin explanation is influential and incomplete: later work constructed examples where bounds of this type fail to track test error, and what governs the generalization of boosting in practice remains discussed in the literature.
+
+@example
+title: Proof of the training error bound
+problem: Prove Theorem 1.
+step: Let $F_T(x) = \sum_{t \le T}\alpha_t h_t(x)$. If $f_T(x_i) \ne y_i$ then $y_i F_T(x_i) \le 0$, so $\mathbb{1}[f_T(x_i) \ne y_i] \le e^{-y_i F_T(x_i)}$. Hence $L_S(f_T) \le \frac{1}{m}\sum_i e^{-y_i F_T(x_i)}$.
+step: Unroll the weight update: $D_{T+1}(i) = D_1(i)\prod_{t \le T}\frac{e^{-\alpha_t y_i h_t(x_i)}}{Z_t} = \frac{e^{-y_i F_T(x_i)}}{m\prod_t Z_t}$.
+step: The weights sum to one, so $1 = \sum_i D_{T+1}(i) = \frac{1}{m\prod_t Z_t}\sum_i e^{-y_i F_T(x_i)}$, that is, $\frac{1}{m}\sum_i e^{-y_i F_T(x_i)} = \prod_t Z_t$. This proves $L_S(f_T) \le \prod_t Z_t$.
+step: Compute $Z_t$. Examples with $h_t(x_i) = y_i$ carry total weight $1 - \epsilon_t$ and are multiplied by $e^{-\alpha_t}$; mistakes carry weight $\epsilon_t$ and are multiplied by $e^{\alpha_t}$. So $Z_t = (1 - \epsilon_t)e^{-\alpha_t} + \epsilon_t e^{\alpha_t}$. With $e^{\alpha_t} = \sqrt{(1 - \epsilon_t)/\epsilon_t}$ this is $(1-\epsilon_t)\sqrt{\epsilon_t/(1-\epsilon_t)} + \epsilon_t\sqrt{(1-\epsilon_t)/\epsilon_t} = 2\sqrt{\epsilon_t(1-\epsilon_t)}$.
+step: Finally $2\sqrt{\epsilon_t(1 - \epsilon_t)} = \sqrt{1 - 4\gamma_t^2}$ because $4\epsilon(1 - \epsilon) = 1 - (1 - 2\epsilon)^2 = 1 - 4\gamma^2$. Since $1 - x \le e^{-x}$, $\sqrt{1 - 4\gamma_t^2} \le e^{-2\gamma_t^2}$, and multiplying over $t$ gives the claim.
+answer: $L_S(f_T) \le \prod_t 2\sqrt{\epsilon_t(1-\epsilon_t)} \le e^{-2\sum_t \gamma_t^2}$.
+
+@example
+title: One round by hand
+problem: Five training points start with weights $0.2$ each. The weak hypothesis $h_1$ is wrong on point 3 only. Compute $\epsilon_1$, $\alpha_1$, $Z_1$ and the new weights.
+step: The weighted error is the weight of the mistakes: $\epsilon_1 = 0.2$.
+step: The coefficient is $\alpha_1 = \frac{1}{2}\ln(0.8/0.2) = \frac{1}{2}\ln 4 = \ln 2 \approx 0.6931$, so $e^{\alpha_1} = 2$ and $e^{-\alpha_1} = 0.5$.
+step: Multiply the weights: the four correct points get $0.2 \cdot 0.5 = 0.1$ each, the mistake gets $0.2 \cdot 2 = 0.4$. Their sum is $Z_1 = 0.4 + 0.4 = 0.8$, which matches $2\sqrt{0.2 \cdot 0.8} = 0.8$.
+step: Normalize: $D_2 = (0.125, 0.125, 0.5, 0.125, 0.125)$. Check: $h_1$'s weighted error under $D_2$ is the weight of point 3, namely $0.5$. After each round the previous weak hypothesis is exactly as good as a coin flip, so the next one must find something new.
+answer: $\epsilon_1 = 0.2$, $\alpha_1 = \ln 2 \approx 0.693$, $Z_1 = 0.8$, $D_2 = (0.125, 0.125, 0.5, 0.125, 0.125)$.
+
+@mistakes
+- Using the error $\epsilon_t$ on the original uniform data instead of on the current weights $D_t$: both $\alpha_t$ and the analysis use the weighted error.
+- Assuming boosting works with any weak learner: the theorem needs $\epsilon_t < 1/2$ on every round; if a round has $\epsilon_t \ge 1/2$ the bound fails and $\alpha_t \le 0$.
+- Concluding that a small training error bound says anything about test error: Theorem 1 is only about the sample; generalization needs the VC or margin arguments.
+
+@practice num
+prompt: In AdaBoost a weak hypothesis has weighted error $\epsilon_t = 0.1$ on the current weights. What is its coefficient $\alpha_t = \frac{1}{2}\ln\frac{1 - \epsilon_t}{\epsilon_t}$? Give four decimal places.
+answer: 1.0986
+tol: 0.0001
+check: 0.5 * log((1 - 0.1) / 0.1)
+hint: $(1 - \epsilon)/\epsilon = 9$.
+solution: $\alpha_t = \frac{1}{2}\ln 9 = \ln 3 \approx 1.0986$.
+
+@practice num
+prompt: AdaBoost is run for $T = 50$ rounds and every weak hypothesis has weighted error $\epsilon_t = 0.4$. What is the upper bound $\prod_t 2\sqrt{\epsilon_t(1 - \epsilon_t)}$ on the training error? Give three decimal places.
+answer: 0.360
+tol: 0.001
+check: (2 * sqrt(0.4 * 0.6)) ** 50
+hint: Each round contributes the factor $2\sqrt{0.24}$; raise it to the 50th power.
+solution: $2\sqrt{0.24} \approx 0.9798$, and $0.9798^{50} \approx 0.360$. The coarser bound $e^{-2\gamma^2 T}$ with $\gamma = 0.1$ gives $e^{-1} \approx 0.368$, slightly larger, as expected.
+
+@practice mc
+prompt: After one round of AdaBoost with $\epsilon_t < 1/2$, which training examples have their weight multiplied by $e^{\alpha_t} > 1$ before normalization?
+choice*: The examples misclassified by $h_t$.
+choice: The examples classified correctly by $h_t$.
+choice: The examples closest to the decision boundary of $h_t$, whether correct or not.
+choice: All examples, by the same factor, so that only the normalization changes the weights.
+hint: Look at the sign of the exponent $-\alpha_t y_i h_t(x_i)$ when $h_t(x_i) = y_i$ and when $h_t(x_i) \ne y_i$.
+solution: For a correct example $y_i h_t(x_i) = 1$, the factor is $e^{-\alpha_t} < 1$; for a mistake, $y_i h_t(x_i) = -1$ and the factor is $e^{\alpha_t} > 1$. Distance from the boundary plays no role because the update uses only the sign of the prediction.
+
+@practice code
+prompt: Write `adaboost(stumps, y, T)` that runs $T$ rounds of AdaBoost on `m` examples with labels `y` in $\{-1, +1\}$. Here `stumps` is a list of candidate weak hypotheses, each a list of `m` predictions in $\{-1, +1\}$. Start with uniform weights. In each round choose the stump with the smallest weighted error, taking the first stump whose error is within `1e-9` of the minimum; stop early if that error is `0` (then return `(0.0, 0.0)`) or at least `0.5` (stop and use the rounds so far). Set $\alpha = \frac{1}{2}\ln\frac{1-\epsilon}{\epsilon}$, update the weights and normalize with $Z$. After the rounds, return `(train_error, bound)`, where `train_error` is the fraction of examples with $y_i F(x_i) \le 0$ for $F = \sum_t \alpha_t h_t$ and `bound` is the product of the $Z$ values of the rounds performed.
+starter:
+```python
+from math import exp, log
+
+def adaboost(stumps, y, T):
+    pass
+```
+tests:
+```python
+xs = [1, 2, 3, 4, 5, 6]
+stumps = []
+for t in [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]:
+    stumps.append([1 if x > t else -1 for x in xs])
+    stumps.append([-1 if x > t else 1 for x in xs])
+y = [1, 1, -1, -1, 1, 1]
+e1, b1 = adaboost(stumps, y, 1)
+assert abs(e1 - 1 / 3) < 1e-9 and abs(b1 - 0.9428090) < 1e-6
+e2, b2 = adaboost(stumps, y, 2)
+assert abs(e2 - 1 / 3) < 1e-9 and abs(b2 - 0.8164966) < 1e-6
+e3, b3 = adaboost(stumps, y, 3)
+assert e3 == 0.0 and abs(b3 - 0.6085806) < 1e-6
+e4, b4 = adaboost(stumps, y, 4)
+assert e4 == 0.0 and abs(b4 - 0.4868645) < 1e-6
+assert adaboost(stumps + [y], y, 5) == (0.0, 0.0)
+```
+model:
+```python
+from math import exp, log
+
+def adaboost(stumps, y, T):
+    """AdaBoost over a finite list of candidate hypotheses (prediction lists).
+    Returns (training error of the vote, product of the Z factors)."""
+    m = len(y)
+    D = [1.0 / m] * m
+    F = [0.0] * m
+    bound = 1.0
+    for _ in range(T):
+        errs = []
+        for h in stumps:
+            e = 0.0
+            for i in range(m):
+                if h[i] != y[i]:
+                    e += D[i]
+            errs.append(e)
+        best = min(errs)
+        j = next(k for k, e in enumerate(errs) if e <= best + 1e-9)
+        eps = errs[j]
+        if eps == 0:
+            return 0.0, 0.0
+        if eps >= 0.5:
+            break
+        alpha = 0.5 * log((1 - eps) / eps)
+        w = [D[i] * exp(-alpha * y[i] * stumps[j][i]) for i in range(m)]
+        Z = 0.0
+        for v in w:
+            Z += v
+        D = [v / Z for v in w]
+        for i in range(m):
+            F[i] += alpha * stumps[j][i]
+        bound *= Z
+    mistakes = sum(1 for i in range(m) if y[i] * F[i] <= 0)
+    return mistakes / m, bound
+```
+hint: Keep three running quantities: the weights `D`, the vote `F` and the product of the `Z` values. Each round, compute every stump's weighted error, pick the first near-minimum, then update all three.
+solution: The weighted error must use the current weights, not the uniform ones. The bound returned is the product of the normalizers $Z_t$, which upper bounds the training error of the final vote, as the first example proves: the tests show training error $1/3$ and then $0$ against bounds $0.94, 0.82, 0.61, 0.49$. The last test checks the early stop, since a stump equal to `y` has weighted error zero. The tolerance in the tie rule keeps the choice of stump independent of rounding in the last digit.
+
+@practice self
+prompt: Prove the margin version of Theorem 1: for every $\theta \in [0, 1)$, the fraction of training examples with $y_i F_T(x_i) \le \theta\sum_t \alpha_t$ is at most $\prod_{t=1}^{T} 2\sqrt{\epsilon_t^{\,1-\theta}(1 - \epsilon_t)^{1+\theta}}$, assuming each $\epsilon_t \in (0, 1/2)$.
+hint: Bound the indicator by an exponential, as in the proof of Theorem 1, but keep the factor $e^{\theta\sum_t\alpha_t}$, and compute the product of $e^{\theta\alpha_t}Z_t$.
+solution: If $y_i F_T(x_i) \le \theta\sum_t\alpha_t$ then $e^{\theta\sum_t\alpha_t - y_i F_T(x_i)} \ge 1$, so $\mathbb{1}[y_i F_T(x_i) \le \theta\sum_t\alpha_t] \le e^{\theta\sum_t\alpha_t}e^{-y_i F_T(x_i)}$. Averaging over the sample and using $\frac{1}{m}\sum_i e^{-y_i F_T(x_i)} = \prod_t Z_t$ from the proof of Theorem 1 gives that the fraction is at most $e^{\theta\sum_t\alpha_t}\prod_t Z_t = \prod_t e^{\theta\alpha_t}Z_t$. Now $e^{\theta\alpha_t} = ((1-\epsilon_t)/\epsilon_t)^{\theta/2}$ and $Z_t = 2\sqrt{\epsilon_t(1-\epsilon_t)}$, so $e^{\theta\alpha_t}Z_t = 2\,\epsilon_t^{-\theta/2}(1-\epsilon_t)^{\theta/2}\epsilon_t^{1/2}(1-\epsilon_t)^{1/2} = 2\sqrt{\epsilon_t^{\,1-\theta}(1-\epsilon_t)^{1+\theta}}$. For $\theta = 0$ this is Theorem 1. If every $\epsilon_t \le 1/2 - \gamma$ and $\theta$ is small enough that each factor is below $1$, the fraction of small-margin points also decays exponentially in $T$.
+rubric: Bounds the indicator of a small margin by an exponential with the factor $e^{\theta\sum_t\alpha_t}$.
+rubric: Reuses the identity $\frac{1}{m}\sum_i e^{-y_iF_T(x_i)} = \prod_t Z_t$ to reach $\prod_t e^{\theta\alpha_t}Z_t$.
+rubric: Simplifies each factor to $2\sqrt{\epsilon_t^{1-\theta}(1-\epsilon_t)^{1+\theta}}$ and checks the case $\theta = 0$.
+
+@quiz num
+prompt: Every weak hypothesis in an AdaBoost run has edge $\gamma = 0.1$ ($\epsilon_t = 0.4$) on its weighting. Using the bound $L_S(f_T) \le e^{-2\gamma^2 T}$, what is the smallest integer number of rounds $T$ that guarantees zero training error on a sample of $m = 1000$ examples (by making the bound smaller than $1/m$)?
+answer: 346
+check: ceil(log(1000) / (2 * 0.1 ** 2))
+hint: Solve $e^{-2\gamma^2 T} < 1/m$ for $T$; the training error is a multiple of $1/m$.
+solution: The condition is $2\gamma^2 T > \ln m$, so $T > \ln(1000)/(2 \cdot 0.01) = 6.9078/0.02 = 345.4$, and $T = 346$ suffices. This is the guarantee from the bound, not a prediction of the exact round at which the training error reaches zero, which is usually much earlier.
+
+@quiz num
+prompt: Every round of an AdaBoost run has $\epsilon_t = 0.25$ and $T = 30$ rounds are performed. Use the margin bound $\prod_t 2\sqrt{\epsilon_t^{1-\theta}(1 - \epsilon_t)^{1+\theta}}$ with $\theta = 0.2$ to bound the fraction of training points whose normalized margin is at most $0.2$. Give three decimal places.
+answer: 0.361
+tol: 0.001
+check: (2 * sqrt(0.25 ** 0.8 * 0.75 ** 1.2)) ** 30
+hint: Compute one factor $2\sqrt{0.25^{0.8}\cdot 0.75^{1.2}}$ and raise it to the 30th power.
+solution: One factor is $2\sqrt{0.25^{0.8}0.75^{1.2}} \approx 0.9666$, and $0.9666^{30} \approx 0.361$. With $\theta = 0$ the same rounds give $(0.866)^{30} \approx 0.013$: demanding a margin of $0.2$ makes the guarantee weaker, but it still decays with $T$.
+
+@quiz mc
+prompt: What does the weak learning assumption need for the AdaBoost training error bound $e^{-2\gamma^2 T}$ to hold?
+choice*: In every round, the weak learner returns a hypothesis with weighted error at most $1/2 - \gamma$ on the current weights $D_t$.
+choice: The base hypothesis class has VC dimension at most $\gamma$.
+choice: A single hypothesis in the base class has error at most $1/2 - \gamma$ on the original uniform data.
+choice: The final vote must have a margin of at least $\gamma$ on every training point.
+hint: The weights $D_t$ change from round to round, and the analysis uses $\epsilon_t$ computed under them.
+solution: The proof multiplies the factors $Z_t = 2\sqrt{\epsilon_t(1 - \epsilon_t)}$, each computed from the weighted error of $h_t$ under $D_t$, so the assumption must hold on those adaptively chosen weights. An edge on the uniform data alone does not guarantee an edge on later weightings, and the margin of the final vote is a consequence of boosting, not an assumption.

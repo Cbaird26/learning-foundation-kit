@@ -1,0 +1,199 @@
+@lesson
+title: Distributed training: data and model parallelism
+summary: Split training across devices with data, pipeline and sharded parallelism, and estimate the communication cost, pipeline idle time and per-device memory.
+objective: Explain data parallelism and show that averaging local gradients reproduces the full-batch gradient.
+objective: Compute ring all-reduce traffic, effective batch size, scaling efficiency and the pipeline bubble.
+objective: Compute per-device memory when optimizer state, gradients or weights are sharded.
+reading: Made With ML, the lesson on distributed training; also look up "data parallelism", "pipeline parallelism" and "sharded optimizer state" in the documentation of a deep learning library.
+@article
+Last week's 1-billion-parameter run took 34.7 days on one device. Sixty-four devices could in principle do it in half a day, and a 7-billion-parameter model's 112 GB of training state does not fit on an 80 GB device at all. Distributed training splits the work across devices to get around both limits. Each way of splitting has a cost, and the cost is communication.
+
+### Data parallelism
+
+In **data parallelism**, every device holds a full copy of the model. A global batch is split into shards, each device computes the gradient on its shard, and the devices **average** their gradients (an **all-reduce**) so that every copy takes the same update. For the mean loss, the average of equal-sized shard gradients is exactly the full-batch gradient. The following program checks this for the model $\hat{y} = w x$ with squared error, using two workers with two examples each.
+
+```python
+data = [(1, 2), (2, 3), (3, 7), (4, 8)]
+
+def grad(w, shard):
+    return 2 / len(shard) * sum((w * x - y) * x for x, y in shard)
+
+shards = [data[:2], data[2:]]
+local = [grad(1.0, s) for s in shards]
+print(local, sum(local) / 2, grad(1.0, data))   # [-3.0, -28.0] -15.5 -15.5
+```
+
+The **effective batch size** is (examples per device) $\times$ (number of devices) $\times$ (gradient accumulation steps), where accumulation sums gradients over several small batches before one update. A larger batch usually calls for retuning the learning rate; a frequently used heuristic is to scale it in proportion to the batch size, with a warm-up period, but it is a heuristic, not a law.
+
+### The cost of averaging
+
+The most common all-reduce algorithm is the **ring all-reduce**. With $p$ devices and $S$ bytes of gradient, each device sends and receives
+
+$$\frac{2(p - 1)}{p}\, S \text{ bytes,}$$
+
+almost independent of $p$, which is why it scales. For $S = 2 \times 10^9$ bytes (1 billion fp16 gradients) and $p = 8$ that is $2 \cdot \tfrac{7}{8} \cdot 2 \times 10^9 = 3.5 \times 10^9$ bytes; at a link speed of $10^{11}$ bytes per second this takes $0.035$ s. If a step computes for $0.5$ s and communication is not overlapped with computation, the step takes $0.535$ s and the **scaling efficiency**
+
+$$\text{efficiency} = \frac{\text{speedup}}{\text{devices}} = \frac{T_1}{p\, T_p}$$
+
+is $0.5/0.535 \approx 0.93$ relative to ideal. Frameworks hide much communication by starting the all-reduce of early layers while later layers are still computing gradients.
+
+### When the model does not fit
+
+Data parallelism copies everything to every device. Three remedies split the model.
+
+**Sharding** the training state removes the redundancy. With mixed precision the per-parameter state is 2 bytes of weights, 2 bytes of gradients and 12 bytes of optimizer state (fp32 master weights and two Adam moments). Sharding only the optimizer state across $d$ devices gives $2 + 2 + 12/d$ bytes per device per parameter; sharding gradients and weights too gives $16/d$, at the price of gathering weights when a layer runs.
+
+**Tensor (model) parallelism** splits the matrices inside a layer across devices; each layer then needs communication, so it is used within a group of tightly connected devices.
+
+**Pipeline parallelism** assigns consecutive layers to $p$ **stages** on different devices. To keep them busy, a batch is cut into $m$ **microbatches** that flow through the stages. At the start and end of a step some stages sit idle, and the idle fraction (the **pipeline bubble**) is
+
+$$\frac{p - 1}{m + p - 1}.$$
+
+With $p = 4$ stages and $m = 8$ microbatches the bubble is $3/11 \approx 0.27$; with $m = 32$ it falls to $3/35 \approx 0.086$. More microbatches shrink the bubble but make each one smaller.
+
+### Choosing
+
+A practical order is: use data parallelism if the model fits; add sharding of optimizer state and gradients if memory is short; add tensor and pipeline parallelism for models too large even then. Every added dimension costs communication, so measure scaling efficiency rather than assuming it.
+@example
+title: Sharding the optimizer state of a 7-billion-parameter model
+problem: A model with $7 \times 10^9$ parameters is trained in mixed precision with Adam on 8 devices of 80 GB each. Compare the per-device parameter-state memory with plain data parallelism and with the optimizer state sharded across all 8 devices.
+step: Plain data parallelism stores 16 bytes per parameter on every device: $7 \times 10^9 \times 16 = 1.12 \times 10^{11}$ bytes, or 112 GB, which exceeds 80 GB.
+step: With the optimizer state sharded across $d = 8$ devices, each device stores $2 + 2 + 12/8 = 5.5$ bytes per parameter.
+step: That is $7 \times 10^9 \times 5.5 = 3.85 \times 10^{10}$ bytes, or 38.5 GB, leaving about 41 GB on an 80 GB device for activations and buffers.
+step: The price is extra communication to gather the sharded values, so measure the step time after sharding rather than assuming it is unchanged.
+answer: 112 GB per device without sharding (too much) and 38.5 GB with the optimizer state sharded over 8 devices.
+@mistakes
+- Assuming that doubling the devices halves the training time; communication and idle time lower the scaling efficiency.
+- Forgetting gradient accumulation and the number of devices when computing the effective batch size, then reusing a learning rate tuned for a different batch size.
+- Averaging shard gradients with equal weights when the shards have different sizes; weight by the number of examples.
+- Using too few microbatches in a pipeline, which leaves stages idle for a large fraction of each step.
+@practice num
+prompt: A ring all-reduce is run on $p = 4$ devices over $S = 4 \times 10^9$ bytes of gradients. How many bytes does each device send, using $2(p-1)S/p$?
+answer: 6e9
+unit: bytes
+tol: 1%
+check: 2 * (4 - 1) * 4e9 / 4
+hint: Evaluate $2(p - 1)/p$ first for $p = 4$, then multiply by $S$.
+solution: $2 \cdot 3/4 = 1.5$, and $1.5 \times 4 \times 10^9 = 6 \times 10^9$ bytes.
+@practice num
+prompt: Each of 16 devices processes 32 examples per forward and backward pass, and gradients are accumulated over 4 passes before each update. What is the effective batch size per update?
+answer: 2048
+unit: examples
+check: 32 * 16 * 4
+hint: Multiply the three factors: examples per device, devices and accumulation steps.
+solution: $32 \times 16 \times 4 = 2048$ examples contribute to each update.
+@practice mc
+prompt: In data-parallel training with $p$ identical replicas of a model, what do the devices exchange at each step so that the replicas stay identical?
+choice*: They average their gradients (all-reduce), and each applies the same update.
+choice: They exchange the training examples so each device sees the whole batch.
+choice: They send their weights to one device that averages the weights once per epoch.
+choice: They exchange activations layer by layer.
+hint: Each replica starts the step with the same weights; what must be identical afterwards?
+solution: Every replica must apply the same update, so they average gradients with an all-reduce each step. Exchanging examples defeats the purpose, averaging weights once per epoch is a different (less synchronized) method, and exchanging activations is what model parallelism does.
+@practice code
+prompt: Write `average_gradients(local_grads, shard_sizes)`. `local_grads` is a list with one gradient (a list of floats) per worker, each computed as the mean over that worker's shard; `shard_sizes` is the number of examples in each shard. Return the gradient of the mean over all examples: the average of the local gradients weighted by shard size, as a list. For example, `average_gradients([[1.0, 2.0], [3.0, 4.0]], [1, 3])` returns `[2.5, 3.5]`.
+starter:
+```python
+def average_gradients(local_grads, shard_sizes):
+    pass
+```
+tests:
+```python
+got = average_gradients([[1.0, 2.0], [3.0, 4.0]], [1, 3])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [2.5, 3.5]))
+got = average_gradients([[2.0], [4.0], [9.0]], [5, 5, 5])
+assert abs(got[0] - 5.0) < 1e-9
+assert average_gradients([[1.5, -2.0]], [7]) == [1.5, -2.0]
+got = average_gradients([[0.0, 10.0], [10.0, 0.0]], [3, 1])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [2.5, 7.5]))
+assert len(average_gradients([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]], [2, 2])) == 3
+```
+model:
+```python
+def average_gradients(local_grads, shard_sizes):
+    """Size-weighted average of per-worker mean gradients."""
+    total = sum(shard_sizes)
+    n_params = len(local_grads[0])
+    result = []
+    for j in range(n_params):
+        acc = 0.0
+        for grad, size in zip(local_grads, shard_sizes):
+            acc += grad[j] * size
+        result.append(acc / total)
+    return result
+```
+hint: Each local gradient is a mean over its shard, so multiply it by the shard size to get a sum, add the sums, and divide by the total number of examples.
+solution: A worker's gradient is a mean, so multiplying by its shard size recovers the sum over its examples; adding the sums and dividing by the total count gives the mean over all examples. A plain average would be wrong whenever shards differ in size (the first and fourth tests).
+@practice code
+prompt: Write `microbatches_needed(stages, max_bubble)` that returns the smallest number of microbatches $m \ge 1$ for which the pipeline bubble $(p - 1)/(m + p - 1)$, with $p$ = `stages`, is at most `max_bubble`. Raise `ValueError` if `max_bubble <= 0` and `stages > 1`. For one stage the bubble is 0, so the answer is 1. For example, `microbatches_needed(4, 0.25)` returns `9`.
+starter:
+```python
+def microbatches_needed(stages, max_bubble):
+    pass
+```
+tests:
+```python
+assert microbatches_needed(4, 0.25) == 9
+assert microbatches_needed(1, 0.5) == 1
+assert microbatches_needed(8, 0.1) == 63
+assert microbatches_needed(3, 0.05) == 38
+assert microbatches_needed(2, 0.9) == 1
+assert raises(ValueError, microbatches_needed, 4, 0.0)
+```
+model:
+```python
+def microbatches_needed(stages, max_bubble):
+    """Smallest microbatch count whose pipeline bubble is within the limit."""
+    if stages == 1:
+        return 1
+    if max_bubble <= 0:
+        raise ValueError("bubble limit must be positive")
+    m = 1
+    while (stages - 1) / (m + stages - 1) > max_bubble:
+        m += 1
+    return m
+```
+hint: Start at m = 1 and increase it while the bubble fraction is still above the limit.
+solution: The bubble decreases as `m` grows, so the first `m` that satisfies the limit is the smallest. A bubble of exactly the limit is allowed (the first test has $3/12 = 0.25$), a single stage has no bubble, and a limit of zero can never be met with more than one stage.
+@quiz code
+prompt: Write `per_device_gb(n_params, devices, shard_optimizer, shard_gradients, shard_weights)` returning the training-state memory per device in GB (1 GB = $10^9$ bytes) in mixed precision. The state per parameter is 2 bytes of weights, 2 bytes of gradients and 12 bytes of optimizer state; each component that is sharded is divided by `devices`, the others are replicated. For example, `per_device_gb(7e9, 8, True, False, False)` returns `38.5`.
+starter:
+```python
+def per_device_gb(n_params, devices, shard_optimizer, shard_gradients,
+                  shard_weights):
+    pass
+```
+tests:
+```python
+assert abs(per_device_gb(7e9, 8, True, False, False) - 38.5) < 1e-9
+assert abs(per_device_gb(7e9, 8, False, False, False) - 112.0) < 1e-9
+assert abs(per_device_gb(7e9, 8, True, True, True) - 14.0) < 1e-9
+assert abs(per_device_gb(1e9, 4, True, True, False) - 5.5) < 1e-9
+assert abs(per_device_gb(2e9, 1, True, True, True) - 32.0) < 1e-9
+```
+model:
+```python
+def per_device_gb(n_params, devices, shard_optimizer, shard_gradients,
+                  shard_weights):
+    """Per-device training-state memory in GB with optional sharding."""
+    weights = 2 / devices if shard_weights else 2
+    grads = 2 / devices if shard_gradients else 2
+    optim = 12 / devices if shard_optimizer else 12
+    return n_params * (weights + grads + optim) / 1e9
+```
+hint: Compute the bytes per parameter of each component, dividing by `devices` only if that component is sharded, then add them and scale by the parameter count.
+solution: Each of the three components costs its replicated size, or that size divided by the number of devices when sharded. In the fourth test the weights stay replicated (2 bytes) while the gradients (0.5) and optimizer state (3) are sharded over 4 devices, giving 5.5 bytes per parameter, so $10^9$ parameters need 5.5 GB.
+@quiz num
+prompt: A pipeline has $p = 6$ stages and processes each batch as $m = 10$ microbatches. What fraction of the time is the pipeline idle (the bubble), to three decimal places?
+answer: 0.333
+tol: 0.001
+check: (6 - 1) / (10 + 6 - 1)
+hint: Use $(p - 1)/(m + p - 1)$.
+solution: $(6 - 1)/(10 + 6 - 1) = 5/15 \approx 0.333$, so a third of the pipeline's time is idle.
+@quiz self
+prompt: A training job on 32 devices shows a step time of 1.0 s on 1 device (for a smaller batch) but each step on 32 devices takes 1.25 s with the per-device batch unchanged, so the global batch is 32 times larger. Define scaling efficiency for this setting, compute it, and propose two ways to improve it.
+hint: With the per-device batch fixed, ideal scaling keeps the step time constant, so the efficiency is the ratio of the step times.
+solution: With the per-device batch unchanged, each step does 32 times more work, so ideal scaling keeps the step time at 1.0 s. The scaling efficiency is $T_1 / T_{32} = 1.0/1.25 = 0.8$, meaning 20% of the time goes to communication and waiting. Two improvements: overlap the all-reduce with the backward pass so that gradients of early layers are exchanged while later layers compute; and reduce the communicated bytes, for example by sending gradients in 16-bit precision or by accumulating gradients over several local batches before each all-reduce. Other options are larger per-device batches (more compute per byte communicated) and placing the devices with the fastest links in the same group.
+rubric: Defines efficiency correctly for a fixed per-device batch (ratio of step times) and computes 0.8.
+rubric: Proposes at least two valid improvements, such as overlapping communication, accumulating gradients, or reducing communicated bytes.
+rubric: Explains that the lost 20% is communication or idle time, not a model change.

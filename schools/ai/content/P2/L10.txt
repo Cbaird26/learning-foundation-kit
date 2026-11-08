@@ -1,0 +1,145 @@
+@lesson
+title: Energy-based models
+summary: Define an energy-based model, derive the two-phase gradient of its log-likelihood, and compute normalizing constants and gradients on tiny discrete models.
+objective: Write the density of an energy-based model and explain why the normalizing constant is the central difficulty.
+objective: Derive the log-likelihood gradient as data expectation minus model expectation and compute it on a small model.
+objective: Compare maximum likelihood with contrastive divergence, score matching and noise-contrastive estimation.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on energy-based models.
+
+@article
+Every model so far paid a price for normalization: autoregressive models by factorizing into normalized conditionals, flows by tracking Jacobians, VAEs by working with a bound. An **energy-based model** (EBM) refuses to pay it in the model definition. It assigns each configuration a scalar energy $E_{\boldsymbol{\theta}}(\mathbf{x})$ (low energy means plausible) and defines
+$$p_{\boldsymbol{\theta}}(\mathbf{x}) = \frac{e^{-E_{\boldsymbol{\theta}}(\mathbf{x})}}{Z_{\boldsymbol{\theta}}},\qquad Z_{\boldsymbol{\theta}} = \int e^{-E_{\boldsymbol{\theta}}(\mathbf{x})}\,d\mathbf{x}\ \ (\text{a sum for discrete }\mathbf{x}).$$
+$E_{\boldsymbol{\theta}}$ can be any function, such as a deep network with a scalar output, which makes the family extremely flexible. The price moves to training and sampling: $Z_{\boldsymbol{\theta}}$ is an integral over all configurations, intractable except for tiny or special models. Adding a constant to $E$ changes $Z$ by the matching factor and leaves $p$ unchanged, so absolute energy values carry no meaning, only differences. Boltzmann machines and restricted Boltzmann machines are classical EBMs over binary variables, and a classifier's logits can be read as an energy over (input, label) pairs.
+
+### A tiny example
+
+Three states have energies $(1, 0, 2)$. Then $Z = e^{-1}+e^{0}+e^{-2} = 0.3679+1+0.1353 = 1.5032$ and $p = (0.2447, 0.6652, 0.0900)$: the lowest energy gets the most probability, and a unit of energy is a factor of $e$ in odds. Summing a three-term series is easy; for $\mathbf{x}\in\{0,1\}^{100}$ it would need $2^{100}$ terms.
+
+### The log-likelihood gradient
+
+For one data point, $\log p_{\boldsymbol{\theta}}(\mathbf{x}) = -E_{\boldsymbol{\theta}}(\mathbf{x}) - \log Z_{\boldsymbol{\theta}}$. Differentiating $\log Z$,
+$$\nabla_{\boldsymbol{\theta}}\log Z_{\boldsymbol{\theta}} = \frac{1}{Z_{\boldsymbol{\theta}}}\int\nabla_{\boldsymbol{\theta}}e^{-E_{\boldsymbol{\theta}}(\mathbf{x}')}\,d\mathbf{x}' = -\int p_{\boldsymbol{\theta}}(\mathbf{x}')\,\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}')\,d\mathbf{x}' = -\mathbb{E}_{\mathbf{x}'\sim p_{\boldsymbol{\theta}}}\big[\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}')\big].$$
+Hence
+$$\nabla_{\boldsymbol{\theta}}\log p_{\boldsymbol{\theta}}(\mathbf{x}) = -\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}) + \mathbb{E}_{\mathbf{x}'\sim p_{\boldsymbol{\theta}}}\big[\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}')\big].$$
+Averaged over the data, this has two phases. The **positive phase** lowers the energy of data points; the **negative phase** raises the energy of samples from the model's own distribution. At a maximum of the likelihood the two expectations of $\nabla_{\boldsymbol{\theta}}E$ agree: the model reproduces the data's statistics. The difficulty is the negative phase, an expectation under $p_{\boldsymbol{\theta}}$, which can generally be estimated only by running a Markov chain (Gibbs sampling for binary models, Langevin dynamics for continuous ones).
+
+### A model with a closed form: two spins
+
+Let $\mathbf{x} = (x_1,x_2)\in\{-1,+1\}^2$ and $E_J(\mathbf{x}) = -J x_1x_2$. The four states give $Z = 2e^{J}+2e^{-J} = 4\cosh J$. The model prefers aligned spins when $J>0$: $P(x_1 = x_2) = e^{J}/(e^{J}+e^{-J}) = \sigma(2J)$, and $\mathbb{E}_{p_J}[x_1x_2] = \tanh J$. With $\partial E/\partial J = -x_1x_2$ the average log-likelihood gradient is
+$$\frac{\partial}{\partial J}\,\frac1n\sum_i\log p_J(\mathbf{x}^{(i)}) = \overline{x_1x_2}_{\text{data}} - \tanh J.$$
+Setting it to zero: $\tanh J^\star = \overline{x_1x_2}_{\text{data}}$, moment matching. Here the negative phase is available exactly; in a large model it is not.
+
+### Ways to train without computing $Z$
+
+- **Contrastive divergence** (CD-$k$; Hinton, 2002) replaces the negative phase by samples from $k$ steps of a Markov chain started at the data. It is cheap and biased; persistent variants keep chains running between updates. When the sampler is poor, regions with low energy but no data can survive, so the model puts probability mass where there are no data.
+- **Score matching** (week 9) fits $-\nabla_{\mathbf{x}}E$ to the data score. Since the score does not contain $Z$, no sampling is needed during training, though sampling is still needed afterward.
+- **Noise-contrastive estimation** (Gutmann and Hyvärinen, 2010) turns density estimation into classification: distinguish data from samples of a known noise distribution, treating $-\log Z$ as an extra learned parameter. Its quality depends on how similar the noise is to the data.
+
+### Where EBMs sit
+
+An EBM can represent distributions that autoregressive or flow architectures struggle with, and it composes naturally (energies of independent factors add, a "product of experts"). But sampling requires an MCMC chain that may mix slowly, likelihoods cannot be evaluated without $Z$ (so comparisons across models need estimators such as annealed importance sampling), and training can be unstable. Diffusion and score-based models can be seen as a way to make the negative phase tractable by learning scores at many noise levels, which is one reason they largely displaced EBMs for image generation.
+
+```python
+from math import exp, tanh
+
+def ising_gradient_ascent(data_corr, eta, steps):
+    j = 0.0
+    for _ in range(steps):
+        grad = data_corr - tanh(j)      # positive phase minus negative phase
+        j += eta * grad
+        print(round(j, 4), round(grad, 4))
+    return j
+
+ising_gradient_ascent(0.75, 0.5, 4)
+```
+
+@example
+title: Fitting two coupled spins
+problem: Eight observations of $(x_1, x_2)\in\{-1,+1\}^2$ contain 6 aligned pairs and 2 anti-aligned pairs, and the model is $E_J(\mathbf{x}) = -Jx_1x_2$. Find the maximum-likelihood coupling $J^\star$, and take one step of gradient ascent on the average log-likelihood from $J = 0$ with step size $0.8$.
+step: The data mean of $x_1x_2$ is $(6\cdot 1 + 2\cdot(-1))/8 = 0.5$.
+step: The gradient is $0.5 - \tanh J$. At the maximum, $\tanh J^\star = 0.5$, so $J^\star = \operatorname{artanh}(0.5) = \tfrac12\ln 3 = 0.5493$. Check: $P(\text{aligned}) = \sigma(2J^\star) = \sigma(1.0986) = 0.75 = 6/8$.
+step: At $J = 0$ the model is uniform, so $\tanh 0 = 0$ and the gradient is $0.5$.
+step: One step with size $0.8$: $J = 0 + 0.8(0.5) = 0.4$.
+step: At $J = 0.4$ the model has $\tanh 0.4 = 0.3799$, so the new gradient is $0.1201$, smaller as the model's statistics approach the data's.
+answer: $J^\star = 0.5493$; one step from $0$ gives $J = 0.4$.
+
+@mistakes
+- Reading $e^{-E}$ as a probability: it is an unnormalized weight, and only after dividing by $Z$ is it a probability.
+- Getting the sign of the negative phase wrong: the log-likelihood gradient is data term minus model term for $-\nabla E$, so the update lowers energy at data and raises it at model samples.
+- Comparing energies of different models or different parameter values as if they were likelihoods: a constant offset changes nothing in $p$, and $Z$ differs between models.
+- Assuming CD-$k$ is unbiased: with few chain steps its gradient is only an approximation to the likelihood gradient.
+
+@practice num
+prompt: A discrete distribution over three states has energies $(1, 0, 2)$ in the order of the states, with $p\propto e^{-E}$. What is the probability of the state with energy $0$? Give your answer to three decimal places.
+answer: 0.665
+tol: 0.001
+check: 1 / (exp(-1) + exp(0) + exp(-2))
+hint: Compute $Z = e^{-1}+e^{0}+e^{-2}$, then divide the weight of the chosen state by it.
+solution: $Z = 0.3679 + 1 + 0.1353 = 1.5032$, and the state with energy 0 has probability $1/1.5032\approx 0.665$.
+
+@practice num
+prompt: Two spins $x_1,x_2\in\{-1,+1\}$ have energy $E_J(\mathbf{x}) = -Jx_1x_2$ with $J = 0.5$. What is the normalizing constant $Z$ (the sum of $e^{-E}$ over the four states)? Give your answer to three decimal places.
+answer: 4.511
+tol: 0.001
+check: sum(exp(0.5 * a * b) for a in (-1, 1) for b in (-1, 1))
+hint: Two states have $x_1x_2 = +1$ and two have $x_1x_2 = -1$.
+solution: Two aligned states have $e^{-E} = e^{0.5}$ and two anti-aligned states have $e^{-0.5}$. So $Z = 2e^{0.5}+2e^{-0.5} = 3.2974 + 1.2131 = 4.511 = 4\cosh 0.5$.
+
+@practice num
+prompt: The two-spin model $E_J(\mathbf{x}) = -Jx_1x_2$ is currently at $J = 0.5$. The data have mean $\overline{x_1x_2} = 0.9$. What is the derivative of the average log-likelihood with respect to $J$ at this point? Give your answer to three decimal places.
+answer: 0.438
+tol: 0.001
+check: 0.9 - (exp(0.5) - exp(-0.5)) / (exp(0.5) + exp(-0.5))
+hint: The derivative is the data average of $x_1x_2$ minus its expectation under the model, which equals $\tanh J$.
+solution: The model expectation is $\tanh 0.5 = 0.4621$, so the derivative is $0.9 - 0.4621 = 0.438$. It is positive: the data are more strongly aligned than the model, so $J$ should increase.
+
+@practice mc
+prompt: Why is maximum-likelihood training of an energy-based model with a deep energy function hard?
+choice*: The gradient of $\log Z_{\boldsymbol{\theta}}$ is an expectation of $\nabla_{\boldsymbol{\theta}}E$ under the model's own distribution, which usually has to be estimated by running a Markov chain.
+choice: The energy function cannot be differentiated with respect to its parameters.
+choice: The log-likelihood is undefined because $e^{-E}$ can be negative.
+choice: The data term of the gradient requires summing over all possible configurations.
+hint: Look at which of the two terms in $-\nabla E(\mathbf{x}) + \mathbb{E}_{p_{\boldsymbol{\theta}}}[\nabla E]$ requires samples from the model.
+solution: The data term is evaluated at observed points. The model term is an expectation over $p_{\boldsymbol{\theta}}$, which needs samples. The energy is typically differentiable, and $e^{-E}$ is positive.
+
+@practice ms
+prompt: Which of the following are true of energy-based models $p_{\boldsymbol{\theta}}(\mathbf{x}) = e^{-E_{\boldsymbol{\theta}}(\mathbf{x})}/Z_{\boldsymbol{\theta}}$? Select all that apply.
+choice*: Adding the same constant to the energy of every configuration leaves the distribution unchanged.
+choice*: Score matching can fit them without evaluating $Z_{\boldsymbol{\theta}}$, because $\nabla_{\mathbf{x}}\log p = -\nabla_{\mathbf{x}}E$.
+choice*: Contrastive divergence with a finite number of chain steps gives a biased estimate of the likelihood gradient.
+choice: The likelihood gradient needs only the energy of the data points, so no sampling is required.
+hint: Check how a constant shifts $Z$, and which terms of the likelihood gradient need samples.
+solution: A shift $c$ multiplies $e^{-E}$ and $Z$ by $e^{-c}$, so $p$ is unchanged. The score does not depend on $Z$. CD-$k$ replaces the model expectation by a short-run chain, which is a biased approximation. The exact gradient has a negative phase that depends on the model's distribution, so sampling cannot be avoided in maximum likelihood.
+
+@practice self
+prompt: Derive $\nabla_{\boldsymbol{\theta}}\log p_{\boldsymbol{\theta}}(\mathbf{x}) = -\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}) + \mathbb{E}_{p_{\boldsymbol{\theta}}}[\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}')]$ for an energy-based model. Then, for the two-spin model $E_J = -Jx_1x_2$, evaluate both terms and show the stationarity condition is $\tanh J = \overline{x_1x_2}$.
+hint: Differentiate $\log Z$ by moving the gradient inside the sum or integral and recognize the density $p_{\boldsymbol{\theta}}$. For the spins, list the four states with their weights.
+solution: Write $\log p_{\boldsymbol{\theta}}(\mathbf{x}) = -E_{\boldsymbol{\theta}}(\mathbf{x}) - \log Z_{\boldsymbol{\theta}}$. Then $\nabla_{\boldsymbol{\theta}}\log Z_{\boldsymbol{\theta}} = \frac{1}{Z_{\boldsymbol{\theta}}}\sum_{\mathbf{x}'}\nabla_{\boldsymbol{\theta}}e^{-E_{\boldsymbol{\theta}}(\mathbf{x}')} = \frac{1}{Z_{\boldsymbol{\theta}}}\sum_{\mathbf{x}'}(-\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}(\mathbf{x}'))e^{-E_{\boldsymbol{\theta}}(\mathbf{x}')} = -\mathbb{E}_{p_{\boldsymbol{\theta}}}[\nabla_{\boldsymbol{\theta}}E_{\boldsymbol{\theta}}]$, which gives the formula. For the spins, $\partial E_J/\partial J = -x_1x_2$, so the gradient for one observation is $x_1x_2 - \mathbb{E}_{p_J}[x_1x_2]$. The model expectation weights the aligned states ($x_1x_2 = +1$, total weight $2e^{J}$) and anti-aligned states ($-1$, total weight $2e^{-J}$) by $e^{\pm J}/Z$, so $\mathbb{E}_{p_J}[x_1x_2] = (e^{J}-e^{-J})/(e^{J}+e^{-J}) = \tanh J$. Averaging over the data and setting the gradient to zero gives $\tanh J = \overline{x_1x_2}$.
+rubric: Differentiates $\log Z$ correctly and identifies the model expectation of $\nabla E$.
+rubric: Evaluates the model expectation $\mathbb{E}_{p_J}[x_1x_2] = \tanh J$ from the four weighted states.
+rubric: Concludes moment matching: model and data correlations agree at the optimum.
+
+@quiz num
+prompt: An energy function over the real line is $E(x) = x^2/8$. What is the normalizing constant $Z = \int e^{-E(x)}\,dx$? Give your answer to three decimal places.
+answer: 5.013
+tol: 0.001
+check: quad(lambda x: exp(-x ** 2 / 8), -inf, inf)
+hint: This is an unnormalized Gaussian $e^{-x^2/(2v)}$ with $v = 4$, and $\int e^{-x^2/(2v)}dx = \sqrt{2\pi v}$.
+solution: With $v = 4$, $Z = \sqrt{2\pi\cdot 4} = \sqrt{8\pi} = 5.013$. The model is $\mathcal{N}(0, 4)$, and its density is $e^{-x^2/8}/5.013$.
+
+@quiz ms
+prompt: Which methods let you train an energy-based model without computing the normalizing constant exactly? Select all that apply.
+choice*: Score matching, which fits the gradient of the energy with respect to the data.
+choice*: Noise-contrastive estimation, which learns to separate data from samples of a known noise distribution.
+choice*: Contrastive divergence, which approximates the model expectation with a short Markov chain started at the data.
+choice: Exact maximum likelihood with a deep energy function, using the closed-form partition function.
+hint: Recall which methods avoid $Z$ altogether and which approximate its gradient.
+solution: Score matching removes $Z$ because it does not depend on $\mathbf{x}$; noise-contrastive estimation replaces the likelihood by a classification problem; contrastive divergence approximates the intractable model expectation. A deep energy function generally has no closed-form partition function.
+
+@quiz self
+prompt: An EBM trained with contrastive divergence from short chains started at the data gives low energy to some images that look nothing like the training data. Explain, using the two phases of the gradient, how this can happen, and suggest two ways to detect or reduce the problem.
+hint: Ask which regions the negative phase actually pushes up when the chains never leave the neighborhood of the data.
+solution: The negative phase raises the energy at samples from the model. If the chains start at data and run only a few steps, the negative samples stay near the data, so only those neighborhoods get pushed up. Regions the chains never visit receive no negative push, and if the energy network makes them low (through generalization or noise), the model puts mass there: spurious modes with no data. Detection: run long, independent chains from random starts and inspect where they settle and whether their energy is lower than that of the data; compare held-out data energies to energies of the model's long-run samples. Reduction: use persistent chains or a replay buffer of past samples so the negative phase explores more, initialize chains from noise and use more steps, add noise or regularization on the energy magnitude, or switch to a method such as denoising score matching that does not rely on a short-run sampler for training.
+rubric: Explains the failure through the negative phase acting only where the chains visit.
+rubric: Gives a way to detect it, such as long independent chains from random starts and an energy comparison with data.
+rubric: Gives a remedy, such as persistent chains or a buffer, longer chains from noise, regularization, or a sampler-free objective.

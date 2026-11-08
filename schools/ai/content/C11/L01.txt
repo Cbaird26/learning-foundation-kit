@@ -3,7 +3,7 @@ title: Floating-point numbers and rounding error
 summary: Explain how Python stores real numbers as doubles, predict where rounding error appears, and write summation and root-finding code that keeps it small.
 objective: Describe the format of a double and compute the spacing between neighboring doubles.
 objective: Explain why `0.1 + 0.2 != 0.3` and compare floats with a tolerance instead of `==`.
-objective: Recognize cancellation and absorption, and implement compensated (Kahan) summation and a stable quadratic formula.
+objective: Recognize cancellation and absorption, and implement compensated (Kahan and Neumaier) summation and a stable quadratic formula.
 reading: Python for Data Analysis, 3rd edition: the early chapter on Python language basics and built-in data types (numeric types); then look up "floating-point arithmetic" and the IEEE 754 standard.
 @article
 Type `0.1 + 0.2` into Python and it answers `0.30000000000000004`. Is Python broken? No: nearly every machine learning computation runs on **floating-point** numbers, and this answer is exactly what the arithmetic is specified to give. Learning to predict such results is the first skill of numerical computing.
@@ -139,35 +139,41 @@ hint: Compute the difference, then compare it with the larger of the relative an
 solution: The relative allowance scales with the larger magnitude, which handles big and small numbers alike; the absolute allowance is needed for comparisons with 0, where any relative tolerance is 0. The test comparing 0.0 with 1e-12 shows why the default must not accept it.
 
 @practice code
-prompt: Write `kahan_sum(xs)` that returns the sum of a list of floats using compensated (Kahan) summation: keep `total` and a correction `comp`; for each `x` compute `y = x - comp`, `t = total + y`, `comp = (t - total) - y`, `total = t`. An empty list returns `0.0`.
+prompt: Kahan's loop fails when a term is larger in magnitude than the running total: the compensation is computed from the wrong operand, so the total can lose the small terms completely. Write `neumaier_sum(xs)` for a list of floats, using Neumaier's improvement. Keep `total` and a correction `comp`, both starting at `0.0`. For each `x`, set `t = total + x`; if `abs(total) >= abs(x)`, add `(total - t) + x` to `comp`, otherwise add `(x - t) + total` to `comp`; then set `total = t`. Return `total + comp` after the loop. Use an explicit loop (not the built-in `sum` or `math.fsum`) and do not modify `xs`. An empty list returns `0.0`. For example, `neumaier_sum([1.0, 1e100, 1.0, -1e100])` returns `2.0`, while a plain loop and Kahan's loop both return `0.0`.
 starter:
 ```python
-def kahan_sum(xs):
+def neumaier_sum(xs):
     pass
 ```
 tests:
 ```python
-assert kahan_sum([]) == 0.0
-assert abs(kahan_sum([1.0] + [1e-16] * 10000) - (1.0 + 1e-12)) < 1e-15
-assert abs(kahan_sum([0.1] * 10) - 1.0) < 1e-15
-assert abs(kahan_sum([1.0] + [1e-17] * 50000) - (1.0 + 5e-13)) < 1e-15
-assert kahan_sum([2.0, 3.5]) == 5.5
+assert neumaier_sum([]) == 0.0
+assert abs(neumaier_sum([2.0, 3.5]) - 5.5) < 1e-12
+assert abs(neumaier_sum([0.5, 1e20, 0.25, -1e20, 0.125]) - 0.875) < 1e-12
+assert abs(neumaier_sum([1e100, 1.0, -1e100]) - 1.0) < 1e-12
+assert abs(neumaier_sum([-1e100, 2.0, 1e100, 3.0]) - 5.0) < 1e-12
+assert abs(neumaier_sum([0.25, 1e30, -1e30, 0.5, 1e30, -1e30]) - 0.75) < 1e-12
+assert abs(neumaier_sum([0.1] * 10) - 1.0) < 1e-15
+xs = [1.0, 1e20, 1.0, -1e20]
+assert abs(neumaier_sum(xs) - 2.0) < 1e-12 and xs == [1.0, 1e20, 1.0, -1e20]
 ```
 model:
 ```python
-def kahan_sum(xs):
-    """Compensated summation of a list of floats."""
+def neumaier_sum(xs):
+    """Neumaier's compensated summation of a list of floats."""
     total = 0.0
     comp = 0.0
     for x in xs:
-        y = x - comp
-        t = total + y
-        comp = (t - total) - y
+        t = total + x
+        if abs(total) >= abs(x):
+            comp += (total - t) + x
+        else:
+            comp += (x - t) + total
         total = t
-    return total
+    return total + comp
 ```
-hint: Follow the four lines in the prompt inside a loop; `comp` starts at 0.0 and carries over from one iteration to the next.
-solution: The line `comp = (t - total) - y` recovers the part of `y` that was lost when `t` was rounded, and the next iteration subtracts it from the next term. A plain loop returns exactly 1.0 for the second test because each 1e-16 is absorbed; the compensated loop recovers the 1e-12.
+hint: Inside the loop, the lost low-order part is `(total - t) + x` when `total` is the bigger operand and `(x - t) + total` when `x` is; add it to `comp` and apply `comp` once, at the end.
+solution: Rounding `total + x` loses the low-order bits of whichever operand is smaller in magnitude, and the exact loss is recovered by subtracting `t` from the larger operand first and then adding the smaller one. Kahan's loop always treats `total` as the larger operand, so when a huge term arrives its correction is wrong and the small terms vanish; the tests with `1e100`, `1e20` and `1e30` catch it, and so does a plain loop. Using only the first branch fails the tests where a huge term arrives after a small total, and using only the second fails the one where the total is huge and a small term arrives (`[1e100, 1.0, -1e100]`). Returning `total` without adding `comp` fails every cancellation test, and the `[0.1] * 10` test catches a plain loop. (CPython 3.12 and later use a compensation of this kind inside the built-in `sum`, which the prompt rules out because other Pythons, including the browser's, do not.)
 
 @quiz code
 prompt: Write `stable_roots(a, b, c)` for $a x^2 + b x + c = 0$ with $a \ne 0$ and a nonnegative discriminant. Compute `d = math.sqrt(b*b - 4*a*c)`, then `q = -(b + math.copysign(d, b)) / 2`, and return the tuple `(q / a, c / q)` ordered so that the root of smaller absolute value comes first. Assume `q` is not 0 (that is, $b$ and $c$ are not both 0).

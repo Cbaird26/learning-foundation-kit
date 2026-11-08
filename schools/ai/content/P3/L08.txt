@@ -1,0 +1,170 @@
+@lesson
+title: Preference optimization without reinforcement learning: DPO and related methods
+summary: Derive the direct preference optimization loss from the KL-regularized objective, compute it on a small example, and compare it with RLHF and with sampling-based alternatives.
+objective: Derive the DPO loss by substituting the optimal policy into the Bradley-Terry model.
+objective: Compute implicit rewards, the DPO loss and its gradient weight from sequence log-probabilities.
+objective: State what DPO assumes, how it differs from RLHF, and which comparisons between them remain open.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the material on alignment, in particular direct preference optimization and how it compares with policy-gradient methods.
+
+@article
+The RLHF pipeline has three models in play at once: a reward model, a policy being optimized, and a reference policy, plus the instabilities of reinforcement learning. Rafailov and colleagues (2023) noticed that the KL-regularized objective of the last lesson has a closed-form optimum, and that this makes the reward model algebraically redundant. The result is a loss that is trained like ordinary supervised learning, on the same preference pairs, with no reward model and no sampling during training. This lesson derives it and then asks what it does and does not give up.
+
+### The derivation
+
+Lesson 7 showed that the maximizer of $\mathbb{E}[r] - \beta\,\mathrm{KL}(\pi\,\Vert\,\pi_{\text{ref}})$ is $\pi^{*}(y\mid x) = \pi_{\text{ref}}(y\mid x)\, e^{r(x,y)/\beta} / Z(x)$. Take logs and solve for the reward:
+
+$$r(x, y) = \beta \log \frac{\pi^{*}(y \mid x)}{\pi_{\text{ref}}(y \mid x)} + \beta \log Z(x).$$
+
+Any policy $\pi_{\boldsymbol{\theta}}$ is the optimal policy for exactly one reward up to the per-prompt constant, namely this expression with $\pi_{\boldsymbol{\theta}}$ in place of $\pi^{*}$. Define the **implicit reward** $\hat{r}_{\boldsymbol{\theta}}(x, y) = \beta \log \frac{\pi_{\boldsymbol{\theta}}(y\mid x)}{\pi_{\text{ref}}(y\mid x)}$. In the Bradley-Terry model only the difference of rewards of two responses to the same prompt enters, and the term $\beta\log Z(x)$ appears in both and **cancels**. Substituting into the Bradley-Terry loss gives the DPO loss:
+
+$$L_{\text{DPO}}(\boldsymbol{\theta}) = -\mathbb{E}_{(x, y_w, y_l)}\Big[\log \sigma\Big(\beta \log\frac{\pi_{\boldsymbol{\theta}}(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)} - \beta \log\frac{\pi_{\boldsymbol{\theta}}(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}\Big)\Big].$$
+
+Here $\log \pi(y\mid x)$ is the **sum** of the token log-probabilities of the whole response. The reference log-probabilities are computed once, by running the frozen reference model over the data. No reward model is trained and no response is sampled during optimization: the preference pairs are an **offline** data set.
+
+### Computing it
+
+Let $\Delta = \beta\big[(\log\pi_w - \log\pi^{\text{ref}}_w) - (\log\pi_l - \log\pi^{\text{ref}}_l)\big]$ and the pair's loss be $-\log\sigma(\Delta)$. At initialization $\pi_{\boldsymbol{\theta}} = \pi_{\text{ref}}$, so $\Delta = 0$ and the loss is $\ln 2 = 0.693$ for every pair. With $\beta = 0.1$, $\log\pi_w = -10.0$, $\log\pi^{\text{ref}}_w = -11.0$, $\log\pi_l = -9.0$, $\log\pi^{\text{ref}}_l = -8.0$: the winner has become 1 nat more likely than under the reference and the loser 1 nat less, so $\Delta = 0.1 \times 2 = 0.2$ and the loss is $0.598$.
+
+The gradient shows how the method behaves:
+
+$$\nabla_{\boldsymbol{\theta}} L = -\beta\, \sigma(-\Delta)\,\big[\nabla_{\boldsymbol{\theta}} \log\pi_{\boldsymbol{\theta}}(y_w\mid x) - \nabla_{\boldsymbol{\theta}} \log\pi_{\boldsymbol{\theta}}(y_l\mid x)\big].$$
+
+Each pair pushes up the winner's log-probability and pushes down the loser's, with weight $\sigma(-\Delta)$: a pair the implicit reward currently ranks wrongly ($\Delta < 0$) gets weight above $1/2$, and one already ranked correctly by a wide margin gets little. The parameter $\beta$ plays the role of the KL coefficient: a small $\beta$ lets the policy move far from the reference.
+
+### What DPO assumes, and what is open
+
+DPO equals RLHF when three things hold: the Bradley-Terry model describes the preferences, the optimization finds the optimum, and the data cover the responses that matter. In practice each is approximate. Three observations are widely reported and should be held as observations rather than laws. The likelihood of both the winner and the loser can decrease during training, as long as their difference grows. The loss can favor longer responses if the data do. And, because pairs are fixed in advance, the policy can move to regions where the pairs say little, which on-policy sampling in RLHF can correct by collecting fresh comparisons. Variants change the loss: IPO replaces the log-sigmoid by a squared loss on the margin to avoid pushing it to infinity when preferences are deterministic, and KTO works from unpaired examples labeled good or bad. Which method is best depends on the data, scale and evaluation, and head-to-head comparisons with RLHF have given mixed results that depend on the setup; no general ranking is established.
+
+### Sampling-based alternatives
+
+**Best-of-$n$** sampling draws $n$ responses and returns the one the reward model scores highest, with no training at all. If a single sample is acceptable with probability $p$ and the scores are accurate, at least one of $n$ is acceptable with probability $1 - (1-p)^n$: for $p = 0.3$ and $n = 4$ that is $0.760$. **Rejection-sampling fine-tuning** trains on the selected samples. These methods cost more at inference or in sampling, and they too are exposed to reward-model errors as $n$ grows.
+
+@example
+title: One DPO pair
+problem: With $\beta = 0.1$, a pair has $\log\pi_w = -10.0$, $\log\pi^{\text{ref}}_w = -11.0$, $\log\pi_l = -9.0$, $\log\pi^{\text{ref}}_l = -8.0$. Find the implicit rewards, the margin, the loss and the gradient weight.
+step: Implicit rewards: $\hat r_w = 0.1(-10.0 + 11.0) = 0.1$ and $\hat r_l = 0.1(-9.0 + 8.0) = -0.1$.
+step: Margin $\Delta = \hat r_w - \hat r_l = 0.2$.
+step: Loss: $-\log\sigma(0.2) = \log(1 + e^{-0.2}) \approx 0.598$.
+step: Gradient weight: $\sigma(-0.2) = 1/(1 + e^{0.2}) \approx 0.450$, slightly below the value $0.5$ it has at initialization.
+answer: $\Delta = 0.2$, loss $\approx 0.598$, weight $\approx 0.450$.
+
+@example
+title: Why the partition function cancels
+problem: For one prompt, two responses have optimal-policy ratios giving $\beta\log(\pi^{*}_w/\pi^{\text{ref}}_w) = 1.4$ and $\beta\log(\pi^{*}_l/\pi^{\text{ref}}_l) = 0.2$, and $\beta \log Z(x) = 5.0$. What are the two rewards and what is their difference?
+step: The rewards are $r_w = 1.4 + 5.0 = 6.4$ and $r_l = 0.2 + 5.0 = 5.2$.
+step: Their difference is $6.4 - 5.2 = 1.2$, equal to $1.4 - 0.2$.
+step: Whatever value $Z(x)$ takes, the difference is the same, so the preference probability $\sigma(1.2) \approx 0.769$ can be written without $Z$.
+answer: Rewards $6.4$ and $5.2$; difference $1.2$, independent of $Z(x)$.
+
+@mistakes
+- Using token log-probabilities instead of sequence log-probabilities: the DPO ratio is over whole responses, so token log-probabilities must be summed.
+- Forgetting the reference model: the implicit reward is a ratio to $\pi_{\text{ref}}$, and without it the loss has no anchor.
+- Reading $\beta$ as a learning rate: it sets how strongly the implicit reward scales the log-ratio, as the KL coefficient does in RLHF.
+- Assuming DPO is on-policy: it trains on a fixed data set of pairs, usually not generated by the current policy.
+
+@practice num
+prompt: With $\beta = 0.2$, a policy assigns a response the sequence log-probability $-20.0$ and the reference model assigns it $-23.0$. What is the implicit reward $\beta\log(\pi/\pi_{\text{ref}})$?
+answer: 0.6
+tol: 0.001
+check: 0.2 * (-20.0 - (-23.0))
+hint: The log of a ratio is a difference of log-probabilities.
+solution: $\log(\pi/\pi_{\text{ref}}) = -20.0 + 23.0 = 3.0$, and multiplying by $\beta = 0.2$ gives $0.6$.
+
+@practice num
+prompt: With $\beta = 0.2$, two preference pairs have these sequence log-probabilities, as $(\log\pi_w, \log\pi^{\text{ref}}_w, \log\pi_l, \log\pi^{\text{ref}}_l)$: pair 1 is $(-20, -23, -25, -24)$ and pair 2 is $(-18, -17, -30, -33)$. Using the implicit rewards as the reward model, what is the mean Bradley-Terry loss over the two pairs? Give the answer to three decimal places.
+answer: 0.771
+tol: 0.001
+check: sum(log(1 + exp(-0.2 * ((a - b) - (c - d)))) for a, b, c, d in [(-20, -23, -25, -24), (-18, -17, -30, -33)]) / 2
+hint: Compute $\Delta = \beta[(\log\pi_w - \log\pi^{\text{ref}}_w) - (\log\pi_l - \log\pi^{\text{ref}}_l)]$ for each pair, then average $\log(1 + e^{-\Delta})$.
+solution: Pair 1: the winner's log-ratio is $3$ and the loser's is $-1$, so $\Delta = 0.2 \times 4 = 0.8$ and the loss is $0.371$. Pair 2: the winner's log-ratio is $-1$ and the loser's is $3$, so $\Delta = -0.8$ and the loss is $1.171$. The mean is $0.771$.
+
+@practice mc
+prompt: In the derivation of DPO, why can the reward be eliminated from the loss?
+choice*: The reward is written in terms of the optimal policy and the reference policy plus a term depending only on the prompt, and that term cancels in the difference between the two responses.
+choice: The reward is assumed to be zero for the preferred response and negative for the other.
+choice: The reward model is trained first and then frozen, so it no longer appears.
+choice: The KL penalty is dropped, which removes the reward from the objective.
+hint: Bradley-Terry depends only on a difference of rewards for the same prompt.
+solution: Solving $\pi^{*} \propto \pi_{\text{ref}} e^{r/\beta}$ for $r$ gives $r = \beta\log(\pi^{*}/\pi_{\text{ref}}) + \beta\log Z(x)$. The second term depends only on $x$, so it cancels in $r_w - r_l$, and the loss can be written with policy ratios alone. The KL penalty is what makes the closed form possible; it is not dropped.
+
+@practice ms
+prompt: Which statements about DPO are correct? Select all that apply.
+choice*: At initialization, when the policy equals the reference, every pair has margin $0$ and loss $\ln 2$.
+choice*: Standard DPO trains on a fixed set of preference pairs, with no reward model and no sampling from the policy during optimization.
+choice*: Under the Bradley-Terry model, exact optimization and sufficient data, DPO and the KL-regularized RLHF objective have the same optimal policy.
+choice: DPO removes the need for a reference model.
+choice: The gradient weight $\sigma(-\Delta)$ is largest for pairs the implicit reward already ranks correctly by a wide margin.
+hint: The implicit reward is a ratio to the reference model; the weight is $\sigma(-\Delta)$.
+solution: With $\pi = \pi_{\text{ref}}$ both log-ratios vanish. Standard DPO is offline. The derivation shows the same optimum under its assumptions. The reference model is needed for the ratios, and the weight $\sigma(-\Delta)$ is large when $\Delta$ is negative, that is, for pairs ranked wrongly.
+
+@practice code
+prompt: Write `dpo_metrics(batch, beta, eps=0.0)`. `batch` is a nonempty list of tuples `(lp_w, lp_l, ref_w, ref_l)` of sequence log-probabilities of the winner and loser under the policy and under the reference model. With $\Delta = \beta[(lp_w - ref_w) - (lp_l - ref_l)]$, each pair's loss is $(1-\varepsilon)\,[-\log\sigma(\Delta)] + \varepsilon\,[-\log\sigma(-\Delta)]$ (`eps=0.0` is the standard DPO loss; `eps` models labels that are wrong with probability `eps`). Return `(mean_loss, accuracy)`, where accuracy is the fraction of pairs with $\Delta > 0$. The loss must be stable for $\Delta = -1000$.
+starter:
+```python
+def dpo_metrics(batch, beta, eps=0.0):
+    return 0.0, 0.0
+```
+tests:
+```python
+import math
+b = [(-12.0, -15.0, -13.0, -14.5), (-10.0, -9.0, -11.0, -8.0)]
+loss, acc = dpo_metrics(b, 0.1)
+assert abs(loss - 0.6095480) < 1e-6 and acc == 1.0
+loss, acc = dpo_metrics([(-5.0, -7.0, -5.0, -7.0)], 0.3)
+assert abs(loss - math.log(2)) < 1e-9 and acc == 0.0
+b2 = [(-30.0, -40.0, -32.0, -39.0)]
+assert abs(dpo_metrics(b2, 0.5)[0] - 0.2014133) < 1e-6
+assert abs(dpo_metrics(b2, 0.5, eps=0.5)[0] - 0.9514133) < 1e-6
+loss, acc = dpo_metrics([(-1000.0, 0.0, 0.0, 0.0)], 1.0)
+assert abs(loss - 1000.0) < 1e-6 and acc == 0.0
+```
+model:
+```python
+import math
+
+
+def _nll_sigmoid(x):
+    """Stable -log(sigmoid(x))."""
+    if x >= 0:
+        return math.log1p(math.exp(-x))
+    return -x + math.log1p(math.exp(x))
+
+
+def dpo_metrics(batch, beta, eps=0.0):
+    """Mean (optionally label-smoothed) DPO loss and implicit-reward accuracy."""
+    total = 0.0
+    correct = 0
+    for lp_w, lp_l, ref_w, ref_l in batch:
+        delta = beta * ((lp_w - ref_w) - (lp_l - ref_l))
+        total += (1 - eps) * _nll_sigmoid(delta) + eps * _nll_sigmoid(-delta)
+        if delta > 0:
+            correct += 1
+    n = len(batch)
+    return total / n, correct / n
+```
+hint: Compute `delta` for each tuple, then combine the two stable terms `-log(sigmoid(delta))` and `-log(sigmoid(-delta))` with weights `1 - eps` and `eps`.
+solution: Each pair needs the margin from the policy-minus-reference log-ratios. Label smoothing mixes the loss with the loss for the reversed preference. The accuracy uses a strict inequality, so a pair at initialization, with margin 0, is not counted as correct, which the second test checks. The last test needs the stable form of the log-sigmoid.
+
+@quiz num
+prompt: A DPO pair has margin $\Delta = -0.8$ under the current policy. What is the weight $\sigma(-\Delta)$ that multiplies its gradient? Give the answer to three decimal places.
+answer: 0.69
+tol: 0.001
+check: 1 / (1 + exp(-0.8))
+hint: $\sigma(-\Delta)$ with $\Delta = -0.8$ is $\sigma(0.8)$.
+solution: $\sigma(0.8) = 1/(1 + e^{-0.8}) \approx 0.690$, above the value $0.5$ at initialization, since the pair is currently ranked wrongly and gets more weight.
+
+@quiz num
+prompt: Best-of-$n$ sampling draws $n = 5$ independent responses, and each is acceptable with probability $0.2$. If the reward model always picks an acceptable response when one exists, what is the probability the returned response is acceptable? Give the answer to three decimal places.
+answer: 0.672
+tol: 0.001
+check: 1 - 0.8 ** 5
+hint: Compute the probability that none of the five is acceptable.
+solution: None is acceptable with probability $0.8^5 = 0.328$, so at least one is acceptable with probability $1 - 0.328 = 0.672$. The assumption that the reward model never errs is the weak point in practice.
+
+@quiz self
+prompt: Compare RLHF with PPO and DPO for a team that has 50,000 preference pairs, limited compute, and no budget to collect new comparisons. Which would you start with and why? State what could make you change your mind.
+hint: Think about offline versus on-policy data, the number of models in memory, and the risk of reward-model exploitation.
+solution: With a fixed set of pairs, no new labeling and limited compute, I would start with DPO. It needs the policy and the frozen reference (whose log-probabilities can be precomputed), not a reward model, a value model and sampling loops, and it is trained like supervised learning, which is easier to debug. Its weakness is that the pairs were not generated by the current policy, so the policy may move into regions where the data say little. RLHF samples from the current policy, which allows on-policy exploration, but a reward model fitted on the same 50,000 pairs can be exploited as the policy moves away from them, and without new comparisons I could not refresh it. I would hold out pairs to monitor implicit-reward accuracy and win-rate against a baseline judged by fresh comparisons, and watch response length and the likelihood of chosen responses, which are known to drift. I would change my mind if DPO's held-out win-rate stalled while the pairs still looked informative, or if budget for new comparisons appeared: then on-policy sampling and a refreshed reward model, or iterating DPO on new samples, becomes attractive. The comparison is empirical and depends on the data; I would not claim either is better in general.
+rubric: Gives a recommendation tied to the stated constraints (fixed pairs, limited compute).
+rubric: Names a real weakness of the chosen method, such as off-policy data, and a monitoring plan.
+rubric: States conditions that would change the choice and avoids claiming a general ranking.

@@ -1,0 +1,178 @@
+@lesson
+title: In-context learning, prompting and retrieval-augmented generation
+summary: Describe what in-context learning is and the competing explanations of it, and build and score a retrieval step that supplies passages to a language model.
+objective: Define few-shot in-context learning and state the main hypotheses about how it works and what is unknown.
+objective: Compute cosine and BM25-style retrieval scores and evaluate a ranking with recall at k and mean reciprocal rank.
+objective: Explain how retrieval-augmented generation is put together and how retrieval errors limit it.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the material on prompting and on retrieval-augmented generation; for retrieval itself, look up a chapter on information retrieval evaluation.
+
+@article
+A language model is given three examples of translating a word, then a fourth word without its translation, and it supplies the translation. No weight changed. What happened? The question is simple and the answer is open: researchers have several explanations, partly supported, none complete. This lesson states them fairly, and then turns to a more engineering-minded way of putting knowledge into a prompt: retrieve it.
+
+### In-context learning
+
+GPT-3 (Brown and colleagues, 2020) popularized **in-context learning**: the prompt contains a task description and $k$ demonstrations, and the model produces the answer for a new input by continuing the text, with no gradient update. Zero-shot, one-shot and few-shot mean $k = 0, 1$ and a handful. Behavior is sensitive to the **format** of the prompt, the order of the examples and which examples are chosen. Some studies reported that replacing the labels in demonstrations with random labels harmed accuracy less than expected in some settings (Min and colleagues, 2022), which suggests the demonstrations partly tell the model what task and format to produce. The result varies across tasks and models and is not universal.
+
+Chain-of-thought prompting (Wei and colleagues, 2022) adds worked reasoning steps to the demonstrations, and the observation that a single instruction to think step by step can elicit step-by-step output (Kojima and colleagues, 2022) followed. Whether the written steps reflect the computation the model actually performs, and how far models reason in the human sense, are open and contested questions; answers depend on tasks and on what "reason" is taken to mean.
+
+### Hypotheses about how it works
+
+- **Task recognition.** Pretraining text contains many tasks implicitly; demonstrations select one. A formal version treats in-context learning as implicit Bayesian inference over latent concepts (Xie and colleagues, 2021), and it explains sensitivity to format.
+- **Learning algorithms in the forward pass.** Analyses of simplified transformers trained on regression tasks show that attention layers can implement steps resembling gradient descent or other learning algorithms on the examples in the prompt. Whether large language models do this on natural tasks is not established.
+- **Mechanistic copying circuits.** Induction heads (Olsson and colleagues, 2022) find an earlier occurrence of the current token and copy what followed it; they are tied to in-context behavior in small models, and how much of in-context learning they explain at scale is unclear.
+
+These need not conflict: in-context learning may combine several mechanisms, and which dominates may depend on the task. What is not known: a complete account, which mechanism matters when, and what limits the number and kinds of tasks that can be learned this way.
+
+### Retrieval-augmented generation
+
+Model weights hold knowledge that is fixed at training time, hard to update and hard to cite. **Retrieval-augmented generation** (RAG; Lewis and colleagues, 2020) fetches passages relevant to the query from an external collection and puts them in the context. The usual structure is: split documents into chunks, build an index, retrieve the top $k$ chunks for each query, and prompt the model with the query and the chunks. Retrieval is either **sparse** (term-matching, for example BM25) or **dense** (embeddings, as in dense passage retrieval, Karpukhin and colleagues, 2020), and the two are often combined.
+
+For dense retrieval, queries and chunks become vectors and are ranked by cosine similarity,
+
+$$\cos(\mathbf{q}, \mathbf{d}) = \frac{\mathbf{q}^\top \mathbf{d}}{\lVert\mathbf{q}\rVert_2\, \lVert\mathbf{d}\rVert_2}.$$
+
+```python
+import math
+
+def cosine(q, d):
+    dot = sum(a * b for a, b in zip(q, d))
+    nq = math.sqrt(sum(a * a for a in q))
+    nd = math.sqrt(sum(b * b for b in d))
+    return dot / (nq * nd)
+
+def top_k(q, docs, k):
+    """docs maps an id to a vector; returns the k best ids, best first."""
+    ranked = sorted(docs, key=lambda i: cosine(q, docs[i]), reverse=True)
+    return ranked[:k]
+```
+
+For $\mathbf{q} = (1, 2, 0)$ and documents $A = (2,1,1)$, $B = (0,3,1)$, $C = (1,0,4)$, the cosines are $0.730$, $0.849$ and $0.108$, so $B$ ranks first.
+
+BM25 scores a document $d$ for query terms $t$ as $\sum_t \mathrm{idf}(t)\cdot \dfrac{f(t,d)\,(k_1 + 1)}{f(t,d) + k_1\,(1 - b + b\,|d|/\mathrm{avgdl})}$, where $f(t,d)$ is the term count, $|d|$ the document length, $\mathrm{avgdl}$ the average length, $\mathrm{idf}(t) = \ln\big(1 + \frac{N - n_t + 0.5}{n_t + 0.5}\big)$ for $n_t$ documents containing $t$ among $N$, and $k_1$ and $b$ are constants (commonly near 1.2 and 0.75). Rare terms count more, repeated terms saturate, and long documents are discounted.
+
+### Evaluating a retrieval step
+
+Evaluate retrieval separately from generation, on queries with known relevant chunks. **Recall at $k$** is the fraction of the relevant chunks that appear in the top $k$. **Mean reciprocal rank** (MRR) averages $1/\text{rank}$ of the first relevant result, counting 0 if none is returned. If the first relevant chunk is at ranks 1, 3 and 2 for three queries, $\mathrm{MRR} = (1 + \tfrac13 + \tfrac12)/3 = 0.611$.
+
+### What retrieval does and does not fix
+
+RAG helps when the answer lies in a document the model can be given and the retriever finds it. It is limited by retrieval recall (a relevant passage that is not retrieved cannot be used), by chunking (an answer split across chunks), and by the generator: it may ignore the evidence, be misled by an irrelevant passage, or blend retrieved text with its own recollection. Whether grounding in retrieved text reduces unsupported statements enough for a particular use must be measured, and a retrieved document may itself be wrong or contain instructions the system should not follow, a point we meet in the next lesson.
+
+@example
+title: Ranking by cosine
+problem: A query vector is $\mathbf{q} = (3, 0, 4)$. Documents are $A = (1, 0, 1)$, $B = (0, 5, 0)$ and $C = (6, 1, 6)$. Rank them by cosine similarity.
+step: $\lVert\mathbf{q}\rVert = 5$. For $A$: $\mathbf{q}^\top\mathbf{A} = 7$ and $\lVert A\rVert = \sqrt2$, so $\cos = 7/(5\sqrt2) = 0.990$.
+step: For $B$: $\mathbf{q}^\top B = 0$, so $\cos = 0$.
+step: For $C$: $\mathbf{q}^\top C = 18 + 24 = 42$ and $\lVert C\rVert = \sqrt{73} = 8.544$, so $\cos = 42/(5 \times 8.544) = 0.983$.
+step: The ranking is $A$, then $C$, then $B$. Note that $C$ is much longer than $A$ and points almost in the same direction: cosine ignores length.
+answer: $A$ (0.990), $C$ (0.983), $B$ (0).
+
+@example
+title: Recall at k and reciprocal rank
+problem: A query has two relevant chunks, $\{p, r\}$. The retriever returns $(s, p, t, r, u)$. Find recall at 3, recall at 5 and the reciprocal rank.
+step: In the top 3, $(s, p, t)$, one of the two relevant chunks appears, so recall at 3 is $1/2$.
+step: In the top 5 both appear, so recall at 5 is $1$.
+step: The first relevant chunk, $p$, is at rank 2, so the reciprocal rank is $1/2$.
+answer: Recall at 3 is $0.5$, recall at 5 is $1$, reciprocal rank $0.5$.
+
+@mistakes
+- Evaluating the whole question-answering system and calling the number a retrieval score: measure retrieval against known relevant chunks, so you can tell whether retrieval or generation failed.
+- Ranking by dot product when vectors differ in length, and then reading it as similarity of direction: cosine normalizes the lengths and dot product does not.
+- Concluding from random-label experiments that demonstrations never matter: the finding is task- and model-dependent.
+- Putting retrieved text in the prompt and trusting it: retrieved passages can be wrong or contain instructions.
+
+@practice num
+prompt: A query vector is $\mathbf{q} = (1, 2, 2)$ and a document vector is $\mathbf{d} = (2, 0, 1)$. What is their cosine similarity? Give the answer to three decimal places.
+answer: 0.596
+tol: 0.001
+check: (1 * 2 + 2 * 0 + 2 * 1) / (sqrt(1 + 4 + 4) * sqrt(4 + 0 + 1))
+hint: The dot product is $4$; the norms are $3$ and $\sqrt{5}$.
+solution: $\mathbf{q}^\top\mathbf{d} = 2 + 0 + 2 = 4$, $\lVert\mathbf{q}\rVert = 3$ and $\lVert\mathbf{d}\rVert = \sqrt5 \approx 2.236$, so $\cos = 4/(3 \times 2.236) \approx 0.596$.
+
+@practice num
+prompt: In BM25 with $k_1 = 1.2$ and $b = 0.75$, a query term occurs $f = 2$ times in a document whose length is twice the average length. What is the term-frequency factor $\dfrac{f(k_1 + 1)}{f + k_1(1 - b + b\,|d|/\mathrm{avgdl})}$? Give the answer to three decimal places.
+answer: 1.073
+tol: 0.001
+check: 2 * 2.2 / (2 + 1.2 * (1 - 0.75 + 0.75 * 2))
+hint: The length ratio $|d|/\mathrm{avgdl}$ is 2. Compute the bracket first.
+solution: The bracket is $1 - 0.75 + 0.75 \times 2 = 1.75$, so the denominator is $2 + 1.2 \times 1.75 = 4.1$. The numerator is $2 \times 2.2 = 4.4$. The factor is $4.4/4.1 \approx 1.073$; for a document of average length it would have been $1.375$.
+
+@practice mc
+prompt: In few-shot in-context learning of a language model, what happens to the model's weights when the demonstrations are placed in the prompt?
+choice*: They are unchanged; the demonstrations are read as part of the input at inference time.
+choice: They are updated by one step of gradient descent on the demonstrations.
+choice: Only the embedding matrix is updated.
+choice: They are updated for the prompt's duration and restored afterward.
+hint: Think about what the model computes when it is run for inference.
+solution: In-context learning is performed in the forward pass: the demonstrations are tokens in the input, and no parameter is modified. Some hypotheses say the forward pass computes something that resembles learning, but the parameters remain fixed.
+
+@practice ms
+prompt: Which statements are accurate? Select all that apply.
+choice*: Few-shot performance can depend on the format, the order and the choice of the demonstrations.
+choice*: How in-context learning works in large language models is not settled; task recognition, learning algorithms in the forward pass, and copying circuits have each been proposed.
+choice*: If a retriever fails to return a passage that contains the answer, a generator conditioned only on the retrieved passages cannot use that passage.
+choice: It has been proven that in-context learning in large language models is gradient descent.
+choice: Retrieval-augmented generation guarantees that every generated statement is supported by a retrieved passage.
+hint: Separate what has been observed from what has been proposed as an explanation.
+solution: Sensitivity to prompt details is observed. The mechanism is an open question with several partially supported hypotheses. A passage that is not retrieved is not in the context. No proof of the gradient-descent claim exists for natural-language models, and retrieval does not guarantee that the generator uses or reports the passages faithfully.
+
+@practice code
+prompt: Write `evaluate_retrieval(rankings, relevant, k)`. `rankings` is a list with one list of document ids per query, best first; `relevant` is a list of sets of relevant ids, one per query (each nonempty). Return `(recall, mrr)`: `recall` is the mean over queries of (number of relevant ids in the top `k`) divided by (number of relevant ids); `mrr` is the mean over queries of `1 / rank` of the first relevant id in the full ranking (ranks start at 1), or 0 if no relevant id appears.
+starter:
+```python
+def evaluate_retrieval(rankings, relevant, k):
+    return 0.0, 0.0
+```
+tests:
+```python
+r, m = evaluate_retrieval([[3, 1, 2], [2, 3, 1], [1, 2, 3]], [{1}, {1}, {3}], 2)
+assert abs(r - 1 / 3) < 1e-9 and abs(m - (0.5 + 1 / 3 + 1 / 3) / 3) < 1e-9
+r, m = evaluate_retrieval([["a", "b", "c", "d"]], [{"b", "d"}], 3)
+assert abs(r - 0.5) < 1e-9 and abs(m - 0.5) < 1e-9
+r, m = evaluate_retrieval([["a", "b"]], [{"z"}], 2)
+assert r == 0.0 and m == 0.0
+r, m = evaluate_retrieval([["a", "b"], ["b", "a"]], [{"a", "b"}, {"b"}], 1)
+assert abs(r - 0.75) < 1e-9 and abs(m - (1.0 + 1.0) / 2) < 1e-9
+```
+model:
+```python
+def evaluate_retrieval(rankings, relevant, k):
+    """Mean recall at k and mean reciprocal rank over queries."""
+    recall_sum = 0.0
+    rr_sum = 0.0
+    for ranking, rel in zip(rankings, relevant):
+        found = sum(1 for doc in ranking[:k] if doc in rel)
+        recall_sum += found / len(rel)
+        for pos, doc in enumerate(ranking, start=1):
+            if doc in rel:
+                rr_sum += 1.0 / pos
+                break
+    n = len(rankings)
+    return recall_sum / n, rr_sum / n
+```
+hint: For each query, count relevant ids in `ranking[:k]` for recall, and scan the full ranking for the first relevant id to get its rank.
+solution: Recall divides by the number of relevant ids, not by `k`, so a query with two relevant ids can reach a recall of 1 only if both are in the top `k`. The reciprocal rank looks at the whole ranking, not only the top `k`, and is 0 when nothing relevant appears. The last test has one query with recall 0.5 and one with 1, whose mean is 0.75.
+
+@quiz num
+prompt: A retrieval system is evaluated on five queries. The rank of the first relevant chunk is $2, 2, 5, 1$, and for the fifth query no relevant chunk is returned. What is the mean reciprocal rank? Give the answer to two decimal places.
+answer: 0.44
+tol: 0.01
+check: (1 / 2 + 1 / 2 + 1 / 5 + 1 + 0) / 5
+hint: Take $1/\text{rank}$ for each query and use 0 for the one that returned nothing.
+solution: The reciprocal ranks are $0.5, 0.5, 0.2, 1, 0$, which sum to $2.2$; dividing by 5 gives $0.44$.
+
+@quiz num
+prompt: In a collection of $N = 1000$ chunks, a term appears in $n_t = 49$ of them. Using $\mathrm{idf}(t) = \ln\big(1 + \frac{N - n_t + 0.5}{n_t + 0.5}\big)$, what is its inverse document frequency? Give the answer to two decimal places.
+answer: 3.01
+tol: 0.01
+check: log(1 + (1000 - 49 + 0.5) / (49 + 0.5))
+hint: Compute the ratio $(N - n_t + 0.5)/(n_t + 0.5)$ first.
+solution: The ratio is $951.5/49.5 \approx 19.22$, so $\mathrm{idf} = \ln(20.22) \approx 3.01$. A term in 700 of the 1000 chunks would have a far smaller value.
+
+@quiz self
+prompt: A designer says, "In-context learning works because the model does gradient descent on the examples in the prompt." Evaluate this claim: say what evidence supports a version of it, what evidence is missing, and describe an experiment that would help decide between this and the view that demonstrations mostly tell the model which task to perform.
+hint: Separate results on simplified models from claims about large language models on natural tasks, and think about experiments where the two views predict different outcomes.
+solution: Support: analyses of small transformers trained on synthetic regression tasks show that attention layers can implement updates that resemble gradient descent on the in-context examples, so the hypothesis is mechanistically possible, and some trained models match such algorithms' predictions. Missing: evidence that large models trained on natural text do this on natural tasks; there, sensitivity to format and the finding that label corruption sometimes matters less than expected fit task recognition equally well, and the two are not exclusive. An experiment: use a task with a novel input-output mapping that cannot have been seen in pretraining, such as an arbitrary relabeling of classes, and vary the number of demonstrations. If the model improves with more examples in a way that tracks a learning algorithm (for example, matching the predictions of gradient descent or a nearest-neighbor rule fitted on the same examples, including on outputs inconsistent with its prior), the learning view gains support; if accuracy depends mostly on format and plateaus at the level reachable by recognizing a familiar task, the recognition view does. Mixed evidence is the likeliest outcome, and results would be specific to the models and tasks tested.
+rubric: Distinguishes evidence from synthetic or simplified settings from claims about large models on natural tasks.
+rubric: Proposes an experiment whose outcomes differ between the two views, such as novel mappings with varying numbers of demonstrations.
+rubric: Avoids declaring either view settled and notes they may both contribute.

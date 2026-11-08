@@ -1,0 +1,119 @@
+@lesson
+title: Causality in machine learning: shortcuts, distribution shift and fairness
+summary: Use causal graphs to explain why classifiers learn shortcuts, which kinds of distribution shift hurt them, and what counterfactual fairness asks of a predictor.
+objective: Explain a spurious shortcut as a non-causal path between a feature and a label in a causal graph.
+objective: Distinguish covariate shift, label shift and concept shift, and apply the corresponding corrections to small numerical cases.
+objective: State counterfactual fairness and explain why removing a protected attribute does not ensure fairness.
+reading: Causal Inference: What If (Hernán and Robins), Part I: the chapter on causal diagrams, for the graph reading; for shortcuts, shift and fairness, look up invariant risk minimization and counterfactual fairness in the machine learning literature.
+@article
+A classifier is trained to tell two kinds of birds apart from photos. It reaches 95% accuracy, then fails on new photos in which land birds appear on water. It learned to look at the background. Why did it, and what does causal reasoning say about avoiding it?
+
+### Shortcuts as non-causal paths
+
+Draw the data-generating process as a causal graph with nodes $E$ (habitat where the photo was taken), $Y$ (bird type, the label), $C$ (the bird's own appearance, "core" features) and $B$ (the background), and edges $E \to Y$ (some species are more often photographed in some habitats), $Y \to C$ (species determines appearance) and $E \to B$ (habitat determines background). Two paths connect the label to features: the path $Y \to C$ is causal and stable; the path $Y \leftarrow E \to B$ is a fork through the common cause $E$, so $B$ is statistically associated with $Y$ although $B$ does not cause $Y$ and $Y$ does not cause $B$. Empirical risk minimization uses any feature that predicts the label on the training distribution, so it uses $B$ whenever it is easier to read than $C$. Such a **shortcut** (also called a spurious correlation) works only while the training correlation holds.
+
+Numbers: suppose half the training photos are of each class, and the background matches the class (water for one, land for the other) in 95% of photos. A classifier using only $B$ has training accuracy $0.95$. If at deployment backgrounds are unrelated to class (water in half of each class), its accuracy falls to $0.50$; if the association reverses and only 5% of photos match, to $0.05$. The classifier using $C$ keeps its accuracy because $P(C \mid Y)$ does not change when $E$ changes: the mechanism $Y \to C$ is **invariant**. Shortcut features are those whose relation to the label changes across environments. Remedies include collecting data where the correlation is broken, augmenting images to swap backgrounds, reweighting groups, and methods that look for predictors whose relation to $Y$ is invariant across environments (invariant causal prediction, Peters, Bühlmann and Meinshausen, 2016; invariant risk minimization, Arjovsky and colleagues, 2019). Each needs some information beyond a single training distribution: knowledge of which features are spurious, data in which the correlation is broken, or several environments in which the spurious association varies (the invariance methods use the last).
+
+### Kinds of distribution shift
+
+Write the joint distribution of features $X$ and label $Y$. In the **training** and **deployment** environments:
+
+- **Covariate shift**: $P(X)$ changes but $P(Y \mid X)$ does not. A model that is correct for $P(Y \mid X)$ stays correct; with a misspecified model, errors in regions that now matter more hurt. Performance on the new distribution can be estimated by **importance weights** $w(x) = p_{\text{test}}(x)/p_{\text{train}}(x)$.
+- **Label shift** (prior shift): $P(Y)$ changes but $P(X \mid Y)$ does not. This is natural when the label causes the features (disease causes symptoms). The posterior is corrected by Bayes' rule: $p_{\text{test}}(y \mid x) \propto p_{\text{train}}(y \mid x)\,p_{\text{test}}(y)/p_{\text{train}}(y)$.
+- **Concept shift**: $P(Y \mid X)$ itself changes. Nothing learned from training data can be relied on without new data.
+
+Whether a shift is plausible depends on the causal direction (**causal versus anticausal learning**, a distinction emphasized by Schölkopf and colleagues, 2012). If features cause the label ($X \to Y$), the mechanism $P(Y \mid X)$ tends to be stable and covariate shift is the natural change. If the label causes the features ($Y \to X$), $P(X \mid Y)$ tends to be stable and label shift is natural.
+
+Example (label shift): the training prior is $P(Y=1) = 0.5$, a model says $p_{\text{train}}(Y=1 \mid x) = 0.8$, and at deployment $P(Y=1) = 0.1$. Then $p_{\text{test}}(1 \mid x) \propto 0.8 \times 0.1/0.5 = 0.16$ and $p_{\text{test}}(0 \mid x) \propto 0.2 \times 0.9/0.5 = 0.36$, so after normalizing, $p_{\text{test}}(1 \mid x) = 0.16/0.52 \approx 0.308$.
+
+### Fairness through a causal lens
+
+Let $A$ be a protected attribute, $Y$ an outcome (such as repayment), $X$ other features and $\hat{Y}$ the prediction. Statistical criteria compare $\hat{Y}$ across groups. **Counterfactual fairness** (Kusner, Loftus, Russell and Silva, 2017) is a causal criterion: a predictor is counterfactually fair if, for an individual, its prediction would be the same (in distribution) had the individual's protected attribute been different, holding fixed the individual's background factors. It needs a causal model. Consider the graph with nodes $A$, $U$ (latent qualification), $X$ (a zip code), $Y$ and edges $A \to X$, $U \to X$ and $U \to Y$. A predictor using $X$ inherits the path $A \to X \to \hat{Y}$, so changing $A$ changes $X$ and hence $\hat{Y}$: it is not counterfactually fair, even though $A$ is not an input ("fairness through unawareness" fails because $X$ is a proxy). A predictor using only $U$, or the part of $X$ not caused by $A$, is counterfactually fair in this model. The criterion rests on the assumed graph and on the latent variables, which cannot be verified from data, so it states a requirement for a model rather than proving that one is fair; other fairness criteria answer different questions.
+
+@example
+title: Importance-weighted accuracy under covariate shift
+problem: A binary feature $x$ has $P_{\text{train}}(x=1) = 0.2$ and $P_{\text{test}}(x=1) = 0.6$. A classifier's accuracy is 0.6 when $x = 1$ and 0.9 when $x = 0$, in both environments. Compute its training and test accuracy and the importance weights.
+step: Training accuracy: $0.2 \times 0.6 + 0.8 \times 0.9 = 0.12 + 0.72 = 0.84$.
+step: Test accuracy: $0.6 \times 0.6 + 0.4 \times 0.9 = 0.36 + 0.36 = 0.72$.
+step: Importance weights: $w(1) = 0.6/0.2 = 3$ and $w(0) = 0.4/0.8 = 0.5$. The weighted training accuracy is $\sum_x P_{\text{train}}(x)\,w(x)\,\text{acc}(x) = 0.2 \cdot 3 \cdot 0.6 + 0.8 \cdot 0.5 \cdot 0.9 = 0.36 + 0.36 = 0.72$, matching the test accuracy.
+answer: Training accuracy 0.84, test accuracy 0.72, weights $3$ and $0.5$.
+
+@example
+title: A classifier that uses a hospital marker
+problem: A chest X-ray model detects pneumonia. Images come from two hospitals; hospital 1 treats sicker patients, and its images carry a different scanner marker. The model gets high accuracy but fails at a new hospital. Explain with a causal graph.
+step: Nodes: $H$ (hospital), $Y$ (pneumonia), $L$ (lung appearance), $M$ (scanner marker). Edges: $H \to Y$ (case mix), $Y \to L$ and $H \to M$.
+step: The causal path $Y \to L$ is stable. The path $Y \leftarrow H \to M$ is a fork: the marker $M$ is associated with $Y$ only through the common cause $H$.
+step: A classifier trained on both hospitals can use $M$ as a proxy for the prevalence at the hospital. At a new hospital with a different case mix, or a different marker, the association changes and accuracy falls.
+step: Conditioning on $H$ (comparing patients within one hospital) removes the association, which is a way to detect the shortcut: if accuracy drops when $M$ is masked within a hospital, the model relied on it.
+answer: $M$ is a proxy for $Y$ through the common cause $H$; the model uses a non-causal path that does not hold at a new hospital.
+
+@mistakes
+- Treating any feature that predicts the label as a cause of it. A feature associated through a common cause is predictive on the training distribution and fails when that cause's relation changes.
+- Assuming a model that is accurate on held-out data from the same distribution is robust: a random test split inherits the same shortcut.
+- Believing that removing the protected attribute from the inputs guarantees fairness. Proxies carry the same information.
+- Applying the label shift correction when $P(X \mid Y)$ itself has changed.
+
+@practice num
+prompt: In training, the background of an image matches its class label in 90% of images, and a classifier uses only the background. In a deployment set the background matches the label in 30% of images. What is the classifier's accuracy on the deployment set, as a decimal?
+answer: 0.3
+check: 0.3 * 1 + (1 - 0.3) * 0
+hint: A classifier that predicts the class from the background is correct exactly when the background matches the label.
+solution: The accuracy equals the fraction of images where the background matches the label, so it falls from $0.90$ in training to $0.30$ in deployment. The classifier used a relation that did not carry over.
+
+@practice mc
+prompt: A spam filter is trained when 50% of emails are spam. At deployment, 10% are spam, but spam and legitimate emails still look the same as before (the distribution of the text given the class is unchanged). Which shift is this?
+choice*: Label (prior) shift: $P(Y)$ changed while $P(X \mid Y)$ stayed the same.
+choice: Covariate shift: $P(X)$ changed while $P(Y \mid X)$ stayed the same.
+choice: Concept shift: $P(X \mid Y)$ changed.
+choice: No shift: the class balance is irrelevant.
+hint: Which of the two conditional distributions is described as unchanged?
+solution: The class prior changed and $P(X \mid Y)$ did not, which is the definition of label shift. $P(Y \mid X)$ does change as a result (by Bayes' rule), so it is not covariate shift.
+
+@practice num
+prompt: A feature $x$ takes two values. In training $P(x=1) = 0.3$; at deployment $P(x=1) = 0.5$. A classifier's accuracy is 0.5 when $x = 1$ and 0.8 when $x = 0$ in both environments. What is its accuracy at deployment, as a decimal?
+answer: 0.65
+check: 0.5 * 0.5 + 0.5 * 0.8
+hint: Average the two group accuracies using the deployment probabilities of $x$.
+solution: Deployment accuracy is $0.5 \times 0.5 + 0.5 \times 0.8 = 0.25 + 0.40 = 0.65$. Training accuracy was $0.3 \times 0.5 + 0.7 \times 0.8 = 0.71$.
+
+@practice num
+prompt: A model trained when $P(Y=1) = 0.5$ outputs $p_{\text{train}}(Y=1 \mid x) = 0.6$ for an input. At deployment $P(Y=1) = 0.2$, with $P(X \mid Y)$ unchanged. What is the corrected probability $p_{\text{test}}(Y=1 \mid x)$? Give three decimal places.
+answer: 0.273
+tol: 0.001
+check: (0.6 * 0.2 / 0.5) / (0.6 * 0.2 / 0.5 + 0.4 * 0.8 / 0.5)
+hint: Multiply each class's training posterior by its test prior over its training prior, then normalize the two numbers.
+solution: The unnormalized values are $0.6 \times 0.2/0.5 = 0.24$ for $Y=1$ and $0.4 \times 0.8/0.5 = 0.64$ for $Y=0$, so $p_{\text{test}}(1 \mid x) = 0.24/0.88 \approx 0.273$.
+
+@practice self
+prompt: A dermatology classifier is trained on photographs from a clinic in which suspicious lesions are routinely marked with a purple surgical skin marker before being photographed. It gets high accuracy on held-out photographs from the same clinic and performs poorly at another clinic that does not use markers. Draw the causal graph as nodes and directed edges, explain the shortcut the classifier learned, and give one way to detect it and one way to reduce it.
+hint: Ask what causes the marker, and whether it is caused by the disease or by someone's judgment about the disease.
+solution: Nodes: $D$ (the lesion is malignant), $L$ (visual appearance of the lesion), $S$ (a clinician's suspicion), $P$ (purple marker present). Edges: $D \to L$, $L \to S$ and $S \to P$ (the marker is added when a clinician suspects malignancy), and the label in the training data comes from $D$. The causal path $D \to L$ is stable across clinics, while $P$ is a downstream consequence of the clinician's reading of $L$ and of the clinic's practice: $P$ is informative about $D$ at the first clinic, because clinicians' suspicion correlates with $D$, but its relation to $D$ depends on clinic practice and disappears where markers are not used. The classifier minimizes training error and uses $P$ because it is easy to read, giving high accuracy on same-clinic held-out data, which contains the same shortcut. To detect it, evaluate on data from other clinics, mask or crop the marker and see whether accuracy drops, or inspect attribution maps; to reduce it, remove the markers (inpainting or cropping), augment training images with and without markers, or collect images before marking, and validate across clinics.
+rubric: Gives a causal graph with nodes and directed edges that separates the stable causal path from the marker's path.
+rubric: Explains that the model used the marker because it predicts the label in the training environment but not in the new one.
+rubric: Names one detection method (external or cross-site evaluation, masking) and one mitigation method.
+
+@quiz mc
+prompt: Which causal structure best explains why a classifier relies on a spurious feature $B$ that predicts the label $Y$ in the training data but not at deployment?
+choice*: A common cause $E$ of both $Y$ and $B$, so $B$ and $Y$ are associated through a path that does not run through $B$ causing $Y$, and whose strength can differ across environments.
+choice: $B$ is a direct cause of $Y$ with a stable mechanism.
+choice: $B$ is a collider of $Y$ and a feature that the classifier conditions on.
+choice: $B$ and $Y$ are d-separated by the empty set.
+hint: The association must hold in training and break elsewhere.
+solution: The association comes through a fork with a common cause $E$ whose relation to the label can change; the feature is not a cause of the label. A direct cause with a stable mechanism would transfer, and d-separation by the empty set would mean no training association at all. A collider structure is possible in some data sets, but it is not the structure described here.
+
+@quiz ms
+prompt: Which of these statements about distribution shift are correct? Select all that apply.
+choice*: Under covariate shift, $P(Y \mid X)$ is unchanged and $P(X)$ differs, so importance weights $p_{\text{test}}(x)/p_{\text{train}}(x)$ reweight training data to the test distribution.
+choice*: Under label shift, $P(X \mid Y)$ is unchanged and the posterior can be corrected by Bayes' rule using the two class priors.
+choice*: A random train-test split of data from a single environment cannot reveal a shortcut that holds throughout that environment.
+choice: Under concept shift, a model trained on the old distribution remains correct because $P(X)$ is unchanged.
+hint: For each shift, ask which distribution is assumed fixed.
+solution: The first two statements are the definitions with the corrections that go with them. A random split from one environment shares its shortcuts. Concept shift changes $P(Y \mid X)$ itself, so the old model is wrong in general.
+
+@quiz self
+prompt: A lender removes race from the inputs to a credit model, but the model still uses zip code. Using a causal graph with nodes $A$ (race), $U$ (latent creditworthiness), $Z$ (zip code), $Y$ (repayment) and edges $A \to Z$, $U \to Z$, $U \to Y$, explain why removing $A$ does not make the model counterfactually fair, and describe a predictor that would be counterfactually fair in this graph and its limits.
+hint: Follow the paths from $A$ to the prediction.
+solution: A predictor using $Z$ receives information from $A$ through $A \to Z$, so if the individual's race were different (a counterfactual intervention on $A$) while $U$ were held fixed, $Z$ would change and so would the prediction: the model is not counterfactually fair although $A$ is not an input. A counterfactually fair predictor uses only variables that do not depend on $A$ in the model, for example an estimate of $U$ obtained by inferring the latent variable from $Z$ while removing the part of $Z$ explained by $A$, or any function of $U$. Its limits: it depends on the assumed graph and on the latent variable $U$, which cannot be observed or checked from data; if the graph is wrong (for example, $A$ also affects $Y$ directly or $U$ is itself affected by $A$), the guarantee fails; and it is one criterion among several, which can conflict with statistical criteria such as equal error rates.
+rubric: Identifies the path from $A$ to the prediction through $Z$ and explains the counterfactual change.
+rubric: Describes a predictor that uses only information not influenced by $A$, such as the latent $U$ or the residual of $Z$.
+rubric: States that the criterion depends on an unverifiable causal graph and may conflict with other criteria.

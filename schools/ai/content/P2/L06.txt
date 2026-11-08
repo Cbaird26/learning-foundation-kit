@@ -1,0 +1,169 @@
+@lesson
+title: Normalizing flows and the change-of-variables formula
+summary: Compute the density of a transformed random variable with the change-of-variables formula, and use coupling layers to build flows with exact likelihoods and cheap Jacobians.
+objective: State and apply the change-of-variables formula in one and several dimensions.
+objective: Compute the log-density of a composition of invertible layers, including an affine map and a coupling layer.
+objective: Explain why flows need invertible maps with tractable Jacobian determinants, and compare flows with VAEs and autoregressive models.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on normalizing flows.
+
+@article
+Last week we got exact likelihoods by factorizing. A **normalizing flow** gets them by transforming. Start with a simple distribution you can sample and evaluate, such as a standard Gaussian; push samples through an invertible function; and track exactly how the density changes. If you can compute the density of a transformed variable, you can fit the transformation by maximum likelihood.
+
+### The change-of-variables formula
+
+Let $z$ have density $p_Z$ and let $x = f(z)$ with $f$ strictly monotone and differentiable. Then $P(X\le x) = P(Z\le f^{-1}(x))$ for increasing $f$, and differentiating gives
+$$p_X(x) = p_Z\big(f^{-1}(x)\big)\left\lvert\frac{d f^{-1}}{dx}(x)\right\rvert = p_Z(z)\left\lvert\frac{df}{dz}(z)\right\rvert^{-1}\Big|_{z = f^{-1}(x)}.$$
+The absolute value keeps the density nonnegative when $f$ is decreasing. In $d$ dimensions, for a differentiable bijection $f:\mathbb{R}^d\to\mathbb{R}^d$ with Jacobian $\mathbf{J}_f(\mathbf{z}) = \partial\mathbf{x}/\partial\mathbf{z}$,
+$$\boxed{p_X(\mathbf{x}) = p_Z(\mathbf{z})\,\big\lvert\det\mathbf{J}_f(\mathbf{z})\big\rvert^{-1},\qquad \mathbf{z} = f^{-1}(\mathbf{x}),}$$
+or in logs, $\log p_X(\mathbf{x}) = \log p_Z(\mathbf{z}) - \log\lvert\det\mathbf{J}_f(\mathbf{z})\rvert$. The determinant is the factor by which $f$ stretches volume: a map that expands volume spreads the same probability mass thinner, so the density drops.
+
+**Examples.** If $z\sim\mathcal{N}(0,1)$ and $x = e^z$, then $p_X(x) = p_Z(\ln x)/x$; at $x = 2$ this is $0.3137/2 = 0.1569$ (the log-normal density). If $\mathbf{x} = \mathbf{A}\mathbf{z}+\mathbf{b}$ with $\mathbf{A}$ invertible and $\mathbf{z}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$, then $\log p_X(\mathbf{x}) = \log\mathcal{N}(\mathbf{A}^{-1}(\mathbf{x}-\mathbf{b});\mathbf{0},\mathbf{I}) - \log\lvert\det\mathbf{A}\rvert$. For $\mathbf{A} = \begin{pmatrix}2&0\\1&1\end{pmatrix}$, $\mathbf{b} = (1,0)^\top$ and $\mathbf{x} = (3,2)^\top$: $\mathbf{z} = (1, 1)^\top$, $\log p_Z = -\log 2\pi - 1 = -2.838$, $\det\mathbf{A} = 2$, so $\log p_X = -2.838 - 0.693 = -3.531$.
+
+### Composition
+
+If $\mathbf{x} = f_K\circ\dots\circ f_1(\mathbf{z}_0)$, the Jacobian is a product, its log-determinant is a sum, and
+$$\log p_X(\mathbf{x}) = \log p_Z(\mathbf{z}_0) - \sum_{k=1}^K\log\big\lvert\det\mathbf{J}_{f_k}(\mathbf{z}_{k-1})\big\rvert.$$
+A deep flow is therefore a stack of simple invertible layers, each with a known inverse and a cheap log-determinant. Training minimizes the negative log-likelihood of the data, where each data point is mapped to the base space by the inverses; sampling draws $\mathbf{z}_0$ and applies the forward maps.
+
+### What a layer must satisfy
+
+A general $d\times d$ determinant costs $O(d^3)$, which is hopeless for images. So the layers of a flow are designed with structure: the map must be invertible, differentiable, have the same input and output dimension, and have a Jacobian whose determinant is cheap. The first practical family, **coupling layers** (NICE, Dinh, Krueger and Bengio, 2014; RealNVP, Dinh, Sohl-Dickstein and Bengio, 2016), splits $\mathbf{z} = (\mathbf{z}_A,\mathbf{z}_B)$ and sets
+$$\mathbf{x}_A = \mathbf{z}_A,\qquad \mathbf{x}_B = \mathbf{z}_B\odot\exp\big(s(\mathbf{z}_A)\big) + t(\mathbf{z}_A),$$
+with $s$ and $t$ arbitrary neural networks. The inverse is explicit, $\mathbf{z}_B = (\mathbf{x}_B - t(\mathbf{x}_A))\odot\exp(-s(\mathbf{x}_A))$, and does not require inverting $s$ or $t$. The Jacobian is block triangular, with $\mathbf{I}$ and $\operatorname{diag}(\exp s(\mathbf{z}_A))$ on the diagonal, so $\log\lvert\det\mathbf{J}\rvert = \sum_j s_j(\mathbf{z}_A)$: the networks can be as complex as desired. Alternating which half is transformed lets all coordinates interact. **Autoregressive flows** (for example the masked autoregressive flow of Papamakarios and colleagues, 2017) use a triangular Jacobian from a different construction: fast in one direction, slow in the other.
+
+### Where flows sit
+
+Compared with VAEs, flows give exact likelihoods and no encoder gap, but need the latent space to have the same dimension as the data and restrict the architecture. Compared with autoregressive models, sampling is parallel for coupling layers (one pass), but each layer is less expressive per parameter. A smooth bijection also cannot change the topology of the support: mapping a unimodal Gaussian to well-separated modes forces large stretching (very large Jacobians) between them, and flows trained on discrete data such as 8-bit images use **dequantization**, adding small uniform noise so that a density exists. Whether likelihood alone is a good training signal for sample quality is a question for week 11.
+
+```python
+from math import exp, log, pi
+
+def coupling_forward(z1, z2):
+    s, t = 0.5 * z1, z1
+    return z1, z2 * exp(s) + t
+
+def coupling_inverse(x1, x2):
+    s, t = 0.5 * x1, x1
+    return x1, (x2 - t) * exp(-s)
+
+def log_density(x1, x2):
+    z1, z2 = coupling_inverse(x1, x2)
+    log_base = -log(2 * pi) - 0.5 * (z1 ** 2 + z2 ** 2)
+    return log_base - 0.5 * z1          # minus log |det J| = minus s
+
+x = coupling_forward(1.0, -0.5)
+print(x, coupling_inverse(*x), log_density(1.0, 0.0))
+```
+
+@example
+title: Density through a coupling layer
+problem: A coupling layer maps $(z_1, z_2)$ to $x_1 = z_1$, $x_2 = z_2\,e^{s(z_1)} + t(z_1)$ with $s(z_1) = 0.5\,z_1$ and $t(z_1) = z_1$. The base distribution is $\mathcal{N}(\mathbf{0},\mathbf{I}_2)$. Compute $\log p_X(2, 5)$.
+step: Invert: $z_1 = x_1 = 2$. Then $s = 0.5\cdot 2 = 1$ and $t = 2$, so $z_2 = (x_2 - t)e^{-s} = (5 - 2)e^{-1} = 1.1036$.
+step: Base log-density: $\log p_Z = -\log 2\pi - \frac12(z_1^2 + z_2^2) = -1.8379 - \frac12(4 + 1.2181) = -4.4469$.
+step: Jacobian of the forward map: $\begin{pmatrix}1 & 0\\ \partial x_2/\partial z_1 & e^{s}\end{pmatrix}$, which is lower triangular, so $\det\mathbf{J}_f = 1\cdot e^{1} = e$ and $\log\lvert\det\mathbf{J}_f\rvert = s = 1$.
+step: Subtract: $\log p_X(2,5) = -4.4469 - 1 = -5.4469$. The off-diagonal entry never mattered.
+answer: $\log p_X(2, 5)\approx -5.447$.
+
+@mistakes
+- Multiplying by $\lvert\det\mathbf{J}_f\rvert$ instead of dividing: when you go from $\mathbf{z}$ to $\mathbf{x}$ the density is divided by the volume stretch; equivalently, you multiply by $\lvert\det\mathbf{J}_{f^{-1}}\rvert$ when you start from $\mathbf{x}$.
+- Evaluating the base density at $\mathbf{x}$ rather than at $f^{-1}(\mathbf{x})$.
+- Forgetting the absolute value of the determinant (or of $dx/dz$) for a decreasing map.
+- Using a layer that is not injective (for example $x = z^2$ on all of $\mathbb{R}$): a flow requires a bijection, and the formula then has to sum over preimages.
+
+@practice num
+prompt: Let $z$ be uniform on $(0, 2)$ and $x = z^3$. What is the density $p_X(1)$? Give your answer to three decimal places.
+answer: 0.167
+tol: 0.001
+check: 0.5 * (1 / 3) * 1 ** (-2 / 3)
+hint: The inverse map is $z = x^{1/3}$, with $dz/dx = \frac13 x^{-2/3}$, and $p_Z(z) = 1/2$ on the interval.
+solution: At $x = 1$: $p_Z(1) = 0.5$ and $dz/dx = \frac13$, so $p_X(1) = 0.5/3 \approx 0.167$.
+
+@practice num
+prompt: Let $\mathbf{z}\sim\mathcal{N}(\mathbf{0},\mathbf{I}_2)$ and $\mathbf{x} = \mathbf{A}\mathbf{z}+\mathbf{b}$ with $\mathbf{A} = \begin{pmatrix}3&1\\0&2\end{pmatrix}$ and $\mathbf{b} = (0, 1)^\top$. What is $\log p_X(4, 3)$? Give your answer to three decimal places.
+answer: -4.630
+tol: 0.001
+check: -log(2 * pi) - 0.5 * float(sum(v ** 2 for v in np.linalg.solve(np.array([[3.0, 1.0], [0.0, 2.0]]), np.array([4.0, 2.0])))) - log(abs(np.linalg.det(np.array([[3.0, 1.0], [0.0, 2.0]]))))
+hint: Solve $\mathbf{A}\mathbf{z} = \mathbf{x}-\mathbf{b}$ for $\mathbf{z}$ (back-substitution), evaluate the standard normal log-density, and subtract $\log\lvert\det\mathbf{A}\rvert$.
+solution: $\mathbf{x}-\mathbf{b} = (4, 2)^\top$. The second equation gives $2z_2 = 2$, so $z_2 = 1$, and then $3z_1 + 1 = 4$ gives $z_1 = 1$. So $\log p_Z = -\log 2\pi - 1 = -2.838$. With $\det\mathbf{A} = 6$, $\log p_X = -2.838 - 1.792 = -4.630$.
+
+@practice mc
+prompt: Why do coupling layers in a normalizing flow have both a tractable inverse and a cheap log-determinant even though the networks $s$ and $t$ are arbitrary?
+choice*: One half of the variables passes through unchanged and parameterizes an affine map of the other half, so the Jacobian is triangular and the inverse needs no inversion of the networks.
+choice: The networks $s$ and $t$ are constrained to be invertible, so the whole layer is invertible.
+choice: The determinant of any neural network's Jacobian can be computed in $O(d)$ time by automatic differentiation.
+choice: The log-determinant is approximated by sampling and never computed exactly.
+hint: Write the Jacobian of $(\mathbf{z}_A,\mathbf{z}_B)\mapsto(\mathbf{z}_A, \mathbf{z}_B\odot e^{s(\mathbf{z}_A)} + t(\mathbf{z}_A))$ in blocks.
+solution: The block for $\partial\mathbf{x}_A/\partial\mathbf{z}_B$ is zero, so the Jacobian is block triangular and its determinant is the product of the diagonal blocks, which gives $\exp(\sum_j s_j)$. The inverse needs only evaluations of $s$ and $t$ at $\mathbf{x}_A = \mathbf{z}_A$, which is available. Nothing requires $s$ or $t$ to be invertible, and a general Jacobian determinant is not $O(d)$.
+
+@practice code
+prompt: Write `flow_logpdf(x, layers)` for a one-dimensional flow with a standard normal base. `layers` is a list of layers listed in the order they are applied from the base variable $z$ to the data $x$. A layer is either `("affine", a, b)`, meaning $u\mapsto a u + b$ with $a\neq 0$, or `("exp",)`, meaning $u\mapsto e^u$. Return $\log p_X(x)$ for a given `x`; for flows containing `("exp",)` you may assume that every value reached while inverting is positive. For example, with `layers = [("affine", 2.0, 1.0)]` the data are $\mathcal{N}(1, 4)$, and `flow_logpdf(1.0, layers)` is $-\frac12\log(2\pi\cdot 4)$.
+starter:
+```python
+from math import exp, log, pi
+
+def flow_logpdf(x, layers):
+    return 0.0
+```
+tests:
+```python
+from math import log, pi
+assert abs(flow_logpdf(1.0, [("affine", 2.0, 1.0)]) - (-0.5 * log(8 * pi))) < 1e-9
+assert abs(flow_logpdf(2.0, [("exp",)]) - (-1.8523122207237188)) < 1e-6
+assert abs(flow_logpdf(1.0, [("affine", 0.5, 0.0), ("exp",)]) - (-0.22579135264472738)) < 1e-6
+assert abs(flow_logpdf(3.0, [("affine", 2.0, 1.0), ("exp",)]) - (-2.711913550367273)) < 1e-6
+assert abs(flow_logpdf(2.0, [("affine", -1.0, 0.0)]) - (-0.5 * log(2 * pi) - 2.0)) < 1e-9
+assert abs(flow_logpdf(0.0, []) - (-0.5 * log(2 * pi))) < 1e-9
+```
+model:
+```python
+from math import exp, log, pi
+
+def flow_logpdf(x, layers):
+    """Log-density of a 1-D flow with a standard normal base."""
+    log_det_inv = 0.0
+    u = x
+    for layer in reversed(layers):
+        if layer[0] == "affine":
+            a, b = layer[1], layer[2]
+            u = (u - b) / a
+            log_det_inv -= log(abs(a))
+        else:
+            log_det_inv -= log(u)
+            u = log(u)
+    return -0.5 * log(2 * pi) - 0.5 * u * u + log_det_inv
+```
+hint: Invert the layers from the last to the first, adding $\log\lvert du_{\text{prev}}/du\rvert$ for each inverse: $-\log\lvert a\rvert$ for an affine layer and $-\log u$ for the exponential (where $u$ is the value before inverting it).
+solution: Walk backwards through the layers: the inverse of an affine layer is $(u-b)/a$ with log-derivative $-\log\lvert a\rvert$, and the inverse of the exponential is $\log u$ with log-derivative $-\log u$. Add these to the base log-density at the final $z$. The $a = -1$ test checks that the absolute value is used, and the empty layer list checks that the base density is returned unchanged.
+
+@practice self
+prompt: Let $\mathbf{z}\sim\mathcal{N}(\mathbf{0},\mathbf{I}_d)$ and $\mathbf{x} = \mathbf{A}\mathbf{z}+\mathbf{b}$ with $\mathbf{A}$ invertible. Use the change-of-variables formula to write $\log p_X(\mathbf{x})$, and verify that the result is the density of $\mathcal{N}(\mathbf{b}, \mathbf{A}\mathbf{A}^\top)$.
+hint: Write $\mathbf{z} = \mathbf{A}^{-1}(\mathbf{x}-\mathbf{b})$ and compare each term with the Gaussian density $\mathcal{N}(\mathbf{b},\boldsymbol{\Sigma})$ for $\boldsymbol{\Sigma} = \mathbf{A}\mathbf{A}^\top$.
+solution: The Jacobian of $f(\mathbf{z}) = \mathbf{A}\mathbf{z}+\mathbf{b}$ is $\mathbf{A}$, so $\log p_X(\mathbf{x}) = \log p_Z(\mathbf{z}) - \log\lvert\det\mathbf{A}\rvert$ with $\mathbf{z} = \mathbf{A}^{-1}(\mathbf{x}-\mathbf{b})$, that is, $-\frac d2\log 2\pi - \frac12\mathbf{z}^\top\mathbf{z} - \log\lvert\det\mathbf{A}\rvert$. Now $\mathbf{z}^\top\mathbf{z} = (\mathbf{x}-\mathbf{b})^\top\mathbf{A}^{-\top}\mathbf{A}^{-1}(\mathbf{x}-\mathbf{b}) = (\mathbf{x}-\mathbf{b})^\top(\mathbf{A}\mathbf{A}^\top)^{-1}(\mathbf{x}-\mathbf{b})$, and $\log\lvert\det\mathbf{A}\rvert = \frac12\log\det(\mathbf{A}\mathbf{A}^\top)$ because $\det(\mathbf{A}\mathbf{A}^\top) = (\det\mathbf{A})^2$. Substituting gives $-\frac d2\log 2\pi - \frac12\log\det\boldsymbol{\Sigma} - \frac12(\mathbf{x}-\mathbf{b})^\top\boldsymbol{\Sigma}^{-1}(\mathbf{x}-\mathbf{b})$, which is the log-density of $\mathcal{N}(\mathbf{b},\boldsymbol{\Sigma})$ with $\boldsymbol{\Sigma} = \mathbf{A}\mathbf{A}^\top$.
+rubric: Writes the change-of-variables formula with the correct sign of the log-determinant term.
+rubric: Rewrites $\mathbf{z}^\top\mathbf{z}$ as a quadratic form in $(\mathbf{A}\mathbf{A}^\top)^{-1}$.
+rubric: Uses $\det(\mathbf{A}\mathbf{A}^\top) = (\det\mathbf{A})^2$ to match the normalizing constant.
+
+@quiz num
+prompt: Let $z\sim\mathcal{N}(0,1)$ and $x = \exp(3z - 1)$. What is the density $p_X(e^2)$? Give your answer to four decimal places.
+answer: 0.0109
+tol: 0.0001
+check: exp(-0.5) / sqrt(2 * pi) / (3 * exp(2))
+hint: Invert to $z = (\ln x + 1)/3$ and note that $dz/dx = 1/(3x)$.
+solution: At $x = e^2$, $\ln x = 2$, so $z = 1$ and $p_Z(1) = 0.2420$. The derivative is $dz/dx = 1/(3e^2) = 0.0451$, so $p_X(e^2) = 0.2420\times 0.0451\approx 0.0109$.
+
+@quiz ms
+prompt: Which statements about normalizing flows are correct? Select all that apply.
+choice*: The density formula uses the absolute value of the determinant of the Jacobian of the transformation.
+choice*: In a coupling layer the Jacobian is triangular, so the log-determinant is a sum of the log scale factors.
+choice: A flow with a $d$-dimensional Gaussian base can be fitted to data lying exactly on a one-dimensional curve in $\mathbb{R}^d$ with a finite density.
+choice: Training a flow requires a variational lower bound, because the exact likelihood is intractable.
+hint: Recall what the determinant of a bijection between spaces of equal dimension measures, and what is exact in a flow.
+solution: The change-of-variables formula needs $\lvert\det\mathbf{J}\rvert$, and a coupling layer's triangular Jacobian reduces it to $\sum_j s_j$. A bijection of $\mathbb{R}^d$ with a smooth inverse cannot map a density on $\mathbb{R}^d$ to a set of zero volume with a finite density, so data on a curve is not representable that way. Flows have exact likelihoods, which is their selling point over VAEs.
+
+@quiz self
+prompt: A colleague proposes building a flow from a single fully connected layer $\mathbf{x} = \mathbf{W}\mathbf{z}+\mathbf{b}$ with a $1000\times 1000$ weight matrix, with exact likelihood computed through $\log\lvert\det\mathbf{W}\rvert$. Explain two problems with this proposal for modeling images, and describe how a stack of coupling layers addresses the computational one.
+hint: Think of the cost of a determinant and of what a linear map of a Gaussian can represent.
+solution: First, a general determinant and inverse of a $1000\times 1000$ matrix cost $O(d^3)$ (about $10^9$ operations) per evaluation, and for images with hundreds of thousands of pixels the matrix would not even fit in memory. Second, an affine map of a Gaussian is a Gaussian, so the model family is a single multivariate normal, which is far too weak for image data however it is trained. Coupling layers address the cost: the Jacobian is triangular and its log-determinant is $\sum_j s_j(\mathbf{z}_A)$, an $O(d)$ sum, and the inverse is explicit. They address expressiveness by letting $s$ and $t$ be deep networks, so each layer is nonlinear, and by alternating the partition of coordinates over layers so that every coordinate is eventually transformed conditionally on every other. The trade-off is that each layer changes only part of the vector, so many layers are needed.
+rubric: Identifies the cubic cost (and memory) of a dense determinant and inverse.
+rubric: Notes that an affine map of a Gaussian remains Gaussian, so the family is too restrictive.
+rubric: Explains triangular Jacobians with arbitrary $s$ and $t$, and alternating partitions, as the remedy.

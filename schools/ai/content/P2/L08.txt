@@ -1,0 +1,176 @@
+@lesson
+title: Diffusion models: the forward and reverse processes
+summary: Derive the closed form of the forward noising process, simulate it with supplied noise, and write the reverse-process posterior and the noise-prediction loss.
+objective: Define the forward process and prove that $q(\mathbf{x}_t\mid\mathbf{x}_0) = \mathcal{N}(\sqrt{\bar\alpha_t}\,\mathbf{x}_0, (1-\bar\alpha_t)\mathbf{I})$.
+objective: Compute $\bar\alpha_t$, noisy samples and the reverse-step posterior mean and variance for a few steps.
+objective: State the denoising training objective and how sampling uses the learned reverse process.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on diffusion models and denoising diffusion probabilistic models.
+
+@article
+Take an image and add a little Gaussian noise; then a little more; keep going for a thousand steps. At the end nothing of the image survives: what remains is pure noise. Now run the film backward. A model that can undo one small noising step at a time is a generative model, because pure noise is something we know how to sample. This is the idea of **diffusion models**, introduced by Sohl-Dickstein and colleagues (2015) and brought to high-quality image synthesis by Ho, Jain and Abbeel (2020) as denoising diffusion probabilistic models (DDPMs). Today is the forward process and the structure of the reverse; next week we connect it to scores.
+
+### The forward process
+
+Fix a **noise schedule** $\beta_1,\dots,\beta_T\in(0,1)$. The forward process is a Markov chain that gradually corrupts a data point $\mathbf{x}_0$:
+$$q(\mathbf{x}_t\mid\mathbf{x}_{t-1}) = \mathcal{N}\big(\mathbf{x}_t;\ \sqrt{1-\beta_t}\,\mathbf{x}_{t-1},\ \beta_t\mathbf{I}\big),\quad\text{i.e.}\quad\mathbf{x}_t = \sqrt{1-\beta_t}\,\mathbf{x}_{t-1} + \sqrt{\beta_t}\,\boldsymbol{\varepsilon}_t,\ \ \boldsymbol{\varepsilon}_t\sim\mathcal{N}(\mathbf{0},\mathbf{I}).$$
+Shrinking by $\sqrt{1-\beta_t}$ while adding noise of variance $\beta_t$ keeps the total variance fixed (a variance-preserving chain). Let $\alpha_t = 1-\beta_t$ and $\bar\alpha_t = \prod_{s=1}^t\alpha_s$.
+
+**Closed form.** $q(\mathbf{x}_t\mid\mathbf{x}_0) = \mathcal{N}\big(\sqrt{\bar\alpha_t}\,\mathbf{x}_0,\ (1-\bar\alpha_t)\mathbf{I}\big)$, so one can write
+$$\mathbf{x}_t = \sqrt{\bar\alpha_t}\,\mathbf{x}_0 + \sqrt{1-\bar\alpha_t}\,\boldsymbol{\varepsilon},\qquad\boldsymbol{\varepsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I}).$$
+*Proof by induction.* For $t = 1$ it is the definition with $\bar\alpha_1 = \alpha_1$. Assume $\mathbf{x}_{t-1} = \sqrt{\bar\alpha_{t-1}}\mathbf{x}_0 + \sqrt{1-\bar\alpha_{t-1}}\boldsymbol{\varepsilon}'$. Then
+$$\mathbf{x}_t = \sqrt{\alpha_t\bar\alpha_{t-1}}\,\mathbf{x}_0 + \sqrt{\alpha_t(1-\bar\alpha_{t-1})}\,\boldsymbol{\varepsilon}' + \sqrt{1-\alpha_t}\,\boldsymbol{\varepsilon}_t.$$
+The two noise terms are independent Gaussians, so their sum is Gaussian with variance $\alpha_t(1-\bar\alpha_{t-1}) + (1-\alpha_t) = 1-\alpha_t\bar\alpha_{t-1} = 1-\bar\alpha_t$, and $\alpha_t\bar\alpha_{t-1} = \bar\alpha_t$. $\square$
+
+The closed form matters for training: to corrupt $\mathbf{x}_0$ to any step $t$ you do not need to simulate $t$ steps. As $t$ grows $\bar\alpha_t\to 0$ and $\mathbf{x}_T$ is nearly $\mathcal{N}(\mathbf{0},\mathbf{I})$. If $\mathbf{x}_0$ has variance $\sigma_0^2$ in some coordinate, the marginal variance is $\bar\alpha_t\sigma_0^2 + (1-\bar\alpha_t)$. (Ho and colleagues used $T = 1000$ and variances rising linearly from $10^{-4}$ to $0.02$.)
+
+### A few steps by hand
+
+Take $\beta = (0.1, 0.2, 0.3)$, so $\alpha = (0.9, 0.8, 0.7)$ and $\bar\alpha = (0.9, 0.72, 0.504)$. For $x_0 = 2$ the closed form gives $x_3 = \sqrt{0.504}\cdot 2 + \sqrt{0.496}\,\varepsilon = 1.4199 + 0.7043\,\varepsilon$. Simulating step by step with noises $(0.5, -1, 0.25)$: $x_1 = \sqrt{0.9}\cdot 2 + \sqrt{0.1}(0.5) = 2.0555$; $x_2 = \sqrt{0.8}(2.0555) + \sqrt{0.2}(-1) = 1.3913$; $x_3 = \sqrt{0.7}(1.3913) + \sqrt{0.3}(0.25) = 1.3009$. This is one path of the chain; it matches the closed form with the combined noise $\varepsilon = (1.3009-1.4199)/0.7043 = -0.169$, a value that depends on the three noises.
+
+### The reverse process
+
+The reverse conditionals $q(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$ are intractable, but conditioned on $\mathbf{x}_0$ they are Gaussian and available in closed form (by Bayes' rule on Gaussians):
+$$q(\mathbf{x}_{t-1}\mid\mathbf{x}_t,\mathbf{x}_0) = \mathcal{N}\big(\tilde{\boldsymbol{\mu}}_t(\mathbf{x}_t,\mathbf{x}_0),\ \tilde\beta_t\mathbf{I}\big),$$
+$$\tilde{\boldsymbol{\mu}}_t = \frac{\sqrt{\bar\alpha_{t-1}}\,\beta_t}{1-\bar\alpha_t}\mathbf{x}_0 + \frac{\sqrt{\alpha_t}\,(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}\mathbf{x}_t,\qquad\tilde\beta_t = \frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\,\beta_t.$$
+The model is a parameterized reverse chain $p_{\boldsymbol{\theta}}(\mathbf{x}_{t-1}\mid\mathbf{x}_t) = \mathcal{N}(\boldsymbol{\mu}_{\boldsymbol{\theta}}(\mathbf{x}_t,t),\sigma_t^2\mathbf{I})$ started from $\mathbf{x}_T\sim\mathcal{N}(\mathbf{0},\mathbf{I})$. Treating $\mathbf{x}_{1:T}$ as latent variables, the ELBO (week 3) decomposes into a sum of KL divergences between Gaussians $q(\mathbf{x}_{t-1}\mid\mathbf{x}_t,\mathbf{x}_0)$ and $p_{\boldsymbol{\theta}}(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$, one per step. A diffusion model is therefore a hierarchical VAE whose encoder is fixed and has no parameters.
+
+### The training objective
+
+Because $\mathbf{x}_0 = (\mathbf{x}_t - \sqrt{1-\bar\alpha_t}\,\boldsymbol{\varepsilon})/\sqrt{\bar\alpha_t}$, the mean $\tilde{\boldsymbol{\mu}}_t$ can be rewritten in terms of the noise: $\tilde{\boldsymbol{\mu}}_t = \frac{1}{\sqrt{\alpha_t}}\big(\mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\boldsymbol{\varepsilon}\big)$. Ho and colleagues therefore have the network predict the noise, $\boldsymbol{\mu}_{\boldsymbol{\theta}}(\mathbf{x}_t,t) = \frac{1}{\sqrt{\alpha_t}}\big(\mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\boldsymbol{\varepsilon}_{\boldsymbol{\theta}}(\mathbf{x}_t,t)\big)$, and train with the simplified loss
+$$L_{\text{simple}}(\boldsymbol{\theta}) = \mathbb{E}_{t,\mathbf{x}_0,\boldsymbol{\varepsilon}}\Big[\big\lVert\boldsymbol{\varepsilon} - \boldsymbol{\varepsilon}_{\boldsymbol{\theta}}\big(\sqrt{\bar\alpha_t}\,\mathbf{x}_0 + \sqrt{1-\bar\alpha_t}\,\boldsymbol{\varepsilon},\ t\big)\big\rVert^2\Big],$$
+with $t$ uniform on $\{1,\dots,T\}$. This reweights the ELBO terms, which improved sample quality in their experiments; it is a denoising regression and needs no sampling of the chain. **Sampling** starts at $\mathbf{x}_T\sim\mathcal{N}(\mathbf{0},\mathbf{I})$ and for $t = T,\dots,1$ draws $\mathbf{x}_{t-1} = \boldsymbol{\mu}_{\boldsymbol{\theta}}(\mathbf{x}_t,t) + \sigma_t\mathbf{z}$ ($\mathbf{z}$ standard normal, with no noise at the last step). That requires $T$ sequential network evaluations; faster deterministic and few-step samplers, such as the DDIM sampler of Song, Meng and Ermon (2020), trade steps against fidelity.
+
+### In code
+
+```python
+from math import sqrt
+
+def alpha_bars(betas):
+    out, prod = [], 1.0
+    for b in betas:
+        prod *= 1.0 - b
+        out.append(prod)
+    return out
+
+def q_sample(x0, abar, eps):
+    return sqrt(abar) * x0 + sqrt(1.0 - abar) * eps
+
+betas = [0.1, 0.2, 0.3]
+abars = alpha_bars(betas)
+print([round(a, 4) for a in abars])
+print([round(q_sample(2.0, a, 0.5), 4) for a in abars])
+```
+
+The closed form is one line in NumPy as well: `np.sqrt(abar) * x0 + np.sqrt(1 - abar) * eps`, applied to a whole batch with one random $t$ per example.
+
+@example
+title: One reverse step
+problem: With $\beta_1 = 0.05$ and $\beta_2 = 0.1$, find the distribution $q(x_1\mid x_2, x_0)$ for $x_0 = 1$ and $x_2 = 0.5$.
+step: Compute the cumulative products: $\alpha_1 = 0.95$, $\alpha_2 = 0.9$, so $\bar\alpha_1 = 0.95$ and $\bar\alpha_2 = 0.855$.
+step: Posterior variance: $\tilde\beta_2 = \frac{1-\bar\alpha_1}{1-\bar\alpha_2}\beta_2 = \frac{0.05}{0.145}(0.1) = 0.03448$.
+step: Coefficient of $x_0$: $\frac{\sqrt{\bar\alpha_1}\,\beta_2}{1-\bar\alpha_2} = \frac{0.97468\times 0.1}{0.145} = 0.6722$. Coefficient of $x_2$: $\frac{\sqrt{\alpha_2}(1-\bar\alpha_1)}{1-\bar\alpha_2} = \frac{0.94868\times 0.05}{0.145} = 0.3271$.
+step: Mean: $0.6722(1) + 0.3271(0.5) = 0.8358$.
+step: Check by precisions: the posterior precision is $\alpha_2/\beta_2 + 1/(1-\bar\alpha_1) = 9 + 20 = 29$, and $1/29 = 0.03448$ agrees with $\tilde\beta_2$.
+answer: $q(x_1\mid x_2, x_0) = \mathcal{N}(0.8358,\ 0.03448)$.
+
+@mistakes
+- Using $\beta_t$ where $\bar\alpha_t$ belongs: the closed form uses the cumulative product of $1-\beta_s$, and its variance is $1-\bar\alpha_t$, not $\sum_s\beta_s$.
+- Treating the step-by-step noises and the one-shot noise $\boldsymbol{\varepsilon}$ as the same numbers: both give the same distribution of $\mathbf{x}_t$, but a given path corresponds to a combination of the individual noises.
+- Confusing the intractable reverse conditional $q(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$ with the tractable $q(\mathbf{x}_{t-1}\mid\mathbf{x}_t,\mathbf{x}_0)$, which needs the clean data point; the network exists to replace the missing $\mathbf{x}_0$.
+- Mixing up the noise-prediction target (the standard normal $\boldsymbol{\varepsilon}$) with the noisy input $\mathbf{x}_t$ or with the clean data.
+
+@practice num
+prompt: A diffusion model uses $\beta = (0.05, 0.1, 0.15, 0.2)$. What is the standard deviation of the noise term in $q(x_4\mid x_0)$, that is $\sqrt{1-\bar\alpha_4}$? Give your answer to three decimal places.
+answer: 0.647
+tol: 0.001
+check: sqrt(1 - (1 - 0.05) * (1 - 0.1) * (1 - 0.15) * (1 - 0.2))
+hint: Multiply the four values of $1-\beta_s$ to get $\bar\alpha_4$ and subtract from 1.
+solution: $\bar\alpha_4 = 0.95\times 0.9\times 0.85\times 0.8 = 0.5814$, so $1-\bar\alpha_4 = 0.4186$ and its square root is $0.647$.
+
+@practice num
+prompt: A coordinate of the data has variance $\sigma_0^2 = 4$, independent of the noise, and the forward process has reached $\bar\alpha_t = 0.25$. What is the marginal variance of that coordinate of $\mathbf{x}_t$?
+answer: 1.75
+check: 0.25 * 4 + (1 - 0.25)
+hint: The signal term is scaled by $\sqrt{\bar\alpha_t}$, so its variance is scaled by $\bar\alpha_t$; the noise adds $1-\bar\alpha_t$.
+solution: $\operatorname{Var}(x_t) = \bar\alpha_t\sigma_0^2 + (1-\bar\alpha_t) = 0.25\cdot 4 + 0.75 = 1.75$. The process pulls any variance toward 1, so it preserves variance only when the data have variance 1.
+
+@practice mc
+prompt: In DDPM training, why is the closed form $q(\mathbf{x}_t\mid\mathbf{x}_0)$ useful?
+choice*: It lets each training example be corrupted directly to a random step $t$ in one operation, instead of simulating the whole chain up to $t$.
+choice: It gives the exact reverse conditional $q(\mathbf{x}_{t-1}\mid\mathbf{x}_t)$ without knowing $\mathbf{x}_0$.
+choice: It guarantees that $\mathbf{x}_T$ equals $\mathbf{x}_0$ plus a fixed offset.
+choice: It makes the sampler need only one network evaluation.
+hint: Think about what a training batch needs: a noisy input at a random level, and the noise that produced it.
+solution: Training needs pairs $(\mathbf{x}_t, \boldsymbol{\varepsilon})$ at random $t$, and the closed form gives them in one step from $\mathbf{x}_0$ and a fresh noise sample. The reverse conditional without $\mathbf{x}_0$ is exactly what the network must learn, and sampling still uses $T$ steps.
+
+@practice code
+prompt: Write `forward_path(x0, betas, noises)` that simulates the forward diffusion chain for a two-dimensional point. `x0` is a list of two floats, `betas` a list of $T$ variances, and `noises` a list of $T$ lists of two floats (the standard normal draws $\boldsymbol{\varepsilon}_1,\dots,\boldsymbol{\varepsilon}_T$). Return the list $[\mathbf{x}_1,\dots,\mathbf{x}_T]$, where $\mathbf{x}_t = \sqrt{1-\beta_t}\,\mathbf{x}_{t-1} + \sqrt{\beta_t}\,\boldsymbol{\varepsilon}_t$ (each $\mathbf{x}_t$ is a list of two floats). Do not modify `x0`.
+starter:
+```python
+from math import sqrt
+
+def forward_path(x0, betas, noises):
+    return []
+```
+tests:
+```python
+from math import sqrt
+x0 = [1.0, -1.0]
+path = forward_path(x0, [0.19, 0.36], [[0.0, 0.0], [0.0, 0.0]])
+assert all(abs(a - b) < 1e-9 for a, b in zip(path[0], [0.9, -0.9]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(path[1], [0.72, -0.72]))
+path = forward_path(x0, [0.19, 0.36], [[1.0, 0.0], [0.0, -1.0]])
+assert len(path) == 2
+assert all(abs(a - b) < 1e-6 for a, b in zip(path[0], [1.3358898943540674, -0.9]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(path[1], [1.0687119154832538, -1.32]))
+assert x0 == [1.0, -1.0]
+assert forward_path([2.0, 3.0], [], []) == []
+```
+model:
+```python
+from math import sqrt
+
+def forward_path(x0, betas, noises):
+    """Simulate x_t = sqrt(1 - beta_t) x_{t-1} + sqrt(beta_t) eps_t."""
+    x = list(x0)
+    path = []
+    for beta, eps in zip(betas, noises):
+        x = [sqrt(1.0 - beta) * xi + sqrt(beta) * ei for xi, ei in zip(x, eps)]
+        path.append(x)
+    return path
+```
+hint: Keep a current point `x`; in each step build a new list from the old one with a comprehension over the coordinates, and append it to the path.
+solution: Each step shrinks every coordinate by $\sqrt{1-\beta_t}$ and adds $\sqrt{\beta_t}$ times that step's noise coordinate. Building a new list each step keeps `x0` unchanged and keeps earlier path entries from being overwritten, which the last two tests would catch. With zero noise the path is $\sqrt{\bar\alpha_t}\mathbf{x}_0$: $0.9$ and then $0.9\times 0.8 = 0.72$.
+
+@practice self
+prompt: Prove by induction that for the forward process $\mathbf{x}_t = \sqrt{\alpha_t}\mathbf{x}_{t-1}+\sqrt{1-\alpha_t}\boldsymbol{\varepsilon}_t$ with independent standard normal noises, $\mathbf{x}_t\mid\mathbf{x}_0\sim\mathcal{N}(\sqrt{\bar\alpha_t}\mathbf{x}_0,(1-\bar\alpha_t)\mathbf{I})$ where $\bar\alpha_t = \prod_{s\le t}\alpha_s$. Then explain in one sentence what happens to $q(\mathbf{x}_T\mid\mathbf{x}_0)$ when $\bar\alpha_T\to 0$.
+hint: Substitute the induction hypothesis for $\mathbf{x}_{t-1}$ and add the variances of independent Gaussian terms.
+solution: Base case: $\mathbf{x}_1 = \sqrt{\alpha_1}\mathbf{x}_0+\sqrt{1-\alpha_1}\boldsymbol{\varepsilon}_1$ has mean $\sqrt{\bar\alpha_1}\mathbf{x}_0$ and covariance $(1-\bar\alpha_1)\mathbf{I}$. Inductive step: suppose $\mathbf{x}_{t-1} = \sqrt{\bar\alpha_{t-1}}\mathbf{x}_0 + \sqrt{1-\bar\alpha_{t-1}}\boldsymbol{\varepsilon}'$, with $\boldsymbol{\varepsilon}'$ standard normal and independent of $\boldsymbol{\varepsilon}_t$ (it is built from $\boldsymbol{\varepsilon}_1,\dots,\boldsymbol{\varepsilon}_{t-1}$). Then $\mathbf{x}_t = \sqrt{\alpha_t\bar\alpha_{t-1}}\mathbf{x}_0 + \sqrt{\alpha_t(1-\bar\alpha_{t-1})}\boldsymbol{\varepsilon}' + \sqrt{1-\alpha_t}\boldsymbol{\varepsilon}_t$. The last two terms are independent zero-mean Gaussians, so their sum is zero-mean Gaussian with covariance $[\alpha_t(1-\bar\alpha_{t-1}) + 1-\alpha_t]\mathbf{I} = (1-\alpha_t\bar\alpha_{t-1})\mathbf{I} = (1-\bar\alpha_t)\mathbf{I}$, and the mean is $\sqrt{\bar\alpha_t}\mathbf{x}_0$. This is the claim for $t$. When $\bar\alpha_T\to 0$, the mean vanishes and the covariance tends to $\mathbf{I}$, so $q(\mathbf{x}_T\mid\mathbf{x}_0)\to\mathcal{N}(\mathbf{0},\mathbf{I})$ whatever $\mathbf{x}_0$ was.
+rubric: States the base case and the inductive hypothesis, with the noise in $\mathbf{x}_{t-1}$ independent of $\boldsymbol{\varepsilon}_t$.
+rubric: Adds variances of independent Gaussians correctly and simplifies to $1-\bar\alpha_t$.
+rubric: Concludes that $\mathbf{x}_T$ approaches a standard normal that does not depend on $\mathbf{x}_0$.
+
+@quiz num
+prompt: With $\beta_1 = 0.05$ and $\beta_2 = 0.1$, what is the posterior variance $\tilde\beta_2 = \frac{1-\bar\alpha_1}{1-\bar\alpha_2}\beta_2$ of $q(x_1\mid x_2, x_0)$ for the one-dimensional case? Give your answer to four decimal places.
+answer: 0.0345
+tol: 0.0001
+check: (1 - 0.95) / (1 - 0.95 * 0.9) * 0.1
+hint: Here $\bar\alpha_1 = \alpha_1$ and $\bar\alpha_2 = \alpha_1\alpha_2$.
+solution: $\bar\alpha_1 = 0.95$ and $\bar\alpha_2 = 0.855$, so $\tilde\beta_2 = (0.05/0.145)(0.1) = 0.03448$.
+
+@quiz ms
+prompt: Which statements about the DDPM forward and reverse processes are correct? Select all that apply.
+choice*: The forward process has no learned parameters; only the reverse process is trained.
+choice*: Conditioned on $\mathbf{x}_0$, the reverse step $q(\mathbf{x}_{t-1}\mid\mathbf{x}_t,\mathbf{x}_0)$ is Gaussian with a closed-form mean and variance.
+choice*: Predicting the noise $\boldsymbol{\varepsilon}$ and predicting $\mathbf{x}_0$ are related by a known change of variables for a given $\mathbf{x}_t$ and $t$.
+choice: Generating one sample requires only one evaluation of the trained network.
+hint: Use $\mathbf{x}_t = \sqrt{\bar\alpha_t}\mathbf{x}_0 + \sqrt{1-\bar\alpha_t}\boldsymbol{\varepsilon}$ to relate the two targets, and recall how sampling proceeds.
+solution: The schedule $\beta_t$ is fixed, so only $\boldsymbol{\theta}$ in the reverse chain is learned. The conditional reverse step is Gaussian by Bayes' rule on Gaussians, and from $\mathbf{x}_t = \sqrt{\bar\alpha_t}\mathbf{x}_0+\sqrt{1-\bar\alpha_t}\boldsymbol{\varepsilon}$ any one of $\boldsymbol{\varepsilon}$, $\mathbf{x}_0$ determines the other. Standard DDPM sampling evaluates the network $T$ times.
+
+@quiz self
+prompt: Starting from the posterior mean $\tilde{\boldsymbol{\mu}}_t = \frac{\sqrt{\bar\alpha_{t-1}}\beta_t}{1-\bar\alpha_t}\mathbf{x}_0 + \frac{\sqrt{\alpha_t}(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}\mathbf{x}_t$ and $\mathbf{x}_0 = (\mathbf{x}_t-\sqrt{1-\bar\alpha_t}\boldsymbol{\varepsilon})/\sqrt{\bar\alpha_t}$, show that $\tilde{\boldsymbol{\mu}}_t = \frac{1}{\sqrt{\alpha_t}}\big(\mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\boldsymbol{\varepsilon}\big)$, and say why this form motivates training a network to predict $\boldsymbol{\varepsilon}$.
+hint: Use $\bar\alpha_{t-1} = \bar\alpha_t/\alpha_t$ and $\beta_t = 1-\alpha_t$, and collect the coefficients of $\mathbf{x}_t$ and $\boldsymbol{\varepsilon}$.
+solution: Substitute $\mathbf{x}_0$. The coefficient of $\boldsymbol{\varepsilon}$ is $-\frac{\sqrt{\bar\alpha_{t-1}}\beta_t}{1-\bar\alpha_t}\cdot\frac{\sqrt{1-\bar\alpha_t}}{\sqrt{\bar\alpha_t}} = -\frac{\beta_t}{\sqrt{\alpha_t}\sqrt{1-\bar\alpha_t}}$, using $\sqrt{\bar\alpha_{t-1}}/\sqrt{\bar\alpha_t} = 1/\sqrt{\alpha_t}$. The coefficient of $\mathbf{x}_t$ is $\frac{\sqrt{\bar\alpha_{t-1}}\beta_t}{(1-\bar\alpha_t)\sqrt{\bar\alpha_t}} + \frac{\sqrt{\alpha_t}(1-\bar\alpha_{t-1})}{1-\bar\alpha_t} = \frac{1}{1-\bar\alpha_t}\Big[\frac{\beta_t}{\sqrt{\alpha_t}} + \sqrt{\alpha_t}(1-\bar\alpha_{t-1})\Big] = \frac{\beta_t + \alpha_t(1-\bar\alpha_{t-1})}{\sqrt{\alpha_t}(1-\bar\alpha_t)} = \frac{1-\bar\alpha_t}{\sqrt{\alpha_t}(1-\bar\alpha_t)} = \frac{1}{\sqrt{\alpha_t}}$, because $\beta_t + \alpha_t - \alpha_t\bar\alpha_{t-1} = 1-\bar\alpha_t$. So $\tilde{\boldsymbol{\mu}}_t = \frac{1}{\sqrt{\alpha_t}}\big(\mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\boldsymbol{\varepsilon}\big)$. At sampling time $\mathbf{x}_t$ is known and $\boldsymbol{\varepsilon}$ is the only unknown, so letting the network predict $\boldsymbol{\varepsilon}_{\boldsymbol{\theta}}(\mathbf{x}_t,t)$ and plugging it into this formula gives the model mean; matching means then reduces to a squared error on $\boldsymbol{\varepsilon}$ up to a $t$-dependent weight, and the target is a standard normal variable of unit scale at every $t$, which is a well-conditioned regression target.
+rubric: Substitutes $\mathbf{x}_0$ and simplifies the $\boldsymbol{\varepsilon}$ coefficient correctly using $\bar\alpha_{t-1}/\bar\alpha_t = 1/\alpha_t$.
+rubric: Shows that the coefficient of $\mathbf{x}_t$ collapses to $1/\sqrt{\alpha_t}$ using $\beta_t+\alpha_t(1-\bar\alpha_{t-1}) = 1-\bar\alpha_t$.
+rubric: Explains that $\boldsymbol{\varepsilon}$ is the only unknown at sampling time and has a unit-scale target.

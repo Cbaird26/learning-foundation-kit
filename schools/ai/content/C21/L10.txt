@@ -1,0 +1,258 @@
+@lesson
+title: Function approximation and deep Q-networks
+summary: Replace the value table by a parameterized function, derive the semi-gradient TD update, and describe how experience replay and a target network stabilize deep Q-learning.
+objective: Evaluate a linear value function and apply the semi-gradient TD(0) update.
+objective: Compute DQN targets from a replay minibatch with a separate target network, and take a minibatch gradient step with linear features.
+objective: Explain the deadly triad and the roles of experience replay and the target network.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the chapters on on-policy prediction with approximation and on off-policy methods with approximation (the deadly triad); for deep Q-networks, the section on Atari in the case-studies chapter and the DQN papers by Mnih and colleagues (2013 and 2015).
+@article
+A table holds one number per state. Backgammon has about $10^{20}$ positions and a camera image has more pixel combinations than there are atoms in the universe, so a table cannot be filled, and visiting a state teaches us nothing about its neighbors. **Function approximation** represents the value function by a parameter vector $\mathbf{w}$ with far fewer entries than states, $\hat v(s, \mathbf{w}) \approx v_\pi(s)$, so that experience in one state generalizes to similar states.
+
+### Linear value functions
+
+Describe each state by a **feature vector** $\mathbf{x}(s) = (x_1(s), \dots, x_d(s))$ and let
+
+$$\hat v(s, \mathbf{w}) = \mathbf{w}^\top \mathbf{x}(s).$$
+
+The tabular case is the special case where $\mathbf{x}(s)$ is a one-hot vector, so each weight is one state's value. **State aggregation** gives one weight to a group of states. Features such as a constant 1 and the position along a line let a single pair of weights describe a whole range of states.
+
+### Semi-gradient TD(0)
+
+To fit $\hat v$ we would like to do gradient descent on the squared error $\big(v_\pi(S_t) - \hat v(S_t, \mathbf{w})\big)^2$. The true $v_\pi$ is unknown, so we substitute the TD target, which itself contains $\hat v(S_{t+1}, \mathbf{w})$:
+
+$$\mathbf{w} \leftarrow \mathbf{w} + \alpha\,\big[\,R_{t+1} + \gamma\,\hat v(S_{t+1}, \mathbf{w}) - \hat v(S_t, \mathbf{w})\,\big]\,\nabla_{\mathbf{w}} \hat v(S_t, \mathbf{w}).$$
+
+For a linear function $\nabla_{\mathbf{w}} \hat v(S_t, \mathbf{w}) = \mathbf{x}(S_t)$, so the update is $\mathbf{w} \leftarrow \mathbf{w} + \alpha\,\delta_t\,\mathbf{x}(S_t)$. It is called a **semi-gradient** method because the target depends on $\mathbf{w}$ but we differentiate only through the prediction, treating the target as a constant; it is not the gradient of any fixed loss. For linear approximation and on-policy sampling, semi-gradient TD(0) converges (with decreasing step sizes) to a well-defined point called the TD fixed point, whose error is bounded in terms of the best linear fit.
+
+For action values, $\hat q(s, a, \mathbf{w}) = \mathbf{w}^\top \mathbf{x}(s, a)$ and the semi-gradient Q-learning update is $\mathbf{w} \leftarrow \mathbf{w} + \alpha\,[\,R_{t+1} + \gamma \max_{a'} \hat q(S_{t+1}, a', \mathbf{w}) - \hat q(S_t, A_t, \mathbf{w})\,]\,\mathbf{x}(S_t, A_t)$.
+
+### The deadly triad
+
+Combining three ingredients can make learning diverge: **function approximation**, **bootstrapping** (targets that use current estimates) and **off-policy** training. Each pair is safe in some form, but all three together are not guaranteed to be, because an update that raises $\hat v$ at one state can raise the target at another, and the errors can feed on each other. Q-learning with a function approximator has all three.
+
+### Deep Q-networks
+
+A **deep Q-network** (DQN; Mnih and colleagues, 2013 and 2015) uses a neural network $q(s, a; \boldsymbol{\theta})$, taking an Atari game screen as input, for the action-value function, trained with semi-gradient Q-learning and two stabilizers aimed at the triad:
+
+- **Experience replay.** Store transitions $(s, a, r, s', \text{done})$ in a buffer and train on random minibatches from it. This breaks the correlation between consecutive samples and reuses each transition many times.
+- **Target network.** Compute targets with a separate copy $\boldsymbol{\theta}^-$ of the parameters that is updated to equal $\boldsymbol{\theta}$ only every $C$ steps. The target $y = r + \gamma \max_{a'} q(s', a'; \boldsymbol{\theta}^-)$ then stays fixed between syncs; for a terminal transition $y = r$.
+
+Each minibatch step minimizes $\frac{1}{B}\sum_i \ell\big(y_i - q(s_i, a_i; \boldsymbol{\theta})\big)$, where $\ell$ is the squared error or the **Huber loss** (quadratic for small errors, linear for large ones, which limits the size of gradients). Many later variants (double Q-learning, prioritized replay, dueling networks) refine this recipe.
+
+For a linear $q(s, a; \mathbf{w}) = \mathbf{w}^\top \mathbf{x}(s, a)$ with the squared error, one step with learning rate $\alpha$ is $\mathbf{w} \leftarrow \mathbf{w} + \frac{\alpha}{B}\sum_i (y_i - \mathbf{w}^\top \mathbf{x}_i)\,\mathbf{x}_i$. Counting parameters of a network with layer sizes $4 \to 8 \to 2$ and biases: $4 \cdot 8 + 8 + 8 \cdot 2 + 2 = 58$. Practitioners implement the same thing with PyTorch, where automatic differentiation computes $\nabla_{\boldsymbol{\theta}} q$:
+
+```text
+y = r + gamma * target_net(s2).max(dim=1).values * (1 - done)
+loss = huber(q_net(s).gather(1, a) - y.detach())
+```
+
+### In code
+
+```python
+def dot(a, b):
+    return sum(p * q for p, q in zip(a, b))
+
+def td0_linear_step(w, x, r, x2, gamma, alpha):
+    """Semi-gradient TD(0) step; x2 is None when the next state is terminal."""
+    v2 = dot(w, x2) if x2 is not None else 0.0
+    delta = r + gamma * v2 - dot(w, x)
+    return [wi + alpha * delta * xi for wi, xi in zip(w, x)]
+
+w = [0.0, 0.0]
+w = td0_linear_step(w, [1, 2], 1.0, [1, 3], 0.9, 0.1)
+w = td0_linear_step(w, [1, 3], 0.0, None, 0.9, 0.1)
+print([round(v, 4) for v in w])
+```
+
+This prints `[0.03, -0.01]`. The features are $(1, s)$: a constant and the position of the state.
+
+@example
+title: A semi-gradient step and a DQN target
+problem: (a) A linear value function has features $\mathbf{x}(s) = (1, s)$ and weights $\mathbf{w} = (0.1, 0.2)$. The agent moves from $s = 2$ to $s' = 3$ with reward 1, $\gamma = 0.9$ and $\alpha = 0.1$. Apply semi-gradient TD(0). (b) In a DQN step the target network gives $q(s', a_1; \boldsymbol{\theta}^-) = 3$ and $q(s', a_2; \boldsymbol{\theta}^-) = 5$; the transition has $r = 2$, is not terminal, and the online network gives $q(s, a; \boldsymbol{\theta}) = 4$. With $\gamma = 0.9$, compute the target, the error, the squared loss and the Huber loss with threshold 1.
+step: Evaluate the features: $\mathbf{x}(2) = (1, 2)$ and $\mathbf{x}(3) = (1, 3)$. Then $\hat v(2) = 0.1 + 0.4 = 0.5$ and $\hat v(3) = 0.1 + 0.6 = 0.7$.
+step: The TD error is $\delta = 1 + 0.9 \times 0.7 - 0.5 = 1.13$.
+step: The update adds $\alpha\delta\,\mathbf{x}(2) = 0.113 \times (1, 2) = (0.113, 0.226)$, so $\mathbf{w} = (0.213, 0.426)$.
+step: For (b), the target is $y = 2 + 0.9 \times \max(3, 5) = 6.5$ and the error is $y - q = 6.5 - 4 = 2.5$. The squared loss is $2.5^2 = 6.25$.
+step: The Huber loss with threshold $\kappa = 1$ and $|e| = 2.5 > \kappa$ is $\kappa\,(|e| - \kappa/2) = 2.5 - 0.5 = 2.0$. Its gradient with respect to the prediction has magnitude 1, not 5.
+answer: (a) $\mathbf{w} = (0.213, 0.426)$. (b) Target 6.5, error 2.5, squared loss 6.25, Huber loss 2.0.
+
+@mistakes
+- Forgetting the feature vector in the update: the weight change is $\alpha\delta\,\mathbf{x}(s)$, not a scalar added to every weight.
+- Differentiating through the target as well: semi-gradient methods treat $R + \gamma \hat v(S', \mathbf{w})$ as a constant.
+- Bootstrapping from a terminal next state: the target of a terminal transition is just the reward.
+- Updating the target network after every step, which removes its stabilizing effect, or never updating it.
+- Sampling a replay minibatch in order instead of at random, which brings back the correlation that replay is meant to break.
+
+@practice num
+prompt: A linear value function has weights $\mathbf{w} = (0.5, -1.0, 2.0)$ and the state has features $\mathbf{x}(s) = (1, 0.4, 0.25)$. What is $\hat v(s, \mathbf{w})$?
+answer: 0.6
+tol: 0.001
+check: 0.5 * 1 + (-1.0) * 0.4 + 2.0 * 0.25
+hint: Take the dot product $\mathbf{w}^\top\mathbf{x}(s)$.
+solution: $0.5 \times 1 - 1.0 \times 0.4 + 2.0 \times 0.25 = 0.5 - 0.4 + 0.5 = 0.6$.
+
+@practice num
+prompt: A linear value function has features $\mathbf{x}(s) = (1, s)$ and weights $\mathbf{w} = (0.2, 0.4)$. The agent moves from $s = 3$ to $s' = 4$ with reward 1, using $\gamma = 0.9$ and $\alpha = 0.05$. After one semi-gradient TD(0) update, what is the second weight $w_1$? Give your answer to three decimal places.
+answer: 0.583
+tol: 0.001
+check: 0.4 + 0.05 * (1 + 0.9 * (0.2 + 0.4 * 4) - (0.2 + 0.4 * 3)) * 3
+hint: Compute $\hat v(3) = 1.4$, $\hat v(4) = 1.8$ and the TD error; the second weight changes by $\alpha\,\delta$ times the second feature, which is 3.
+solution: $\delta = 1 + 0.9 \times 1.8 - 1.4 = 1.22$. The second feature of $s = 3$ is 3, so $w_1 = 0.4 + 0.05 \times 1.22 \times 3 = 0.583$.
+
+@practice mc
+prompt: What is the main purpose of experience replay in a deep Q-network?
+choice*: To break the correlation between consecutive training samples and to reuse each transition for many updates.
+choice: To make the target depend on the same parameters as the prediction, so that the update is an exact gradient.
+choice: To compute the optimal policy directly from the transition probabilities.
+choice: To remove the need for an exploration policy.
+hint: Think about what a minibatch of consecutive steps looks like compared with a random sample from a large buffer.
+solution: Consecutive transitions are highly correlated, which hurts gradient-based learning, and each interaction is expensive, so replay samples random minibatches from stored experience and reuses it. Keeping the target tied to separate parameters is the job of the target network, replay does not use the dynamics, and the agent still needs exploration to fill the buffer.
+
+@practice code
+prompt: Write `fit_linear_td(episodes, feats, gamma, alpha, w)` for semi-gradient TD(0) with linear features. `episodes` is a list of episodes, each a list of `(state, reward, next_state)` transitions with `next_state` equal to `None` at the end of the episode (value 0). `feats[s]` is the list of features of state `s`, and `w` is the list of starting weights (do not modify it). Process the transitions in order and apply `w += alpha * delta * x` after each one, where `delta = r + gamma * v(next) - v(state)`. Return the final list of weights.
+starter:
+```python
+def fit_linear_td(episodes, feats, gamma, alpha, w):
+    pass
+```
+tests:
+```python
+F = {0: [1, 0], 1: [1, 1], 2: [1, 2], 3: [1, 3]}
+E = [[(1, 0.0, 2), (2, 1.0, 3), (3, 0.0, None)], [(0, 0.0, 1), (1, 2.0, None)]]
+w0 = [0.1, 0.1]
+got = fit_linear_td(E, F, 0.5, 0.2, w0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.423712, -0.000728]))
+got = fit_linear_td(E[:1], F, 0.5, 0.2, w0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-0.0548, -0.5264]))
+assert fit_linear_td([], F, 0.5, 0.2, w0) == [0.1, 0.1] and w0 == [0.1, 0.1]
+O = {s: [1.0 if i == s else 0.0 for i in range(4)] for s in range(4)}
+got = fit_linear_td(E, O, 1.0, 0.5, [0.0] * 4)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 1.0, 0.5, 0.0]))
+```
+model:
+```python
+def fit_linear_td(episodes, feats, gamma, alpha, w):
+    """Semi-gradient TD(0) with a linear value function."""
+    w = list(w)
+    for episode in episodes:
+        for s, r, s2 in episode:
+            x = feats[s]
+            v = sum(wi * xi for wi, xi in zip(w, x))
+            v2 = 0.0
+            if s2 is not None:
+                v2 = sum(wi * xi for wi, xi in zip(w, feats[s2]))
+            delta = r + gamma * v2 - v
+            w = [wi + alpha * delta * xi for wi, xi in zip(w, x)]
+    return w
+```
+hint: Copy `w` first. For each transition compute both values with the current weights, form `delta`, and then update all weights at once.
+solution: The update changes every weight in proportion to its feature, and both values in `delta` use the weights from before the update. With one-hot features the function reproduces tabular TD(0): the last test gives the same numbers as updating a table with $\alpha = 0.5$. The empty-list test checks that the input list is not changed.
+
+@practice code
+prompt: Write `dqn_targets(batch, feat, actions, w_target, gamma)` for a linear action-value function. `batch` is a list of transitions `(s, a, r, s2, done)`; `feat[(s, a)]` is the feature list of a state-action pair; `w_target` is the weight list of the target network; `actions` lists all actions. Return the list of targets: `r` if `done` is true, otherwise `r + gamma * max over a2 in actions of dot(w_target, feat[(s2, a2)])`. When `done` is true, `s2` may be `None` and must not be looked up.
+starter:
+```python
+def dqn_targets(batch, feat, actions, w_target, gamma):
+    pass
+```
+tests:
+```python
+FE = {}
+for s in ('p', 'q'):
+    for i, a in enumerate(('u', 'v')):
+        FE[(s, a)] = [1.0, 1.0 if s == 'q' else 0.0, float(i)]
+wt = [0.5, 1.0, 2.0]
+B = [('p', 'u', 1.0, 'q', False), ('q', 'v', -1.0, 'p', False),
+     ('q', 'u', 3.0, None, True), ('p', 'v', 0.0, 'p', False)]
+got = dqn_targets(B, FE, ['u', 'v'], wt, 0.9)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [4.15, 1.25, 3.0, 2.25]))
+assert dqn_targets([], FE, ['u', 'v'], wt, 0.9) == []
+got = dqn_targets(B[:1], FE, ['u', 'v'], [0.0, 0.0, 0.0], 0.9)
+assert abs(got[0] - 1.0) < 1e-9
+got = dqn_targets(B[:1], FE, ['u', 'v'], [0.0, -2.0, -1.0], 1.0)
+assert abs(got[0] - (1.0 - 2.0)) < 1e-9
+```
+model:
+```python
+def dqn_targets(batch, feat, actions, w_target, gamma):
+    """Targets r + gamma * max_a' q(s', a'; w_target), or r when done."""
+    targets = []
+    for s, a, r, s2, done in batch:
+        if done:
+            targets.append(r)
+        else:
+            best = max(sum(w * x for w, x in zip(w_target, feat[(s2, b)]))
+                       for b in actions)
+            targets.append(r + gamma * best)
+    return targets
+```
+hint: For a non-terminal transition take the maximum over all actions of the dot product of `w_target` with the features of `(s2, action)`, and do not touch `s2` when `done` is true.
+solution: The target network supplies the next-state values, and a terminal transition has target equal to its reward. In the first transition the best next value is $\max(1.5, 3.5) = 3.5$, so the target is $1 + 0.9 \times 3.5 = 4.15$. The last test makes the maximum negative: it is the largest of $-2$ and $-3$, not the value of the first action.
+
+@quiz code
+prompt: Write `minibatch_update(w, batch, feat, actions, w_target, gamma, alpha)` for a linear DQN step. `batch` is a list of `(s, a, r, s2, done)` transitions and `feat[(s, a)]` gives the features. For each transition, the target is `y = r` if `done`, else `r + gamma * max over a2 of dot(w_target, feat[(s2, a2)])`. With the current weights `w` (all errors computed before any change), return the new weight list `w + alpha * (1/B) * sum_i (y_i - dot(w, x_i)) * x_i` where `x_i = feat[(s_i, a_i)]` and `B = len(batch)`. Do not modify `w`.
+starter:
+```python
+def minibatch_update(w, batch, feat, actions, w_target, gamma, alpha):
+    pass
+```
+tests:
+```python
+FE = {}
+for s in ('p', 'q'):
+    for i, a in enumerate(('u', 'v')):
+        FE[(s, a)] = [1.0, 1.0 if s == 'q' else 0.0, float(i)]
+wt = [0.5, 1.0, 2.0]
+B = [('p', 'u', 1.0, 'q', False), ('q', 'v', -1.0, 'p', False),
+     ('q', 'u', 3.0, None, True), ('p', 'v', 0.0, 'p', False)]
+acts = ['u', 'v']
+got = minibatch_update([0.0, 0.0, 0.0], B, FE, acts, wt, 0.9, 0.1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.26625, 0.10625, 0.0875]))
+got = minibatch_update([0.5, 1.0, 2.0], B, FE, acts, wt, 0.9, 0.1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.56625, 0.98125, 1.9375]))
+w = [0.1, 0.2, 0.3]
+got = minibatch_update(w, B[:1], FE, acts, wt, 0.5, 1.0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [2.75, 0.2, 0.3]))
+assert w == [0.1, 0.2, 0.3]
+```
+model:
+```python
+def minibatch_update(w, batch, feat, actions, w_target, gamma, alpha):
+    """One averaged gradient step on the squared TD error (linear q)."""
+    grad = [0.0] * len(w)
+    for s, a, r, s2, done in batch:
+        if done:
+            y = r
+        else:
+            y = r + gamma * max(
+                sum(wt * x for wt, x in zip(w_target, feat[(s2, b)]))
+                for b in actions)
+        x = feat[(s, a)]
+        err = y - sum(wi * xi for wi, xi in zip(w, x))
+        for i in range(len(w)):
+            grad[i] += err * x[i]
+    return [wi + alpha * g / len(batch) for wi, g in zip(w, grad)]
+```
+hint: Accumulate `err * x[i]` for every transition using the unchanged `w`, then divide by the batch size and apply the step once.
+solution: Every transition's error is computed with the same weights, the contributions are averaged over the batch, and only then is `w` changed; updating sequentially inside the loop would give different numbers. The single-transition test with `alpha = 1.0` moves the first weight by the whole error $2.65$, since only that feature is active.
+
+@quiz num
+prompt: A Q-network has layer sizes $6 \to 16 \to 16 \to 3$: two hidden layers of 16 units and 3 outputs, with a bias for every unit in the hidden and output layers. How many trainable parameters does it have?
+answer: 435
+check: 6 * 16 + 16 + 16 * 16 + 16 + 16 * 3 + 3
+hint: Each layer has (inputs × outputs) weights plus one bias per output.
+solution: The layers have $6 \cdot 16 + 16 = 112$, $16 \cdot 16 + 16 = 272$ and $16 \cdot 3 + 3 = 51$ parameters, for a total of $435$.
+
+@quiz text
+prompt: What does this program print?
+```python
+w = [1.0, 0.0]
+x, x2 = [1, 2], [1, 4]
+delta = 0.5 + 1.0 * (w[0] * x2[0] + w[1] * x2[1]) - (w[0] * x[0] + w[1] * x[1])
+w = [wi + 0.1 * delta * xi for wi, xi in zip(w, x)]
+print(w)
+```
+answer: [1.05, 0.1]
+check: run("w = [1.0, 0.0]\nx, x2 = [1, 2], [1, 4]\ndelta = 0.5 + 1.0 * (w[0] * x2[0] + w[1] * x2[1]) - (w[0] * x[0] + w[1] * x[1])\nw = [wi + 0.1 * delta * xi for wi, xi in zip(w, x)]\nprint(w)")
+hint: Both values are 1.0 because the second weight is 0, so $\delta = 0.5 + 1 - 1$.
+solution: The current estimate of both states is $1.0$ (the second weight is 0), so $\delta = 0.5 + 1.0 - 1.0 = 0.5$. The update adds $0.1 \times 0.5 \times (1, 2) = (0.05, 0.1)$, so it prints `[1.05, 0.1]`.

@@ -1,0 +1,162 @@
+@project
+title: A production-ready model package
+overview: Take a model you built in an earlier course and turn it into a small, tested Python package: a data validation step, a reproducible training script, a batch prediction function, a drift monitor and a model card, plus a written deployment and monitoring plan with the alerts you would set. The point is the engineering around the model, so a simple model is fine.
+goal: Show that the pipeline rejects bad data and that training can be rerun from its record to the same result.
+goal: Show that the prediction code is tested and that drift is detected with a population stability index you wrote yourself.
+goal: Document the model and plan its rollout, monitoring, cost and incident response.
+step: Pick the model and frame it (week 1). Write one paragraph with the input, target, training loss, evaluation metric and the metric's cost assumptions. Compute at least two baselines (majority class or mean, and a simple rule) on a validation split and report your model against them.
+step: Write the validation step (weeks 2 and 4). Write `validate_row` (schema, types, ranges) and `validate_batch` (fraction of bad rows against a budget) without libraries. Test them with at least eight unit and edge-case tests, including the bad rows in the supplied sample table. Add a time-based or seeded split.
+step: Write the reproducible training script (week 3). It takes a configuration dictionary, derives a fingerprint from it, seeds every random choice with its own generator, logs the settings, the data version (a checksum of the training rows) and the metrics to a run record, and gives the same metrics when run twice. Report the mean and sample standard deviation of your metric over five seeds.
+step: Write the prediction code and its tests (weeks 4 and 8). Write a model wrapper that validates its input, a `predict_batch` function that scores a list of rows, and tests for the wrapper (wrong length, missing value, output range, determinism). Measure the p50, p95 and p99 latency of the batch function on your data with the nearest-rank method and state the throughput.
+step: Estimate resources (weeks 5 to 7). Write down the memory and compute needed to train your model's parameter count with Adam in mixed precision (state the bytes per parameter and the 6ND approximation), and the cost and energy for stated prices, power draw, PUE and carbon intensity. Write a function that quantizes your model's weights to 8 bits and report the maximum and mean squared error and the effect on your metric.
+step: Write the drift monitor (weeks 9 and 10). From your training data choose bin edges for each of two numeric features, compute the PSI between the training data and a shifted copy of the validation data (shift one feature on purpose), and show that the monitor stays quiet on an unshifted copy and alerts on the shifted one. Also implement the persistence rule from week 9.
+step: Write the model card and the plan (weeks 11 and 12). The card covers intended use, training data, evaluation by at least two slices, limitations and the monitoring plan. The plan covers shadow, canary and A/B stages with their decision rules, the alerts you would set (metric, limit, persistence, first action), the rollback procedure and a one-page blameless postmortem template.
+material: Sample training table for the validation step: the columns are `age`, `income`, `plan` and `churned`. Rows 5 and 9 are deliberately bad (a negative age, a missing income) and row 11 has a plan that the schema does not allow. Save it as a CSV and use it in your tests.
+```text
+age,income,plan,churned
+34,52000,basic,0
+41,61000,premium,0
+29,38000,basic,1
+52,87000,premium,0
+-3,45000,basic,0
+23,29000,basic,1
+37,56000,premium,0
+45,71000,basic,0
+31,,basic,1
+58,93000,premium,0
+27,41000,trial,1
+39,64000,premium,0
+```
+material: Schema and alert-plan templates. Use the schema in your validator and fill in the alert table for your own model (invent limits from your baseline and say how you chose them).
+```text
+schema = {
+    "age": (0, 120),
+    "income": (0, 1_000_000),
+    "plan": {"basic", "premium"},
+}
+
+| alert | metric | limit | persistence | first action |
+|---|---|---|---|---|
+| bad input | fraction of rows failing validation | 2% | 1 batch | stop the pipeline, notify data owner |
+| drift | PSI of each key feature | 0.25 | 2 days | check upstream, compare labeled performance |
+| latency | p95 of prediction time | your SLO | 3 windows | check load, roll back if a release is recent |
+| quality | rolling accuracy on labeled cohort | baseline minus 3 sigma | 2 weeks | investigate, consider retraining |
+```
+deliverable: A package (a folder of Python files and tests) with the validation, training, prediction, quantization and drift modules, and a test run that passes.
+deliverable: A run record for the training script showing the settings, fingerprint, data version and the mean and standard deviation over five seeds.
+deliverable: The model card and a two-page deployment and monitoring plan, including the cost and energy estimates with their assumptions.
+rubric: The validation function and tests catch each kind of bad row and return readable errors; float comparisons in tests use a tolerance.
+rubric: Training is reproducible: two runs with the same configuration give identical metrics, and the run record is enough to rebuild the model.
+rubric: The PSI, percentile and quantization functions are written from scratch, give correct values on hand-checkable inputs, and the drift monitor separates the shifted and unshifted data.
+rubric: The resource estimates state their assumptions (bytes per parameter, the 6ND approximation, prices, power, PUE, carbon intensity) and the arithmetic is correct.
+rubric: The model card and plan are specific: slice results, limitations, alert limits with persistence rules, a rollback procedure and a blameless postmortem template.
+safety: Use synthetic data or data you have the right to use, never real personal data, and never put passwords, keys or personal identifiers in logged settings or run records.
+tutor: I wrote a validation function for my table; what edge cases have I probably missed, and how would I test each?
+tutor: My drift monitor alerts on the unshifted data too; how can I tell whether the bin edges, the sample size or the floor for empty bins is the cause?
+tutor: Here is my model card; what would a reviewer who has never seen the project still not be able to tell from it?
+@review
+### Week by week
+
+**Week 1, framing.** A product goal becomes an input, a target, a training loss and an evaluation metric; the metric should carry costs. Accuracy, precision $TP/(TP+FP)$, recall $TP/(TP+FN)$, F1 $=2PR/(P+R)$, expected cost $c_{FP}FP + c_{FN}FN$. Always compute trivial baselines. Choose thresholds on validation data.
+
+**Week 2, data.** Pipeline stages and checks: schema, range, completeness, uniqueness, distribution. Return all errors, budget the fraction of bad rows. Leakage, time-based splits, duplicates, train/serve skew.
+
+**Week 3, reproducibility.** Seeds and separate generators; versions of code, data and settings; run records and configuration fingerprints; report mean and sample standard deviation over seeds.
+
+**Week 4, tests.** Unit, edge-case, property, invariance, regression and integration tests; tolerances for floats; central finite differences $(f(x+h)-f(x-h))/2h$ for gradients; testing a wrapper's validation, determinism and output range.
+
+**Week 5, one device.** Bytes per parameter: 4 (fp32), 2 (fp16, bf16), 1 (int8); Adam training state 16 bytes per parameter; compute $\approx 6ND$; time $=\text{FLOPs}/(\text{peak}\times\text{utilization}\times\text{devices})$; loss scaling for fp16; checkpointing costs about $8ND$.
+
+**Week 6, many devices.** Data parallelism averages gradients; ring all-reduce sends $2(p-1)S/p$ bytes per device; effective batch size; scaling efficiency; sharding gives $2+2+12/d$ bytes per parameter; pipeline bubble $(p-1)/(m+p-1)$.
+
+**Week 7, efficiency.** Symmetric quantization $s=\max|w|/q_{\max}$, error at most $s/2$; magnitude pruning, unstructured against structured; distillation with temperature softmax.
+
+**Week 8, serving.** Batch, online and streaming; nearest-rank percentiles; Little's law $L=\lambda W$; batching trades latency for throughput.
+
+**Week 9, monitoring.** Four metric layers; delayed labels and cohorts; control limits, EWMA, persistence rules; SLOs and error budgets.
+
+**Week 10, drift.** Covariate shift, label shift, concept drift; $\text{PSI}=\sum(a_i-e_i)\ln(a_i/e_i)$ with baseline bins and a floor; the KS statistic.
+
+**Week 11, experiments.** Shadow, canary, A/B; stable salted-hash assignment; the two-proportion z statistic; $n\approx 2(1.96+0.84)^2p(1-p)/\delta^2$.
+
+**Week 12, operations.** Cost and energy with stated assumptions; model cards; detect, mitigate, resolve, learn; MTTD and MTTR; blameless postmortems with owned action items.
+
+### Self-check
+
+- Can you compute precision, recall and expected cost from four counts, and name the baseline you must beat?
+- Can you write a validation function and say which check catches which failure?
+- Can you estimate the memory and the days of training for a model from its parameter and token counts, with assumptions?
+- Can you compute a PSI and a nearest-rank percentile by hand?
+- Can you write the rollback condition for a canary?
+
+### Common errors
+
+Reporting accuracy on imbalanced data without a baseline; tuning on the test set; shuffling time-ordered data; seeding only some randomness; comparing floats with `==`; counting only weights in memory; using peak throughput as real throughput; averaging percentiles; reading a high PSI as proof of lower accuracy; peeking at an A/B test; blaming a person in a postmortem.
+@exam code
+prompt: Write `monitor_window(baseline, current, edges, psi_limit, latencies, p95_slo_ms)` for one monitoring window. Bin `baseline` and `current` with the increasing interior `edges` (bin 0 holds values below `edges[0]`; bin `i` holds `edges[i-1] <= v < edges[i]`; the last bin holds values at or above `edges[-1]`), turn counts into proportions, raise any proportion below `1e-4` to `1e-4`, and compute $\text{PSI} = \sum_i (a_i - e_i)\ln(a_i/e_i)$ with baseline proportions $e$ and current proportions $a$. Compute the nearest-rank p95 of `latencies` (the value at rank `ceil(0.95 * n)` of the sorted list, counting from 1; use `(95 * n + 99) // 100`). Return a list of alerts: include `"drift"` if the PSI is greater than `psi_limit`, then include `"latency"` if the p95 is greater than `p95_slo_ms`. For example, with no drift and a p95 within the limit the list is empty.
+starter:
+```python
+import math
+
+def monitor_window(baseline, current, edges, psi_limit, latencies, p95_slo_ms):
+    pass
+```
+tests:
+```python
+base = [5, 12, 15, 25]
+drifted = [8, 9, 11, 22]
+lat = [10] * 18 + [40, 90]
+assert monitor_window(base, base, [10, 20], 0.25, lat, 50) == []
+assert monitor_window(base, drifted, [10, 20], 0.25, lat, 50) == ["drift"]
+assert monitor_window(base, drifted, [10, 20], 0.25, lat, 30) == ["drift", "latency"]
+assert monitor_window(base, base, [10, 20], 0.25, lat, 30) == ["latency"]
+assert monitor_window(base, drifted, [10, 20], 0.5, lat, 50) == []
+assert monitor_window(base, base, [10, 20], 0.25, lat, 40) == []
+assert monitor_window(base, [5, 6, 7, 8], [10, 20], 5.0, lat, 50) == ["drift"]
+```
+model:
+```python
+import math
+
+def monitor_window(baseline, current, edges, psi_limit, latencies, p95_slo_ms):
+    """Return the alerts ("drift", "latency") raised by one monitoring window."""
+    def proportions(values):
+        counts = [0] * (len(edges) + 1)
+        for v in values:
+            i = 0
+            while i < len(edges) and v >= edges[i]:
+                i += 1
+            counts[i] += 1
+        return [max(c / len(values), 1e-4) for c in counts]
+
+    e = proportions(baseline)
+    a = proportions(current)
+    psi = 0.0
+    for ei, ai in zip(e, a):
+        psi += (ai - ei) * math.log(ai / ei)
+    ordered = sorted(latencies)
+    p95 = ordered[(95 * len(ordered) + 99) // 100 - 1]
+    alerts = []
+    if psi > psi_limit:
+        alerts.append("drift")
+    if p95 > p95_slo_ms:
+        alerts.append("latency")
+    return alerts
+```
+hint: Compute the two statistics separately, the PSI from floored bin proportions and the p95 by nearest rank, then compare each with its limit, drift first.
+solution: The PSI uses baseline edges for both samples and floors empty bins so the logarithm stays finite; the p95 is the 19th of 20 sorted latencies, which is 40 here. Equal values do not alert (the sixth test: p95 equals the limit 40), and the last test has a PSI of about 7.25, above even a limit of 5.
+@exam num
+prompt: A model with $10^9$ parameters is trained on $3 \times 10^{10}$ tokens using the approximation of $6ND$ FLOPs. It runs on 16 devices, each with a peak of $10^{14}$ FLOP/s at 40% utilization, with perfect sharing of the work. At an assumed price of \$2 per device-hour, what is the cost of the run in dollars?
+answer: 2500
+unit: dollars
+tol: 1
+check: 6 * 1e9 * 3e10 / (1e14 * 0.4 * 16) / 3600 * 16 * 2
+hint: Find the FLOPs, divide by the effective throughput of all 16 devices to get seconds, convert to hours, and multiply by the number of devices and the price.
+solution: The compute is $6 \times 10^9 \times 3 \times 10^{10} = 1.8 \times 10^{20}$ FLOPs. The effective throughput is $16 \times 10^{14} \times 0.4 = 6.4 \times 10^{14}$ FLOP/s, so the run takes $2.8125 \times 10^{5}$ s, or 78.125 hours. That is $16 \times 78.125 = 1{,}250$ device-hours, which cost $1250 \times 2 = \$2{,}500$.
+@exam self
+prompt: A bank has trained a model that predicts loan default. Using what you learned in this course, write a deployment and monitoring plan of about one page: how you would validate the training data, make training reproducible, choose and size the serving design, roll the model out, monitor it given that defaults are known only after 12 months, and respond to an incident in which the model's approval rate suddenly doubles.
+hint: Give one concrete mechanism for each stage and one number or rule where you can, such as a budget, a limit, a persistence rule or a sample size.
+solution: Data: a validation step checks schema, ranges, completeness and duplicates, fails when the fraction of bad rows exceeds a budget (for example 1%), and splits by time so that the test period follows the training period, with no features from after the application. Reproducibility: a configuration fingerprint, seeds for every random choice, a run record with code version, data version and settings, and results reported as a mean and spread over several seeds. Serving: applications are scored when they arrive, so online prediction with a p99 latency target (for example 200 ms), replicas sized by Little's law at moderate utilization, a timeout and a conservative fallback rule, and the previous model kept for rollback. Rollout: shadow mode to compare scores and latency, then a canary at a small share with a one-sided test on errors and latency, then an A/B test with a stable salted-hash assignment, a pre-chosen primary metric and sample size, and no peeking. Monitoring: system metrics, data-quality metrics, the distribution of scores and the approval rate (all label-free), PSI on key inputs with a limit of 0.25 and a persistence rule, and accuracy by monthly cohort when 12-month outcomes arrive, with earlier delinquency signals as proxies. Incident: if the approval rate doubles, alert fires on the approval-rate metric; triage severity (financial exposure), mitigate first by rolling back or switching to the fallback, then diagnose with the data-quality and PSI dashboards (for example a changed upstream field), fix the cause, and write a blameless postmortem with a timeline, root cause and action items that each have an owner, a date and a check, such as a validation gate for that field.
+rubric: Covers validation, reproducibility, serving, rollout, monitoring and incident response, each with a concrete mechanism.
+rubric: Handles delayed labels with cohort evaluation and label-free proxies, and uses persistence or limits to avoid alert fatigue.
+rubric: Describes mitigation by rollback or fallback before diagnosis, and a blameless postmortem with owned, verifiable action items.

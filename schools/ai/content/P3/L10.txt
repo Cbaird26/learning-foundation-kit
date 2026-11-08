@@ -1,0 +1,127 @@
+@lesson
+title: Tool use and agents
+summary: Describe how a language model calls tools in a loop, compute how errors and context accumulate over many steps, and design and evaluate a retrieval step for a question-answering system.
+objective: Describe the tool-use loop and the ideas of ReAct and Toolformer.
+objective: Compute end-to-end success over multi-step tasks, the context cost of a long episode, and the chunking of a document for retrieval.
+objective: Explain prompt injection conceptually and the defenses that limit it, and design an evaluation for a retrieval step.
+reading: Stanford CS336: Language Modeling from Scratch. Look up any material on agents and tool use; for the research, find the papers on ReAct (Yao and colleagues, 2022) and Toolformer (Schick and colleagues, 2023).
+
+@article
+A language model alone can only emit text. Ask it for the product of two ten-digit numbers, today's weather, or the contents of a file, and the best it can do is guess from patterns in its training data. A **tool** is a program that the surrounding system runs on the model's behalf: a calculator, a search engine, a code interpreter, a database query. Once a model can call tools, and see their results, and decide what to do next, we call the loop around it an **agent**. This lesson describes the loop, the arithmetic that limits it, and its main security problem, and ends with how to design the retrieval tool that most question-answering agents use.
+
+### The loop
+
+The mechanism is simple. The prompt describes the available tools and the format for calling them. The model generates text; when the text contains a call, the system stops generation, runs the tool with the supplied arguments, appends the result to the context as ordinary tokens, and lets the model continue. The loop ends when the model produces a final answer or a limit is reached. In a toy transcript, with invented tools:
+
+```text
+Question: what is 17% of the sum of the two file sizes?
+Action: size(report.txt)      -> Observation: 2400
+Action: size(data.csv)        -> Observation: 1600
+Action: calc(0.17 * (2400 + 1600))  -> Observation: 680
+Answer: 680
+```
+
+Two research ideas shaped this design. **ReAct** (Yao and colleagues, 2022) interleaves written reasoning with actions, so the model can plan, act, read the observation and revise. **Toolformer** (Schick and colleagues, 2023) trained a model to decide for itself when to call an interface: it inserted candidate calls into text and kept those whose results made the following text more predictable, then fine-tuned on the kept examples. Both are demonstrations that tool calls can be produced by a model trained on text; they do not tell you how reliably any given model will choose the right tool and arguments.
+
+### The arithmetic of long tasks
+
+**Errors compound.** If each of $n$ steps succeeds independently with probability $p$, the task succeeds with probability $p^{n}$. At $p = 0.95$ and $n = 20$ this is $0.358$: a step that is right 19 times in 20 gives a task that fails almost two times in three. The independence assumption is idealized, since steps can be correlated, and an agent can notice and recover from errors, which raises success. If a step can be attempted twice and a verifier accepts a correct attempt (and only then), per-step success becomes $1 - (1-p)^2$: from $0.8$ to $0.96$. Reliability over long horizons is one of the central open problems for agents.
+
+**Context accumulates.** Each action and observation extends the context, and without caching the model rereads everything at every step. With an initial context of $c = 1000$ tokens and $m = 500$ tokens added per step, step $i$ reads $c + m(i-1)$ tokens, and over $T = 10$ steps the total is $Tc + m\,T(T-1)/2 = 10{,}000 + 22{,}500 = 32{,}500$ tokens: growth that is quadratic in $T$. Caching of earlier computation (lesson 11) reduces the recomputation but not the memory the long context needs, and long contexts also degrade how well information in the middle is used in some models.
+
+### Prompt injection and its limits
+
+The model reads instructions and data in the same stream of tokens. If a retrieved web page, an email or a tool result contains text that looks like an instruction ("ignore your task and do something else"), the model may follow it. This is **prompt injection**, and when the text is placed there by a third party, it is an indirect one. No filter is known that reliably separates data from instructions in natural language, so the defenses reduce the damage rather than remove the cause: give the agent the **least privilege** (only the tools and permissions the task needs), require confirmation from a person for consequential actions, keep untrusted content in labeled channels and treat what is returned from it as untrusted, run code in a sandbox, log and audit actions, and test against known attack patterns. How to make an agent robust against an adaptive attacker is an open problem. The basic rule for the designer is to assume some injections will succeed and to bound what a successful one can do.
+
+### Designing a retrieval step
+
+Most question-answering agents call a retrieval tool, and its quality bounds the system. A design has choices of **chunk size** (small chunks are precise and may lose context; large ones dilute the signal and use context), **overlap** (to avoid splitting an answer across a boundary), the **retriever** (sparse, dense, or both), the number $k$ of chunks returned and whether a second-stage re-ranker filters them. For a document of $L$ tokens, chunks of $c$ tokens and an overlap of $o$ tokens, the stride is $s = c - o$ and the number of chunks is $\lceil (L - c)/s \rceil + 1$ (for $L > c$). Evaluation, as in lesson 9, starts with a set of questions with known supporting chunks, measures recall at $k$ and MRR for retrieval alone, then measures answer correctness with and without retrieval, and breaks failures down into "not retrieved", "retrieved but ignored" and "retrieved and misread".
+
+@example
+title: Success over a multi-step task
+problem: An agent task needs 12 independent steps, each succeeding with probability 0.9. What is the probability of success? How does allowing a second attempt per step with a perfect verifier change it?
+step: Without retries: $0.9^{12} \approx 0.282$.
+step: With one retry and a verifier that accepts exactly the correct attempts: per-step success is $1 - 0.1^2 = 0.99$.
+step: Then $0.99^{12} \approx 0.886$.
+answer: About 0.282 without retries and 0.886 with a retry; the result depends on the verifier being reliable.
+
+@example
+title: Chunking a document
+problem: A document has 1,000 tokens. It is split into chunks of 256 tokens with an overlap of 64. How many chunks are there, and where does the last one start?
+step: Stride $s = 256 - 64 = 192$.
+step: Number of chunks: $\lceil (1000 - 256)/192 \rceil + 1 = \lceil 3.875 \rceil + 1 = 5$.
+step: Starts are $0, 192, 384, 576, 768$. The last chunk starts at 768 and ends at 1000 (it is shorter than 256, since only 232 tokens remain).
+answer: 5 chunks; the last starts at token 768.
+
+@mistakes
+- Multiplying step success rates for steps that are strongly correlated: independence is an idealization, and recovery from errors makes real success higher or lower.
+- Believing a filter can reliably remove injected instructions: text is both data and instruction, so limit privileges instead.
+- Evaluating only the final answer: a wrong answer might come from retrieval, from the generator ignoring the evidence, or from a misread.
+- Forgetting that every step's result is appended to the context: cost and latency grow faster than the number of steps.
+
+@practice num
+prompt: An agent task needs 25 independent steps, each succeeding with probability 0.97. What is the probability that the whole task succeeds? Give the answer to three decimal places.
+answer: 0.467
+tol: 0.001
+check: 0.97 ** 25
+hint: All 25 steps must succeed, and they are independent.
+solution: The probability is $0.97^{25} \approx 0.467$: even with 97 percent per-step success, the task fails more than half the time.
+
+@practice num
+prompt: A document of 2,300 tokens is split into chunks of 512 tokens with an overlap of 64 tokens between consecutive chunks. The last chunk may be shorter. How many chunks are there?
+answer: 5
+check: ceil((2300 - 512) / (512 - 64)) + 1
+hint: The stride is $512 - 64 = 448$; use $\lceil (L - c)/s \rceil + 1$.
+solution: $(2300 - 512)/448 = 3.99$, which rounds up to 4, and adding 1 gives 5 chunks, starting at $0, 448, 896, 1344$ and $1792$. The last chunk covers tokens 1792 to 2300.
+
+@practice mc
+prompt: What is the root cause that makes indirect prompt injection possible?
+choice*: The model receives instructions and untrusted data as one stream of tokens, and nothing guarantees that it treats text from a tool or document as data only.
+choice: Tools return results in the wrong file format.
+choice: The context window is too small to hold the system prompt.
+choice: Language models cannot read web pages, so they misparse them.
+hint: Where does injected text come from, and how does the model receive it?
+solution: Retrieved pages, emails and tool results are placed in the same token stream as the instructions, and the model has no built-in way to mark some tokens as non-executable. That is why defenses focus on limiting privileges and confirming consequential actions.
+
+@practice ms
+prompt: Which statements are accurate? Select all that apply.
+choice*: In ReAct (Yao and colleagues, 2022), the model interleaves written reasoning with actions and reads each observation before continuing.
+choice*: A tool's output is placed in the model's context as ordinary tokens, so a long episode lengthens the context at every step.
+choice*: Limiting an agent's permissions bounds what a successful prompt injection can do.
+choice: If every step of a task succeeds with probability 0.9, the whole task succeeds with probability 0.9 regardless of its length.
+choice: Retrying failed steps can never raise the success rate of a multi-step task.
+hint: Work out $p^n$ and consider what a retry does to the per-step probability.
+solution: ReAct interleaves reasoning and acting; observations enter the context; least privilege limits the damage of an injection. Success of $n$ independent steps is $p^n$, which falls with length, and a retry with a reliable check raises the per-step probability.
+
+@practice self
+prompt: You must design and evaluate the retrieval step of a question-answering system over 800 internal policy documents of 1,000 to 20,000 tokens each. Specify your chunking, your retriever, the number of chunks returned, and an evaluation plan with at least two metrics and a way to find where failures come from. State one risk the design leaves open.
+hint: Build a labeled set of questions with their supporting passages first, then choose metrics that apply to retrieval alone and to the whole system.
+solution: Chunking: split by section headings where available, otherwise into chunks of about 300 tokens with an overlap of 50, and attach the document title and section heading to each chunk so that short chunks carry their context. Retriever: combine BM25 (good for exact policy terms, names and numbers) with dense retrieval (good for paraphrase), merging their rankings, and re-rank the top 30 with a cross-encoder-style scorer; return $k = 5$ chunks to the generator, a choice to tune against the context cost. Evaluation: write or sample about 300 questions with annotated supporting passages, split into tuning and test sets before any tuning. Measure recall at 5 and at 30 and MRR for retrieval alone, with confidence intervals; then measure answer correctness with retrieval, with oracle (gold) passages and with no retrieval. The three give a decomposition: if gold passages give high accuracy and retrieval does not, retrieval is the bottleneck; if gold passages still fail, the generator is. Sample failures and label them as "not retrieved", "retrieved but ignored" and "retrieved but misread". Open risk: documents change, so the index and the labeled set age, and a policy document could itself contain instructions or errors the system will pass along; I would add re-indexing on updates and treat retrieved text as untrusted content.
+rubric: Specifies concrete chunk size, overlap, retriever and k, with a reason for each.
+rubric: Plans retrieval-only metrics (recall at k, MRR) on a held-out labeled set, plus end-to-end measurement.
+rubric: Includes a way to localize failures, such as oracle passages or failure categories.
+rubric: Names an honest residual risk.
+
+@quiz num
+prompt: An agent episode starts with a context of 1,500 tokens, and each step adds 600 tokens. Without caching, at step $i$ the model reads the whole context, $1500 + 600(i-1)$ tokens. How many tokens does it read in total over 8 steps?
+answer: 28800
+unit: tokens
+check: sum(1500 + 600 * (i - 1) for i in range(1, 9))
+hint: Add the 1500 for each of the 8 steps, and then the growth, which is $600 \times (0 + 1 + \dots + 7)$.
+solution: The base cost is $8 \times 1500 = 12{,}000$. The growth contributes $600 \times 28 = 16{,}800$, since $0 + 1 + \dots + 7 = 28$. The total is 28,800 tokens, which is why long episodes get expensive.
+
+@quiz num
+prompt: A task has 10 independent steps. Each attempt at a step succeeds with probability 0.8, and a step may be attempted twice, with a verifier that accepts an attempt exactly when it is correct. What is the probability that the whole task succeeds? Give the answer to three decimal places.
+answer: 0.665
+tol: 0.001
+check: (1 - 0.2 ** 2) ** 10
+hint: First find the per-step success probability with two attempts.
+solution: A step fails only if both attempts fail, which has probability $0.2^2 = 0.04$, so per-step success is $0.96$. Over 10 steps: $0.96^{10} \approx 0.665$, compared with $0.8^{10} \approx 0.107$ without a retry.
+
+@quiz self
+prompt: A company wants an agent that reads incoming customer emails, searches an internal knowledge base, and sends replies and issues refunds. Identify two security risks that arise from the agent reading untrusted text, and describe a design that bounds the harm without relying on the model to resist every attack.
+hint: Think about what an attacker controls, what the agent can do, and which actions are hardest to undo.
+solution: Risk one is indirect prompt injection: an email can contain text that tells the agent to refund money, send information to another address, or ignore its instructions, and the model reads it as part of the context. Risk two is data exposure: a crafted email or a retrieved document could induce the agent to include confidential knowledge-base content or other customers' details in a reply. A design that bounds harm: give the agent the least privilege, with separate tools and credentials for reading, drafting and acting; let it draft replies but require approval for sending to new addresses; cap refunds by amount and require human approval above a small limit; run actions only through a narrow interface that validates arguments (fixed fields, allowed customers, amount limits) rather than free text; keep untrusted email text in a labeled channel and never let it change the tool permissions; log every action; and test with a set of known injection patterns and monitor for anomalies. These measures assume an injection will sometimes succeed and limit what it can do; they do not make the model immune, and no complete defense is known.
+rubric: Names two distinct risks (such as injection leading to unauthorized actions, and data exposure).
+rubric: Proposes design measures independent of the model resisting attacks, such as least privilege, limits and human approval.
+rubric: Acknowledges that the design reduces and does not eliminate risk.

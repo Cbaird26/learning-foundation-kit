@@ -1,0 +1,290 @@
+@lesson
+title: Policy gradients and actor-critic methods
+summary: Derive the policy gradient and the REINFORCE update, add a baseline, and replace the Monte Carlo return by a learned critic in an actor-critic method.
+objective: Derive $\nabla_{\boldsymbol{\theta}} J = \mathbb{E}[\,G\,\nabla_{\boldsymbol{\theta}} \ln \pi\,]$ for a bandit and compute the gradient of a softmax log-probability.
+objective: Implement REINFORCE on a bandit and on episodes, with and without a baseline.
+objective: Implement a one-step actor-critic update and explain the bias and variance trade-off against REINFORCE.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the chapter on policy gradient methods: policy approximation, the policy gradient theorem, REINFORCE with and without a baseline, and actor-critic methods; the gradient bandit algorithm is in the bandits chapter.
+@article
+So far the agent learned values and then acted greedily. A different idea is to learn the policy directly: parameterize $\pi(a \mid s; \boldsymbol{\theta})$ and adjust $\boldsymbol{\theta}$ to increase expected return. This handles continuous actions, can represent stochastic policies, and changes action probabilities smoothly instead of flipping a greedy argmax.
+
+### A softmax policy
+
+With one preference $\theta_a$ per action (the bandit case, or one such vector per state),
+
+$$\pi(a) = \frac{e^{\theta_a}}{\sum_c e^{\theta_c}}.$$
+
+Its log-probability is $\ln \pi(a) = \theta_a - \ln\sum_c e^{\theta_c}$, so differentiating with respect to a preference $\theta_b$ gives
+
+$$\frac{\partial \ln \pi(a)}{\partial \theta_b} = \mathbb{1}[a = b] - \pi(b).$$
+
+Raising the chosen action's preference raises its probability, and the other actions' probabilities fall in proportion to their current size.
+
+### The policy gradient for a bandit
+
+Let $J(\boldsymbol{\theta}) = \sum_a \pi(a)\,q(a)$ be the expected reward. Using the **log-derivative trick** $\nabla \pi = \pi\,\nabla \ln \pi$,
+
+$$\nabla J = \sum_a q(a)\,\nabla\pi(a) = \sum_a \pi(a)\,q(a)\,\nabla \ln \pi(a) = \mathbb{E}\big[\,R\;\nabla \ln \pi(A)\,\big].$$
+
+So a single sampled action and reward give an unbiased estimate of the gradient: $R\,\nabla \ln\pi(A)$. Ascending it gives the update
+
+$$\theta_b \leftarrow \theta_b + \alpha\,R\,\big(\mathbb{1}[A = b] - \pi(b)\big).$$
+
+**A baseline.** For any number $b$ that does not depend on the action, $\sum_a b\,\nabla\pi(a) = b\,\nabla \sum_a \pi(a) = b\,\nabla 1 = 0$. So we may subtract it: $\nabla J = \mathbb{E}[(R - b)\,\nabla \ln \pi(A)]$. The expectation is unchanged, but a good baseline (the average reward so far is common) reduces the variance of the estimate, because it makes the weight positive for better-than-average actions and negative for worse ones. This is the gradient bandit algorithm.
+
+### REINFORCE
+
+For an episodic MDP the **policy gradient theorem** says that the gradient of the expected return is proportional to the expected sum over states and actions of $q_\pi(s, a)\,\nabla \pi(a \mid s)$, where states are weighted by how often $\pi$ visits them. Sampling this expectation and replacing $q_\pi(S_t, A_t)$ by the observed return gives REINFORCE (Williams, 1992). After each complete episode, for $t = 0, \dots, T-1$:
+
+$$\boldsymbol{\theta} \leftarrow \boldsymbol{\theta} + \alpha\,\gamma^{t}\,G_t\,\nabla_{\boldsymbol{\theta}} \ln \pi(A_t \mid S_t; \boldsymbol{\theta}).$$
+
+In our tabular softmax version, the preference of action $b$ in state $S_t$ changes by $\alpha\,\gamma^t\,G_t\,(\mathbb{1}[A_t = b] - \pi(b \mid S_t))$. Updates are applied in time order and each uses the current parameters. REINFORCE needs complete episodes and its updates have high variance, since $G_t$ sums many random rewards. Subtracting a state-dependent baseline $b(S_t)$ from $G_t$ again leaves the expected gradient unchanged.
+
+### Actor-critic
+
+An **actor-critic** method keeps two things: the **actor**, the policy, and the **critic**, a value function $V(s)$ learned by TD. The critic's TD error $\delta_t = R_{t+1} + \gamma V(S_{t+1}) - V(S_t)$ serves as an estimate of how much better the action was than expected (the **advantage**). Each step:
+
+$$V(S_t) \leftarrow V(S_t) + \alpha_w\,\delta_t, \qquad \theta_b \leftarrow \theta_b + \alpha_\theta\,\delta_t\,\big(\mathbb{1}[A_t = b] - \pi(b \mid S_t)\big).$$
+
+Compared with REINFORCE, actor-critic updates every step, works in continuing tasks, and has much lower variance, at the price of bias from an imperfect critic. Modern deep methods build on this structure; PPO (Schulman and colleagues, 2017) keeps each policy update small by clipping the ratio of new to old action probabilities.
+
+### In code
+
+```python
+import math
+
+def softmax(theta):
+    m = max(theta)
+    e = [math.exp(t - m) for t in theta]
+    z = sum(e)
+    return [x / z for x in e]
+
+def reinforce_bandit_step(theta, a, r, baseline, alpha):
+    """Gradient bandit update after action a and reward r."""
+    p = softmax(theta)
+    return [t + alpha * (r - baseline) * ((1.0 if k == a else 0.0) - p[k])
+            for k, t in enumerate(theta)]
+
+theta = [0.0, 0.0, 0.0]
+theta = reinforce_bandit_step(theta, 1, 2.0, 1.0, 0.1)
+print([round(t, 4) for t in theta])
+```
+
+This prints `[-0.0333, 0.0667, -0.0333]`: the chosen action's preference rises by $0.1 \times 1 \times \tfrac23$ and the others fall by $0.1 \times 1 \times \tfrac13$. Subtracting the maximum inside `softmax` avoids overflow without changing the result. In PyTorch, `loss = -(G - b) * log_prob` and `loss.backward()` produce the same update with automatic differentiation.
+
+@example
+title: One REINFORCE step with a baseline
+problem: A 3-armed bandit has softmax preferences $\boldsymbol{\theta} = (0, 0, 0)$. The agent samples arm 2, receives reward 4, and uses a baseline of 1 and $\alpha = 0.3$. (a) Compute the update of all three preferences. (b) What is the new probability of arm 2? (c) Show that the baseline does not change the expected update for arm 2 when all three rewards of this bandit are fixed at $(1, 3, 4)$ for arms 0, 1, 2 and the policy is uniform.
+step: The policy is uniform, $\pi = (\tfrac13, \tfrac13, \tfrac13)$, and $R - b = 3$. For arm 2 (chosen), $\mathbb{1} - \pi = \tfrac23$ so $\Delta\theta_2 = 0.3 \times 3 \times \tfrac23 = 0.6$.
+step: For the other arms $\mathbb{1} - \pi = -\tfrac13$ so $\Delta\theta_0 = \Delta\theta_1 = 0.3 \times 3 \times (-\tfrac13) = -0.3$. The new preferences are $(-0.3, -0.3, 0.6)$.
+step: New probability of arm 2: $e^{0.6}/(2e^{-0.3} + e^{0.6}) = 1.822/(1.481 + 1.822) = 0.5515$, up from $0.3333$.
+step: For (c), the expected update of $\theta_2$ is $\alpha\sum_a \pi(a)\,(r_a - b)(\mathbb{1}[a = 2] - \tfrac13)$ with $\pi(a) = \tfrac13$. Collect the terms: it equals $\alpha\cdot\tfrac13\big[(1 - b)(-\tfrac13) + (3 - b)(-\tfrac13) + (4 - b)(\tfrac23)\big]$.
+step: The coefficient of $b$ inside the bracket is $\tfrac13 + \tfrac13 - \tfrac23 = 0$, and the rest is $\tfrac{-1 - 3 + 8}{3} = \tfrac43$. So the expected update is $\tfrac{4}{9}\alpha$ for every $b$: the baseline changes individual updates but not their average.
+answer: (a) The preferences become $(-0.3, -0.3, 0.6)$. (b) The probability of arm 2 becomes $0.5515$. (c) The expected update is unchanged by the baseline because $\sum_a \pi(a)\,\nabla\ln\pi(a) = 0$.
+
+@mistakes
+- Updating with the gradient of $\pi(a)$ instead of $\ln\pi(a)$: the log form is what makes $R\,\nabla\ln\pi$ an unbiased estimate of the gradient.
+- Letting the baseline depend on the action taken, which does bias the gradient; it may depend on the state but not on $A_t$.
+- Using the immediate reward instead of the return $G_t$ in REINFORCE for tasks with delayed reward.
+- Forgetting the $-\pi(b)$ term in the softmax gradient, so that only the chosen action's preference changes.
+- Updating the actor with the TD error before updating the critic, or with a stale $V(S_{t+1})$ at a terminal state (which must be 0).
+
+@practice num
+prompt: A softmax policy has preferences $\boldsymbol{\theta} = (1, 2, 3)$. For the sampled action $a = 2$ (the second action, preference 2), what is $\partial \ln\pi(a) / \partial\theta_0$, the derivative with respect to the preference of the first action? Give your answer to three decimal places.
+answer: -0.09
+tol: 0.001
+check: -exp(1) / (exp(1) + exp(2) + exp(3))
+hint: The derivative is $\mathbb{1}[a = b] - \pi(b)$ with $b$ the first action, which was not chosen.
+solution: The first action was not chosen, so the indicator is 0 and the derivative is $-\pi(0) = -e^1/(e^1 + e^2 + e^3) = -0.0900$.
+
+@practice num
+prompt: A 3-armed bandit has softmax preferences $(0, 0, 0)$. The agent chooses arm 2 (the third arm), receives reward 5, uses a baseline of 2 and $\alpha = 0.3$. After the gradient bandit update, what is the preference of arm 0?
+answer: -0.3
+tol: 0.001
+check: 0 + 0.3 * (5 - 2) * (0 - 1 / 3)
+hint: Arm 0 was not chosen, so its indicator is 0 and $\pi(0) = 1/3$.
+solution: The update is $\alpha\,(R - b)\,(\mathbb{1}[A = 0] - \pi(0)) = 0.3 \times 3 \times (0 - \tfrac13) = -0.3$, so the preference falls to $-0.3$ while that of arm 2 rises by $0.6$.
+
+@practice mc
+prompt: Why does subtracting a baseline $b$ that does not depend on the action from the reward leave the expected policy gradient unchanged?
+choice*: Because $\sum_a b\,\nabla\pi(a) = b\,\nabla\sum_a\pi(a) = 0$, since the probabilities always sum to 1.
+choice: Because the baseline is chosen to be equal to the optimal value, which makes the gradient zero.
+choice: Because the update is no longer applied to the chosen action after subtraction.
+choice: Because $\nabla \ln\pi(a)$ is zero for the best action, so the baseline never matters.
+hint: Move the constant out of the sum and use $\sum_a \pi(a) = 1$.
+solution: The baseline term is $\mathbb{E}[b\,\nabla\ln\pi(A)] = b\sum_a\nabla\pi(a) = b\,\nabla(1) = 0$, so the expected update is unchanged. Only the variance of the sampled update changes. The baseline does not need to equal any optimal value, and it does not change which action is updated.
+
+@practice code
+prompt: Write `run_reinforce(rewards, theta0, alpha, us, use_baseline)` for a bandit with fixed rewards: pulling arm `a` always gives reward `rewards[a]`. The policy is a softmax over the preference list `theta`, starting from a copy of `theta0`. Use one number from the list `us` per step: at each step compute the softmax probabilities, choose the smallest arm `a` whose cumulative probability exceeds `u` (if rounding leaves none, choose the last arm), take the reward, and update every preference by `alpha * (r - b) * ((1 if k == a else 0) - p[k])`, where `p` holds the probabilities before the update. The baseline `b` is 0 if `use_baseline` is false; otherwise it is the mean of the rewards received at earlier steps (0 at the first step). Return `(theta, chosen)` with the final preferences and the list of chosen arms.
+starter:
+```python
+import math
+
+def run_reinforce(rewards, theta0, alpha, us, use_baseline):
+    pass
+```
+tests:
+```python
+rew = [1.0, 2.0, 0.0]
+us = [0.1, 0.5, 0.9, 0.3, 0.7, 0.2, 0.6, 0.45]
+th, ch = run_reinforce(rew, [0.0, 0.0, 0.0], 0.5, us, False)
+assert ch == [0, 1, 2, 1, 1, 1, 1, 1]
+want = [-0.840974645983197, 1.8428048459439061, -1.0018301999607095]
+assert all(abs(a - b) < 1e-9 for a, b in zip(th, want))
+th, ch = run_reinforce(rew, [0.0, 0.0, 0.0], 0.5, us, True)
+assert ch == [0, 1, 2, 0, 1, 0, 1, 1]
+want = [-0.10554984320954015, 1.105183765321047, -0.9996339221115069]
+assert all(abs(a - b) < 1e-9 for a, b in zip(th, want))
+th0 = [0.0, 0.0, 0.0]
+th, ch = run_reinforce(rew, th0, 0.5, [], True)
+assert th == [0.0, 0.0, 0.0] and ch == [] and th0 == [0.0, 0.0, 0.0]
+```
+model:
+```python
+import math
+
+def run_reinforce(rewards, theta0, alpha, us, use_baseline):
+    """Gradient bandit algorithm driven by a supplied list of uniforms."""
+    theta = list(theta0)
+    chosen = []
+    total, count = 0.0, 0
+    for u in us:
+        m = max(theta)
+        e = [math.exp(t - m) for t in theta]
+        z = sum(e)
+        p = [x / z for x in e]
+        a = len(p) - 1
+        cum = 0.0
+        for k, pk in enumerate(p):
+            cum += pk
+            if u < cum:
+                a = k
+                break
+        r = rewards[a]
+        b = total / count if (use_baseline and count > 0) else 0.0
+        for k in range(len(theta)):
+            theta[k] += alpha * (r - b) * ((1 if k == a else 0) - p[k])
+        total += r
+        count += 1
+        chosen.append(a)
+    return theta, chosen
+```
+hint: Compute `p` before changing any preference, sample by walking through the cumulative sums, and keep a running total of past rewards for the baseline.
+solution: The baseline uses only earlier rewards, so at step 0 it is 0. Without a baseline every reward is positive or zero, so the preference of any sampled arm with positive reward rises, including the mediocre arm 0; with the baseline, arms that are worse than average are pushed down. The two runs choose different arms from step 3 onward, because their preferences differ.
+
+@practice code
+prompt: Write `reinforce_episode_update(theta, episode, alpha, gamma)` for a tabular softmax policy. `theta[s]` is a dictionary mapping each action to its preference in state `s`. `episode` is a list of `(state, action, reward)` steps. First compute the returns $G_t$ of the episode. Then, for $t = 0, 1, \dots$ in order, update every preference `theta[s][b]` of the state `s` visited at step `t` by `alpha * gamma**t * G_t * ((1 if b == action else 0) - p[b])`, where `p` is the softmax of the preferences of that state at that moment (updates within the episode are applied sequentially, so later steps see the changed values). Return a new nested dictionary and leave the input unchanged.
+starter:
+```python
+import math
+
+def reinforce_episode_update(theta, episode, alpha, gamma):
+    pass
+```
+tests:
+```python
+th = {'s': {'x': 0.0, 'y': 0.0}, 't': {'x': 0.0, 'y': 1.0}}
+ep = [('s', 'x', 0.0), ('t', 'y', 2.0), ('s', 'y', 4.0)]
+new = reinforce_episode_update(th, ep, 0.1, 0.5)
+assert abs(new['s']['x'] - 0.045016600268752205) < 1e-9
+assert abs(new['s']['y'] + 0.045016600268752205) < 1e-9
+assert abs(new['t']['x'] + 0.053788284273999024) < 1e-9
+assert abs(new['t']['y'] - 1.053788284273999) < 1e-9
+assert th == {'s': {'x': 0.0, 'y': 0.0}, 't': {'x': 0.0, 'y': 1.0}}
+new = reinforce_episode_update(th, [('s', 'x', 1.0)], 1.0, 0.9)
+assert abs(new['s']['x'] - 0.5) < 1e-9 and abs(new['s']['y'] + 0.5) < 1e-9
+assert reinforce_episode_update(th, [], 0.1, 0.5) == th
+```
+model:
+```python
+import math
+
+def reinforce_episode_update(theta, episode, alpha, gamma):
+    """REINFORCE with a tabular softmax policy."""
+    theta = {s: dict(d) for s, d in theta.items()}
+    returns = [0.0] * len(episode)
+    g = 0.0
+    for t in range(len(episode) - 1, -1, -1):
+        g = episode[t][2] + gamma * g
+        returns[t] = g
+    for t, (s, a, r) in enumerate(episode):
+        acts = list(theta[s])
+        prefs = [theta[s][b] for b in acts]
+        m = max(prefs)
+        e = [math.exp(x - m) for x in prefs]
+        z = sum(e)
+        for b, eb in zip(acts, e):
+            p = eb / z
+            theta[s][b] += alpha * gamma ** t * returns[t] * (
+                (1 if b == a else 0) - p)
+    return theta
+```
+hint: Copy the nested dictionary, compute the returns backward, and for each step compute the softmax from the current copy before changing that state's preferences.
+solution: The factor `gamma ** t` discounts the later steps of the episode, and the step at time 2 sees the preferences of state `s` already changed by the step at time 0, which is why the test values are not simply additive. The single-step test with $\gamma = 0.9$ and $t = 0$ has factor 1, a return of 1 and a uniform policy, so the chosen preference rises by $0.5$.
+
+@quiz code
+prompt: Write `actor_critic_step(theta, V, s, a, r, s2, alpha_theta, alpha_w, gamma)` for a one-step tabular actor-critic. `theta[s]` is a dictionary of action preferences (softmax policy) and `V` is a dictionary of state values; `s2` is `None` when the episode ended. Compute `delta = r + gamma * V[s2] - V[s]` (with `V[s2]` replaced by 0 when `s2` is `None`), then update `V[s] += alpha_w * delta` and, for every action `b`, `theta[s][b] += alpha_theta * delta * ((1 if b == a else 0) - p[b])`, where `p` is the softmax of the preferences of `s` before the update. Modify the dictionaries in place and return `delta`.
+starter:
+```python
+import math
+
+def actor_critic_step(theta, V, s, a, r, s2, alpha_theta, alpha_w, gamma):
+    pass
+```
+tests:
+```python
+th = {'s': {'x': 0.0, 'y': 0.0}, 't': {'x': 0.0, 'y': 0.0}}
+V = {'s': 0.0, 't': 2.0}
+d = actor_critic_step(th, V, 's', 'y', 1.0, 't', 0.5, 0.1, 0.9)
+assert abs(d - 2.8) < 1e-9 and abs(V['s'] - 0.28) < 1e-9
+assert abs(th['s']['x'] + 0.7) < 1e-9 and abs(th['s']['y'] - 0.7) < 1e-9
+assert th['t'] == {'x': 0.0, 'y': 0.0} and V['t'] == 2.0
+th = {'s': {'x': 0.0, 'y': 1.0}}
+V = {'s': 3.0}
+d = actor_critic_step(th, V, 's', 'x', 1.0, None, 1.0, 0.5, 0.9)
+assert abs(d + 2.0) < 1e-9 and abs(V['s'] - 2.0) < 1e-9
+assert abs(th['s']['x'] + 1.4621171572600098) < 1e-9
+assert abs(th['s']['y'] - 2.4621171572600096) < 1e-9
+th = {'s': {'x': 0.0, 'y': 0.0}}
+V = {'s': 1.0}
+assert abs(actor_critic_step(th, V, 's', 'x', 1.0, None, 1.0, 0.5, 0.9)) < 1e-9
+assert th == {'s': {'x': 0.0, 'y': 0.0}} and V == {'s': 1.0}
+```
+model:
+```python
+import math
+
+def actor_critic_step(theta, V, s, a, r, s2, alpha_theta, alpha_w, gamma):
+    """One-step actor-critic update; returns the TD error."""
+    v2 = V[s2] if s2 is not None else 0.0
+    delta = r + gamma * v2 - V[s]
+    acts = list(theta[s])
+    prefs = [theta[s][b] for b in acts]
+    m = max(prefs)
+    e = [math.exp(x - m) for x in prefs]
+    z = sum(e)
+    V[s] += alpha_w * delta
+    for b, eb in zip(acts, e):
+        theta[s][b] += alpha_theta * delta * ((1 if b == a else 0) - eb / z)
+    return delta
+```
+hint: Compute `delta` and the softmax probabilities from the values before any change; then update the critic and the actor with the same `delta`.
+solution: The TD error plays the role of the return minus a baseline: positive means the action did better than the critic expected. In the second test the critic expected 3 but the episode ended with reward 1, so $\delta = -2$ and the probability of the chosen action falls sharply. The last test has $\delta = 0$, so nothing changes.
+
+@quiz num
+prompt: A 2-armed bandit has softmax preferences $(0, 0)$. The agent chooses arm 1 (the second arm), receives reward 4, uses no baseline, and takes one gradient bandit step with $\alpha = 0.25$. What is the new probability of arm 1? Give your answer to three decimal places.
+answer: 0.731
+tol: 0.001
+check: 1 / (1 + exp(-(0.25 * 4 * 0.5 - (-0.25 * 4 * 0.5))))
+hint: The step raises $\theta_1$ by $\alpha R (1 - \tfrac12)$ and lowers $\theta_0$ by $\alpha R \cdot \tfrac12$; then apply the softmax.
+solution: $\Delta\theta_1 = 0.25 \times 4 \times 0.5 = 0.5$ and $\Delta\theta_0 = -0.5$, so the preferences are $(-0.5, 0.5)$. The probability of arm 1 is $e^{0.5}/(e^{-0.5} + e^{0.5}) = 1/(1 + e^{-1}) \approx 0.731$.
+
+@quiz ms
+prompt: Which of these statements about REINFORCE and one-step actor-critic are true? Select all that apply.
+choice*: REINFORCE uses the full return $G_t$ and so needs the episode to finish before it updates.
+choice*: A one-step actor-critic uses the TD error of a learned critic in place of the return, which lowers variance but can add bias if the critic is inaccurate.
+choice*: Subtracting a baseline that depends only on the state leaves the expected REINFORCE update unchanged.
+choice: Actor-critic is a value-based method because it never represents the policy explicitly.
+choice: The REINFORCE update is unbiased only when the baseline is zero.
+hint: Recall what each method uses as the target for the policy update.
+solution: REINFORCE uses complete returns, actor-critic uses a bootstrapped TD error (lower variance, possible bias), and a state-dependent baseline keeps the gradient unbiased. The actor in actor-critic is an explicit parameterized policy, and the baseline does not need to be zero.

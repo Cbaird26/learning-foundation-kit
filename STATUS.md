@@ -43,18 +43,18 @@ Decisions so far:
 | C13 | Probability, statistics and information theory for machine learning | 13/13 | yes | yes |
 | C14 | Data science: wrangling, exploration and visualization | 13/13 | yes | yes |
 | C15 | Supervised learning in depth | 13/13 | yes | yes |
-| C16 | Unsupervised learning and probabilistic models | 13/13 | yes |  |
+| C16 | Unsupervised learning and probabilistic models | 13/13 | yes | yes |
 | C17 | Deep learning foundations | 13/13 | yes | yes |
 | C18 | Deep learning architectures: convolution, recurrence and attention | 13/13 | yes | yes |
 | C19 | Natural language processing | 13/13 | yes | yes |
 | C20 | Computer vision | 13/13 | yes | yes |
-| C21 | Reinforcement learning | 9/13 |  |  |
-| C22 | Causal inference and experimentation | 10/13 |  |  |
-| C23 | AI ethics, safety and governance | 8/13 |  |  |
-| C24 | Machine learning engineering and MLOps | 6/13 |  |  |
-| P1 | Statistical learning theory | 0/13 |  |  |
-| P2 | Probabilistic machine learning and generative models | 0/13 |  |  |
-| P3 | Large language models | 0/13 |  |  |
+| C21 | Reinforcement learning | 13/13 | yes |  |
+| C22 | Causal inference and experimentation | 13/13 | yes | yes |
+| C23 | AI ethics, safety and governance | 13/13 | yes | yes |
+| C24 | Machine learning engineering and MLOps | 13/13 | yes |  |
+| P1 | Statistical learning theory | 10/13 |  |  |
+| P2 | Probabilistic machine learning and generative models | 10/13 |  |  |
+| P3 | Large language models | 11/13 |  |  |
 | P4 | Interpretability and AI alignment | 0/13 |  |  |
 | P5 | Research methods in machine learning | 0/13 |  |  |
 | P6 | Research apprenticeship and qualifying exams | 0/13 |  |  |
@@ -97,3 +97,4 @@ Decisions so far:
 - 2026-11-07: C20 written (0 errors) and in review; P1 started.
 - 2026-11-07: C19 reviewed (27 fixes plus one follow-up).
 - 2026-11-07: C20 reviewed (15 fixes plus two follow-ups).
+- 2026-11-07: C16, C22 and C23 reviewed with follow-ups; C21 and C24 written and in review; P3 and P4 being written; re-typing audit found 16 code items to rework in C11, C13, C14 and C16 (fixes running); BRIEF updated with Digital Omnibus details

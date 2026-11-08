@@ -1,0 +1,189 @@
+@lesson
+title: The transformer language model in detail
+summary: Describe a decoder-only transformer language model layer by layer, and count its parameters and the size of its attention computation from its configuration.
+objective: Write the computation of one transformer block, including the causal mask and the scaling of attention scores.
+objective: Count the parameters of a decoder-only transformer from its configuration, stating the conventions you use.
+objective: Estimate the memory and compute that attention and the feed-forward layers require.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the lectures on the transformer architecture and on how parameters and compute are counted.
+
+@article
+A paper reports "a 1.3-billion-parameter model", and a second paper reports a model of "the same size" that has a different memory footprint and a different training cost. Both can be right, because a parameter count depends on conventions that papers often leave implicit: are the embedding matrices counted, are the input and output embeddings shared, are biases and normalization gains counted? A researcher who can count parameters from a configuration can check a claim in seconds and can see where a model's capacity lives. This lesson builds the counting from the architecture up.
+
+### The model
+
+A **language model** assigns a probability to a sequence of tokens by the chain rule, $p(t_1,\dots,t_n) = \prod_{i=1}^{n} p(t_i \mid t_{<i})$. A **decoder-only transformer** (the architecture family introduced by the transformer of Vaswani and colleagues, 2017, with the decoder stack used alone as in the GPT line of work) computes each factor as follows. Let $n$ be the sequence length and $d$ the model width.
+
+1. **Embedding.** Each token index $t_i$ selects a row of a matrix $\mathbf{E} \in \mathbb{R}^{V \times d}$, where $V$ is the vocabulary size. Position information is added: either a learned matrix with $n_{\text{ctx}}$ rows, or a fixed scheme such as sinusoids (Vaswani and colleagues, 2017) or rotary embeddings (Su and colleagues, 2021) that have no parameters.
+2. **Blocks.** The residual stream $\mathbf{X} \in \mathbb{R}^{n \times d}$ passes through $L$ identical blocks. In the common pre-norm arrangement, a block computes $\mathbf{X} \leftarrow \mathbf{X} + \operatorname{Attn}(\operatorname{LN}(\mathbf{X}))$ and then $\mathbf{X} \leftarrow \mathbf{X} + \operatorname{MLP}(\operatorname{LN}(\mathbf{X}))$, with layer normalization (Ba, Kiros and Hinton, 2016).
+3. **Output.** A final layer norm and a matrix of shape $d \times V$ turn each row into logits, and a softmax gives $p(t_{i+1} \mid t_{\le i})$.
+
+### Causal self-attention
+
+With $h$ heads and head width $d_k = d/h$, head $j$ computes queries, keys and values $\mathbf{Q} = \mathbf{X}\mathbf{W}^Q_j$, $\mathbf{K} = \mathbf{X}\mathbf{W}^K_j$, $\mathbf{V} = \mathbf{X}\mathbf{W}^V_j$ and then
+
+$$\operatorname{head}_j = \operatorname{softmax}\!\Big(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d_k}} + \mathbf{M}\Big)\mathbf{V}, \qquad M_{ab} = \begin{cases} 0 & b \le a \\ -\infty & b > a. \end{cases}$$
+
+The **causal mask** $\mathbf{M}$ stops position $a$ from reading positions after it, so the loss at all $n$ positions can be computed in one parallel forward pass without leaking the answer. The heads are concatenated and multiplied by $\mathbf{W}^O \in \mathbb{R}^{d \times d}$. The division by $\sqrt{d_k}$ matters: if query and key entries are independent with mean 0 and variance 1, a dot product has variance $d_k$, so without scaling the softmax would saturate as $d_k$ grows and its gradients would vanish. The $n \times n$ score matrix per head is why attention cost grows quadratically in sequence length.
+
+The MLP applies two linear maps with a nonlinearity between them: widths $d \to d_{\text{ff}} \to d$, with $d_{\text{ff}} = 4d$ in the original design. Gated variants change the number of matrices, so always read the configuration, not just the family name.
+
+### Counting parameters
+
+Conventions first. Here we count every weight matrix, state whether biases and layer-norm gains and shifts are included, and say whether the output matrix is **tied** to $\mathbf{E}$ (the same $V \times d$ matrix used for input and output). Per block:
+
+| part | weights | biases | layer norm (gain and shift) |
+|---|---|---|---|
+| attention: $\mathbf{W}^Q,\mathbf{W}^K,\mathbf{W}^V,\mathbf{W}^O$ | $4d^2$ | $4d$ | |
+| MLP | $2 d\, d_{\text{ff}}$ | $d_{\text{ff}} + d$ | |
+| two layer norms | | | $4d$ |
+
+Take $d = 512$, $L = 6$, $d_{\text{ff}} = 2048$, $V = 32{,}000$, $n_{\text{ctx}} = 1024$ with learned positions, tied embeddings, and a final layer norm.
+
+| quantity | parameters |
+|---|---|
+| token embedding $V d$ | 16,384,000 |
+| position embedding $n_{\text{ctx}} d$ | 524,288 |
+| one block, weights only | 3,145,728 |
+| one block, with biases and norms | 3,152,384 |
+| six blocks, with biases and norms | 18,914,304 |
+| final layer norm | 1,024 |
+| **total, all counted** | **35,823,616** |
+| total, matrices only | 35,782,656 |
+
+The two conventions differ by 0.1 percent, so for large models the matrices decide the count. Untying the output would add another 16,384,000. Notice that nearly half of this small model sits in the embedding; in a model with $d = 4096$ and $L = 32$ the embedding is a small fraction, because blocks grow as $d^2$ and the embedding only as $d$. The count that matters for training cost is usually the non-embedding parameters, as we will see in the lessons on scaling.
+
+### Counting compute and memory
+
+A matrix multiplication of an $n \times a$ by an $a \times b$ matrix takes about $2nab$ floating-point operations, one multiply and one add per term. Each weight is used once per token in a forward pass, so the forward pass costs roughly $2N$ FLOPs per token for $N$ non-embedding weights, plus the attention scores, which cost about $4 n\, d$ per token per layer. Training adds a backward pass of about twice that, giving the "6 per parameter per token" rule used from lesson 3 on. Memory for activations of the score matrices is $h n^2$ entries per layer per sequence unless a fused algorithm avoids storing them (Dao and colleagues, 2022).
+
+What is established and what is not: the architecture above and its counting are exact. Why the transformer works better than recurrent models at scale, and which of its components matter, is argued from experiments; many proposed modifications turn out to matter less than scale.
+
+@example
+title: Counting a tiny model
+problem: A decoder-only model has $d = 64$, $L = 2$, $d_{\text{ff}} = 256$, $V = 1000$, learned positions with $n_{\text{ctx}} = 128$, tied embeddings, a final layer norm, and biases and layer norms counted. How many parameters does it have?
+step: Embeddings: $V d = 64{,}000$ and positions $n_{\text{ctx}} d = 8{,}192$, so 72,192.
+step: One block's attention: $4d^2 = 16{,}384$ weights plus $4d = 256$ biases, so 16,640.
+step: One block's MLP: $2 d\, d_{\text{ff}} = 32{,}768$ weights plus $d_{\text{ff}} + d = 320$ biases, so 33,088. Two layer norms add $4d = 256$. One block has $16{,}640 + 33{,}088 + 256 = 49{,}984$.
+step: Two blocks: 99,968. Add the final layer norm $2d = 128$ and the embeddings: $72{,}192 + 99{,}968 + 128 = 172{,}288$. Tying means no separate output matrix.
+answer: 172,288 parameters (170,496 if only matrices are counted).
+
+@example
+title: Causal attention for one position
+problem: In one head, the second token (position 2) has scaled scores $0$ against the first token and $\ln 2$ against itself. The value vectors are $\mathbf{v}_1 = (3, 0)$ and $\mathbf{v}_2 = (0, 6)$. What is the head's output at position 2?
+step: Position 2 may read positions 1 and 2 only, so the softmax runs over the two scores $(0, \ln 2)$.
+step: The exponentials are $1$ and $2$, so the weights are $1/3$ and $2/3$.
+step: The output is $\tfrac13(3, 0) + \tfrac23(0, 6) = (1, 4)$.
+answer: $(1, 4)$.
+
+@mistakes
+- Counting the tied embedding twice: if the output matrix shares $\mathbf{E}$, the $V \times d$ block appears once in the total.
+- Forgetting $\mathbf{W}^O$: attention has four $d \times d$ matrices in total, not three.
+- Mixing conventions when comparing papers: a count with biases and layer norms and a count of matrices only differ, and so do counts with and without embeddings. State yours.
+- Applying the causal mask after the softmax instead of before: zeroing weights afterward leaves rows that do not sum to one.
+
+@practice num
+prompt: A decoder-only transformer has $d = 128$, $L = 4$, $d_{\text{ff}} = 512$, $V = 5000$ and learned positions with $n_{\text{ctx}} = 256$. Embeddings are tied. Count only weight matrices (no biases, no layer norms). How many parameters does it have?
+answer: 1459200
+unit: parameters
+check: 5000 * 128 + 256 * 128 + 4 * (4 * 128 ** 2 + 2 * 128 * 512)
+hint: Embeddings are $Vd$ plus $n_{\text{ctx}} d$. Each block has $4d^2$ attention weights and $2 d\, d_{\text{ff}}$ MLP weights.
+solution: Embeddings: $5000 \cdot 128 = 640{,}000$ and $256 \cdot 128 = 32{,}768$. One block: $4 \cdot 128^2 = 65{,}536$ plus $2 \cdot 128 \cdot 512 = 131{,}072$, which is 196,608; four blocks give 786,432. The total is $640{,}000 + 32{,}768 + 786{,}432 = 1{,}459{,}200$.
+
+@practice num
+prompt: A model uses rotary position embeddings (no position parameters) and has $d = 256$, $L = 2$, $d_{\text{ff}} = 1024$, $V = 8000$. Its output matrix is not tied to the input embedding. Count weight matrices only. How many parameters does it have?
+answer: 5668864
+unit: parameters
+check: 8000 * 256 * 2 + 2 * (4 * 256 ** 2 + 2 * 256 * 1024)
+hint: Untied means two $V \times d$ matrices. Rotary embeddings add nothing to the count.
+solution: Two vocabulary matrices give $2 \cdot 8000 \cdot 256 = 4{,}096{,}000$. One block has $4 \cdot 65{,}536 = 262{,}144$ attention weights and $2 \cdot 256 \cdot 1024 = 524{,}288$ MLP weights, 786,432 in all; two blocks give 1,572,864. The total is 5,668,864.
+
+@practice mc
+prompt: Why are the attention scores divided by $\sqrt{d_k}$ before the softmax?
+choice*: Without it, the variance of a query-key dot product grows with $d_k$, which pushes the softmax toward saturation and shrinks its gradients.
+choice: It makes each row of attention weights sum to one.
+choice: It implements the causal mask so that a position cannot read later positions.
+choice: It reduces the number of parameters in the key matrix by a factor of $\sqrt{d_k}$.
+hint: Think about the variance of a sum of $d_k$ products of independent unit-variance numbers.
+solution: A dot product of two $d_k$-dimensional vectors with independent unit-variance entries has variance $d_k$, so large $d_k$ gives scores with large spread and a nearly one-hot softmax with tiny gradients. Dividing by $\sqrt{d_k}$ restores variance near 1. Row sums equal one because of the softmax itself, the mask is a separate additive term, and scaling changes no parameter count.
+
+@practice ms
+prompt: Which statements about causal self-attention in a decoder-only transformer are true? Select all that apply.
+choice*: The attention-weight matrix of each head is lower triangular, with zeros above the diagonal.
+choice*: Because of the mask, the next-token losses at all positions of a training sequence can be computed in one forward pass.
+choice*: The mask is applied to the scores before the softmax, so each row of weights still sums to one.
+choice: Each position attends to later tokens during training but not during generation.
+choice: The mask lets the model look at the true next token, which is why training is faster.
+hint: Position $a$ may use positions $b \le a$ only, in training and in generation alike.
+solution: The mask sets scores to $-\infty$ above the diagonal before the softmax, giving a lower-triangular weight matrix whose rows sum to one, and this lets every position be trained in parallel. The model never sees later tokens in either setting; the mask exists precisely to prevent that leak.
+
+@practice code
+prompt: Some models restrict attention to a **sliding window**. Write `windowed_causal_weights(scores, w)`, where `scores` is an $n \times n$ list of lists of already-scaled attention scores and `w` is a window size of at least 1. Position `i` may attend to positions `j` with `i - w < j <= i` (the `w` most recent positions, itself included). Return an $n \times n$ list of lists of attention weights: a softmax over each row's allowed positions, and exactly `0.0` elsewhere. Use a numerically stable softmax.
+starter:
+```python
+def windowed_causal_weights(scores, w):
+    return []
+```
+tests:
+```python
+import math
+got = windowed_causal_weights([[0.0] * 3 for _ in range(3)], 2)
+want = [[1.0, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 0.5, 0.5]]
+assert all(abs(a - b) < 1e-9 for r, s in zip(got, want) for a, b in zip(r, s))
+got = windowed_causal_weights([[5.0, 1.0], [2.0, 9.0]], 1)
+assert got == [[1.0, 0.0], [0.0, 1.0]]
+got = windowed_causal_weights([[1000.0, 0.0], [1000.0, 1000.0]], 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got[1], [0.5, 0.5]))
+got = windowed_causal_weights([[0, 0, 0], [0, 0, 0], [0, 0, math.log(3)]], 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got[2], [0.2, 0.2, 0.6]))
+assert all(abs(sum(r) - 1.0) < 1e-9 for r in got)
+```
+model:
+```python
+import math
+
+
+def windowed_causal_weights(scores, w):
+    """Softmax over the w most recent positions of each row; zero elsewhere."""
+    n = len(scores)
+    out = []
+    for i in range(n):
+        lo = max(0, i - w + 1)
+        allowed = scores[i][lo:i + 1]
+        m = max(allowed)
+        exps = [math.exp(s - m) for s in allowed]
+        total = 0.0
+        for x in exps:
+            total += x
+        row = [0.0] * n
+        for k, x in enumerate(exps):
+            row[lo + k] = x / total
+        out.append(row)
+    return out
+```
+hint: For row `i` the allowed columns are `max(0, i - w + 1)` through `i`. Subtract the row maximum before exponentiating.
+solution: Slice each row to its allowed columns, apply a stable softmax to that slice only, and write the results back into a row of zeros. The third test has scores of 1000, which overflow `exp` unless the maximum is subtracted first.
+
+@quiz num
+prompt: A training batch has 2 sequences of 1500 tokens, and the model has 12 attention heads per layer. If a layer stores the full attention-score matrix of every head for every sequence, how many score entries is that per layer?
+answer: 54000000
+unit: entries
+check: 2 * 12 * 1500 ** 2
+hint: Each head of each sequence has an $n \times n$ matrix.
+solution: Each head has $1500^2 = 2{,}250{,}000$ entries, and there are $2 \times 12 = 24$ head-sequence pairs, so 54,000,000 entries per layer.
+
+@quiz num
+prompt: A decoder has $7.0 \times 10^{8}$ non-embedding parameters. Using about 2 FLOPs per parameter per token for the forward pass, and ignoring the attention scores, estimate the FLOPs to run a forward pass over 2000 tokens. Give the answer in FLOPs; this is an approximation.
+answer: 2.8e12
+unit: FLOPs
+tol: 1%
+check: 2 * 7.0e8 * 2000
+hint: Each weight is used in one multiply and one add per token.
+solution: Two FLOPs per parameter per token gives $2 \times 7 \times 10^{8} = 1.4 \times 10^{9}$ per token; over 2000 tokens that is $2.8 \times 10^{12}$ FLOPs. The estimate omits attention scores and is an approximation.
+
+@quiz self
+prompt: A colleague says the transformer language model "reads the whole prompt in parallel, so generating text is just as parallel." Explain what is parallel and what is not in training and in generation, and why the causal mask is essential to the first.
+hint: Separate computing the loss on a known sequence from producing a new token whose value is not yet known.
+solution: In training the whole sequence is known, so one forward pass computes the hidden states and the next-token loss at every position at once; the causal mask guarantees that position $a$ cannot read the token it is asked to predict, so the $n$ losses are valid and need no sequential loop. In generation each new token depends on the one just sampled, so tokens are produced one at a time, and each step must still attend to all earlier positions. Processing the given prompt can be parallel, which is why the cost splits into a parallel prompt phase and a sequential token phase, a point that returns in the lesson on inference. Without the mask, training would let each position copy its target and the model would learn nothing useful for generation.
+rubric: States that training computes all positions' losses in one pass because the sequence is known.
+rubric: States that generation is sequential because each token depends on the previous sample.
+rubric: Explains that the mask prevents leaking the target, so parallel training is valid.

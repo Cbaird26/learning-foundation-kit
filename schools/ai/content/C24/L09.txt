@@ -1,0 +1,202 @@
+@lesson
+title: Monitoring models in production
+summary: Decide what to monitor for a deployed model, handle delayed labels, and write alerting rules based on baselines, control limits and consecutive violations.
+objective: Separate system, data, model and business metrics and say what each can and cannot reveal.
+objective: Build alert rules from a baseline with control limits, exponentially weighted averages and consecutive-violation counts.
+objective: Compute accuracy over a rolling window of labeled predictions when labels arrive late, and an error budget from a service-level objective.
+reading: Made With ML, the lesson on monitoring machine learning systems; look up "monitoring" and "alerting" in the course index.
+@article
+A deployed model fails differently from ordinary software. A web service that breaks returns errors; a model that breaks keeps returning answers, just worse ones. Nothing crashes, so someone must look. **Monitoring** is the continuous measurement of a running system, and **alerting** is the rule that decides when a person is called.
+
+### Four layers of metrics
+
+| layer | examples | what it catches | what it misses |
+|---|---|---|---|
+| system | latency percentiles, error rate, memory | outages, slowdowns | bad predictions from a healthy service |
+| data | fraction of missing values, ranges, new categories | broken upstream pipelines | changes that keep values in range |
+| model | distribution of scores, fraction predicted positive | shifts in behavior | which side is right |
+| business | conversions, complaints, losses | the outcome that matters | slow, noisy, hard to attribute |
+
+No single layer is enough. Data and model metrics need no labels, so they are available at once, and they are early warnings. **Accuracy** needs the true label, which often arrives late: whether a loan defaults is known after months, whether a recommendation was good after a click or never. When labels are **delayed**, track accuracy by cohort (the predictions of one week, evaluated when their labels arrive), and use label-free metrics as proxies in the meantime.
+
+### Baselines and control limits
+
+An alert needs a baseline for "normal". Collect a metric's values over a healthy period, for example the daily fraction of predictions that are positive, and compute their mean $\mu$ and sample standard deviation $s$. **Control limits** at $n$ standard deviations are $\mu \pm n s$; a new value outside them is an alert. The **z-score** $z = (x - \mu)/s$ says how many standard deviations a value is from the baseline. For five baseline days $0.10, 0.12, 0.11, 0.09, 0.13$ the mean is $0.11$, $s \approx 0.0158$, and 3-sigma limits are $[0.063, 0.157]$. A day at $0.14$ has $z \approx 1.9$ and is normal; a day at $0.19$ has $z \approx 5.1$ and fires.
+
+### Smoothing and persistence
+
+A metric computed over a small number of requests is noisy, and alerting on every spike teaches people to ignore the alerts (**alert fatigue**). Two simple tools reduce noise. An **exponentially weighted moving average** (EWMA) smooths a series with $s_t = \alpha x_t + (1 - \alpha) s_{t-1}$, where $0 < \alpha \le 1$ sets how quickly old values fade. And a **persistence rule** fires only when the metric violates its limit for $k$ consecutive periods.
+
+```python
+def ewma(values, alpha):
+    """Exponentially weighted moving average, starting from the first value."""
+    s = values[0]
+    smoothed = [s]
+    for x in values[1:]:
+        s = alpha * x + (1 - alpha) * s
+        smoothed.append(s)
+    return smoothed
+
+print(ewma([10, 10, 10, 20], 0.5))   # [10, 10.0, 10.0, 15.0]
+```
+
+### Service-level objectives and error budgets
+
+An **SLO** states a target, for instance "99.9% of requests succeed within 100 ms over 30 days". The complement, $1 - \text{SLO}$, is the **error budget**: with 1,000,000 requests the budget is $1{,}000$ failed requests. The fraction of the budget left is $1 - \text{failures}/\text{budget}$; spending it quickly is a signal to slow down releases and fix reliability.
+
+### Good alerts
+
+A useful alert is **actionable** (someone knows what to do), **specific** (it points to a metric and a segment, not just "model bad") and **rare** enough to be read. Every alert should link to a runbook: what the metric means, how to check it and how to roll back. Keep a dashboard for exploration and reserve pages for conditions that need a person now.
+@example
+title: Control limits and a persistence rule
+problem: The daily fraction of missing `income` values has a healthy baseline of $0.02, 0.03, 0.01, 0.02, 0.02$. Compute the 3-sigma upper limit, then decide whether the next three days at $0.05, 0.06, 0.07$ trigger an alert under a rule that requires the limit to be exceeded on 2 consecutive days.
+step: The baseline mean is $\mu = 0.10/5 = 0.02$. The deviations are $0, 0.01, -0.01, 0, 0$, whose squares sum to $0.0002$.
+step: The sample variance is $0.0002/4 = 0.00005$, so $s \approx 0.00707$. The 3-sigma upper limit is $\mu + 3s = 0.02 + 0.02121 = 0.04121$.
+step: The first day, $0.05$, exceeds $0.0412$, so it is a violation, but the rule needs 2 in a row, so no alert yet.
+step: The second day, $0.06$, also exceeds the limit: two consecutive violations, so the alert fires on day 2 (and stays on for day 3 at $0.07$).
+answer: Upper limit about 0.0412; the alert fires on the second day.
+@mistakes
+- Alerting on raw spikes of a noisy metric, which trains people to ignore alerts; smooth, aggregate over enough requests, or require persistence.
+- Watching only system metrics: a model that returns confident nonsense has perfect latency and error rate.
+- Computing accuracy on whatever labels have arrived without grouping by prediction date, so late labels bias the number.
+- Setting limits from a baseline that already contains the incident, or too short to show the weekly pattern.
+@practice num
+prompt: A service has an SLO of 99.95% successful requests over a month, and it handles 4,000,000 requests that month. How many failed requests does the error budget allow?
+answer: 2000
+unit: requests
+tol: 0.5
+check: (1 - 0.9995) * 4000000
+hint: The error budget is the fraction $1 - \text{SLO}$ of all requests.
+solution: The budget is $1 - 0.9995 = 0.0005$ of the requests, and $0.0005 \times 4{,}000{,}000 = 2{,}000$ failures.
+@practice num
+prompt: An exponentially weighted moving average with $\alpha = 0.5$ starts at the first value of the series $10, 20, 20$ and updates by $s_t = \alpha x_t + (1 - \alpha)s_{t-1}$. What is its final value?
+answer: 17.5
+check: 0.5 * 20 + 0.5 * (0.5 * 20 + 0.5 * 10)
+hint: Start with $s = 10$, apply the update for the second value, then once more for the third.
+solution: $s_1 = 10$; $s_2 = 0.5(20) + 0.5(10) = 15$; $s_3 = 0.5(20) + 0.5(15) = 17.5$.
+@practice mc
+prompt: A model predicts whether a customer will cancel within 90 days. How can its accuracy be monitored, given that the true outcome is known only after 90 days?
+choice*: Evaluate each week's predictions when their 90-day outcomes arrive, and meanwhile watch label-free proxies such as the score distribution and input data quality.
+choice: Wait to monitor anything until the first 90 days of labels are in; before that, no monitoring is possible.
+choice: Use the model's own predicted probabilities as if they were the true labels.
+choice: Retrain the model each day and report its training accuracy.
+hint: Which measurements are available immediately, and which only after the delay?
+solution: Delayed labels are handled by cohort evaluation (score each cohort of predictions when its labels arrive) while input and score distributions give early warnings without labels. Using predictions as labels measures nothing, and training accuracy says nothing about live performance.
+@practice code
+prompt: Write `first_alert(values, threshold, k)` that scans a list of metric values and returns the index at which the metric has been strictly below `threshold` for `k` consecutive values (the index of the `k`th consecutive low value), or `-1` if that never happens. A value equal to the threshold is not low. For example, `first_alert([0.9, 0.7, 0.6, 0.9], 0.75, 2)` returns `2`.
+starter:
+```python
+def first_alert(values, threshold, k):
+    pass
+```
+tests:
+```python
+assert first_alert([0.9, 0.7, 0.6, 0.9], 0.75, 2) == 2
+assert first_alert([0.9, 0.8, 0.7, 0.9, 0.6, 0.65, 0.7, 0.9], 0.75, 3) == 6
+assert first_alert([0.9, 0.7, 0.9], 0.75, 1) == 1
+assert first_alert([0.9, 0.9], 0.75, 2) == -1
+assert first_alert([0.75, 0.75, 0.75], 0.75, 2) == -1
+assert first_alert([], 0.5, 1) == -1
+```
+model:
+```python
+def first_alert(values, threshold, k):
+    """Index where the metric has been below threshold k times in a row."""
+    run = 0
+    for i, x in enumerate(values):
+        run = run + 1 if x < threshold else 0
+        if run >= k:
+            return i
+    return -1
+```
+hint: Keep a counter of the current run of low values; reset it to zero whenever a value is not low.
+solution: The counter grows on each low value and resets on any other, so it reaches `k` exactly at the `k`th consecutive low value. Values equal to the threshold reset the run (fifth test), and the second test shows that a run broken by 0.9 must restart.
+@practice code
+prompt: Write `flag_outliers(baseline, new_values, n_sigma)`. Compute the mean and the sample standard deviation (dividing by `len(baseline) - 1`) of `baseline`, and return the list of indices `i` for which `new_values[i]` lies strictly outside the interval `mean - n_sigma * std` to `mean + n_sigma * std`. Raise `ValueError` if the baseline has fewer than 2 values. For example, with baseline `[0.50, 0.52, 0.48, 0.51, 0.49]` and `n_sigma = 2`, the new values `[0.51, 0.58]` give `[1]`.
+starter:
+```python
+import math
+
+def flag_outliers(baseline, new_values, n_sigma):
+    pass
+```
+tests:
+```python
+b = [0.50, 0.52, 0.48, 0.51, 0.49]
+assert flag_outliers(b, [0.51, 0.58], 2) == [1]
+assert flag_outliers(b, [0.51, 0.58, 0.47, 0.43, 0.50], 2) == [1, 3]
+assert flag_outliers(b, [0.54, 0.55], 3) == [1]
+assert flag_outliers(b, [0.54, 0.55], 2) == [0, 1]
+assert flag_outliers(b, [], 2) == []
+assert raises(ValueError, flag_outliers, [0.5], [0.5], 2)
+```
+model:
+```python
+import math
+
+def flag_outliers(baseline, new_values, n_sigma):
+    """Indices of new values outside mean +/- n_sigma sample std."""
+    n = len(baseline)
+    if n < 2:
+        raise ValueError("need at least two baseline values")
+    mean = 0.0
+    for x in baseline:
+        mean += x
+    mean /= n
+    var = 0.0
+    for x in baseline:
+        var += (x - mean) ** 2
+    std = math.sqrt(var / (n - 1))
+    low, high = mean - n_sigma * std, mean + n_sigma * std
+    return [i for i, x in enumerate(new_values) if x < low or x > high]
+```
+hint: Compute the baseline mean, then the sum of squared deviations divided by $n - 1$, and compare each new value with the two limits.
+solution: The limits depend only on the baseline, so compute them once and then scan the new values. Dividing by $n - 1$ makes this the sample standard deviation, which is slightly larger than the population version and gives wider limits. With 3 sigma the value 0.54 is inside but with 2 sigma it is outside (third and fourth tests).
+@quiz code
+prompt: Write `rolling_accuracy(pairs, window)`. `pairs` is a list of `(prediction, label)` in order of prediction time, where `label` is `None` while the true label has not arrived. For each pair that has a label, in order, return the accuracy over the most recent `window` labeled pairs up to and including that one (fewer at the start). Pairs without a label produce no output. For example, `rolling_accuracy([(1, 1), (0, 1), (1, None), (0, 0)], 2)` returns `[1.0, 0.5, 0.5]`.
+starter:
+```python
+def rolling_accuracy(pairs, window):
+    pass
+```
+tests:
+```python
+p = [(1, 1), (0, 1), (1, None), (0, 0), (1, 1), (1, 0), (0, None), (0, 0)]
+assert rolling_accuracy([(1, 1), (0, 1), (1, None), (0, 0)], 2) == [1.0, 0.5, 0.5]
+got = rolling_accuracy(p, 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.0, 0.5, 2 / 3, 2 / 3, 2 / 3, 2 / 3]))
+got = rolling_accuracy(p, 2)
+assert got == [1.0, 0.5, 0.5, 1.0, 0.5, 0.5]
+assert rolling_accuracy([(1, None), (0, None)], 3) == []
+assert rolling_accuracy([], 3) == []
+```
+model:
+```python
+def rolling_accuracy(pairs, window):
+    """Accuracy over the latest `window` labeled predictions, at each label."""
+    correct = []
+    result = []
+    for pred, label in pairs:
+        if label is None:
+            continue
+        correct.append(1 if pred == label else 0)
+        recent = correct[-window:]
+        result.append(sum(recent) / len(recent))
+    return result
+```
+hint: Keep a list of 1s and 0s for the labeled pairs only, and average its last `window` entries after each new label.
+solution: Skipping unlabeled pairs means the window counts only labeled examples. Slicing `correct[-window:]` takes fewer entries at the start, which is why the first outputs average fewer than `window` values. Integer sums make the results exact for the tests that compare lists directly.
+@quiz num
+prompt: The daily fraction of positive predictions has a baseline mean of 0.30 and a sample standard deviation of 0.04. Today it is 0.45. What is today's z-score?
+answer: 3.75
+tol: 0.01
+check: (0.45 - 0.30) / 0.04
+hint: The z-score is the distance from the mean divided by the standard deviation.
+solution: $z = (0.45 - 0.30)/0.04 = 3.75$ standard deviations above the baseline, well outside 3-sigma limits.
+@quiz self
+prompt: A loan-approval model has been in production for two months. Design its monitoring: name one metric from each of the four layers (system, data, model, business), explain how you will evaluate accuracy given that defaults are known only after 12 months, and give one alert rule with a limit and a persistence condition.
+hint: Think about what is available immediately, what is delayed, and how to avoid alert fatigue.
+solution: System: p99 latency and error rate of the scoring service. Data: fraction of missing values in income and credit-history fields, and the share of values outside valid ranges. Model: the daily distribution of predicted default probability (mean and fraction above the approval threshold), which needs no labels. Business: approval rate and, later, realized loss per approved loan. Because defaults are known after 12 months, evaluate accuracy by cohort: score each month's applications when their 12-month outcomes arrive, and use the model-layer and data-layer metrics as early proxies, together with earlier signals such as 30-day delinquency if they correlate with default. An example alert: compute the baseline mean and sample standard deviation of the daily fraction above the threshold over a healthy 8-week period (long enough to include weekly patterns); alert when it lies outside mean plus or minus 3 standard deviations on 2 consecutive days, with a runbook that first checks the data-quality metrics, then the upstream pipeline, then rolls back to the previous model if needed.
+rubric: Names a sensible metric in each of the four layers.
+rubric: Handles delayed labels with cohort evaluation and label-free proxies.
+rubric: Gives a concrete alert rule with a baseline, a limit and a persistence condition, plus a first action.

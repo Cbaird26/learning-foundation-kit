@@ -1,0 +1,166 @@
+@lesson
+title: Variational autoencoders
+summary: Write the variational autoencoder objective, apply the reparameterization trick to estimate its gradient, and compute the ELBO of a small encoder and decoder.
+objective: State the VAE model, the encoder and decoder roles and the ELBO with its reconstruction and KL terms.
+objective: Explain and apply the reparameterization trick, and compare it with the score-function estimator.
+objective: Compute a closed-form and a Monte Carlo ELBO for a one-dimensional latent variable, and describe posterior collapse.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on variational autoencoders and on the reparameterization trick.
+
+@article
+A variational autoencoder (VAE; Kingma and Welling, 2013, and independently Rezende, Mohamed and Wierstra, 2014) is last week's variational inference with two decisions made: both the generative model and the approximate posterior are neural networks, and the same network handles every data point. If you understand the ELBO, the VAE is an exercise in making its gradient computable.
+
+### The model
+
+A **decoder** defines a latent-variable generative model $p_{\boldsymbol{\theta}}(\mathbf{x},\mathbf{z}) = p(\mathbf{z})\,p_{\boldsymbol{\theta}}(\mathbf{x}\mid\mathbf{z})$ with prior $p(\mathbf{z}) = \mathcal{N}(\mathbf{0},\mathbf{I})$, and a network maps $\mathbf{z}$ to the parameters of the distribution over $\mathbf{x}$ (Bernoulli probabilities for binary data, a Gaussian mean for real data). An **encoder** $q_{\boldsymbol{\phi}}(\mathbf{z}\mid\mathbf{x}) = \mathcal{N}(\boldsymbol{\mu}_{\boldsymbol{\phi}}(\mathbf{x}), \operatorname{diag}\boldsymbol{\sigma}_{\boldsymbol{\phi}}^2(\mathbf{x}))$ maps each $\mathbf{x}$ to the mean and variance of an approximate posterior. Using one network for all $\mathbf{x}$ is called **amortized inference**: it costs a gap (the encoder cannot fit each posterior exactly) but replaces a per-example optimization with one forward pass.
+
+### The objective
+
+For each data point the ELBO (week 3) is
+$$\mathcal{L}(\boldsymbol{\theta},\boldsymbol{\phi};\mathbf{x}) = \mathbb{E}_{q_{\boldsymbol{\phi}}(\mathbf{z}\mid\mathbf{x})}\big[\log p_{\boldsymbol{\theta}}(\mathbf{x}\mid\mathbf{z})\big] - \mathrm{KL}\big(q_{\boldsymbol{\phi}}(\mathbf{z}\mid\mathbf{x})\,\Vert\,p(\mathbf{z})\big),$$
+and training maximizes its average over the data set. The first term is a **reconstruction** term: sample a code, decode it, and score how well the original is recovered. The second is a regularizer that keeps the codes close to the prior so that sampling $\mathbf{z}\sim p(\mathbf{z})$ and decoding yields plausible data. With a Gaussian decoder of fixed variance the reconstruction term is a scaled squared error; the encoder and decoder together look like an autoencoder with noise injected in the middle.
+
+### The gradient problem and the reparameterization trick
+
+The KL term has a closed form (week 3). The reconstruction term is an expectation under a distribution that depends on $\boldsymbol{\phi}$, so we cannot differentiate a sampled value directly. Two estimators exist:
+
+- The **score-function estimator** (REINFORCE; Williams, 1992): $\nabla_{\boldsymbol{\phi}}\mathbb{E}_{q_{\boldsymbol{\phi}}}[f(\mathbf{z})] = \mathbb{E}_{q_{\boldsymbol{\phi}}}[f(\mathbf{z})\nabla_{\boldsymbol{\phi}}\log q_{\boldsymbol{\phi}}(\mathbf{z})]$. It works for discrete variables but has high variance.
+- The **reparameterization trick**: write the sample as a deterministic function of the parameters and parameter-free noise, $\mathbf{z} = \boldsymbol{\mu} + \boldsymbol{\sigma}\odot\boldsymbol{\varepsilon}$ with $\boldsymbol{\varepsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$. Then
+$$\nabla_{\boldsymbol{\phi}}\,\mathbb{E}_{q_{\boldsymbol{\phi}}}[f(\mathbf{z})] = \mathbb{E}_{\boldsymbol{\varepsilon}}\big[\nabla_{\boldsymbol{\phi}} f(\boldsymbol{\mu}_{\boldsymbol{\phi}} + \boldsymbol{\sigma}_{\boldsymbol{\phi}}\odot\boldsymbol{\varepsilon})\big],$$
+because the expectation is now over a distribution that does not depend on $\boldsymbol{\phi}$, so the gradient passes inside. A single draw of $\boldsymbol{\varepsilon}$ already gives an unbiased gradient estimate, with typically much lower variance than the score-function estimator. The trick requires that $f$ be differentiable and that the sample be a differentiable function of the parameters, which excludes discrete latents without relaxations.
+
+### A closed-form check
+
+Take a one-dimensional latent variable, encoder output $\mu = 0.5$ and $\sigma = 0.8$, and a decoder $p(x\mid z) = \mathcal{N}(x; z, 0.5)$ (variance $0.5$) for the observation $x = 1.2$. Since $\mathbb{E}[(x-z)^2] = (x-\mu)^2 + \sigma^2 = 0.49 + 0.64 = 1.13$,
+$$\mathbb{E}_q[\log p(x\mid z)] = -\tfrac12\log(2\pi\cdot 0.5) - \frac{1.13}{2\cdot 0.5} = -0.5724 - 1.13 = -1.7024,$$
+$\mathrm{KL}(q\Vert p(z)) = \frac12(0.64 + 0.25 - 1 - \log 0.64) = 0.1681$, so $\mathcal{L} = -1.8705$. A Monte Carlo estimate with four fixed noise draws $\varepsilon\in\{-1.2,-0.8,0.8,1.2\}$ uses $z = \mu+\sigma\varepsilon$ and gives a reconstruction term of $-1.728$, hence $-1.896$; averaging over more draws converges to the closed form.
+
+```python
+from math import log, pi
+
+def elbo_gaussian_decoder(mu, sigma, x, s2, eps_list):
+    rec = 0.0
+    for e in eps_list:
+        z = mu + sigma * e
+        rec += -0.5 * log(2 * pi * s2) - (x - z) ** 2 / (2 * s2)
+    rec /= len(eps_list)
+    kl = 0.5 * (sigma ** 2 + mu ** 2 - 1 - log(sigma ** 2))
+    return rec - kl, rec, kl
+
+print(elbo_gaussian_decoder(0.5, 0.8, 1.2, 0.5, [-1.2, -0.8, 0.8, 1.2]))
+```
+
+In PyTorch the same estimator is `mu + std * torch.randn_like(std)`, followed by the decoder and the loss; automatic differentiation does the rest.
+
+### Known difficulties
+
+**Posterior collapse.** If the decoder is powerful enough to model $\mathbf{x}$ without help (for example an autoregressive decoder), the optimum can set $q_{\boldsymbol{\phi}}(\mathbf{z}\mid\mathbf{x})\approx p(\mathbf{z})$: the KL term is zero and $\mathbf{z}$ is ignored. Remedies include annealing the weight on the KL term, weakening the decoder, or constraining the KL from below. Scaling the KL term by a factor $\beta$ (the $\beta$-VAE of Higgins and colleagues, 2017) deliberately trades reconstruction against how closely the codes match the prior. **Looseness.** The ELBO is only a bound, and tighter importance-weighted bounds (Burda, Grosse and Salakhutdinov, 2015) use several samples. **Sample quality.** With a simple Gaussian decoder, samples are often blurry because the squared-error likelihood averages over plausible outputs; this is a property of the likelihood choice and not of the latent variable model itself.
+
+@example
+title: Gradient of the ELBO through the reparameterization
+problem: A one-dimensional VAE has encoder output $\mu = -0.5$, $\sigma = 0.5$, decoder $p(x\mid z) = \mathcal{N}(x; 2z, 1)$ (mean $2z$, variance 1) and observation $x = 0.5$. Compute the ELBO in closed form and its derivative with respect to $\mu$.
+step: Reconstruction expectation: $\mathbb{E}[(x - 2z)^2] = (x - 2\mu)^2 + 4\sigma^2 = (0.5 + 1)^2 + 4(0.25) = 2.25 + 1 = 3.25$.
+step: So $\mathbb{E}_q[\log p(x\mid z)] = -\frac12\log 2\pi - \frac{3.25}{2} = -0.9189 - 1.625 = -2.5439$.
+step: KL term: $\frac12(\sigma^2 + \mu^2 - 1 - \log\sigma^2) = \frac12(0.25 + 0.25 - 1 + 1.3863) = 0.4431$.
+step: ELBO: $-2.5439 - 0.4431 = -2.9870$.
+step: Derivative in $\mu$: the reconstruction term is $-\frac{(x - 2\mu)^2 + 4\sigma^2}{2}$ plus constants, with derivative $2(x - 2\mu) = 3$. The KL term has derivative $\mu = -0.5$. The total derivative is $3 - (-0.5) = 3.5$, so increasing $\mu$ improves the bound: the decoder wants a larger code to reach $x = 0.5$.
+answer: $\mathcal{L}\approx -2.987$ and $\partial\mathcal{L}/\partial\mu = 3.5$.
+
+@mistakes
+- Sampling $\mathbf{z}$ from $\mathcal{N}(\boldsymbol{\mu},\boldsymbol{\sigma}^2)$ as a black box before the decoder: the gradient then cannot reach the encoder. The noise $\boldsymbol{\varepsilon}$ must be the only random input, with $\boldsymbol{\mu}$ and $\boldsymbol{\sigma}$ entering deterministically.
+- Mixing up $\sigma$, $\sigma^2$ and $\log\sigma^2$: encoders usually output $\log\sigma^2$, so $\boldsymbol{\sigma} = \exp(\tfrac12\log\boldsymbol{\sigma}^2)$, and the KL formula uses $\sigma^2$.
+- Dropping the decoder's normalizing constant when comparing models with different variances: the constant $-\frac12\log(2\pi s^2)$ matters for ELBO values even when it does not affect the encoder gradient.
+- Reading a small KL term as success: a KL near zero can mean that the latent code is ignored (posterior collapse).
+
+@practice num
+prompt: A VAE encoder outputs mean $\mu = 1.2$ and log-variance $\log\sigma^2 = -1.0$. Using the noise value $\varepsilon = 0.7$, what is the reparameterized sample $z = \mu + \sigma\varepsilon$? Give your answer to three decimal places.
+answer: 1.625
+tol: 0.001
+check: 1.2 + exp(0.5 * -1.0) * 0.7
+hint: The standard deviation is $\sigma = \exp(\tfrac12\log\sigma^2)$.
+solution: $\sigma = e^{-0.5}\approx 0.6065$, so $z = 1.2 + 0.6065\cdot 0.7\approx 1.625$.
+
+@practice num
+prompt: A two-dimensional encoder outputs means $\boldsymbol{\mu} = (0.5, -1)$ and variances $\boldsymbol{\sigma}^2 = (0.5, 2)$. What is $\mathrm{KL}\big(\mathcal{N}(\boldsymbol{\mu}, \operatorname{diag}\boldsymbol{\sigma}^2)\,\Vert\,\mathcal{N}(\mathbf{0},\mathbf{I})\big)$ in nats?
+answer: 0.875
+check: sum(0.5 * (s + m * m - 1 - log(s)) for m, s in [(0.5, 0.5), (-1, 2)])
+hint: The KL divergence of a diagonal Gaussian from the standard normal is the sum over coordinates of $\frac12(\sigma_j^2 + \mu_j^2 - 1 - \log\sigma_j^2)$. The two logarithm terms cancel.
+solution: Coordinate 1 gives $\frac12(0.5 + 0.25 - 1 - \log 0.5)$ and coordinate 2 gives $\frac12(2 + 1 - 1 - \log 2)$. The logarithms are $-\log 0.5 = +\log 2$ and $-\log 2$, so they cancel, leaving $\frac12(-0.25 + 2) = 0.875$.
+
+@practice mc
+prompt: What is the main reason a VAE uses the reparameterization trick instead of differentiating through a sampling operation directly?
+choice*: It writes the sample as a differentiable function of the encoder's outputs and fixed noise, so gradients of the reconstruction term can flow into the encoder.
+choice: It makes the KL term between the encoder and the prior computable in closed form.
+choice: It guarantees that the ELBO equals the log evidence $\log p(x)$.
+choice: It removes the need for a decoder network during training.
+hint: Ask where $\boldsymbol{\phi}$ appears in the expectation before and after rewriting $\mathbf{z} = \boldsymbol{\mu}+\boldsymbol{\sigma}\odot\boldsymbol{\varepsilon}$.
+solution: Before the rewrite, $\boldsymbol{\phi}$ controls the distribution being sampled, and a random draw is not differentiable in its parameters. After it, the randomness is in $\boldsymbol{\varepsilon}$, which does not depend on $\boldsymbol{\phi}$, and $\mathbf{z}$ is a smooth function of $\boldsymbol{\phi}$. The closed-form KL comes from using Gaussians, and the ELBO is exact only when $q$ is the posterior.
+
+@practice code
+prompt: Write `elbo_bernoulli(mu, logvar, x, eps_list, w, b)` for a one-dimensional latent variable. The encoder is $q = \mathcal{N}(\mu, e^{\texttt{logvar}})$. The decoder gives $p(x{=}1\mid z) = \operatorname{sigmoid}(w z + b)$ for a binary observation `x` (0 or 1). Return the Monte Carlo ELBO: the average over the noise draws `eps` in `eps_list` of $x\log p + (1-x)\log(1-p)$ evaluated at $z = \mu + e^{\texttt{logvar}/2}\,\varepsilon$, minus the closed-form KL divergence $\frac12(e^{\texttt{logvar}} + \mu^2 - 1 - \texttt{logvar})$ to $\mathcal{N}(0,1)$. For example, `elbo_bernoulli(0.0, 0.0, 1, [0.0], 1.0, 0.0)` is $\log 0.5$.
+starter:
+```python
+from math import exp, log
+
+def elbo_bernoulli(mu, logvar, x, eps_list, w, b):
+    return 0.0
+```
+tests:
+```python
+from math import log
+assert abs(elbo_bernoulli(0.0, 0.0, 1, [0.0], 1.0, 0.0) - log(0.5)) < 1e-9
+assert abs(elbo_bernoulli(1.0, -0.5, 1, [-1.0, 1.0], 2.0, -1.0) - (-1.0957424360141843)) < 1e-6
+assert abs(elbo_bernoulli(1.0, -0.5, 0, [-1.0, 1.0], 2.0, -1.0) - (-2.095742436014184)) < 1e-6
+assert abs(elbo_bernoulli(-0.5, 0.4, 1, [0.5], 1.5, 0.2) - (-0.697690074005606)) < 1e-6
+assert abs(elbo_bernoulli(0.5, 0.0, 0, [0.3, -0.3, 1.0], 1.0, 0.5) - (-1.7153741712538073)) < 1e-6
+```
+model:
+```python
+from math import exp, log
+
+def elbo_bernoulli(mu, logvar, x, eps_list, w, b):
+    """Monte Carlo ELBO of a 1-D VAE with a Bernoulli decoder."""
+    std = exp(0.5 * logvar)
+    total = 0.0
+    for eps in eps_list:
+        z = mu + std * eps
+        p = 1.0 / (1.0 + exp(-(w * z + b)))
+        total += x * log(p) + (1 - x) * log(1 - p)
+    rec = total / len(eps_list)
+    kl = 0.5 * (exp(logvar) + mu * mu - 1 - logvar)
+    return rec - kl
+```
+hint: Compute $\sigma = e^{\texttt{logvar}/2}$, loop over the noise draws, average the Bernoulli log-likelihood, and subtract the KL term once (not once per draw).
+solution: Each draw gives $z = \mu + \sigma\varepsilon$ and the decoder probability $p = \operatorname{sigmoid}(wz + b)$; the reconstruction term averages $x\log p + (1-x)\log(1-p)$ over the draws, and the KL term is computed once from $\mu$ and the log-variance. The first test has $\mu = 0$, $\sigma = 1$, so the KL is zero and the answer is $\log 0.5$; the second and third tests differ only in $x$ and catch a Bernoulli term that ignores the label.
+
+@practice self
+prompt: Let $f(z) = (z - c)^2$ and $z\sim\mathcal{N}(\mu,\sigma^2)$. Using the reparameterization $z = \mu + \sigma\varepsilon$, derive $\partial_\mu\,\mathbb{E}[f(z)]$ and $\partial_\sigma\,\mathbb{E}[f(z)]$ by moving the derivative inside the expectation, and verify them against the closed form $\mathbb{E}[f(z)] = (\mu-c)^2 + \sigma^2$. Then explain why a single draw of $\varepsilon$ gives an unbiased gradient estimate.
+hint: Substitute $z = \mu+\sigma\varepsilon$, differentiate $f(\mu+\sigma\varepsilon)$ with the chain rule, and then take the expectation using $\mathbb{E}[\varepsilon]=0$.
+solution: Write $g(\mu,\sigma,\varepsilon) = (\mu + \sigma\varepsilon - c)^2$. Then $\partial_\mu g = 2(\mu+\sigma\varepsilon - c)$ and $\partial_\sigma g = 2(\mu+\sigma\varepsilon - c)\varepsilon$. Taking expectations with $\mathbb{E}[\varepsilon] = 0$ and $\mathbb{E}[\varepsilon^2] = 1$: $\mathbb{E}[\partial_\mu g] = 2(\mu - c)$ and $\mathbb{E}[\partial_\sigma g] = 2\mu\mathbb{E}[\varepsilon] - 2c\,\mathbb{E}[\varepsilon] + 2\sigma\mathbb{E}[\varepsilon^2] = 2\sigma$. The closed form $(\mu-c)^2+\sigma^2$ has derivatives $2(\mu - c)$ and $2\sigma$, which agree. The expectation is over $\varepsilon$, whose distribution does not depend on $(\mu,\sigma)$, so the derivative can be exchanged with the expectation (the integrand is smooth and polynomial). Hence $\nabla g(\mu,\sigma,\varepsilon)$ for one draw of $\varepsilon$ has expectation equal to the true gradient, which is unbiasedness; its variance is what averaging more draws reduces.
+rubric: Differentiates the reparameterized integrand correctly for both $\mu$ and $\sigma$.
+rubric: Uses $\mathbb{E}[\varepsilon]=0$ and $\mathbb{E}[\varepsilon^2]=1$ to recover $2(\mu-c)$ and $2\sigma$ and checks them against the closed form.
+rubric: Explains unbiasedness through the parameter-free distribution of $\varepsilon$, which allows swapping derivative and expectation.
+
+@quiz num
+prompt: A one-dimensional VAE has encoder $q = \mathcal{N}(\mu = 1, \sigma^2 = 1)$, prior $\mathcal{N}(0,1)$, and decoder $p(x\mid z) = \mathcal{N}(x; z, 1)$. For the observation $x = 1$, what is the ELBO in closed form? Give your answer to three decimal places.
+answer: -1.919
+tol: 0.001
+check: -0.5 * log(2 * pi) - ((1 - 1) ** 2 + 1) / 2 - 0.5 * (1 + 1 - 1 - log(1))
+hint: The reconstruction term is $-\frac12\log 2\pi - \frac12\big((x-\mu)^2 + \sigma^2\big)$ and the KL term is $\frac12(\sigma^2+\mu^2-1-\log\sigma^2)$.
+solution: Reconstruction: $-0.9189 - \frac12(0 + 1) = -1.4189$. KL: $\frac12(1 + 1 - 1 - 0) = 0.5$. So $\mathcal{L} = -1.4189 - 0.5 = -1.919$.
+
+@quiz ms
+prompt: Which of these statements about variational autoencoders are correct? Select all that apply.
+choice*: The ELBO the VAE maximizes is at most $\log p_{\boldsymbol{\theta}}(\mathbf{x})$ for every choice of encoder.
+choice*: Amortized inference uses one encoder network for all data points instead of optimizing a separate $q$ for each.
+choice*: A very flexible decoder can make the optimal encoder equal the prior, so that the code carries no information.
+choice: The reparameterization trick is what makes the KL term between two Gaussians available in closed form.
+hint: Recall the ELBO identity, the meaning of "amortized", and what the KL term is when $q(\mathbf{z}\mid\mathbf{x}) = p(\mathbf{z})$.
+solution: The bound holds for any $q$ because $\log p(\mathbf{x}) - \mathcal{L}$ is a KL divergence. Amortization shares encoder weights across examples. If the decoder can model $\mathbf{x}$ alone, setting $q = p(\mathbf{z})$ makes the KL zero and loses nothing in reconstruction (posterior collapse). The closed-form KL is a property of Gaussians, whereas reparameterization concerns the gradient of the reconstruction expectation.
+
+@quiz self
+prompt: A VAE with a strong autoregressive decoder reaches a good ELBO, but $\mathrm{KL}(q(\mathbf{z}\mid\mathbf{x})\Vert p(\mathbf{z}))$ is almost zero on every example and samples from the prior are unrelated to any attribute of the data. Explain what has happened using the form of the ELBO, and propose two changes you would try, with the trade-off of each.
+hint: Write the ELBO as reconstruction minus KL and ask what the decoder can do without $\mathbf{z}$.
+solution: The ELBO is $\mathbb{E}_q[\log p(\mathbf{x}\mid\mathbf{z})] - \mathrm{KL}$. A strong autoregressive decoder can model $p(\mathbf{x})$ well without any latent input, so reconstruction does not improve when $\mathbf{z}$ carries information, while the KL term charges for every nat of information in $\mathbf{z}$. The optimum therefore sets $q(\mathbf{z}\mid\mathbf{x}) = p(\mathbf{z})$: posterior collapse. The good ELBO is real, but it is the ELBO of a model that has no useful latent variable. Two remedies: anneal the KL weight from 0 to 1 (or use a free-bits floor on the KL per dimension), which lets the encoder start using $\mathbf{z}$ early at the price of optimizing a different objective for part of training and, for $\beta<1$, a model that is no longer a bound on the likelihood; or weaken the decoder (limit its context, add dropout on its inputs), which forces information into $\mathbf{z}$ but gives up some likelihood. A diagnostic worth adding is the mutual information between $\mathbf{x}$ and $\mathbf{z}$ under the encoder, or reconstructions when $\mathbf{z}$ is resampled from the prior.
+rubric: Explains collapse from the ELBO: the KL penalty with no reconstruction benefit makes $q=p(\mathbf{z})$ optimal.
+rubric: Proposes two plausible remedies (KL annealing or free bits, weaker decoder, or a similar change).
+rubric: States a trade-off for each remedy and, ideally, a diagnostic that detects collapse.

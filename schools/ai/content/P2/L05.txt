@@ -1,0 +1,143 @@
+@lesson
+title: Autoregressive models
+summary: Factorize a joint distribution with the chain rule, compute exact likelihoods, bits per dimension and perplexity, and explain why training is parallel while sampling is sequential.
+objective: Write the autoregressive factorization, compute the probability and negative log-likelihood of a sequence from conditional tables.
+objective: Convert between nats, bits per dimension and perplexity, and count the parameters of simple parameterizations.
+objective: Explain how masking enforces the autoregressive property, and state the strengths and weaknesses of the model family.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the section on autoregressive models.
+
+@article
+Variational autoencoders gave up exact likelihoods: the ELBO is only a bound. Is there a deep generative model that keeps the exact likelihood and needs no latent variable at all? Yes, and it is the oldest idea in probability: the **chain rule**. For any random vector $\mathbf{x} = (x_1,\dots,x_d)$,
+
+$$p(\mathbf{x}) = \prod_{i=1}^{d} p(x_i \mid x_1,\dots,x_{i-1}) = \prod_{i=1}^{d} p(x_i\mid\mathbf{x}_{<i}).$$
+
+This is an identity, not a modeling assumption, and it holds for every ordering of the variables. The modeling decision is how to represent each conditional. An **autoregressive model** parameterizes each conditional $p_{\boldsymbol{\theta}}(x_i\mid\mathbf{x}_{<i})$ with a shared function (a logistic regression, a neural network, a transformer), so the model has an exact, tractable log-likelihood
+$$\log p_{\boldsymbol{\theta}}(\mathbf{x}) = \sum_{i=1}^d \log p_{\boldsymbol{\theta}}(x_i\mid\mathbf{x}_{<i}).$$
+
+### A three-variable example
+
+Let $x_1,x_2,x_3\in\{0,1\}$ with $P(x_1{=}1) = 0.6$; $P(x_2{=}1\mid x_1{=}1) = 0.7$ and $P(x_2{=}1\mid x_1{=}0) = 0.2$; and $P(x_3{=}1\mid x_1,x_2) = 0.9, 0.5, 0.4, 0.1$ for $(x_1,x_2) = (1,1), (1,0), (0,1), (0,0)$. The probability of $(1,0,1)$ is the product of three conditionals: $0.6\times(1-0.7)\times 0.5 = 0.09$. Its negative log-likelihood is $-\log 0.09 = 2.408$ nats, or $3.474$ bits. The eight sequence probabilities sum to 1 automatically, because each conditional is normalized: that is the structural advantage of the factorization.
+
+To **sample**, draw $x_1$ from its marginal, then $x_2$ from its conditional given the drawn $x_1$, and so on (ancestral sampling). With uniform draws $u = (0.5, 0.9, 0.3)$ and the rule "$x_i = 1$ if $u_i < P(x_i{=}1\mid\cdot)$": $x_1 = 1$ since $0.5 < 0.6$; $x_2 = 0$ since $0.9 > 0.7$; $x_3 = 1$ since $0.3 < 0.5$.
+
+### Parameterizations and what they cost
+
+A full conditional table over $d$ binary variables needs $2^d - 1$ numbers (1023 for $d = 10$). Cheaper choices share structure:
+
+- **Logistic autoregression** (fully visible sigmoid belief network): $p(x_i{=}1\mid\mathbf{x}_{<i}) = \sigma(b_i + \sum_{j<i}w_{ij}x_j)$ has $d + d(d-1)/2$ parameters (55 for $d=10$).
+- **Weight sharing with neural networks**: NADE (Larochelle and Murray, 2011) shares hidden-unit weights across the conditionals, so cost grows linearly rather than quadratically in $d$.
+- **Masked networks**: MADE (Germain and colleagues, 2015) computes all $d$ conditionals in one forward pass by masking weights. Give each input a degree $1,\dots,d$ and each hidden unit a degree $m$; allow a hidden unit of degree $m$ to see inputs of degree $\le m$, and let output $i$ see hidden units of degree $< i$. Then output $i$ depends only on $\mathbf{x}_{<i}$, because any path from input $j$ passes through a hidden degree $m$ with $j\le m<i$.
+- **Convolutional and attention-based models**: PixelRNN and PixelCNN (van den Oord and colleagues, 2016) order the pixels of an image in raster order, and a causal mask on a convolution gives the same property; transformer decoders (Vaswani and colleagues, 2017) use a causal attention mask.
+
+For real-valued variables each conditional needs a density family: a mixture of Gaussians, or a discretization into bins with a categorical output.
+
+### Training, sampling and evaluation
+
+Training maximizes $\sum_n\log p_{\boldsymbol{\theta}}(\mathbf{x}^{(n)})$, i.e., minimizes the cross-entropy. With **teacher forcing**, each conditional is evaluated with the true previous values, so with masks all $d$ terms are computed in one parallel pass. **Sampling** has no such shortcut: $x_i$ needs the sampled $\mathbf{x}_{<i}$, so generating $d$ values takes $d$ sequential network evaluations (caching of intermediate results reduces the cost per step but not the sequential dependency). A related weakness is **exposure bias**: the model is trained only on true prefixes but at generation time conditions on its own samples, so early mistakes can compound.
+
+Likelihoods are reported in nats per example, or in **bits per dimension**: $\text{NLL (nats)}/(d\ln 2)$. For sequence models, **perplexity** is $\exp(\text{average NLL per token in nats})$, the effective number of equally likely choices per step. Bits per dimension compares models of the same data and discretization, nothing more.
+
+### Strengths and limits
+
+Autoregressive models give exact likelihoods, stable maximum-likelihood training, and very flexible conditionals, and the same recipe underlies large language models, which later courses treat. The weaknesses are slow sequential sampling, a dependence on the chosen ordering for how easily the conditionals can be learned (even though every ordering is exact in principle), and the absence of a compact latent representation: there is no low-dimensional code to edit or interpolate. They also do not by themselves tell you whether samples look good: likelihood and sample quality are distinct (week 11).
+
+```python
+p1 = 0.6
+p2 = {1: 0.7, 0: 0.2}
+p3 = {(1, 1): 0.9, (1, 0): 0.5, (0, 1): 0.4, (0, 0): 0.1}
+
+def prob(x1, x2, x3):
+    a = p1 if x1 else 1 - p1
+    b = p2[x1] if x2 else 1 - p2[x1]
+    c = p3[(x1, x2)] if x3 else 1 - p3[(x1, x2)]
+    return a * b * c
+
+def sample(us):
+    x1 = 1 if us[0] < p1 else 0
+    x2 = 1 if us[1] < p2[x1] else 0
+    x3 = 1 if us[2] < p3[(x1, x2)] else 0
+    return x1, x2, x3
+
+print(prob(1, 0, 1), sample([0.5, 0.9, 0.3]))
+```
+
+@example
+title: Likelihood, bits per symbol and perplexity
+problem: A model of two-symbol strings over $\{a, b\}$ has $P(\text{first} = a) = 0.5$, $P(a\mid a) = 0.9$, $P(b\mid a) = 0.1$, $P(a\mid b) = 0.4$ and $P(b\mid b) = 0.6$. Compute the probability of the string "aabb", its negative log-likelihood in nats, the bits per symbol and the perplexity.
+step: Chain rule: $P(\text{aabb}) = P(a)\,P(a\mid a)\,P(b\mid a)\,P(b\mid b) = 0.5\times 0.9\times 0.1\times 0.6$.
+step: Multiply: $0.5\times 0.9 = 0.45$, $\times 0.1 = 0.045$, $\times 0.6 = 0.027$.
+step: Negative log-likelihood: $-\ln 0.027 = 3.612$ nats, which is $3.612/\ln 2 = 5.211$ bits for four symbols.
+step: Bits per symbol: $5.211/4 = 1.303$.
+step: Perplexity: $2^{1.303} = 0.027^{-1/4} \approx 2.467$, equal to $\exp(3.612/4)$ in nats. The model behaves as if it chose among about 2.5 equally likely symbols per step, out of 2.
+answer: $P = 0.027$; NLL $= 3.612$ nats; $1.303$ bits per symbol; perplexity $\approx 2.467$.
+
+@mistakes
+- Believing the chain rule assumes independence: it assumes nothing. A model's assumptions live in how the conditionals are parameterized.
+- Using the same $\log$ base for NLL and perplexity inconsistently: perplexity is $2^{\text{bits per token}} = e^{\text{nats per token}}$, and mixing a bits value with $e$ gives the wrong number.
+- Training with the model's own samples as the conditioning prefix and calling it maximum likelihood: teacher forcing conditions on the true prefix, and the difference is the source of exposure bias.
+- Thinking parallel training means parallel sampling: generation remains $d$ sequential steps.
+
+@practice num
+prompt: Three binary variables have $P(x_1{=}1) = 0.3$, $P(x_2{=}1\mid x_1{=}1) = 0.8$, $P(x_2{=}1\mid x_1{=}0) = 0.1$, and $P(x_3{=}1\mid x_2{=}1) = 0.5$, $P(x_3{=}1\mid x_2{=}0) = 0.9$ (the third variable depends only on the second). What is $P(x_1{=}1, x_2{=}1, x_3{=}0)$?
+answer: 0.12
+check: 0.3 * 0.8 * (1 - 0.5)
+hint: Multiply the three conditionals, using $1 - P(x_3{=}1\mid x_2{=}1)$ for $x_3 = 0$.
+solution: $P = 0.3\times 0.8\times 0.5 = 0.12$.
+
+@practice num
+prompt: A fully visible sigmoid belief network models $d = 10$ binary variables, with $p(x_i{=}1\mid\mathbf{x}_{<i}) = \sigma(b_i + \sum_{j<i}w_{ij}x_j)$. How many parameters (biases plus weights) does it have?
+answer: 55
+unit: parameters
+check: 10 + sum(i for i in range(10))
+hint: Variable $i$ (counting from 1) has one bias and $i - 1$ weights.
+solution: The bias count is $10$ and the weight count is $0 + 1 + \dots + 9 = 45$, for $55$ parameters in total, compared with $2^{10}-1 = 1023$ for an unrestricted table.
+
+@practice num
+prompt: A language model has an average negative log-likelihood of $1.2$ nats per token on held-out text. What is its perplexity? Give your answer to two decimal places.
+answer: 3.32
+tol: 0.01
+check: exp(1.2)
+hint: Perplexity is the exponential of the average per-token NLL when the NLL is in nats.
+solution: $\exp(1.2)\approx 3.320$. Equivalently, $1.2/\ln 2 = 1.731$ bits per token and $2^{1.731} = 3.32$.
+
+@practice ms
+prompt: Which statements about autoregressive generative models are true? Select all that apply.
+choice*: The factorization $p(\mathbf{x}) = \prod_i p(x_i\mid\mathbf{x}_{<i})$ is an exact identity for every ordering of the variables.
+choice*: With teacher forcing and a causal mask, the log-likelihood of a data point is computed with one pass over the sequence.
+choice*: Drawing a sample requires generating the variables one after another, because each depends on the earlier ones.
+choice: The factorization assumes the variables are conditionally independent given a low-dimensional latent code.
+hint: Separate what the chain rule guarantees from what a particular network can learn easily, and recall the roles of training and sampling.
+solution: The chain rule holds for any ordering. A causal mask lets all $d$ conditionals be evaluated simultaneously on a known $\mathbf{x}$, whereas sampling must feed each drawn value into the next conditional. Autoregressive models have no latent code at all; conditional independence given a latent code describes models like VAEs.
+
+@practice self
+prompt: A masked network (MADE-style) has inputs $x_1,x_2,x_3$ with degrees $1,2,3$, one hidden layer of four units with degrees $(1,1,2,2)$, and three outputs, where output $i$ parameterizes $p(x_i\mid\mathbf{x}_{<i})$. State the connection rule for each layer, list which hidden units each output may see, say what each output can depend on, and prove that output $i$ cannot depend on $x_i,\dots,x_3$.
+hint: A hidden unit of degree $m$ may connect to inputs of degree $\le m$, and output $i$ may connect to hidden units of degree $<i$.
+solution: Rule: hidden unit $k$ with degree $m_k$ connects to input $j$ if and only if $j\le m_k$; output $i$ connects to hidden unit $k$ if and only if $i > m_k$. Hidden units 1 and 2 (degree 1) see only $x_1$; units 3 and 4 (degree 2) see $x_1,x_2$. Output 1 needs $m_k < 1$ and so sees no hidden unit: it depends only on its bias, giving the unconditional $p(x_1)$. Output 2 sees the degree-1 units, so it depends on $x_1$ only. Output 3 sees all four hidden units, so it depends on $x_1$ and $x_2$ only. Proof: a path from input $j$ to output $i$ passes through some hidden unit $k$, which requires both $j\le m_k$ and $m_k < i$, hence $j < i$. So no path exists from $x_i,\dots,x_3$ to output $i$, and the conditionals multiply to a valid joint distribution.
+rubric: States both connection rules (hidden sees inputs of degree at most its own; outputs see hidden units of strictly smaller degree).
+rubric: Lists the visible hidden units and dependencies for all three outputs correctly.
+rubric: Proves the claim with the inequality $j\le m_k<i$ along any path.
+
+@quiz num
+prompt: A model assigns a total negative log-likelihood of $540$ nats to a $28\times 28$ grayscale image ($784$ pixels). How many bits per dimension is that? Give your answer to three decimal places.
+answer: 0.994
+tol: 0.001
+check: 540 / log(2) / 784
+hint: Convert nats to bits by dividing by $\ln 2$, then divide by the number of dimensions.
+solution: $540/\ln 2 = 779.1$ bits, and $779.1/784\approx 0.994$ bits per dimension.
+
+@quiz mc
+prompt: A single network defines all conditionals $p(x_i\mid\mathbf{x}_{<i})$ of a $d$-dimensional autoregressive model with causal masking. How many sequential network evaluations are needed to draw one sample of $\mathbf{x}$ (without any caching tricks)?
+choice*: $d$, one for each variable, since each $x_i$ needs the previously sampled values.
+choice: One, because the mask produces all conditionals at once, as in training.
+choice: $d$ evaluations that can all be run in parallel.
+choice: A number that depends on the size of the training set.
+hint: Which values are available to the network at step $i$ when you sample rather than score a known data point?
+solution: In training all values are known, so all conditionals come from one pass. In sampling, $x_i$ is unknown until it is drawn, and the conditional for $x_{i+1}$ needs it, so the evaluations form a sequence of length $d$.
+
+@quiz self
+prompt: You must choose between an autoregressive model and a VAE for three tasks: (a) evaluating how well a model predicts held-out data, (b) generating many samples cheaply, (c) learning a low-dimensional code to interpolate between examples. For each task say which model you would try first and why, and name one reason your choice could be wrong.
+hint: Think of exact versus bounded likelihood, sequential versus single-pass sampling, and whether a latent code exists.
+solution: (a) Autoregressive: its log-likelihood is exact and cheap to evaluate, whereas the VAE offers only the ELBO, a bound whose gap is unknown; the choice could be wrong if the data are far from the ordering and discretization the autoregressive model assumes, so that its likelihood is not comparable with another model's. (b) VAE: sampling is one decoder pass, while an autoregressive model needs $d$ sequential steps; this could be wrong if sample quality matters more than speed, since a VAE with a simple likelihood often gives blurrier samples. (c) VAE: the encoder gives a compact code with a smooth prior, and interpolating in $\mathbf{z}$ is meaningful; an autoregressive model has no latent code. It could be wrong if posterior collapse leaves the code uninformative, or if a disentangled code is required, which the VAE objective does not guarantee.
+rubric: Matches each task to a model using exactness of likelihood, sampling cost and the existence of a latent code.
+rubric: Gives a valid reason for each choice, not just a label.
+rubric: Names a realistic failure mode for at least two of the three choices.

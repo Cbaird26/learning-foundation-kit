@@ -1,0 +1,220 @@
+@lesson
+title: Gaussian processes
+summary: Compute the posterior mean and variance of a Gaussian process regression on a few points, choose among kernels, and explain how the marginal likelihood trades fit against complexity.
+objective: Build a kernel matrix and apply the conditioning formulas to get a GP posterior mean and variance.
+objective: Explain the weight-space and function-space views and decide whether a function is a valid kernel.
+objective: Evaluate the log marginal likelihood and state the computational cost of exact GP regression.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on Gaussian processes. The standard book-length reference is Gaussian Processes for Machine Learning (Rasmussen and Williams, 2006).
+
+@article
+Last week you gave a model a prior over a handful of weights. Suppose instead you give a prior directly over functions, so that before seeing data you say "the function is smooth, varies on a scale of about one unit, and has typical size one", and you let the data narrow it down. That is a **Gaussian process** (GP). It is the natural next step because it makes one idea of week 1 disappear: you no longer choose a finite feature set, and the model's flexibility grows with the data.
+
+### Definition
+
+A GP is a distribution over functions $f$ such that for every finite set of inputs $x_1,\dots,x_n$ the vector $(f(x_1),\dots,f(x_n))$ is jointly Gaussian. It is specified by a mean function (taken to be zero here) and a **kernel** (covariance function) $k(x,x') = \operatorname{Cov}(f(x), f(x'))$. We write $f \sim \mathcal{GP}(0, k)$. The finite-dimensional marginal at inputs $\mathbf{x}$ is $\mathcal{N}(\mathbf{0}, \mathbf{K})$ with $K_{ij} = k(x_i, x_j)$.
+
+A function $k$ is a valid kernel exactly when it is symmetric and every kernel matrix it produces is positive semidefinite. The most used example is the **squared-exponential** (RBF) kernel
+
+$$k(x, x') = s^2\exp\!\left(-\frac{(x-x')^2}{2\ell^2}\right),$$
+
+with amplitude $s$ (taken as 1 below) and length scale $\ell$. Nearby inputs have correlation close to 1, so sampled functions are smooth; a larger $\ell$ gives slower variation.
+
+### Where the kernel comes from
+
+Take Bayesian linear regression with features $\boldsymbol{\phi}$ and prior $\mathbf{w}\sim\mathcal{N}(\mathbf{0}, \alpha^{-1}\mathbf{I})$. Then $f(x) = \mathbf{w}^\top\boldsymbol{\phi}(x)$ is Gaussian with covariance $k(x, x') = \alpha^{-1}\boldsymbol{\phi}(x)^\top\boldsymbol{\phi}(x')$. A GP is the same model seen in **function space**: you specify the covariance and never write the weights. The RBF kernel corresponds to infinitely many features. Neal (1996) showed that a one-hidden-layer network with random weights tends to a GP as its width goes to infinity, which is one reason GPs recur in the theory of wide networks.
+
+### The posterior
+
+Observe $y_i = f(x_i) + \varepsilon_i$ with $\varepsilon_i\sim\mathcal{N}(0,\sigma^2)$. Write $\mathbf{K}_y = \mathbf{K} + \sigma^2\mathbf{I}$, let $\mathbf{k}_*$ be the vector with entries $k(x_i, x_*)$ and $k_{**} = k(x_*, x_*)$. The joint distribution of $\mathbf{y}$ and $f_* = f(x_*)$ is Gaussian with covariance blocks $\mathbf{K}_y$, $\mathbf{k}_*$ and $k_{**}$. Conditioning a joint Gaussian on one block (the rule you proved in C13) gives
+
+$$f_* \mid \mathbf{y} \sim \mathcal{N}\!\left(\mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{y},\; k_{**} - \mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{k}_*\right).$$
+
+The mean is a linear combination of the data, equivalently a combination of kernel functions centered at the training inputs. The variance does not involve $\mathbf{y}$: it starts at the prior variance $k_{**}$ and subtracts the information the data carry. A new noisy observation adds $\sigma^2$.
+
+### A two-point example
+
+Use the RBF kernel with $\ell = 1$, data $x = (0, 1)$, $y = (2, 0)$ and $\sigma^2 = 0.1$, and predict at $x_* = 0.5$. Here $k(0,1) = e^{-1/2} = 0.6065$, so
+$$\mathbf{K}_y = \begin{pmatrix}1.1 & 0.6065\\ 0.6065 & 1.1\end{pmatrix},\quad \mathbf{k}_* = \begin{pmatrix}0.8825\\ 0.8825\end{pmatrix}.$$
+Solving gives $\mathbf{K}_y^{-1}\mathbf{y} = (2.6125, -1.4405)^\top$ and $\mathbf{K}_y^{-1}\mathbf{k}_* = (0.5171, 0.5171)^\top$. The mean is $0.8825\cdot(2.6125 - 1.4405) = 1.0343$ and the variance of $f_*$ is $1 - 0.8825\cdot 1.0342 = 0.0873$. The data pin the function down between the two points, but only to a standard deviation of $0.30$.
+
+### Hyperparameters and the marginal likelihood
+
+Kernel hyperparameters $\theta = (\ell, s, \sigma)$ are chosen by maximizing the log marginal likelihood
+
+$$\log p(\mathbf{y}\mid\theta) = -\frac12\mathbf{y}^\top\mathbf{K}_y^{-1}\mathbf{y} - \frac12\log\lvert\mathbf{K}_y\rvert - \frac{n}{2}\log 2\pi.$$
+
+The first term rewards fit; the second penalizes complexity, because $\log\lvert\mathbf{K}_y\rvert$ grows when the kernel allows many different functions. No validation set is needed, but the marginal likelihood can be multimodal and it overfits when many hyperparameters are tuned on few points.
+
+### Cost and the limits of the method
+
+Exact inference needs a Cholesky factorization of $\mathbf{K}_y$, which costs $O(n^3)$ time and $O(n^2)$ memory, so exact GPs are practical up to thousands of points. Sparse methods built on inducing points reduce this at the price of an approximation. GP regression with Gaussian noise is exact; for classification or other likelihoods the posterior is no longer Gaussian and variational or Laplace approximations (next week's tools) are needed. The kernel encodes strong assumptions: an RBF kernel cannot express a periodic or sharply changing function, and combinations of kernels (sums, products) are how practitioners add structure.
+
+### In code
+
+```python
+from math import exp, sqrt
+
+def kernel(a, b, ell=1.0):
+    return exp(-(a - b) ** 2 / (2 * ell ** 2))
+
+def cholesky(A):
+    n = len(A)
+    L = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            s = sum(L[i][k] * L[j][k] for k in range(j))
+            if i == j:
+                L[i][j] = sqrt(A[i][i] - s)
+            else:
+                L[i][j] = (A[i][j] - s) / L[j][j]
+    return L
+
+def solve_chol(L, b):
+    n = len(b)
+    z = [0.0] * n
+    for i in range(n):
+        z[i] = (b[i] - sum(L[i][k] * z[k] for k in range(i))) / L[i][i]
+    x = [0.0] * n
+    for i in reversed(range(n)):
+        x[i] = (z[i] - sum(L[k][i] * x[k] for k in range(i + 1, n))) / L[i][i]
+    return x
+
+def gp_posterior(xs, ys, x_star, ell, noise):
+    n = len(xs)
+    Ky = [[kernel(xs[i], xs[j], ell) + (noise if i == j else 0.0)
+           for j in range(n)] for i in range(n)]
+    ks = [kernel(x, x_star, ell) for x in xs]
+    L = cholesky(Ky)
+    alpha = solve_chol(L, ys)
+    v = solve_chol(L, ks)
+    mean = sum(k * a for k, a in zip(ks, alpha))
+    var = kernel(x_star, x_star, ell) - sum(k * w for k, w in zip(ks, v))
+    return mean, var
+
+print(gp_posterior([0, 1, 2], [0.5, 1.5, 1.0], 1.5, 1.0, 0.1))
+```
+
+Libraries solve the same equations with a vectorized Cholesky factorization; the structure is exactly this.
+
+@example
+title: A noise-free GP extrapolating
+problem: A GP with the RBF kernel ($\ell = 1$, amplitude 1) is conditioned, without noise, on the observations $f(0) = 1$ and $f(1) = 3$. Find the posterior mean and variance at $x_* = 2$.
+step: Kernel matrix: $k(0,1) = e^{-1/2} \approx 0.6065$, so $\mathbf{K} = \begin{pmatrix}1 & 0.6065\\ 0.6065 & 1\end{pmatrix}$ with determinant $1 - e^{-1} \approx 0.6321$.
+step: Cross-covariances with the test point: $k(0, 2) = e^{-2} \approx 0.1353$ and $k(1, 2) = e^{-1/2} \approx 0.6065$, so $\mathbf{k}_* = (0.1353, 0.6065)^\top$.
+step: Solve $\mathbf{K}\mathbf{a} = \mathbf{y}$ with $\mathbf{y} = (1, 3)^\top$: $\mathbf{a} \approx (-1.2966, 3.7864)^\top$. The mean is $\mathbf{k}_*^\top\mathbf{a} = 0.1353(-1.2966) + 0.6065(3.7864) \approx 2.1211$.
+step: Solve $\mathbf{K}\mathbf{v} = \mathbf{k}_*$ to get $\mathbf{v} \approx (-0.3679, 0.8297)^\top$, so $\mathbf{k}_*^\top\mathbf{v} \approx 0.4534$ and the variance is $1 - 0.4534 \approx 0.5466$.
+step: Interpret: the mean (2.12) continues the upward trend only partly and falls back toward the prior mean 0, and the variance (0.55, standard deviation 0.74) is much larger than it would be between the points.
+answer: mean $\approx 2.121$, variance $\approx 0.547$.
+
+@mistakes
+- Forgetting $\sigma^2\mathbf{I}$ on the diagonal of the training kernel matrix (or adding it to $k_{**}$ in the variance of $f_*$): the noise belongs in $\mathbf{K}_y$, and only a predicted observation $y_*$ gets $+\sigma^2$.
+- Thinking the posterior variance depends on the observed values $\mathbf{y}$: for Gaussian noise it depends only on the inputs and the kernel.
+- Using a function that is not positive semidefinite as a kernel (for example $-(x-x')^2$), which can produce negative variances.
+- Inverting $\mathbf{K}_y$ explicitly: a Cholesky solve is faster and numerically safer, and gives $\log\lvert\mathbf{K}_y\rvert$ for free.
+
+@practice num
+prompt: A GP uses the RBF kernel $k(x, x') = \exp\!\big(-(x-x')^2 / (2\ell^2)\big)$ with $\ell = 0.5$. What is the covariance $k(0.2, 0.9)$ between $f(0.2)$ and $f(0.9)$? Give your answer to four decimal places.
+answer: 0.3753
+tol: 0.0001
+check: exp(-(0.2 - 0.9) ** 2 / (2 * 0.5 ** 2))
+hint: Compute the squared distance $0.7^2 = 0.49$ and divide by $2\ell^2 = 0.5$.
+solution: The exponent is $-0.49/0.5 = -0.98$, and $e^{-0.98} \approx 0.3753$.
+
+@practice num
+prompt: A GP with RBF kernel (length scale $\ell = 2$, amplitude 1) and noise variance $\sigma^2 = 0.5$ is conditioned on $y(0) = 1$ and $y(1) = 2$. What is the posterior mean of $f$ at $x_* = 0.5$? Give your answer to three decimal places.
+answer: 1.220
+tol: 0.001
+check: (lambda k: np.array([k(0.5, 0), k(0.5, 1)]) @ np.linalg.solve(np.array([[k(0, 0) + 0.5, k(0, 1)], [k(1, 0), k(1, 1) + 0.5]]), np.array([1.0, 2.0])))(lambda a, b: exp(-(a - b) ** 2 / (2 * 2 ** 2)))
+hint: Build the $2\times 2$ matrix $\mathbf{K}_y = \mathbf{K} + 0.5\,\mathbf{I}$ (diagonal $1.5$, off-diagonal $k(0,1)$), solve $\mathbf{K}_y\mathbf{a} = \mathbf{y}$, and take the dot product with $\mathbf{k}_*$.
+solution: With $\ell = 2$, $k(0,1) = e^{-1/8} \approx 0.8825$ and $k(0.5, 0) = k(0.5, 1) = e^{-1/32} \approx 0.9692$. So $\mathbf{K}_y = \begin{pmatrix}1.5 & 0.8825\\ 0.8825 & 1.5\end{pmatrix}$, and solving $\mathbf{K}_y\mathbf{a} = (1, 2)^\top$ gives $\mathbf{a} \approx (-0.1801, 1.4393)^\top$. The mean is $0.9692(-0.1801 + 1.4393) \approx 1.220$.
+
+@practice mc
+prompt: You fit two GPs with the RBF kernel to the same data, one with length scale $\ell = 0.3$ and one with $\ell = 3$, and draw functions from each prior. What do you expect?
+choice*: The $\ell = 3$ prior produces functions that change much more slowly with $x$.
+choice: The $\ell = 3$ prior produces functions with larger overall amplitude.
+choice: The $\ell = 0.3$ prior produces smoother functions because it has more local structure.
+choice: The two priors produce functions with the same smoothness and differ only in their posterior means.
+hint: The correlation between $f(x)$ and $f(x')$ is $\exp(-(x-x')^2/(2\ell^2))$; ask how far apart two inputs must be before the correlation drops.
+solution: The length scale sets how far apart inputs can be and remain strongly correlated. With $\ell = 3$ the correlation between inputs one unit apart is $\exp(-1/18) \approx 0.95$, so sampled functions vary slowly; with $\ell = 0.3$ it is $\exp(-1/0.18) \approx 0.004$, so they vary rapidly. The amplitude is controlled by the separate amplitude parameter, not by $\ell$.
+
+@practice ms
+prompt: A GP regression model with Gaussian noise is fitted to $n$ training points. Which of these statements are true? Select all that apply.
+choice*: The posterior variance at a test input does not depend on the observed targets.
+choice*: Exact inference costs $O(n^3)$ time because of the factorization of an $n\times n$ matrix.
+choice*: The posterior mean at a test input is a weighted sum of the observed targets.
+choice: With positive noise variance, the posterior variance of $f$ at a training input is exactly zero.
+hint: Write the posterior mean as $\mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{y}$ and the variance as $k_{**} - \mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{k}_*$, and check what each depends on.
+solution: The mean $\mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{y}$ is linear in $\mathbf{y}$, the variance contains no $\mathbf{y}$, and the factorization of $\mathbf{K}_y$ costs $O(n^3)$. With noise, the observation at a training input does not determine $f$ there exactly, so the posterior variance is positive; it reaches zero only in the noise-free limit.
+
+@practice code
+prompt: Write `log_marginal_likelihood(xs, ys, ell, noise)` that returns the log marginal likelihood $-\frac12\mathbf{y}^\top\mathbf{K}_y^{-1}\mathbf{y} - \frac12\log\lvert\mathbf{K}_y\rvert - \frac n2\log 2\pi$ of a zero-mean GP with the RBF kernel $\exp(-(a-b)^2/(2\ell^2))$ (amplitude 1) and noise variance `noise`. `xs` and `ys` are lists of floats of the same length $n \ge 1$. For example, with `xs = [0.0]`, `ys = [0.0]`, `ell = 1.0` and `noise = 1.0`, the matrix is $[2]$ and the result is $-\frac12\log(2) - \frac12\log(2\pi)$. Do not import any library other than `math`.
+starter:
+```python
+from math import exp, log, pi, sqrt
+
+def log_marginal_likelihood(xs, ys, ell, noise):
+    return 0.0
+```
+tests:
+```python
+from math import log, pi
+got = log_marginal_likelihood([0.0], [0.0], 1.0, 1.0)
+assert abs(got - (-0.5 * log(2) - 0.5 * log(2 * pi))) < 1e-9
+got = log_marginal_likelihood([0.0, 1.0], [1.0, -1.0], 1.0, 0.1)
+assert abs(got - (-3.7784293700981557)) < 1e-6
+got = log_marginal_likelihood([0.0, 1.0], [1.0, -1.0], 0.5, 0.1)
+assert abs(got - (-2.9621905348824233)) < 1e-6
+got = log_marginal_likelihood([0.0, 1.0, 3.0], [0.2, 0.9, -0.4], 1.0, 0.05)
+assert abs(got - (-3.2199696728458242)) < 1e-6
+```
+model:
+```python
+from math import exp, log, pi, sqrt
+
+def log_marginal_likelihood(xs, ys, ell, noise):
+    """Log marginal likelihood of a zero-mean RBF GP with Gaussian noise."""
+    n = len(xs)
+    K = [[exp(-(xs[i] - xs[j]) ** 2 / (2 * ell ** 2)) + (noise if i == j else 0.0)
+          for j in range(n)] for i in range(n)]
+    L = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            s = sum(L[i][k] * L[j][k] for k in range(j))
+            if i == j:
+                L[i][j] = sqrt(K[i][i] - s)
+            else:
+                L[i][j] = (K[i][j] - s) / L[j][j]
+    z = [0.0] * n
+    for i in range(n):
+        z[i] = (ys[i] - sum(L[i][k] * z[k] for k in range(i))) / L[i][i]
+    quad = sum(v * v for v in z)
+    logdet = 2 * sum(log(L[i][i]) for i in range(n))
+    return -0.5 * quad - 0.5 * logdet - 0.5 * n * log(2 * pi)
+```
+hint: Factor $\mathbf{K}_y = \mathbf{L}\mathbf{L}^\top$. Then $\mathbf{y}^\top\mathbf{K}_y^{-1}\mathbf{y} = \lVert\mathbf{L}^{-1}\mathbf{y}\rVert^2$ and $\log\lvert\mathbf{K}_y\rvert = 2\sum_i\log L_{ii}$.
+solution: Build the kernel matrix with the noise on the diagonal, compute its Cholesky factor, and do one forward substitution to get $\mathbf{z} = \mathbf{L}^{-1}\mathbf{y}$. The quadratic term is $\lVert\mathbf{z}\rVert^2$ and the log determinant is twice the sum of the logs of the diagonal of $\mathbf{L}$. The one-point test catches a missing $\frac n2\log 2\pi$ term, and the second and third tests together (same data, two length scales) catch a mistake in the kernel's denominator.
+
+@quiz num
+prompt: A GP with RBF kernel ($\ell = 1$, amplitude 1) has been conditioned on one observation $y(0) = 3$ with noise variance $\sigma^2 = 0.5$. What is the posterior variance of the latent function value $f(1)$? Give your answer to three decimal places.
+answer: 0.755
+tol: 0.001
+check: 1 - exp(-0.5) ** 2 / (1 + 0.5)
+hint: With one observation, $\mathbf{K}_y$ is the scalar $1 + 0.5$ and $\mathbf{k}_* = k(0, 1) = e^{-1/2}$.
+solution: The variance is $k_{**} - k_*^2 / K_y = 1 - e^{-1}/1.5 = 1 - 0.3679/1.5 \approx 0.755$. The observed value 3 does not enter.
+
+@quiz ms
+prompt: Which of the following functions of two real inputs are valid kernels (symmetric and positive semidefinite for every set of inputs)? Select all that apply.
+choice*: $k(x, x') = x x' + 1$
+choice*: $k(x, x') = \exp(-\lvert x - x'\rvert)$
+choice: $k(x, x') = -(x - x')^2$
+choice: $k(x, x') = x - x'$
+hint: Test the second pair of inputs $x_1 = 0$, $x_2 = 1$ in the candidates that look suspicious, and check symmetry.
+solution: The product $x x'$ is the kernel of a linear model with one weight and the constant 1 adds a bias, so their sum is a valid kernel; $\exp(-\lvert x-x'\rvert)$ is the exponential (Matérn-1/2) kernel. For $-(x-x')^2$ the matrix at $x = (0, 1)$ is $\begin{pmatrix}0 & -1\\ -1 & 0\end{pmatrix}$, which has eigenvalue $-1$. The function $x - x'$ is antisymmetric, so it cannot be a covariance.
+
+@quiz self
+prompt: Show that the GP posterior mean and variance follow from conditioning a joint Gaussian. State the joint distribution of $(\mathbf{y}, f_*)$, the conditioning rule you use, and the resulting formulas, then comment in one sentence on what the marginal likelihood term $\log\lvert\mathbf{K}_y\rvert$ measures.
+hint: Use the rule that for $\begin{pmatrix}\mathbf{a}\\\mathbf{b}\end{pmatrix}\sim\mathcal{N}\!\Big(\mathbf{0}, \begin{pmatrix}\mathbf{A} & \mathbf{C}\\ \mathbf{C}^\top & \mathbf{B}\end{pmatrix}\Big)$, the conditional $\mathbf{b}\mid\mathbf{a}$ has mean $\mathbf{C}^\top\mathbf{A}^{-1}\mathbf{a}$ and covariance $\mathbf{B} - \mathbf{C}^\top\mathbf{A}^{-1}\mathbf{C}$.
+solution: By the GP definition and independent noise, $(\mathbf{y}, f_*)$ is zero-mean Gaussian with covariance $\begin{pmatrix}\mathbf{K}_y & \mathbf{k}_*\\ \mathbf{k}_*^\top & k_{**}\end{pmatrix}$, where $\mathbf{K}_y = \mathbf{K} + \sigma^2\mathbf{I}$: the cross-covariance between $y_i$ and $f_*$ is $k(x_i, x_*)$ because the noise is independent of $f$. Applying the conditioning rule with $\mathbf{a} = \mathbf{y}$, $\mathbf{b} = f_*$, $\mathbf{A} = \mathbf{K}_y$, $\mathbf{C} = \mathbf{k}_*$ and $\mathbf{B} = k_{**}$ gives $f_*\mid\mathbf{y}\sim\mathcal{N}(\mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{y},\; k_{**} - \mathbf{k}_*^\top\mathbf{K}_y^{-1}\mathbf{k}_*)$. The log determinant is the log volume of the prior's predictive distribution over $\mathbf{y}$, so it measures model complexity: kernels that can produce many different data sets have a large determinant and are penalized unless the data fit them much better.
+rubric: States the joint covariance with $\sigma^2\mathbf{I}$ only in the $\mathbf{y}$ block.
+rubric: Applies the Gaussian conditioning formulas correctly to obtain both the mean and the variance.
+rubric: Interprets $\log\lvert\mathbf{K}_y\rvert$ as a complexity (volume) penalty that balances the data-fit term.

@@ -1,0 +1,140 @@
+@lesson
+title: Generative adversarial networks
+summary: Write the GAN minimax objective, derive the optimal discriminator and the Jensen-Shannon connection, and explain why training the game is hard.
+objective: State the GAN value function and derive the optimal discriminator $D^\star(x) = p_{\text{data}}(x)/(p_{\text{data}}(x) + p_g(x))$.
+objective: Compute $D^\star$, the value $V(D^\star, G)$ and the Jensen-Shannon divergence on small examples.
+objective: Explain the non-saturating loss, mode collapse and the rotational dynamics of simultaneous gradient play in a simple game.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on generative adversarial networks.
+
+@article
+Every model so far has defined a density, exactly or approximately, and was trained by maximizing a likelihood or a bound on it. A **generative adversarial network** (GAN; Goodfellow and colleagues, 2014) dispenses with the density. A **generator** $G_{\boldsymbol{\theta}}$ turns noise $\mathbf{z}\sim p_z$ into samples, which define an implicit distribution $p_g$ that we can sample from but cannot evaluate. A **discriminator** $D_{\boldsymbol{\psi}}(\mathbf{x})\in(0,1)$ is trained to tell real data from generated samples, and the generator is trained to fool it. The two networks play a two-player game with value function
+
+$$V(D, G) = \mathbb{E}_{\mathbf{x}\sim p_{\text{data}}}[\log D(\mathbf{x})] + \mathbb{E}_{\mathbf{z}\sim p_z}[\log(1 - D(G(\mathbf{z})))],\qquad \min_G\max_D V(D, G).$$
+
+The discriminator's inner problem is exactly the log-likelihood of a binary classifier trained to separate real examples (label 1) from generated ones (label 0).
+
+### The optimal discriminator
+
+Fix $G$ and write $p_g$ for its sample distribution. Since $\mathbb{E}_{\mathbf{z}}[\log(1-D(G(\mathbf{z})))] = \mathbb{E}_{\mathbf{x}\sim p_g}[\log(1-D(\mathbf{x}))]$,
+$$V(D, G) = \int\big[p_{\text{data}}(\mathbf{x})\log D(\mathbf{x}) + p_g(\mathbf{x})\log(1 - D(\mathbf{x}))\big]\,d\mathbf{x}.$$
+Maximizing pointwise over $y = D(\mathbf{x})\in(0,1)$: the function $a\log y + b\log(1-y)$ with $a = p_{\text{data}}(\mathbf{x})$ and $b = p_g(\mathbf{x})$ has derivative $a/y - b/(1-y)$, which vanishes at $y = a/(a+b)$ and is a maximum because the function is concave. Therefore
+$$D^\star_G(\mathbf{x}) = \frac{p_{\text{data}}(\mathbf{x})}{p_{\text{data}}(\mathbf{x}) + p_g(\mathbf{x})}.$$
+This is the Bayes-optimal classifier for equal class priors. Substituting back and writing $m = \frac12(p_{\text{data}} + p_g)$,
+$$V(D^\star_G, G) = -\log 4 + \mathrm{KL}(p_{\text{data}}\Vert m) + \mathrm{KL}(p_g\Vert m) = -\log 4 + 2\,\mathrm{JS}(p_{\text{data}}\Vert p_g),$$
+where the **Jensen-Shannon divergence** $\mathrm{JS}(p\Vert q) = \frac12\mathrm{KL}(p\Vert m) + \frac12\mathrm{KL}(q\Vert m)$ is symmetric, nonnegative, zero only when $p = q$, and at most $\log 2$ (in nats). So if the generator could be optimized over all distributions against an optimal discriminator, the global minimum is $-\log 4$, attained exactly when $p_g = p_{\text{data}}$, where $D^\star\equiv\frac12$.
+
+### A discrete check
+
+Let three outcomes have $p_{\text{data}} = (0.6, 0.4, 0)$ and $p_g = (0.2, 0.3, 0.5)$. Then $D^\star = (0.75, 0.571, 0)$: outcome 3 is never real, so the discriminator rejects it. The mixture is $m = (0.4, 0.35, 0.25)$, $\mathrm{JS} = 0.2292$ nats, and $V(D^\star, G) = -\log 4 + 2(0.2292) = -0.928$. Computing $V$ directly as $0.6\log 0.75 + 0.4\log 0.571 + 0.2\log 0.25 + 0.3\log 0.429 + 0.5\log 1$ gives the same value.
+
+### Why the game is hard
+
+**Saturation and vanishing gradients.** If the supports of $p_{\text{data}}$ and $p_g$ are disjoint, then $\mathrm{JS} = \log 2$ no matter how far apart they are, and a perfect discriminator gives the generator almost no gradient through $\log(1 - D(G(\mathbf{z})))$. The original paper therefore recommends the **non-saturating** generator loss, maximizing $\mathbb{E}[\log D(G(\mathbf{z}))]$ instead; it has the same fixed point but a gradient that does not vanish when the discriminator wins. The **Wasserstein GAN** (Arjovsky, Chintala and Bottou, 2017) replaces the JS-based objective by the Wasserstein-1 distance, estimated by a critic constrained to be 1-Lipschitz, which stays informative for disjoint supports.
+
+**Mode collapse.** A generator can map all noise to a few outputs that fool the current discriminator. The discriminator then learns to reject those, and the generator jumps to others, so the samples can cycle through modes without covering the data distribution.
+
+**Rotational dynamics.** Training alternates gradient steps, a descent for $G$ and an ascent for $D$, on a function that is not convex-concave in the networks' parameters. A minimal caricature is the bilinear game $\min_x\max_y xy$, whose equilibrium is $(0,0)$. Simultaneous gradient steps are $x\leftarrow x-\eta y$, $y\leftarrow y+\eta x$, and
+$$x'^2 + y'^2 = (x-\eta y)^2 + (y+\eta x)^2 = (1+\eta^2)(x^2+y^2),$$
+so the distance to the equilibrium grows by a factor $\sqrt{1+\eta^2}$ per step: the iterates spiral outward. Practical GAN training succeeds through architecture choices, regularization of the discriminator and careful tuning, not through a guarantee, and there are no general convergence results for networks trained this way.
+
+**Theory versus practice.** The optimality result lives in the space of densities, assuming an unlimited discriminator trained to optimality. In practice $G$ is a restricted parametric family, $D$ is a finite network trained a few steps at a time, and $p_g$ has no density. The result explains what the objective measures, not that training reaches it.
+
+### Strengths, limits and uses
+
+GANs produce samples in one forward pass and can be very sharp, but give no likelihood and no direct way to score held-out data (week 11). They have been used for image synthesis and translation, super-resolution and data augmentation; the same capability supports deceptive synthetic media, which is the subject of week 12.
+
+```python
+def play(eta, steps, alternating=False):
+    x, y = 1.0, 1.0
+    for t in range(steps):
+        if alternating:
+            x = x - eta * y
+            y = y + eta * x
+        else:
+            x, y = x - eta * y, y + eta * x
+        print(t + 1, round(x, 4), round(y, 4), round(x * x + y * y, 4))
+
+play(0.1, 3)
+```
+
+@example
+title: Simultaneous gradient play on a bilinear game
+problem: Two players minimize and maximize $V(x, y) = xy$ with simultaneous gradient steps of size $\eta = 0.1$ starting at $(x, y) = (1, 1)$: $x\leftarrow x-\eta\,\partial_xV$, $y\leftarrow y+\eta\,\partial_yV$. Compute two steps and the squared distance to the equilibrium.
+step: The gradients are $\partial_xV = y$ and $\partial_yV = x$, so the updates are $x\leftarrow x-0.1y$ and $y\leftarrow y+0.1x$, both using the old values.
+step: Step 1 from $(1,1)$: $x = 1 - 0.1 = 0.9$, $y = 1 + 0.1 = 1.1$. The squared distance is $0.81 + 1.21 = 2.02$.
+step: Step 2 from $(0.9, 1.1)$: $x = 0.9 - 0.11 = 0.79$, $y = 1.1 + 0.09 = 1.19$. The squared distance is $0.6241 + 1.4161 = 2.0402$.
+step: Check with the identity: $(1+\eta^2)^2\cdot 2 = 1.0201\cdot 2 = 2.0402$. The distance from $(0,0)$ grows every step, although each player follows its own gradient exactly.
+answer: After two steps $(x, y) = (0.79, 1.19)$ and $x^2+y^2 = 2.0402$, up from $2$.
+
+@mistakes
+- Stating that the GAN objective minimizes KL divergence to the data: with an optimal discriminator it is the Jensen-Shannon divergence (up to constants), and the behavior is different.
+- Treating $D^\star$ as something the discriminator can reach in practice: the formula is the optimum over all functions, and a finite network trained alongside a moving generator only approximates it.
+- Concluding that a good discriminator loss means a good generator: a discriminator that wins easily gives the generator little signal, so a perfectly balanced loss is not the goal and the losses are not a quality measure.
+- Believing the equilibrium implies convergence of gradient play: even the bilinear game diverges under simultaneous gradient steps.
+
+@practice num
+prompt: The real data distribution is $\mathcal{N}(0, 1)$ and the generator's distribution is $\mathcal{N}(1, 1)$. What is the optimal discriminator's output $D^\star(x)$ at $x = 1$? Give your answer to three decimal places.
+answer: 0.378
+tol: 0.001
+check: (lambda p, q: p / (p + q))(exp(-0.5 * 1 ** 2) / sqrt(2 * pi), exp(-0.5 * (1 - 1) ** 2) / sqrt(2 * pi))
+hint: Use $D^\star = p_{\text{data}}/(p_{\text{data}}+p_g)$ and note that the normalizing constants cancel; compare the two exponents at $x = 1$.
+solution: At $x = 1$ the real density is proportional to $e^{-1/2} = 0.6065$ and the generator density to $e^{0} = 1$. So $D^\star = 0.6065/(0.6065 + 1) = 0.3775\approx 0.378$: the point sits at the center of the generated distribution, so the discriminator leans toward "fake".
+
+@practice num
+prompt: Let $p_{\text{data}} = (0.5, 0.5, 0)$ and $p_g = (0, 0.5, 0.5)$ over three outcomes. What is $V(D^\star, G)$ in nats? Give your answer to three decimal places.
+answer: -0.693
+tol: 0.001
+check: -log(4) + 2 * (0.5 * (0.5 * log(0.5 / 0.25) + 0.5 * log(0.5 / 0.5)) + 0.5 * (0.5 * log(0.5 / 0.5) + 0.5 * log(0.5 / 0.25)))
+hint: Use $V(D^\star,G) = -\log 4 + 2\,\mathrm{JS}$, with mixture $m = (0.25, 0.5, 0.25)$, and compute each KL divergence from the mixture.
+solution: The mixture is $(0.25, 0.5, 0.25)$. $\mathrm{KL}(p_{\text{data}}\Vert m) = 0.5\log 2 + 0.5\log 1 = 0.3466$, and the same holds for $p_g$, so $\mathrm{JS} = 0.3466$. Then $V = -1.3863 + 0.6931 = -0.693 = -\log 2$. Only the middle outcome is shared, so the divergence is half of the maximum $\log 2$.
+
+@practice mc
+prompt: In the original GAN formulation, when the discriminator is nearly perfect early in training, the term $\log(1-D(G(\mathbf{z})))$ gives the generator a very small gradient. What is the standard remedy?
+choice*: Train the generator to maximize $\log D(G(\mathbf{z}))$ instead, which has the same fixed point and a larger gradient where the discriminator is confident.
+choice: Stop training the discriminator permanently so that it never becomes perfect.
+choice: Replace the generator's noise input by the real data.
+choice: Minimize the KL divergence $\mathrm{KL}(p_{\text{data}}\Vert p_g)$ directly, which has no saturation.
+hint: Compare the gradients of $\log(1-D)$ and $-\log D$ with respect to $D$ near $D = 0$.
+solution: Write $D = \sigma(a)$ for a logit $a$. Then $\partial\log(1-D)/\partial a = -D$, which is nearly zero when $D$ is near 0 (the discriminator confidently rejects the fake), while $\partial\log D/\partial a = 1-D$, which is nearly 1 there. So maximizing $\log D(G(\mathbf{z}))$ keeps a strong gradient exactly when the generator is losing, and it has the same optimum $p_g=p_{\text{data}}$. The other choices either remove the adversary or change the method.
+
+@practice ms
+prompt: Which statements about GANs are correct? Select all that apply.
+choice*: With an optimal discriminator the minimax value equals $-\log 4 + 2\,\mathrm{JS}(p_{\text{data}}\Vert p_g)$.
+choice*: The generator defines an implicit distribution that can be sampled but whose density is generally not available.
+choice*: If $p_{\text{data}}$ and $p_g$ have disjoint supports, $\mathrm{JS} = \log 2$ whatever the distance between the supports.
+choice: Gradient descent-ascent with a small enough step size is guaranteed to converge to the equilibrium of any minimax game.
+hint: Recall the bilinear game $\min_x\max_y xy$ and what it does under simultaneous gradient steps.
+solution: The first three statements follow from the derivation: the optimal discriminator gives the JS form, the generator only provides samples, and for disjoint supports $D^\star$ is exactly 0 or 1 and $\mathrm{JS}$ is $\log 2$. Simultaneous gradient steps on $xy$ expand by $\sqrt{1+\eta^2}$ per step for every $\eta>0$, which contradicts any such guarantee.
+
+@practice self
+prompt: Derive the optimal discriminator $D^\star_G(\mathbf{x}) = p_{\text{data}}(\mathbf{x})/(p_{\text{data}}(\mathbf{x}) + p_g(\mathbf{x}))$ for the GAN value function, explaining why the maximization can be done pointwise and why the stationary point is a maximum.
+hint: Rewrite the generator's expectation as an expectation over $p_g$, combine the two integrals, and maximize the integrand over $D(\mathbf{x})\in(0,1)$ for each $\mathbf{x}$.
+solution: By the change of variables for expectations, $\mathbb{E}_{\mathbf{z}}[\log(1-D(G(\mathbf{z})))] = \int p_g(\mathbf{x})\log(1-D(\mathbf{x}))\,d\mathbf{x}$, so $V = \int[p_{\text{data}}\log D + p_g\log(1-D)]\,d\mathbf{x}$. The discriminator is an arbitrary function and its value at one $\mathbf{x}$ does not constrain its value at another, so $V$ is maximized by maximizing the integrand for each $\mathbf{x}$ separately. With $a = p_{\text{data}}(\mathbf{x})$, $b = p_g(\mathbf{x})$ and $y = D(\mathbf{x})$, $h(y) = a\log y + b\log(1-y)$ has $h'(y) = a/y - b/(1-y)$, which is zero at $y = a/(a+b)$. The second derivative $h''(y) = -a/y^2 - b/(1-y)^2<0$, so $h$ is strictly concave and the stationary point is the maximum. This holds for each $\mathbf{x}$ with $a + b > 0$ (elsewhere the value of $D$ is irrelevant). Hence $D^\star_G = p_{\text{data}}/(p_{\text{data}}+p_g)$.
+rubric: Converts the generator term into an integral against $p_g$ and combines it with the data term.
+rubric: Justifies pointwise maximization by the freedom to choose $D(\mathbf{x})$ independently at each $\mathbf{x}$.
+rubric: Finds the stationary point and shows concavity (second derivative) so it is a maximum.
+
+@quiz num
+prompt: In the bilinear game $\min_x\max_y xy$, simultaneous gradient steps with $\eta = 0.2$ start at $(x, y) = (1, 0)$. What is $x^2 + y^2$ after 3 steps? Give your answer to three decimal places.
+answer: 1.125
+tol: 0.001
+check: float(run("x, y = 1.0, 0.0\nfor _ in range(3):\n    x, y = x - 0.2 * y, y + 0.2 * x\nprint(x * x + y * y)"))
+hint: Each step multiplies $x^2+y^2$ by the same factor, which you can find by expanding $(x-\eta y)^2 + (y+\eta x)^2$.
+solution: The factor is $1+\eta^2 = 1.04$, so after three steps $x^2+y^2 = 1.04^3\cdot 1 = 1.1249$.
+
+@quiz ms
+prompt: Two distributions $p$ and $q$ over the same space have disjoint supports. Which statements are correct?
+choice*: $\mathrm{JS}(p\Vert q) = \log 2$ regardless of how far apart the supports are.
+choice*: The optimal discriminator is exactly 1 on the support of $p$ and exactly 0 on the support of $q$.
+choice: $\mathrm{KL}(p\Vert q)$ is finite while $\mathrm{JS}(p\Vert q)$ is infinite.
+choice: The discriminator's loss gives the generator a gradient pointing toward the support of $p$, whose size grows with the distance.
+hint: Evaluate $p/(p+q)$ on each support and the mixture $m$ in the JS definition.
+solution: On the support of $p$ we have $q = 0$, so $D^\star = 1$; on the support of $q$, $D^\star = 0$. Then $\mathrm{KL}(p\Vert m) = \log 2$ and $\mathrm{KL}(q\Vert m) = \log 2$, so $\mathrm{JS} = \log 2$, a constant that carries no information about distance. In contrast $\mathrm{KL}(p\Vert q)$ is infinite for disjoint supports. A flat divergence provides no useful gradient, which is the motivation for the non-saturating loss and the Wasserstein objective.
+
+@quiz self
+prompt: A paper states: "By the optimality theorem, our GAN converges to the data distribution." Write a referee's paragraph that states precisely what the theorem proves, lists at least three gaps between the theorem and the training procedure, and says what evidence would support a claim about the trained model.
+hint: Separate the statement about $p_g$ and $D^\star$ in the space of densities from what gradient steps on parameters of networks do.
+solution: The theorem says that for a fixed generator the optimal discriminator is $p_{\text{data}}/(p_{\text{data}}+p_g)$, that the value then equals $-\log 4 + 2\,\mathrm{JS}(p_{\text{data}}\Vert p_g)$, and that the global minimum over $p_g$ is $-\log 4$ attained only at $p_g = p_{\text{data}}$. It does not say that training reaches this point. Gaps: (i) the discriminator is a finite network trained a few steps per generator update, not optimal for each generator; (ii) the generator minimizes over network parameters, not over all densities, so the minimizer of $V$ over the family need not be $p_{\text{data}}$ and the objective is nonconvex in the parameters; (iii) simultaneous or alternating gradient steps on a minimax problem need not converge (they diverge on the bilinear game); (iv) in practice the non-saturating loss replaces the original one, so the stated value function is not the one being optimized; (v) $p_g$ may have no density, and for low-dimensional supports the JS divergence is flat. The claim about the trained model needs evidence such as sample-based metrics against held-out data, precision and recall measures of coverage and fidelity, checks for memorization, and repeated runs with different seeds; these evaluate the model, not the theorem.
+rubric: States the theorem accurately (optimal discriminator, JS form, global minimum at $p_g=p_{\text{data}}$) and notes it does not assert convergence.
+rubric: Names at least three real gaps between the theorem and practice.
+rubric: Proposes empirical evidence appropriate for a claim about the trained model, including variability across runs.

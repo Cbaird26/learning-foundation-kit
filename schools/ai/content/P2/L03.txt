@@ -1,0 +1,150 @@
+@lesson
+title: Variational inference and the evidence lower bound
+summary: Derive the evidence lower bound two ways, compute it for small discrete and Gaussian examples, and explain what optimizing it does to an approximate posterior.
+objective: Derive $\log p(x) = \mathrm{ELBO} + \mathrm{KL}(q \,\Vert\, p(z\mid x))$ and use it to explain why the ELBO is a lower bound.
+objective: Compute an ELBO and the KL divergence between Gaussians on small examples.
+objective: Describe the behavior of mean-field variational inference and of the reverse KL divergence.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the sections on variational inference and on the evidence lower bound.
+
+@article
+Week 1 had a posterior in closed form, because Gaussian prior times Gaussian likelihood is Gaussian. For almost every interesting model (a mixture, a neural decoder, a topic model) the posterior $p(z\mid x) = p(x,z)/p(x)$ has an intractable normalizer $p(x) = \int p(x,z)\,dz$. There are two broad responses: sample from the posterior (Markov chain Monte Carlo), or pick a tractable family of distributions $q$ and find the member closest to the posterior. The second response is **variational inference** (VI). It turns inference into optimization, and that is why it scales to the models of the next weeks.
+
+### The evidence lower bound
+
+Fix an observation $x$ and any distribution $q(z)$ over the latent variable. The **evidence lower bound** (ELBO) is
+
+$$\mathcal{L}(q) = \mathbb{E}_{q(z)}\big[\log p(x, z) - \log q(z)\big].$$
+
+**Derivation 1 (Jensen).** Multiply and divide inside the integral by $q$ and use that $\log$ is concave:
+$$\log p(x) = \log\int q(z)\frac{p(x,z)}{q(z)}\,dz \;\ge\; \int q(z)\log\frac{p(x,z)}{q(z)}\,dz = \mathcal{L}(q).$$
+
+**Derivation 2 (the gap).** Substitute $p(x,z) = p(z\mid x)\,p(x)$:
+$$\mathcal{L}(q) = \mathbb{E}_q\big[\log p(z\mid x) - \log q(z)\big] + \log p(x) = \log p(x) - \mathrm{KL}\big(q(z)\,\Vert\,p(z\mid x)\big).$$
+Hence the identity
+$$\boxed{\log p(x) = \mathcal{L}(q) + \mathrm{KL}\big(q(z)\,\Vert\,p(z\mid x)\big)}.$$
+Because $\mathrm{KL}\ge 0$ with equality only when $q = p(z\mid x)$, the ELBO is a lower bound for every $q$, and **maximizing the ELBO over $q$ is the same as minimizing the KL divergence from $q$ to the true posterior**, since $\log p(x)$ does not depend on $q$. The quantity we can compute (the ELBO) tells us how close we are to the one we cannot (the posterior), up to the unknown constant $\log p(x)$.
+
+A second useful form splits the ELBO into a fit term and a regularizer:
+$$\mathcal{L}(q) = \mathbb{E}_q[\log p(x\mid z)] - \mathrm{KL}\big(q(z)\,\Vert\,p(z)\big).$$
+
+### A discrete check
+
+Let $z\in\{0,1\}$ with prior $(0.5, 0.5)$ and likelihoods $p(x\mid z) = (0.8, 0.2)$ for the observed $x$. Then $p(x,z) = (0.4, 0.1)$, $p(x) = 0.5$, and the posterior is $(0.8, 0.2)$. With $q = (0.5, 0.5)$:
+$$\mathcal{L}(q) = 0.5\log\frac{0.4}{0.5} + 0.5\log\frac{0.1}{0.5} \approx -0.916,\qquad \mathrm{KL}(q\Vert p(z\mid x)) = 0.5\log\frac{0.5}{0.8} + 0.5\log\frac{0.5}{0.2} \approx 0.223.$$
+Their sum is $-0.693 = \log 0.5$, as the identity requires. With $q$ equal to the posterior, $\mathcal{L} = \log p(x)$ exactly.
+
+### Gaussian KL
+
+You will use this closed form constantly. For univariate Gaussians
+$$\mathrm{KL}\big(\mathcal{N}(\mu_1,\sigma_1^2)\,\Vert\,\mathcal{N}(\mu_2,\sigma_2^2)\big) = \log\frac{\sigma_2}{\sigma_1} + \frac{\sigma_1^2 + (\mu_1-\mu_2)^2}{2\sigma_2^2} - \frac12,$$
+and against a standard normal prior it reduces to $\frac12(\sigma_1^2 + \mu_1^2 - 1 - \log\sigma_1^2)$. For a diagonal Gaussian in $d$ dimensions, sum over coordinates.
+
+### Mean-field VI and coordinate ascent
+
+The simplest family is the **mean-field** family $q(\mathbf{z}) = \prod_j q_j(z_j)$. Maximizing the ELBO over one factor with the others fixed gives the update
+$$\log q_j^\star(z_j) = \mathbb{E}_{q_{-j}}\big[\log p(\mathbf{x},\mathbf{z})\big] + \text{const},$$
+and cycling through the factors is **coordinate ascent variational inference** (CAVI); each update cannot decrease the ELBO. For a Gaussian target with mean $\boldsymbol{\mu}$ and precision matrix $\boldsymbol{\Lambda}$, the optimal factors are $\mathcal{N}(\mu_j, \Lambda_{jj}^{-1})$. Since $\Lambda_{jj}^{-1}$ is at most the true marginal variance $\Sigma_{jj}$, with strict inequality when the coordinates are correlated, mean-field **underestimates** posterior variance in correlated Gaussians.
+
+### What the reverse KL does
+
+VI minimizes $\mathrm{KL}(q\Vert p)$, not $\mathrm{KL}(p\Vert q)$. The reverse KL is infinite if $q$ puts mass where $p$ has none, so $q$ avoids low-probability regions: it is **mode-seeking**. If the posterior has two well-separated modes and $q$ is a single Gaussian, a minimizer typically settles on one mode and ignores the other; minimizing the forward KL would instead stretch over both. Neither is "right": the choice trades missing probability mass against placing mass in the wrong place, and it changes what downstream uncertainty estimates mean.
+
+### Caveats a careful reader keeps in mind
+
+The ELBO bounds $\log p(x)$ from below with an unknown gap, so comparing ELBOs of two models compares their evidences only if the gaps are similar. The optimum is over the chosen family, so an expressive $q$ matters more than a clever optimizer. The ELBO is generally non-concave in the parameters of $q$, and CAVI finds local optima. Next week the family of $q$ will be a neural network, and the expectation will be estimated by sampling.
+
+### In code
+
+```python
+from math import log
+
+prior = [0.5, 0.5]
+lik = [0.8, 0.2]
+joint = [p * l for p, l in zip(prior, lik)]
+q = [0.5, 0.5]
+elbo = sum(qi * (log(ji) - log(qi)) for qi, ji in zip(q, joint))
+print(round(elbo, 4), round(log(sum(joint)), 4))
+```
+
+@example
+title: ELBO gap in a Gaussian model
+problem: Let $z\sim\mathcal{N}(0,1)$ and $x\mid z\sim\mathcal{N}(z, 1)$, and observe $x = 2$. Compute $\log p(x)$, the ELBO for the approximation $q = \mathcal{N}(0,1)$, and check that the gap equals $\mathrm{KL}(q\Vert p(z\mid x))$.
+step: The posterior is Gaussian: precision $1 + 1 = 2$ and mean $2/2 = 1$, so $p(z\mid x) = \mathcal{N}(1, 0.5)$. The marginal is $x\sim\mathcal{N}(0, 2)$, so $\log p(x) = -\frac12\log(4\pi) - \frac{2^2}{2\cdot 2} \approx -1.2655 - 1 = -2.2655$.
+step: Fit term for $q = \mathcal{N}(0,1)$: $\mathbb{E}_q[\log p(x\mid z)] = -\frac12\log 2\pi - \frac12\mathbb{E}[(2 - z)^2]$ with $\mathbb{E}[(2-z)^2] = (2 - 0)^2 + 1 = 5$, so it equals $-0.9189 - 2.5 = -3.4189$.
+step: Regularizer: $q$ equals the prior, so $\mathrm{KL}(q\Vert p(z)) = 0$ and $\mathcal{L}(q) = -3.4189$.
+step: The gap is $\log p(x) - \mathcal{L}(q) = -2.2655 + 3.4189 = 1.1534$.
+step: Direct KL: $\mathrm{KL}(\mathcal{N}(0,1)\Vert\mathcal{N}(1,0.5)) = \log\frac{\sqrt{0.5}}{1} + \frac{1 + 1}{2\cdot 0.5} - \frac12 = -0.3466 + 2 - 0.5 = 1.1534$. The identity holds, and $q = \mathcal{N}(1, 0.5)$ would close the gap to zero.
+answer: $\log p(x) \approx -2.266$, $\mathcal{L}(q)\approx -3.419$, and the gap $1.153$ equals $\mathrm{KL}(q\Vert p(z\mid x))$.
+
+@mistakes
+- Writing the VI objective as $\mathrm{KL}(p\Vert q)$: the ELBO identity involves $\mathrm{KL}(q\Vert p(z\mid x))$, and the direction determines the mode-seeking behavior.
+- Treating the ELBO as an approximation to $\log p(x)$ with no error: it is a bound, and the gap is the posterior KL, which is unknown.
+- Forgetting that $\log p(x)$ is constant in $q$: this is why optimizing the ELBO and minimizing the posterior KL are the same problem.
+- Expecting mean-field to recover correlations or the true marginal variances: independence in $q$ cannot represent dependence in the posterior.
+
+@practice num
+prompt: Compute $\mathrm{KL}\big(\mathcal{N}(1.5,\,0.4)\,\Vert\,\mathcal{N}(0,\,1)\big)$ in nats, where the second argument of each normal is the variance. Give your answer to three decimal places.
+answer: 1.283
+tol: 0.001
+check: 0.5 * (0.4 + 1.5 ** 2 - 1 - log(0.4))
+hint: Use $\frac12(\sigma^2 + \mu^2 - 1 - \log\sigma^2)$ with $\mu = 1.5$ and $\sigma^2 = 0.4$.
+solution: Substituting, $\frac12(0.4 + 2.25 - 1 + 0.9163) = \frac12(2.5663) \approx 1.283$ nats.
+
+@practice num
+prompt: A latent variable $z$ takes three values, and for the observed $x$ the joint probabilities are $p(x, z) = (0.1, 0.2, 0.1)$. For the approximating distribution $q = (0.5, 0.3, 0.2)$, compute the ELBO $\sum_z q(z)\log\frac{p(x,z)}{q(z)}$ in nats. Give your answer to three decimal places.
+answer: -1.065
+tol: 0.001
+check: sum(a * log(b / a) for a, b in zip([0.5, 0.3, 0.2], [0.1, 0.2, 0.1]))
+hint: Compute the three ratios $p(x,z)/q(z)$, take logs, and average with weights $q$. Compare the result with $\log p(x) = \log 0.4$.
+solution: The ratios are $0.2$, $0.667$ and $0.5$, with logs $-1.609$, $-0.405$ and $-0.693$. Weighting by $q$: $0.5(-1.609) + 0.3(-0.405) + 0.2(-0.693) \approx -1.065$. This is below $\log 0.4 = -0.916$, and the difference $0.149$ is $\mathrm{KL}(q\Vert p(z\mid x))$ for the posterior $(0.25, 0.5, 0.25)$.
+
+@practice mc
+prompt: For a fixed observation $x$, you maximize the ELBO over the approximating distribution $q(z)$ (with the model fixed). What does this minimize?
+choice*: $\mathrm{KL}\big(q(z)\,\Vert\,p(z\mid x)\big)$
+choice: $\mathrm{KL}\big(p(z\mid x)\,\Vert\,q(z)\big)$
+choice: $\mathrm{KL}\big(q(z)\,\Vert\,p(z)\big)$, the divergence from the prior alone
+choice: $\log p(x)$, the model evidence
+hint: Use the identity $\log p(x) = \mathcal{L}(q) + \mathrm{KL}(\cdot\Vert\cdot)$ and note which terms depend on $q$.
+solution: The evidence $\log p(x)$ does not depend on $q$, so raising $\mathcal{L}(q)$ lowers $\mathrm{KL}(q\Vert p(z\mid x))$ by the same amount. The prior-KL appears inside the ELBO as one of its two terms but is not what the whole optimization minimizes, and the forward KL is the objective of a different method.
+
+@practice ms
+prompt: Which of these statements about mean-field variational inference with the reverse KL divergence $\mathrm{KL}(q\Vert p)$ are true? Select all that apply.
+choice*: A single-Gaussian $q$ fitted to a bimodal posterior tends to cover only one mode.
+choice*: A factorized $q$ cannot represent correlations between latent variables.
+choice*: The ELBO is a lower bound on $\log p(x)$ for every valid $q$, not only for the optimum.
+choice: The fitted $q$ overestimates the variance of a correlated Gaussian posterior.
+hint: Recall the identity with the posterior KL, the formula $\Lambda_{jj}^{-1}$ for mean-field Gaussians, and why the reverse KL penalizes mass outside the posterior.
+solution: The bound holds for all $q$ because the KL term is nonnegative. A product distribution has zero correlation by construction, and the reverse KL punishes mass where $p$ is small, which favors one mode. For correlated Gaussians the mean-field variances are $\Lambda_{jj}^{-1}\le\Sigma_{jj}$, so variance is underestimated, not overestimated.
+
+@practice self
+prompt: Derive the identity $\log p(x) = \mathcal{L}(q) + \mathrm{KL}(q(z)\Vert p(z\mid x))$ starting from the definition $\mathcal{L}(q) = \mathbb{E}_q[\log p(x,z) - \log q(z)]$, and conclude that $\mathcal{L}(q)\le\log p(x)$ with equality if and only if $q = p(z\mid x)$ almost everywhere. State any condition on the supports.
+hint: Rewrite $p(x,z)$ using the product rule with the posterior, and recognize the KL divergence.
+solution: Assume $q$ is absolutely continuous with respect to the posterior (so $p(z\mid x)>0$ wherever $q(z)>0$), which keeps the KL finite and the logarithms defined. Write $p(x,z) = p(z\mid x)\,p(x)$. Then $\mathcal{L}(q) = \mathbb{E}_q[\log p(z\mid x) + \log p(x) - \log q(z)] = \log p(x) - \mathbb{E}_q\big[\log\frac{q(z)}{p(z\mid x)}\big] = \log p(x) - \mathrm{KL}(q\Vert p(z\mid x))$, because $\log p(x)$ is constant under the expectation. Rearranging gives the identity. Gibbs' inequality gives $\mathrm{KL}\ge 0$, with equality if and only if $q = p(z\mid x)$ almost everywhere, so $\mathcal{L}(q)\le\log p(x)$ with equality exactly then.
+rubric: Applies the product rule $p(x,z) = p(z\mid x)p(x)$ and pulls $\log p(x)$ out of the expectation.
+rubric: Identifies the remaining expectation as $\mathrm{KL}(q\Vert p(z\mid x))$ with the correct direction.
+rubric: Concludes the bound and the equality condition from nonnegativity of KL, and mentions the support condition.
+
+@quiz num
+prompt: The posterior over two latent variables is Gaussian with covariance $\boldsymbol{\Sigma} = \begin{pmatrix}2 & 1\\ 1 & 1\end{pmatrix}$. A fully factorized Gaussian $q(z_1)q(z_2)$ is fitted by minimizing $\mathrm{KL}(q\Vert p)$. What is the variance of the fitted factor for $z_2$?
+answer: 0.5
+tol: 0.0001
+check: 1 / inv([[2, 1], [1, 1]])[1][1]
+hint: The mean-field variance of coordinate $j$ is $1/\Lambda_{jj}$, where $\boldsymbol{\Lambda} = \boldsymbol{\Sigma}^{-1}$ is the precision matrix.
+solution: The determinant of $\boldsymbol{\Sigma}$ is $2 - 1 = 1$, so $\boldsymbol{\Lambda} = \begin{pmatrix}1 & -1\\ -1 & 2\end{pmatrix}$. Then $\Lambda_{22} = 2$ and the fitted variance is $1/2$, half of the true marginal variance $\Sigma_{22} = 1$.
+
+@quiz mc
+prompt: The exact posterior over a latent variable is an equal mixture of two well-separated Gaussians. You fit a single Gaussian $q$ by minimizing $\mathrm{KL}(q\Vert p)$. What behavior should you expect from the optimizer?
+choice*: It tends to place $q$ on one of the two modes with a variance close to that mode's variance.
+choice: It tends to place $q$ between the modes with a variance large enough to cover both.
+choice: It returns exactly the posterior mean and variance of the mixture.
+choice: It becomes uniform, because the reverse KL ignores the shape of $p$.
+hint: The reverse KL is large when $q$ puts mass where $p$ is nearly zero. What does a broad $q$ between the modes do?
+solution: A broad $q$ covering both modes puts mass in the empty region between them, where $p$ is tiny, and $\log(q/p)$ there is large and positive. A narrow $q$ on one mode only loses the other mode, which the reverse KL penalizes less. Matching the mixture's mean and variance is the behavior of the forward KL (moment matching).
+
+@quiz self
+prompt: A colleague trains two latent variable models and reports ELBOs of $-80.0$ for model A and $-82.0$ for model B on the same held-out data, concluding that model A has the higher evidence. Explain what this does and does not establish, and name two things you would check.
+hint: Use $\log p(x) = \mathcal{L} + \mathrm{KL}$ and think about the two gaps.
+solution: Both numbers are lower bounds, $\log p_A(x) = -80 + \mathrm{gap}_A$ and $\log p_B(x) = -82 + \mathrm{gap}_B$ with $\mathrm{gap}\ge 0$ unknown, so the ELBO ordering establishes the ordering of the evidences only if $\mathrm{gap}_B - \mathrm{gap}_A < 2$; for example, if the approximate posterior is poorer for model A the true advantage may vanish or reverse. The comparison can still be a fair criterion in its own right ("which model plus inference procedure gives the better bound"), but it should be described that way. Things to check: the variational family and training budget of the two models (same encoder capacity and optimization), a tighter bound such as an importance-weighted estimate with many samples for both, and the variance of the Monte Carlo ELBO estimates across seeds, since a 2-nat difference may be within noise.
+rubric: Explains that the ELBO is a bound with an unknown gap equal to the posterior KL, so the ranking is not guaranteed.
+rubric: States a condition under which the ranking is valid or what the numbers do establish.
+rubric: Names concrete checks such as a tighter bound, equal inference capacity, or variability across runs.

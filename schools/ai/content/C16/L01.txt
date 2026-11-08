@@ -151,45 +151,59 @@ hint: The weights are the squared distances to the center 0; divide the weight o
 solution: The squared distances are $0, 1, 16, 81$, with total 98, so the probability is $81/98 \approx 0.827$.
 
 @practice code
-prompt: Write `kmeans(points, centers, iters)` that runs exactly `iters` iterations of Lloyd's algorithm and returns the final centers as a list of lists of floats. Each iteration assigns every point to its nearest center (lowest index on ties), then moves each center to the mean of its points; a center with no points stays where it is. `points` and `centers` are lists of lists of floats, and the starting `centers` must not be modified. For example, `kmeans([[0.0], [2.0]], [[0.0], [3.0]], 1)` returns `[[0.0], [2.0]]`, because the point 2.0 is closer to the center 3.0.
+prompt: Write `kmeans(points, centers, max_updates)` that runs Lloyd's algorithm until the assignments stop changing and returns a tuple `(centers, J, updates)`. Each pass assigns every point to its nearest center (squared Euclidean distance, lowest index on ties). Stop if these assignments are the same as in the previous pass, or if `max_updates` updates have already been made; otherwise move each center to the mean of its points (a center with no points stays where it is), count one update and start the next pass. Return the final centers as a list of lists of floats (without modifying the starting `centers`), the k-means objective $J$ of the last pass's assignments with the final centers, and the number of updates made. For example, `kmeans([[0.0], [2.0]], [[0.0], [3.0]], 10)` returns `([[0.0], [2.0]], 0.0, 1)`: after one update the centers sit on the points, and the second pass repeats the assignments.
 starter:
 ```python
-def kmeans(points, centers, iters):
-    return [list(c) for c in centers]
+def kmeans(points, centers, max_updates):
+    return [list(c) for c in centers], 0.0, 0
 ```
 tests:
 ```python
-got = kmeans([[0.0], [2.0], [3.0], [9.0]], [[0.0], [2.0]], 1)
-assert all(abs(a[0] - b) < 1e-9 for a, b in zip(got, [0.0, 14 / 3]))
-got = kmeans([[0.0], [2.0], [3.0], [9.0]], [[0.0], [2.0]], 5)
-assert all(abs(a[0] - b) < 1e-9 for a, b in zip(got, [5 / 3, 9.0]))
+def close(got, want_c, want_J, want_u):
+    c, J, u = got
+    return (u == want_u and abs(J - want_J) < 1e-9 and len(c) == len(want_c)
+            and all(abs(a - b) < 1e-9
+                    for g, w in zip(c, want_c) for a, b in zip(g, w)))
+
+pts = [[0.0], [2.0], [3.0], [9.0]]
+assert close(kmeans(pts, [[0.0], [2.0]], 10), [[5 / 3], [9.0]], 14 / 3, 3)
+assert close(kmeans(pts, [[0.0], [2.0]], 1), [[0.0], [14 / 3]], 230 / 9, 1)
 P = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [8.0, 8.0], [8.0, 9.0], [9.0, 8.0]]
-got = kmeans(P, [[0.0, 0.0], [1.0, 0.0]], 6)
 want = [[1 / 3, 1 / 3], [25 / 3, 25 / 3]]
-assert all(abs(a - b) < 1e-9 for g, w in zip(got, want) for a, b in zip(g, w))
-got = kmeans([[0.0], [1.0], [10.0]], [[0.0], [100.0], [10.0]], 3)
-assert all(abs(a[0] - b) < 1e-9 for a, b in zip(got, [0.5, 100.0, 10.0]))
+assert close(kmeans(P, [[0.0, 0.0], [1.0, 0.0]], 20), want, 8 / 3, 2)
+got = kmeans([[0.0], [1.0], [10.0]], [[0.0], [100.0], [10.0]], 10)
+assert close(got, [[0.5], [100.0], [10.0]], 0.5, 1)
+assert close(kmeans([[1.0], [5.0]], [[0.0], [2.0]], 10), [[1.0], [5.0]], 0.0, 1)
 start = [[0.0], [2.0]]
-assert kmeans([[0.0], [2.0], [3.0]], start, 0) == [[0.0], [2.0]]
+assert close(kmeans([[0.0], [2.0], [3.0]], start, 0), [[0.0], [2.0]], 1.0, 0)
 assert start == [[0.0], [2.0]]
 ```
 model:
 ```python
-def kmeans(points, centers, iters):
-    """Run `iters` iterations of Lloyd's algorithm; return the new centers."""
+def kmeans(points, centers, max_updates):
+    """Lloyd's algorithm until the assignments repeat; return (centers, J, updates)."""
     centers = [list(c) for c in centers]
-    for _ in range(iters):
-        groups = [[] for _ in centers]
+    labels, updates = None, 0
+    while True:
+        new = []
         for p in points:
-            dists = [sum((x - y) ** 2 for x, y in zip(p, c)) for c in centers]
-            groups[dists.index(min(dists))].append(p)
-        for j, members in enumerate(groups):
+            d = [sum((x - y) ** 2 for x, y in zip(p, c)) for c in centers]
+            new.append(d.index(min(d)))
+        stop = new == labels or updates == max_updates
+        labels = new
+        if stop:
+            break
+        for j in range(len(centers)):
+            members = [p for p, l in zip(points, labels) if l == j]
             if members:
                 centers[j] = [sum(col) / len(members) for col in zip(*members)]
-    return centers
+        updates += 1
+    J = sum(sum((x - y) ** 2 for x, y in zip(p, centers[l]))
+            for p, l in zip(points, labels))
+    return centers, J, updates
 ```
-hint: Inside the loop, build one list of members per center, then replace each center that has members by the coordinate-wise mean of its members.
-solution: `dists.index(min(dists))` picks the lowest index on ties. Copying the starting centers avoids changing the caller's list, and skipping empty groups keeps their centers fixed, which the fourth test checks. The first two tests differ only in the number of iterations, so a function that stops after one pass fails the second.
+hint: Keep the previous pass's assignments, starting from `None`. In each pass compute the new assignments; stop if they equal the previous ones or the update budget is spent, and otherwise update the centers and count the update. Compute $J$ at the end from the last assignments.
+solution: When a pass repeats the previous assignments, the centers would not move, so the algorithm has converged. The first test needs three updates and a fourth pass to see this, so a function that always makes `max_updates` updates returns the wrong count. With `max_updates` equal to 1, $J$ must use the assignments to the final centers ($230/9 \approx 25.56$), not the assignments made before the update. The tie test fails if the point 1.0 goes to the higher index, and the empty-cluster test checks that the center 100.0 stays where it is.
 
 @quiz text
 prompt: What does this program print?
