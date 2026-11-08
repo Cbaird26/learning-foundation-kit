@@ -16,7 +16,7 @@ An episode is a list of steps `(s, a, r)`: the agent was in state `s`, took acti
 
 A state can appear several times in one episode. **First-visit MC** averages, for each state, the return that follows its first visit in each episode. **Every-visit MC** averages the returns after all visits. Take $\gamma = 0.5$ and two episodes: episode 1 visits A (reward 2), then B (reward $-1$), then A again (reward 4); episode 2 visits B (reward 3), then A (reward 1). The returns are $(2.5, 1, 4)$ in episode 1 and $(3.5, 1)$ in episode 2. First-visit MC gives $V(A) = (2.5 + 1)/2 = 1.75$ and $V(B) = (1 + 3.5)/2 = 2.25$; every-visit MC gives $V(A) = (2.5 + 4 + 1)/3 = 2.5$ and the same $V(B)$.
 
-Both estimates converge to $v_\pi(s)$ as the number of episodes grows. First-visit returns are independent, identically distributed samples with expected value $v_\pi(s)$, so that estimate is unbiased; every-visit estimates are biased for finite data but also consistent. MC does not **bootstrap**: it never uses another state's estimate to update this one, so the estimate of each state is independent of the estimates of other states, and the cost of estimating one state does not grow with the size of the state space. The price is that returns are noisy: they depend on many random steps, so the variance is high.
+Both estimates converge to $v_\pi(s)$ as the number of episodes grows. First-visit returns are independent, identically distributed samples with expected value $v_\pi(s)$, so that estimate is unbiased; every-visit estimates are biased for finite data but also consistent. MC does not **bootstrap**: it never uses another state's estimate to update this one, so the estimate of each state is computed without using the estimates of other states, and the cost of estimating one state does not grow with the size of the state space. The price is that returns are noisy: they depend on many random steps, so the variance is high.
 
 The averages can be kept incrementally, $V(s) \leftarrow V(s) + \tfrac{1}{N(s)}\,(G - V(s))$, or with a constant step size, $V(s) \leftarrow V(s) + \alpha\,(G - V(s))$, which tracks a changing policy or environment.
 
@@ -107,30 +107,28 @@ hint: Think about what the return of a visit is and when it can be computed.
 solution: Both methods average actual returns, which have expected value $v_\pi(s)$, so both are consistent. Neither bootstraps from other estimates, and both need the episode to finish before the returns are known.
 
 @practice code
-prompt: Write `mc_q_prediction(episodes, gamma)` for first-visit Monte Carlo prediction of action values. `episodes` is a list of episodes, each a list of `(state, action, reward)` steps (the reward follows the action). For each `(state, action)` pair, average the return following its first occurrence in each episode that contains it. Return a dictionary keyed by `(state, action)` that contains only the pairs that occurred. For example, `mc_q_prediction([[('a', 'x', 1)]], 0.9)` returns `{('a', 'x'): 1.0}`.
+prompt: Write `mc_greedy(episodes, gamma)` for first-visit Monte Carlo control without a model. `episodes` is a list of episodes, each a list of `(state, action, reward)` steps (the reward follows the action; states and actions are strings). First estimate $q(s, a)$ for every pair that occurred: the average, over the episodes that contain the pair, of the return that follows the pair's first occurrence in that episode. Then return a dictionary that maps every state that occurred to its greedy action, chosen only among the actions tried in that state. If two actions have exactly equal estimates, choose the one that comes first alphabetically. For example, `mc_greedy([[('a', 'x', 1)]], 0.9)` returns `{'a': 'x'}`.
 starter:
 ```python
-def mc_q_prediction(episodes, gamma):
+def mc_greedy(episodes, gamma):
     pass
 ```
 tests:
 ```python
-ea = [('P', 'u', 1), ('Q', 'u', 0), ('P', 'v', 5), ('P', 'u', 2)]
-eb = [('P', 'v', 2), ('Q', 'u', 4)]
-q = mc_q_prediction([ea, eb], 0.9)
-assert set(q) == {('P', 'u'), ('Q', 'u'), ('P', 'v')}
-assert abs(q[('P', 'u')] - 6.508) < 1e-9
-assert abs(q[('Q', 'u')] - 5.06) < 1e-9
-assert abs(q[('P', 'v')] - 6.2) < 1e-9
-assert mc_q_prediction([], 0.9) == {}
-q = mc_q_prediction([ea], 0.0)
-assert abs(q[('P', 'u')] - 1.0) < 1e-9 and abs(q[('P', 'v')] - 5.0) < 1e-9
-assert mc_q_prediction([[('a', 'x', 1)]], 0.9) == {('a', 'x'): 1.0}
+e1 = [('M', 'a', 0), ('N', 'x', 1), ('M', 'a', 6), ('M', 'b', 2)]
+e2 = [('M', 'b', 5), ('N', 'y', 0)]
+e3 = [('M', 'a', 1), ('N', 'x', 3)]
+assert mc_greedy([e1, e2, e3], 0.5) == {'M': 'b', 'N': 'x'}
+assert mc_greedy([e1, e3], 0.5) == {'M': 'a', 'N': 'x'}
+assert mc_greedy([[('T', 'q', 1)], [('T', 'p', 1)]], 0.9) == {'T': 'p'}
+assert mc_greedy([[('U', 'l', -1)], [('U', 'r', -3)]], 0.9) == {'U': 'l'}
+assert mc_greedy([], 0.5) == {}
+assert mc_greedy([[('a', 'x', 1)]], 0.9) == {'a': 'x'}
 ```
 model:
 ```python
-def mc_q_prediction(episodes, gamma):
-    """First-visit Monte Carlo estimate of q for visited pairs."""
+def mc_greedy(episodes, gamma):
+    """Greedy policy from first-visit Monte Carlo estimates of q."""
     total, count = {}, {}
     for episode in episodes:
         returns = [0.0] * len(episode)
@@ -145,10 +143,15 @@ def mc_q_prediction(episodes, gamma):
             seen.add((s, a))
             total[(s, a)] = total.get((s, a), 0.0) + returns[t]
             count[(s, a)] = count.get((s, a), 0) + 1
-    return {k: total[k] / count[k] for k in total}
+    policy, best = {}, {}
+    for s, a in sorted(total):
+        q = total[(s, a)] / count[(s, a)]
+        if s not in best or q > best[s]:
+            policy[s], best[s] = a, q
+    return policy
 ```
-hint: Compute the returns of each episode backward, then add the return to the running total of a pair only the first time that pair appears in the episode.
-solution: The key is the pair `(state, action)`, not the state alone. In the first episode `('P', 'u')` appears twice, and only the return of its first occurrence (6.508) counts, while `('P', 'v')` appears in both episodes and is averaged over 6.8 and 5.6. The `gamma = 0` test keeps only the immediate reward.
+hint: Estimate the value of each (state, action) pair from the first occurrence in each episode, then pick the best action per state; visit the pairs in sorted order and replace the incumbent only when strictly better.
+solution: The estimates are keyed by the pair, not the state alone. With $\gamma = 0.5$ the first-visit estimates are $q(M, a) = 2.375$ and $q(M, b) = 3.5$, so `b` is greedy in state M; an every-visit average would count the second occurrence of `('M', 'a')` (return 6) and give about 3.92, which would flip the answer in the first test. Sorting the pairs makes ties go to the alphabetically first action.
 
 @practice code
 prompt: Write `mc_constant_alpha(episodes, gamma, alpha)` for every-visit Monte Carlo prediction with a constant step size. Start with an empty dictionary `V` (an unseen state counts as 0.0). Process the episodes in the given order; for each episode compute all returns first, then visit the steps from the first to the last and apply `V[s] += alpha * (G - V[s])` for every step (so a state that occurs twice is updated twice). Each episode is a list of `(state, action, reward)` steps. Return `V`.

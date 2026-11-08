@@ -1,0 +1,119 @@
+@lesson
+title: Induction heads and in-context learning
+summary: Explain the two-head induction circuit, compute attention scores and a prefix-matching score from supplied numbers, and assess how much of in-context learning the evidence attributes to induction heads.
+objective: Compute scaled dot-product attention weights for a small query and set of keys.
+objective: Describe how a previous-token head and an induction head compose to complete the pattern A B ... A, and why this needs at least two layers.
+objective: Compute a prefix-matching score and an in-context learning score.
+objective: State which claims about induction heads and in-context learning are well supported and which are open.
+reading: Interpretable Machine Learning by Christoph Molnar for background on interpretation methods; for this topic, read the sections of Elhage and colleagues (2021) on one-layer and two-layer attention-only models, and Olsson and colleagues (2022).
+
+@article
+Feed a language model a sequence of random tokens, and then the same sequence again. On the first copy the model can only guess; on the second its loss collapses, because everything it needs to predict next appeared earlier. Nothing about the tokens' meaning helps, so the model must be doing something purely structural: *find where the current token occurred before, and copy what came next*. This week we study the mechanism, one of the best-understood circuits in transformers.
+
+### Attention scores
+
+An attention head at position $i$ forms a query $\mathbf{q}_i$ and scores each earlier position $j$ by its key $\mathbf{k}_j$,
+
+$$s_{ij} = \frac{\mathbf{q}_i^\top \mathbf{k}_j}{\sqrt{d_k}}, \qquad a_{ij} = \frac{e^{s_{ij}}}{\sum_{j' \le i} e^{s_{ij'}}},$$
+
+where $d_k$ is the key dimension and the sum runs over positions up to $i$ (causal masking). The head's output at $i$ is the attention-weighted sum of the **value** vectors, passed through the output matrix. Which positions a head attends to is decided by the QK circuit of week 4; what it moves is decided by the OV circuit.
+
+### The induction pattern
+
+An **induction head** completes patterns of the form $[A][B] \dots [A] \rightarrow [B]$: when it sees token $A$ again, it attends to the position *after* the previous occurrence of $A$, and its OV circuit copies the token there into the output logits, raising the probability of $B$.
+
+Olsson and colleagues (2022) and Elhage and colleagues (2021) showed that this needs two heads in different layers. A **previous-token head** in an early layer attends from each position to the one before it and writes "my previous token was $X$" into the residual stream at each position. The **induction head** in a later layer uses **K-composition**: its keys are computed from the residual stream that now contains this information, so the key at the position of $B$ says "I follow an $A$". The query at the current $A$ matches those keys, so attention lands on $B$, and the OV circuit copies $B$. A one-layer attention-only model cannot do this and instead learns weaker patterns over token triples (skip-trigrams).
+
+### Two scores
+
+To find induction heads in a trained model, one feeds sequences with repeats and computes, for each head, a **prefix-matching score**. In the version used here: for each destination position $i$ whose current token appeared earlier at positions $j < i$, take the total attention weight $a_{i,j+1}$ placed on the positions that *followed* those earlier occurrences, and average over all such $i$.
+
+Take tokens $[5, 7, 2, 5, 7, 2]$ and suppose a head's attention rows at positions 3, 4 and 5 (over positions $0..3$, $0..4$ and $0..5$) are $(0.05, 0.80, 0.05, 0.10)$, $(0.02, 0.03, 0.85, 0.05, 0.05)$ and $(0.05, 0.05, 0.10, 0.70, 0.05, 0.05)$. Position 3 holds token 5, which occurred at position 0, so we read the weight on position 1: $0.80$. Position 4 (token 7, earlier at 1) reads position 2: $0.85$. Position 5 (token 2, earlier at 2) reads position 3: $0.70$. Positions 0 to 2 have no earlier occurrence and are skipped. The score is $(0.80 + 0.85 + 0.70)/3 = 0.783$, near 1 for a head that does exactly this.
+
+The second quantity is the **in-context learning score** of Olsson and colleagues: the model's average loss at the 500th token of a context minus its loss at the 50th. More negative means the model benefits more from earlier context in the same sequence.
+
+### The evidence and its limits
+
+Olsson and colleagues reported that during training of small models there is a short period, a **phase change**, in which induction heads appear, the in-context learning score drops sharply, and a bump appears in the training loss curve, all at the same time. They gave several lines of argument that induction heads are the mechanism of much of in-context learning. In small attention-only models the evidence is causal: changing the architecture so that induction heads cannot form removes the effect, and ablating heads removes it. For larger models with MLP layers the evidence is correlational (the timing coincides, and heads with induction-like behavior exist). They also hypothesized that "fuzzy" induction heads, matching meaning rather than exact tokens, could underlie more abstract few-shot behavior; that is a hypothesis.
+
+What is open: how much of in-context learning in large models goes through induction heads is not settled. Alternative accounts describe in-context learning as implicit Bayesian inference over latent tasks, or as a learning algorithm implemented in the forward pass; these operate at a different level of description and are not necessarily in conflict with the circuit story, but the relationships between the accounts are active research. Backup mechanisms, multiple copying circuits and distributed computation make clean ablation experiments hard to interpret at scale. A careful reading therefore separates three claims: induction heads exist and implement the pattern (well supported); they are responsible for the phase change in small models (supported by causal evidence); they explain most in-context learning in large models (suggestive, contested).
+
+@example
+title: Scaled attention weights for one query
+problem: A head has key dimension $d_k = 4$. The query at the current position is $\mathbf{q} = (1, 1, 0, 0)$, and the three earlier positions have keys $(2, 2, 0, 0)$, $(0, 0, 1, 1)$ and $(1, 0, 0, 0)$. Compute the attention weights.
+step: Dot products: $\mathbf{q}^\top\mathbf{k}_1 = 4$, $\mathbf{q}^\top\mathbf{k}_2 = 0$, $\mathbf{q}^\top\mathbf{k}_3 = 1$.
+step: Scale by $\sqrt{d_k} = 2$: the scores are $2$, $0$ and $0.5$.
+step: Exponentiate: $e^{2} = 7.389$, $e^{0} = 1$, $e^{0.5} = 1.649$; the sum is $10.038$.
+step: Normalize: the weights are $0.736$, $0.100$ and $0.164$, summing to 1. Most of the attention goes to the position whose key matches the query.
+answer: $(0.736, 0.100, 0.164)$.
+
+@mistakes
+- Forgetting the $1/\sqrt{d_k}$ scaling or applying the softmax over future positions: the weights then do not match the model, and causal masking restricts the sum to positions up to $i$.
+- Describing an induction head as attending to the earlier occurrence of the token: it attends to the position after it, and that offset is what the previous-token head makes possible.
+- Treating the timing of the phase change as proof of mechanism in large models: for models with MLP layers the evidence is correlational, and ablation can be confounded by backup components.
+- Taking a high prefix-matching score as enough: a head must also copy (its OV circuit must raise the logit of the attended token) to count as an induction head.
+
+@practice num
+prompt: A head has key dimension $d_k = 4$ and query $\mathbf{q} = (1, 1, 1, 1)$. Three earlier positions have keys $(2, 2, 0, 0)$, $(1, 1, 0, 0)$ and $(0, 0, 0, 0)$. What attention weight does the head give the first position? Give three decimal places.
+answer: 0.665
+tol: 0.001
+check: exp((1*2 + 1*2) / sqrt(4)) / (exp((1*2 + 1*2) / sqrt(4)) + exp((1*1 + 1*1) / sqrt(4)) + exp(0))
+hint: The scores are the dot products divided by 2; then take the softmax of the three scores.
+solution: The scores are $4/2 = 2$, $2/2 = 1$ and $0$. The weight on the first is $e^2/(e^2 + e + 1) = 7.389/11.107 \approx 0.665$.
+
+@practice num
+prompt: The tokens are $[3, 9, 4, 3, 9]$. A head's attention row at position 3 (over positions $0..3$) is $(0.1, 0.6, 0.1, 0.2)$ and at position 4 (over positions $0..4$) is $(0.05, 0.10, 0.70, 0.05, 0.10)$. Using the definition in this lesson (average, over destination positions whose token occurred earlier, of the attention on the positions following the earlier occurrences), what is the prefix-matching score of this head?
+answer: 0.65
+tol: 0.001
+check: (0.6 + 0.70) / 2
+hint: Position 3 holds token 3, which occurred at position 0, so look at position 1; position 4 holds token 9, which occurred at position 1, so look at position 2.
+solution: Position 3 puts weight $0.6$ on position 1, and position 4 puts weight $0.70$ on position 2. Positions 0 to 2 have no earlier occurrence. The score is $(0.6 + 0.70)/2 = 0.65$.
+
+@practice mc
+prompt: In the two-head induction circuit, what does the previous-token head contribute to the induction head?
+choice*: At each position it writes information about the preceding token into the residual stream, so that the induction head's keys at the position after an earlier $A$ can signal "I follow an $A$".
+choice: It copies the current token directly into the output logits, so that the induction head only has to confirm it.
+choice: It attends to the first token of the sequence and gives the induction head a fixed reference point.
+choice: It replaces the induction head's value vectors with random noise so that the head attends uniformly.
+hint: Induction needs a key that encodes what came before each position.
+solution: K-composition: the induction head's keys are computed from a residual stream that includes the previous-token head's output, so each key carries the identity of the token before that position. The query for the current token $A$ matches keys that say "preceded by $A$", which are the positions holding $B$. The other choices describe mechanisms that do not appear in the circuit.
+
+@practice ms
+prompt: Which of the following statements are accurate descriptions of the research on induction heads and in-context learning? Select all that apply.
+choice*: The in-context learning score of Olsson and colleagues is the loss at the 500th token minus the loss at the 50th token, so a more negative value means more benefit from context.
+choice*: In small attention-only models the evidence that induction heads drive the drop in the in-context learning score is causal, while in larger models with MLPs it is largely correlational.
+choice: A one-layer attention-only transformer can implement the full induction pattern by a single head.
+choice: It has been proved that induction heads account for all in-context learning in every transformer.
+hint: Recall the definition of the score, and what the circuit needs in terms of layers.
+solution: The score and the strength of evidence are as described. A single layer cannot compose a previous-token head with an induction head, so one-layer models learn skip-trigram-like patterns. No proof covers all in-context learning, and the extent of the induction-head explanation at scale is open.
+
+@practice self
+prompt: A lab claims that, in a large pretrained model, the heads with the highest prefix-matching scores are "responsible for" its few-shot learning on a set of text-classification tasks. Design an experiment to test the claim, including the intervention, the metrics, two controls and how you would interpret a small effect.
+solution: Identify candidate heads by prefix-matching and copying scores on random repeated-token sequences, on data separate from the evaluation tasks. Intervention: ablate the top $k$ heads (mean ablation over a reference set, to avoid off-distribution zeros) and measure (i) the in-context learning score on ordinary text, (ii) accuracy on the few-shot tasks as a function of the number of demonstrations, and (iii) the model's zero-shot accuracy on the same tasks, which should not depend on in-context copying. Controls: ablate $k$ random heads from the same layers, and $k$ heads matched in layer and attention entropy but with low prefix-matching score; run with several values of $k$ and report effect size with confidence intervals across tasks and prompt sets. Interpretation: a large drop in few-shot accuracy relative to controls, with zero-shot accuracy unchanged, supports the claim for these tasks. A small effect does not refute it: backup heads may take over, so a small effect should be followed by ablating the heads together with the components that compensate (found by patching) or by retraining with the heads blocked; and few-shot performance on these tasks may come from other mechanisms, such as task recognition from the instruction, which a demonstrations-count curve helps to separate. The claim should be limited to what the experiment tests.
+rubric: Defines the intervention, with mean or resample ablation and heads selected on separate data.
+rubric: Includes random-head and matched controls, a zero-shot comparison, and uncertainty over tasks.
+rubric: Interprets a small effect carefully, considering compensation and alternative mechanisms, instead of treating it as refutation.
+
+@quiz num
+prompt: A head has key dimension $d_k = 4$ and query $\mathbf{q} = (2, 0, 1, 1)$. Three positions have keys $(1, 1, 1, 1)$, $(1, 0, 0, 0)$ and $(0, 0, 1, 1)$. What attention weight does it give the first position? Give three decimal places.
+answer: 0.576
+tol: 0.001
+check: exp(4 / 2) / (exp(4 / 2) + exp(2 / 2) + exp(2 / 2))
+hint: Compute the three dot products with the query, then divide each by $\sqrt{d_k} = 2$ and take the softmax.
+solution: The dot products are $2 + 0 + 1 + 1 = 4$ for the first key, $2$ for $(1,0,0,0)$ and $1 + 1 = 2$ for $(0,0,1,1)$. After dividing by 2 the scores are $2$, $1$, $1$, and the first weight is $e^2/(e^2 + 2e) = 7.389/12.826 \approx 0.576$.
+
+@quiz mc
+prompt: Why can a one-layer attention-only transformer not implement the induction pattern $[A][B] \dots [A] \rightarrow [B]$ the way two-layer models do?
+choice*: Each position's key in a single layer is computed from the token embedding alone, which does not contain the identity of the previous token, so no single head can match "follows an $A$".
+choice: A single attention head cannot copy any token into the output logits.
+choice: Attention weights in the first layer are always uniform over earlier positions.
+choice: Induction requires an MLP layer between the two heads to store the repeated token.
+hint: Think about what information is available at the position of $B$ in the first layer.
+solution: In a one-layer model the keys depend only on the token at each position (plus position information), so a key cannot say what the previous token was. A previous-token head in an earlier layer supplies that information, which the later head's keys then read. Single heads can copy tokens, first-layer attention is not uniform, and the composition runs through the residual stream rather than an MLP.
+
+@quiz self
+prompt: Write a short referee paragraph on a paper that reports that, across a family of model sizes, the training step at which a sharp bump appears in the loss curve coincides with the step at which heads with a high prefix-matching score appear, and concludes that induction heads cause in-context learning in all of the models. State what the evidence supports and give two additional experiments.
+solution: The coincidence of timing is evidence that a transition in the loss curve is associated with the appearance of heads with induction-like attention, and it is a useful observation. It does not show causation: other circuits might form in the same period, and a high prefix-matching score shows attention to the right position, not that the head copies the token or that it matters for the loss. The causal claim also differs by model: causal tests are feasible for small models, and for larger models more evidence is needed. I would ask for two experiments. First, ablation of the identified heads (mean or resample ablation, with a matched random-head control) in the trained models, reporting the change in the in-context learning score and in few-shot task performance, together with a check for compensating heads. Second, an intervention during training or on the architecture, such as blocking the formation of such heads or the composition between them, or retraining with the same data, to test whether the bump and the improvement disappear. I would also ask for a copying score for the heads, and I would reword the conclusion for large models as consistent with, not established by, the evidence.
+rubric: Distinguishes timing coincidence from causation and notes that attention pattern is not the same as copying behavior.
+rubric: Proposes ablation with controls and a check for compensation.
+rubric: Proposes an architectural or training-time intervention, and rewords the claim for the larger models.

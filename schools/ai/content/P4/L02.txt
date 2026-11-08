@@ -1,0 +1,181 @@
+@lesson
+title: Feature attribution: gradients, integrated gradients and Shapley values
+summary: Compute gradient, integrated-gradients and Shapley attributions for small models by hand and in code, check their axioms, and say what each does and does not establish.
+objective: Compute gradient saliency and gradient times input, and explain why saturation makes them fail.
+objective: Compute integrated gradients by a Riemann sum and check the completeness axiom.
+objective: Compute exact Shapley values for three features from a value function and state the axioms that characterize them.
+objective: Describe the sanity checks of Adebayo and colleagues (2018) and the open problem of attribution without ground truth.
+reading: Interpretable Machine Learning by Christoph Molnar: the chapters on Shapley values, SHAP and LIME (local surrogate models).
+
+@article
+Suppose a classifier is so confident about an image that nudging any pixel changes its output by almost nothing. Its gradient with respect to the input is nearly zero everywhere on the image, yet the output clearly depends on the input. A method that reports "no pixel matters" is wrong in an instructive way. This week's methods are three answers to the question "how should the output be divided among the inputs?"
+
+### Gradients and saturation
+
+The **gradient saliency map** (Simonyan, Vedaldi and Zisserman, 2013) scores feature $i$ by $\partial f / \partial x_i$ at the input. **Gradient times input** multiplies by $x_i$, which for a linear model recovers $w_i x_i$. Both are cheap, and both measure *local sensitivity*, not the contribution of a feature to the output. When a unit saturates (a sigmoid in its flat region, a ReLU that is off) the local gradient is small even for features that mattered earlier on the path from a neutral input.
+
+### Integrated gradients
+
+**Integrated gradients** (Sundararajan, Taly and Yan, 2017) integrate the gradient along the straight line from a baseline $\mathbf{x}'$ to the input $\mathbf{x}$:
+
+$$\mathrm{IG}_i(\mathbf{x}) = (x_i - x'_i) \int_0^1 \frac{\partial f\big(\mathbf{x}' + \alpha(\mathbf{x} - \mathbf{x}')\big)}{\partial x_i}\, d\alpha .$$
+
+By the fundamental theorem of calculus applied to $\alpha \mapsto f(\mathbf{x}' + \alpha(\mathbf{x} - \mathbf{x}'))$, the attributions satisfy the **completeness axiom**: $\sum_i \mathrm{IG}_i = f(\mathbf{x}) - f(\mathbf{x}')$, for differentiable $f$. In practice the integral is replaced by a Riemann sum with $m$ steps,
+
+$$\mathrm{IG}_i \approx \frac{x_i - x'_i}{m} \sum_{k=1}^{m} \frac{\partial f}{\partial x_i}\Big(\mathbf{x}' + \tfrac{k}{m}(\mathbf{x} - \mathbf{x}')\Big),$$
+
+and completeness holds only approximately; the gap $f(\mathbf{x}) - f(\mathbf{x}') - \sum_i \mathrm{IG}_i$ is a standard check on whether $m$ is large enough.
+
+Take $f(\mathbf{x}) = \sigma(x_1 + 2x_2 - 1)$, $\mathbf{x} = (1, 1)$ and baseline $\mathbf{0}$. Then $f(\mathbf{x}) - f(\mathbf{0}) = 0.8808 - 0.2689 = 0.6119$. Gradient times input gives $(0.105, 0.210)$, summing to only $0.315$: the unit is nearly saturated at $\mathbf{x}$. With $m = 4$ the Riemann sum gives $\mathrm{IG} = (0.1898, 0.3796)$ with sum $0.5694$; with $m = 1000$ the sum is $0.6117$.
+
+```python
+from math import exp
+
+def f(x):
+    return 1 / (1 + exp(-(x[0] + 2 * x[1] - 1)))
+
+def grad_f(x):
+    p = f(x)
+    return [p * (1 - p), 2 * p * (1 - p)]
+
+def integrated_gradients(grad, x, base, m):
+    total = [0.0] * len(x)
+    for k in range(1, m + 1):
+        point = [b + k / m * (xi - b) for xi, b in zip(x, base)]
+        for i, g in enumerate(grad(point)):
+            total[i] += g / m
+    return [(xi - b) * t for xi, b, t in zip(x, base, total)]
+
+ig = integrated_gradients(grad_f, [1, 1], [0, 0], 4)
+print([round(v, 4) for v in ig])
+```
+
+Libraries compute the gradients by automatic differentiation; the algorithm is this loop.
+
+### Shapley values
+
+Shapley (1953) asked how to split the payoff of a cooperative game among players. Treat the features $N = \{1, \dots, n\}$ as players and let $v(S)$ be the model's value when only features in $S$ are "present" (how absent features are handled is a modeling choice, discussed below). The **Shapley value** of feature $i$ is its average marginal contribution over all orders in which features could be added:
+
+$$\varphi_i = \sum_{S \subseteq N \setminus \{i\}} \frac{|S|!\,(n - |S| - 1)!}{n!}\,\big(v(S \cup \{i\}) - v(S)\big).$$
+
+It is the unique attribution that satisfies **efficiency** ($\sum_i \varphi_i = v(N) - v(\emptyset)$), **symmetry** (features that contribute equally to every coalition get equal credit), the **dummy** property (a feature adding nothing to any coalition gets zero) and **additivity** across games. SHAP (Lundberg and Lee, 2017) applies Shapley values to model predictions and unifies several earlier methods, including LIME (Ribeiro, Singh and Guestrin, 2016), which fits a weighted local linear surrogate around the input. Exact computation needs $2^n$ evaluations, so practical implementations sample or exploit model structure.
+
+The axioms do not settle the value function. Defining $v(S)$ by fixing the features in $S$ and averaging the others over a reference data set (interventional) or over their conditional distribution (observational) gives different attributions, and researchers disagree about which answers the intended question: the first asks what the model uses, the second what is informative about the output in the data.
+
+### Do attributions explain anything?
+
+Axioms say how credit is divided, not that the credit tracks the model's reasoning. Adebayo and colleagues (2018) proposed **sanity checks**: randomize the model's trained weights, layer by layer, or train on shuffled labels, and see whether the saliency maps change. A method whose maps barely change is not explaining the trained model, whatever it looks like. Several popular methods failed, which is why visual appeal is not accepted as evidence. The deeper open problem is that real models have no ground-truth attribution to compare with; evaluation relies on interventions (deletion, insertion), synthetic models whose answer is known, and human studies, each with its own limits.
+
+@example
+title: Exact Shapley values for three features
+problem: Three features have the value function $v(\emptyset) = 0$, $v(\{1\}) = 10$, $v(\{2\}) = 20$, $v(\{3\}) = 6$, $v(\{1,2\}) = 50$, $v(\{1,3\}) = 18$, $v(\{2,3\}) = 28$, $v(\{1,2,3\}) = 66$. Compute the Shapley value of each feature and check efficiency.
+step: For $n = 3$ the weights are $1/3$ for $S = \emptyset$, $1/6$ for each of the two singletons, and $1/3$ for the pair, since $|S|!(2 - |S|)!/3!$ equals $2/6$, $1/6$, $2/6$.
+step: Feature 1: the marginals are $10 - 0 = 10$ (from $\emptyset$), $50 - 20 = 30$ (from $\{2\}$), $18 - 6 = 12$ (from $\{3\}$) and $66 - 28 = 38$ (from $\{2,3\}$). So $\varphi_1 = \tfrac13 \cdot 10 + \tfrac16 (30 + 12) + \tfrac13 \cdot 38 = 3.333 + 7 + 12.667 = 23$.
+step: Feature 2: the marginals are $20$, $50 - 10 = 40$, $28 - 6 = 22$ and $66 - 18 = 48$. So $\varphi_2 = \tfrac13 \cdot 20 + \tfrac16 (40 + 22) + \tfrac13 \cdot 48 = 6.667 + 10.333 + 16 = 33$.
+step: Feature 3: the marginals are $6$, $18 - 10 = 8$, $28 - 20 = 8$ and $66 - 50 = 16$. So $\varphi_3 = \tfrac13 \cdot 6 + \tfrac16 (8 + 8) + \tfrac13 \cdot 16 = 2 + 2.667 + 5.333 = 10$.
+step: Check efficiency: $23 + 33 + 10 = 66 = v(\{1,2,3\}) - v(\emptyset)$.
+answer: $\varphi = (23, 33, 10)$.
+
+@mistakes
+- Reading gradient times input as a contribution: at a saturated unit it can be near zero for a feature that clearly matters.
+- Forgetting the baseline in integrated gradients: the attributions sum to $f(\mathbf{x}) - f(\mathbf{x}')$, not to $f(\mathbf{x})$, so a different baseline gives a different decomposition.
+- Trusting completeness after a coarse Riemann sum: with few steps the attributions can miss the output change, and the gap should be reported.
+- Treating Shapley values as causal effects: they depend on the value function chosen for absent features, and the axioms are silent on that choice.
+
+@practice num
+prompt: A model is $f(\mathbf{x}) = x_1^2 + 3 x_1 x_2$. At $\mathbf{x} = (2, 1)$, what is the gradient-times-input attribution of $x_1$?
+answer: 14
+check: (2 * 2 + 3 * 1) * 2
+hint: Differentiate $f$ with respect to $x_1$, evaluate at the point, and multiply by $x_1$.
+solution: $\partial f / \partial x_1 = 2x_1 + 3x_2 = 4 + 3 = 7$, and multiplying by $x_1 = 2$ gives 14.
+
+@practice num
+prompt: A one-feature model is $f(x) = x^3$. Compute the integrated-gradients attribution of the input $x = 2$ with baseline $x' = 0$ using a right Riemann sum with $m = 2$ steps (the points $\alpha = 1/2$ and $\alpha = 1$).
+answer: 15
+check: 2 * sum(3 * (k / 2 * 2) ** 2 for k in (1, 2)) / 2
+hint: The gradient is $3x^2$; evaluate it at the points $0.5 \times 2 = 1$ and $1 \times 2 = 2$, average the two values, and multiply by $x - x'$.
+solution: The gradients are $3 \cdot 1 = 3$ and $3 \cdot 4 = 12$, with mean $7.5$. Multiplying by $x - x' = 2$ gives 15. The exact integral is $f(2) - f(0) = 8$, so the right Riemann sum with two steps overshoots, because the gradient is increasing; completeness holds only as $m$ grows.
+
+@practice mc
+prompt: In the model-parameter randomization sanity check of Adebayo and colleagues (2018), what outcome is evidence against using an attribution method to explain a trained network?
+choice*: The attribution maps stay nearly the same when the trained weights are replaced by random weights.
+choice: The attribution maps change when the trained weights are replaced by random weights.
+choice: The attribution maps differ when a different baseline is used.
+choice: The attribution maps sum exactly to the difference between the output and the baseline output.
+hint: A method that explains the trained model should be sensitive to the parameters the model learned.
+solution: If the maps barely change when the weights are randomized, they do not depend on what the model learned, so they cannot explain it. A change under randomization is the desired behavior. Baseline dependence is expected, and summing to the output difference is the completeness property, which does not by itself say the attribution is informative.
+
+@practice code
+prompt: Write `shapley_values(v, n)` that returns the list of exact Shapley values of features `0` to `n - 1`. The value function `v` is a dictionary mapping a sorted tuple of feature indices (the coalition, for example `(0, 2)`; the empty coalition is `()`) to a number, and it contains all `2 ** n` coalitions. For example, with `v = {(): 0, (0,): 4, (1,): 1, (0, 1): 9}` and `n = 2` the result is `[6.0, 3.0]`.
+starter:
+```python
+def shapley_values(v, n):
+    return [0.0] * n
+```
+tests:
+```python
+got = shapley_values({(): 0, (0,): 4, (1,): 1, (0, 1): 9}, 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [6.0, 3.0]))
+v3 = {(): 0, (0,): 2, (1,): 8, (2,): 5, (0, 1): 14, (0, 2): 9,
+      (1, 2): 12, (0, 1, 2): 20}
+got = shapley_values(v3, 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [5.0, 9.5, 5.5]))
+add = {(): 0, (0,): 2, (1,): 0, (2,): 5, (0, 1): 2, (0, 2): 7,
+       (1, 2): 5, (0, 1, 2): 7}
+got = shapley_values(add, 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [2.0, 0.0, 5.0]))
+assert abs(sum(shapley_values(v3, 3)) - 20) < 1e-9
+assert shapley_values({(): 0, (0,): 3}, 1) == [3.0]
+```
+model:
+```python
+from itertools import combinations
+from math import factorial
+
+
+def shapley_values(v, n):
+    """Exact Shapley values by averaging marginal contributions over coalitions."""
+    values = []
+    for i in range(n):
+        others = [j for j in range(n) if j != i]
+        total = 0.0
+        for size in range(n):
+            weight = factorial(size) * factorial(n - size - 1) / factorial(n)
+            for coalition in combinations(others, size):
+                with_i = tuple(sorted(coalition + (i,)))
+                total += weight * (v[with_i] - v[coalition])
+        values.append(total)
+    return values
+```
+hint: For each feature, loop over all coalitions of the other features, weight each marginal contribution by $|S|!(n-|S|-1)!/n!$, and remember that coalitions are sorted tuples.
+solution: Enumerate the subsets of the other features with `combinations`, which yields sorted tuples, and look up `v` for the coalition with and without feature `i`. The efficiency test (the values sum to the grand coalition's value) catches wrong weights, and the additive game catches a missing dummy or symmetry property.
+
+@practice self
+prompt: A colleague reports SHAP feature importances for a tabular model, using a background sample of 100 training rows to represent absent features, and concludes that "feature A is the most important feature in the real world". Critique the claim and design one check that tests a part of it.
+solution: The attributions describe how the model's output is divided among features relative to the chosen background, not importance in the world. Three issues: the interventional value function breaks correlations (if A and B are strongly correlated, evaluating the model on combinations of A and B that never occur tests it off the data distribution, where its behavior was never constrained), so the numbers depend on the background and the dependence structure; Shapley values split credit among correlated features in a way that may hide that A is a proxy for B; and nothing here is causal, since the model may use A because it is a correlate of the true cause. A check: recompute the attributions with a different background (a subsample, or a conditional-sampling value function) and report how the ranking changes; if the ranking of A against B flips, the claim is not robust. A model-level check is a deletion test, replacing features in importance order and plotting the output, to see whether the ranking predicts the model's behavior. Claims about the world need causal assumptions or experiments, not attributions alone.
+rubric: Separates what the model uses from importance in the world, and names the dependence of the result on the background or value function.
+rubric: Identifies the effect of correlated features (off-distribution evaluation or credit splitting).
+rubric: Designs a concrete check (alternative background or deletion test) and says how the result would bear on the claim.
+
+@quiz num
+prompt: Three features have the value function $v(\emptyset) = 0$, $v(\{1\}) = 3$, $v(\{2\}) = 3$, $v(\{3\}) = 0$, $v(\{1,2\}) = 12$, $v(\{1,3\}) = 3$, $v(\{2,3\}) = 3$, $v(\{1,2,3\}) = 12$. What is the Shapley value of feature 1?
+answer: 6
+check: (3 - 0) / 3 + ((12 - 3) + (3 - 0)) / 6 + (12 - 3) / 3
+hint: Average the marginal contributions of feature 1 with weights $1/3$ (from the empty set), $1/6$ and $1/6$ (from each singleton) and $1/3$ (from the other pair).
+solution: The marginals of feature 1 are $3$ from $\emptyset$, $12 - 3 = 9$ after feature 2, $3 - 0 = 3$ after feature 3, and $12 - 3 = 9$ after both. Then $\varphi_1 = 3/3 + (9 + 3)/6 + 9/3 = 1 + 2 + 3 = 6$. Feature 3 adds nothing to any coalition, so it is a dummy with value 0, and by symmetry feature 2 also gets 6.
+
+@quiz ms
+prompt: Which of these statements are true? Select all that apply.
+choice*: For a differentiable $f$, the exact integrated-gradients attributions sum to $f(\mathbf{x}) - f(\mathbf{x}')$.
+choice*: Shapley values satisfy efficiency: they sum to $v(N) - v(\emptyset)$.
+choice: Gradient saliency is guaranteed to give nonzero attribution to every feature that affects the output.
+choice: Because Shapley values satisfy their axioms, they do not depend on how absent features are represented.
+hint: Recall the completeness and efficiency properties, then ask what a gradient measures at a saturated unit and what $v(S)$ means.
+solution: Completeness and efficiency are the defining accounting properties. A saturated unit can have a near-zero gradient although the feature matters. The Shapley axioms take the value function as given; interventional and conditional definitions of $v(S)$ give different values.
+
+@quiz self
+prompt: Design a randomization sanity check (in the spirit of Adebayo and colleagues, 2018) for integrated gradients applied to an image classifier. State the procedure, one quantitative summary, and how you would interpret each possible outcome.
+solution: Procedure: compute integrated-gradients maps for a fixed set of test images with the trained model. Then re-initialize the weights of the layers one at a time from the output layer toward the input (cascading randomization), recompute the maps after each step, and also compute maps for a model of the same architecture trained on randomly permuted labels. Summary: for each image, the rank correlation (or structural similarity) between the original map and the randomized-model map, reported as a distribution over images and layers, together with the same quantity between two independently trained real models as a reference. Interpretation: if the correlation drops toward zero as layers are randomized and the label-permuted model gives dissimilar maps, the method is sensitive to what was learned, which is necessary but not sufficient for explanation. If the correlation stays high, the maps are driven mostly by the input or the architecture, and the method should not be used to explain this model. A low correlation does not show the method is faithful; it needs interventions such as deletion tests in addition.
+rubric: Describes cascading or layerwise randomization of the trained model and a shuffled-label or independently trained comparison.
+rubric: Gives a quantitative similarity measure with a reference value.
+rubric: Interprets both outcomes and notes that passing the check is necessary but not sufficient.

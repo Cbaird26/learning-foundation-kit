@@ -1,0 +1,181 @@
+@lesson
+title: Probing representations and its pitfalls
+summary: Train and evaluate a linear probe on frozen activations, and use control tasks, baselines and interventions to separate what a representation contains from what the probe can memorize or the model actually uses.
+objective: Define a linear probe and fit one from supplied activations.
+objective: Compute the selectivity of a probe from its accuracy on a task and on a control task.
+objective: Explain why decodable information need not be used information, and describe an intervention that tests use.
+objective: State the competing views on how complex a probe should be.
+reading: Interpretable Machine Learning by Christoph Molnar: look up the chapters on neural network interpretation and learned features; for probing itself, read the paper on control tasks and selectivity by Hewitt and Liang (2019).
+
+@article
+Freeze a language model, take the activations at layer 6 for every word of a corpus, and train a classifier to predict each word's part of speech. It reaches 95% accuracy. Does layer 6 "know" grammar? Now give the classifier random labels for each distinct word, and suppose it reaches 80% anyway. What did the first number measure?
+
+### Probes
+
+A **probe** (Alain and Bengio, 2016) is a classifier trained on the frozen activations $\mathbf{h}$ of a network at some layer to predict a property $y$. The original use was diagnostic: train a **linear probe** $\hat{y} = \mathbb{1}[\mathbf{w}^\top \mathbf{h} + b > 0]$ at every layer and see where a property becomes linearly decodable, which showed that for image classifiers linear separability of the classes tends to increase with depth. The network is not updated; only the probe is trained.
+
+A simple probe needs no gradient descent. The **mean-difference probe** uses $\mathbf{w} = \boldsymbol{\mu}_1 - \boldsymbol{\mu}_0$, the difference of the class means, with the threshold halfway between the projected means, so that $b = -\mathbf{w}^\top (\boldsymbol{\mu}_1 + \boldsymbol{\mu}_0)/2$. Logistic regression is the other standard choice (you implement it in this week's practice).
+
+```python
+def fit_mean_difference_probe(X, y):
+    ones = [x for x, t in zip(X, y) if t == 1]
+    zeros = [x for x, t in zip(X, y) if t == 0]
+    d = len(X[0])
+    m1 = [sum(x[j] for x in ones) / len(ones) for j in range(d)]
+    m0 = [sum(x[j] for x in zeros) / len(zeros) for j in range(d)]
+    w = [a - c for a, c in zip(m1, m0)]
+    b = -sum(wj * (a + c) / 2 for wj, a, c in zip(w, m1, m0))
+    return w, b
+
+def accuracy(w, b, X, y):
+    hits = 0
+    for x, t in zip(X, y):
+        score = sum(wj * xj for wj, xj in zip(w, x)) + b
+        hits += int((score > 0) == (t == 1))
+    return hits / len(X)
+```
+
+### Pitfall 1: capacity
+
+A probe can score well because it is powerful, not because the representation is good. With $n$ examples in $d$ dimensions, a linear classifier can fit almost any labeling when $n$ is not much larger than $d$, and a probe with a hidden layer can memorize far more. Hewitt and Liang (2019) proposed **control tasks**: keep the inputs, but assign each word type a label at random (the same label wherever the word occurs). A control task cannot be solved from the linguistic content of the representation, only by memorizing word identity, so a probe's accuracy on it measures how much it can memorize. The **selectivity** of a probe is
+
+$$\text{selectivity} = \text{accuracy}_{\text{task}} - \text{accuracy}_{\text{control}} .$$
+
+In their experiments, higher-capacity probes reached similar accuracy on the real task but much higher accuracy on the control task, so lower selectivity. The recommended practice is to compare probes of different capacity and report selectivity next to accuracy. Illustrative numbers: a linear probe with 0.92 task accuracy and 0.55 control accuracy has selectivity 0.37; a probe with a large hidden layer with 0.95 and 0.90 has selectivity 0.05, and its high task accuracy says little.
+
+### Pitfall 2: baselines
+
+A decodable property may be decodable from the input alone. Report baselines: the majority class, a probe on the input embeddings, and a probe on a randomly initialized network of the same architecture. Layerwise curves matter only relative to these.
+
+### Pitfall 3: decodable is not used
+
+A probe shows that information is *present* in the activations in an extractable form. It does not show that the model *uses* it. A layer may carry the property incidentally, or the downstream computation may read a different direction. Testing use requires an **intervention**: remove or alter the probed direction (project it out, or swap activations as in week 4) and measure the change in the model's behavior on a task that depends on the property, with a control intervention that removes an equally large random direction. Note also that removing a linear direction does not remove nonlinearly encoded information, and a probe retrained after the intervention can still find the property.
+
+### How complex should a probe be?
+
+Researchers disagree on the answer. One view (Hewitt and Liang's) is that a probe should be simple, so that what it finds is a property of the representation and not of the probe; selectivity is the tool. The opposing view is that the question is how much information is available, however hard to extract, so one should use the best probe and report the trade-off between accuracy and complexity, comparing against baselines. Both agree that a single accuracy number for one probe is not interpretable. Whether a property is *linearly represented* (the linear representation hypothesis) is itself a substantive and partly open claim, tested by causal interventions on the direction, not by accuracy.
+
+@example
+title: A mean-difference probe, and the same probe on a control task
+problem: Activations in two dimensions are: label 1: $(3,0)$, $(3,2)$, $(4,1)$; label 0: $(1,1)$, $(0,0)$, $(1,2)$. Fit the mean-difference probe and compute its accuracy. Then assign the control labels $1,0,1,0,1,0$ to the six points in the order listed above, fit the probe to them, and compute the selectivity. Predict class 1 when the score is strictly positive.
+step: Task means: $\boldsymbol{\mu}_1 = (10/3, 1)$ and $\boldsymbol{\mu}_0 = (2/3, 1)$, so $\mathbf{w} = (8/3, 0)$ and the midpoint is $(2, 1)$, giving $b = -16/3$. The probe says class 1 exactly when $x_1 > 2$.
+step: Task accuracy: the label-1 points have $x_1 = 3, 3, 4$, all above 2, and the label-0 points have $x_1 = 1, 0, 1$, all below, so the accuracy is $6/6 = 1$.
+step: Control labels: the points $(3,0)$, $(4,1)$, $(0,0)$ get 1 and $(3,2)$, $(1,1)$, $(1,2)$ get 0. The means are $(7/3, 1/3)$ and $(5/3, 5/3)$, so $\mathbf{w} = (2/3, -4/3)$, the midpoint is $(2, 1)$ and $b = -(4/3 - 4/3) = 0$.
+step: Control scores $\tfrac23 x_1 - \tfrac43 x_2$: $(3,0)$: 2; $(3,2)$: $-2/3$; $(4,1)$: $4/3$; $(1,1)$: $-2/3$; $(0,0)$: 0; $(1,2)$: $-2$. Predictions 1,0,1,0,0,0 match the control labels $1,0,1,0,1,0$ on five of six points, so the control accuracy is $5/6$.
+step: Selectivity: $1 - 5/6 = 1/6 \approx 0.17$. With six points in two dimensions even random labels are almost fit, so the probe's capacity is high relative to the data and the task accuracy is weak evidence; a larger data set, or a lower-capacity probe, is needed.
+answer: Task accuracy $1$, control accuracy $5/6$, selectivity $1/6$.
+
+@mistakes
+- Reading probe accuracy as proof that the model uses the property: decodability concerns what is present, and only an intervention on the model tests use.
+- Reporting probe accuracy without a baseline or a control task: a high-capacity probe, or a property available in the input, can produce high numbers with no information in the layer.
+- Evaluating the probe on the data it was trained on: report accuracy on held-out examples, with control-task labels assigned by word type so that the same type keeps the same label in train and test.
+- Concluding that a property is absent because a linear probe fails: it may be encoded nonlinearly, and a weak probe does not show absence.
+
+@practice num
+prompt: A probe with weights $\mathbf{w} = (1, -2)$ and bias $b = 0.5$ predicts class 1 when $\mathbf{w}^\top \mathbf{x} + b > 0$. On the points $(2,1)$ label 1, $(0,1)$ label 0, $(3,1)$ label 1, $(1,0)$ label 1, $(1,2)$ label 0 and $(2,2)$ label 1, what is its accuracy as a percent to one decimal place?
+answer: 83.3
+unit: %
+tol: 0.1
+check: 100 * sum(((x1 - 2 * x2 + 0.5) > 0) == (y == 1) for (x1, x2), y in [((2, 1), 1), ((0, 1), 0), ((3, 1), 1), ((1, 0), 1), ((1, 2), 0), ((2, 2), 1)]) / 6
+hint: Compute the score $x_1 - 2x_2 + 0.5$ for each point and compare the sign with the label.
+solution: The scores are $0.5$, $-1.5$, $1.5$, $1.5$, $-2.5$ and $-1.5$, so the predictions are 1, 0, 1, 1, 0, 0. All match except the last point, whose label is 1, so the accuracy is $5/6 \approx 83.3\%$.
+
+@practice num
+prompt: On a part-of-speech task a probe has test accuracy 46/50, and on a control task built from the same inputs with random labels per word type it has test accuracy 31/50. What is its selectivity?
+answer: 0.3
+tol: 0.001
+check: 46 / 50 - 31 / 50
+hint: Selectivity is task accuracy minus control accuracy.
+solution: The task accuracy is $0.92$ and the control accuracy is $0.62$, so the selectivity is $0.30$. Half of the control-task accuracy above chance suggests the probe can memorize a good deal, so the task result should be read with care.
+
+@practice mc
+prompt: What is the purpose of the control task in the method of Hewitt and Liang (2019)?
+choice*: To measure how much of a probe's accuracy can be obtained by memorizing word identity, which the probe's capacity allows regardless of the representation's content.
+choice: To show that the model uses the probed property in its downstream predictions.
+choice: To provide a more difficult linguistic task on which all probes score lower.
+choice: To remove the probed information from the representation so that its effect can be measured.
+hint: In a control task, the labels carry no linguistic information, only a per-word-type assignment.
+solution: Random per-type labels can be fit only by memorizing word identity, so the control accuracy measures probe capacity. It says nothing about downstream use (that needs an intervention), is not a harder linguistic task, and does not remove information.
+
+@practice code
+prompt: Write `train_logistic_probe(X, y, lr, steps)` that fits a logistic-regression probe by full-batch gradient descent on the mean cross-entropy loss, starting from zero weights and zero bias, and returns the pair `(w, b)` where `w` is a list. `X` is a list of feature lists, `y` a list of 0/1 labels, `lr` the step size and `steps` the number of updates. The probabilities are $p = \sigma(\mathbf{w}^\top \mathbf{x} + b)$ and the gradient of the mean loss is the mean of $(p - y)\,\mathbf{x}$ for `w` and the mean of $p - y$ for `b`. For example, `train_logistic_probe([[1.0], [-1.0]], [1, 0], 1.0, 1)` returns `([0.5], 0.0)`.
+starter:
+```python
+def train_logistic_probe(X, y, lr, steps):
+    w = [0.0] * len(X[0])
+    b = 0.0
+    return w, b
+```
+tests:
+```python
+w, b = train_logistic_probe([[1.0], [-1.0]], [1, 0], 1.0, 1)
+assert abs(w[0] - 0.5) < 1e-9 and abs(b) < 1e-9
+X = [[2.0, 1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, -1.0]]
+y = [1, 1, 0, 0]
+w, b = train_logistic_probe(X, y, 1.0, 1)
+assert abs(w[0] - 0.5) < 1e-9 and abs(w[1] - 0.125) < 1e-9 and abs(b) < 1e-9
+w, b = train_logistic_probe(X, y, 0.5, 0)
+assert w == [0.0, 0.0] and b == 0.0
+w, b = train_logistic_probe(X, y, 0.5, 200)
+preds = [int(w[0] * x[0] + w[1] * x[1] + b > 0) for x in X]
+assert preds == y
+w, b = train_logistic_probe([[1.0], [2.0]], [0, 1], 1.0, 1)
+assert abs(w[0] - 0.25) < 1e-9 and abs(b - 0.0) < 1e-9
+```
+model:
+```python
+from math import exp
+
+
+def train_logistic_probe(X, y, lr, steps):
+    """Logistic-regression probe fit by full-batch gradient descent."""
+    n, d = len(X), len(X[0])
+    w = [0.0] * d
+    b = 0.0
+    for _ in range(steps):
+        gw = [0.0] * d
+        gb = 0.0
+        for x, t in zip(X, y):
+            z = sum(wj * xj for wj, xj in zip(w, x)) + b
+            p = 1 / (1 + exp(-z))
+            for j in range(d):
+                gw[j] += (p - t) * x[j] / n
+            gb += (p - t) / n
+        w = [wj - lr * g for wj, g in zip(w, gw)]
+        b -= lr * gb
+    return w, b
+```
+hint: Inside a loop over the steps, accumulate the gradient over all examples first, divide by $n$, and only then update `w` and `b`.
+solution: At zero weights every probability is 0.5, so one step moves each weight by `lr` times the mean of $(y - 0.5)x$. The tests check this one-step value, which catches a missing division by the number of examples, a missing bias gradient, or an update applied while the gradient is still being accumulated. The last test has $p = 0.5$ at both points, so the weight gradient is $\tfrac12\big(0.5 \cdot 1 + (-0.5) \cdot 2\big) = -0.25$ and one step gives the weight $0.25$.
+
+@practice self
+prompt: A probe trained on activations at one layer decodes whether a sentence is in the past or present tense with high held-out accuracy and high selectivity. Design an experiment to test whether the model actually uses a linear tense direction in its predictions. Specify the intervention, the behavioral measure, the controls and two alternative explanations that would remain if the result were positive.
+solution: Use the probe's weight vector (or the mean-difference direction) as the candidate direction. Intervention: project the direction out of the activations at that layer (subtract the component along it) on a held-out set of prompts where the next-token prediction depends on tense, such as completing a verb. Behavioral measure: the change in the probability the model assigns to the correct tense-marked continuation, compared with the unmodified model. Controls: project out random directions of the same dimension and norm-matched, and a direction from a probe trained on a control task; and a second intervention that adds the direction to flip the tense, checking whether the predictions flip in the expected way. If removing the tense direction degrades tense-dependent predictions much more than the controls and does not degrade tense-independent predictions, that is evidence of use. Alternative explanations: the information is redundantly encoded in other directions (the intervention then underestimates use, and a retrained probe would still decode tense); and a large positive effect may come from the intervention pushing activations off the data distribution, damaging the model generally, which the tense-independent control and the random-direction control address only partly. Repeating on other layers and with a nonlinear probe would show whether the claim is specifically about a linear direction.
+rubric: Specifies an intervention on the model (projection or addition along the direction) and a behavioral measure that depends on the property.
+rubric: Includes random-direction and tense-independent controls.
+rubric: Names at least two real alternative explanations, such as redundant encoding and off-distribution damage.
+
+@quiz num
+prompt: A mean-difference probe has $\mathbf{w} = (1, 1)$ and $b = -3$, and predicts class 1 when $\mathbf{w}^\top \mathbf{x} + b > 0$ (strictly). On the points $(1,2)$ label 1, $(2,2)$ label 1, $(0,1)$ label 0, $(3,1)$ label 1 and $(1,1)$ label 0, what is its accuracy as a percent?
+answer: 80
+unit: %
+tol: 0.01
+check: 100 * sum(((x1 + x2 - 3) > 0) == (y == 1) for (x1, x2), y in [((1, 2), 1), ((2, 2), 1), ((0, 1), 0), ((3, 1), 1), ((1, 1), 0)]) / 5
+hint: The score is $x_1 + x_2 - 3$. Remember that a score of exactly 0 is not strictly positive.
+solution: The scores are $0, 1, -2, 1, -1$, so the predictions are 0, 1, 0, 1, 0. The first point has label 1 but a score of exactly 0, so it is predicted 0 and is wrong; the other four are correct, giving $4/5 = 80\%$.
+
+@quiz ms
+prompt: Which of these statements about probing are true? Select all that apply.
+choice*: A probe with a large hidden layer can reach high accuracy on a control task with random per-word-type labels, so its accuracy on a real task is harder to interpret.
+choice*: Information being linearly decodable from a layer does not by itself show that the model's later computation uses that information.
+choice: If a linear probe at some layer is at chance accuracy, the layer provably contains no information about the property.
+choice: Selectivity is defined as control-task accuracy minus task accuracy.
+hint: Recall what capacity does to control-task accuracy, what a probe measures, and the definition of selectivity.
+solution: High-capacity probes can memorize the random labels of a control task. Decodability does not imply use. A linear probe at chance can fail when the information is encoded nonlinearly, and selectivity is task accuracy minus control accuracy, not the reverse.
+
+@quiz self
+prompt: A paper trains probes at each layer of a model for syntactic depth and reports a curve peaking at layer 6. It concludes that "the model computes syntactic structure at layer 6". Write a referee paragraph assessing the claim, with the evidence you would require.
+solution: The curve shows where a property is most decodable by one family of probes. It does not show that computation happens there. Decodability is not use, and a peak can reflect the probe's capacity interacting with the geometry of that layer. Before accepting the claim I would ask for the following. A baseline probe on the input embeddings and on a randomly initialized network, so that the peak is shown to come from training. A control task and selectivity for each probe, with probes of more than one capacity, to rule out memorization. A causal test: patch or project out the probed directions at layer 6 and show that behavior on syntax-dependent examples degrades relative to random-direction controls, and that interventions at other layers have smaller effects. Without the last item, I would ask the authors to rephrase the conclusion as "syntactic depth is linearly decodable most easily at layer 6". Whether the structure is computed at that layer, or merely made available by earlier computation, is a different question.
+rubric: Distinguishes where a property is decodable from where it is computed or used.
+rubric: Requires baselines and a control task or selectivity.
+rubric: Requires a causal intervention and says how the conclusion should be reworded without it.

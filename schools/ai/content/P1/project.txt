@@ -1,0 +1,162 @@
+@project
+title: A theory write-up: prove a bound, simulate it, and say what it explains
+overview: Choose one result from the course, write a complete and self-contained proof with all lemmas, run a small simulation from scratch that compares the bound with observed behavior, and explain in two pages what the bound does and does not explain about practice. The aim is the habit of a learning theorist: exact statements, complete proofs, and honest numerical comparison.
+goal: Produce a self-contained proof of one theorem, stating its setting, quantifiers and constants exactly.
+goal: Measure how loose or tight the bound is by a simulation written without libraries, and diagnose the sources of looseness.
+goal: Explain in two pages what the result does and does not say about learning in practice, including the limits discussed in weeks 6, 11 and 12.
+step: Pick a result from the menu in the first material, or propose your own of similar scope (for instance the perceptron bound, a stability bound for ridge regression, or the VC bound for a class of your choice). Write its exact statement: setting, loss, assumptions, quantifiers (for every distribution, with probability at least $1 - \delta$ over the sample), and the version of the constants you use.
+step: Write the complete proof. Include every lemma that the main argument needs and prove each one, except the classical named tools that you state exactly (Hoeffding's inequality, McDiarmid's inequality, Talagrand's contraction lemma, Jensen's inequality). Check each line, and recompute every constant.
+step: Implement the simulation. The learning algorithm, the quantity being bounded (excess risk, empirical Rademacher complexity, regret) and the bound itself must be written in plain Python without NumPy or other libraries (use the code in the materials as a starting point). Use at least four values of the size parameter ($m$ or $T$), at least 200 repetitions for probabilistic claims, and a fixed random seed.
+step: Report a table of the observed value (mean and 95th percentile where the bound is a high-probability bound) next to the bound. Then change one thing (the noise level, the distribution, the dimension, the class) and report how both the observed value and the bound respond.
+step: Diagnose the gap. Say which factor in the proof is responsible for the looseness (a union bound over a large class, a worst-case distribution, a constant, a relaxation such as $1 - \epsilon \le e^{-\epsilon}$) and, where possible, test your diagnosis with a further run.
+step: Write the two-page explanation. Cover: what the theorem guarantees and for whom; what the simulation shows; one thing the theorem explains about practice and one thing it does not (use the no-free-lunch theorem, the interpolation puzzle of week 11, or the checklist of week 12). Then read your own proof once more, as a referee would.
+material: The menu of results, with exact statements.
+
+| option | statement to prove | what to simulate |
+|---|---|---|
+| A | Finite class, agnostic case: if $m \ge 2\ln(2\lvert\mathcal{H}\rvert/\delta)/\epsilon^2$ then with probability at least $1 - \delta$ every ERM output has $L_{\mathcal{D}}(h_S) \le \min_h L_{\mathcal{D}}(h) + \epsilon$ | excess risk of ERM over a grid of thresholds against $\sqrt{2\ln(2\lvert\mathcal{H}\rvert/\delta)/m}$ |
+| B | Linear class: for $\{\mathbf{x} \mapsto \langle \mathbf{w}, \mathbf{x} \rangle : \lVert\mathbf{w}\rVert_2 \le B\}$ and $\lVert\mathbf{x}_i\rVert_2 \le \rho$, $R_S(\mathcal{H}) \le B\rho/\sqrt{m}$, and the uniform convergence bound $2R_m + \sqrt{\ln(1/\delta)/(2m)}$ that follows | Monte Carlo estimate of $R_S$ against $B\rho/\sqrt{m}$, for several $m$ and dimensions |
+| C | Hedge: for losses in $[0,1]$, $\text{Regret}_T \le \ln N/\eta + \eta T/8$ and $\le \sqrt{(T/2)\ln N}$ for $\eta = \sqrt{8\ln N/T}$ | regret of Hedge on random and on adversarial loss sequences against the bound |
+material: Starting code for option A. The data are $x \sim \text{Uniform}[0,1]$ and labels $y = \mathbb{1}[x \ge 0.4]$ flipped with probability $0.1$. The class is $\mathcal{H} = \{\mathbb{1}[x \ge j/100] : j = 0, \dots, 100\}$, so $\lvert\mathcal{H}\rvert = 101$ and the target threshold is in the class. The true risk of the threshold $t$ is exactly $0.1 + 0.8\lvert t - 0.4\rvert$, so the excess risk of the ERM output is $0.8\lvert t - 0.4\rvert$.
+```python
+import math
+import random
+
+def erm_thresholds(m, rng, K=100, theta=0.4, noise=0.1):
+    """ERM over thresholds t = j / K; returns the excess true risk."""
+    xs = [rng.random() for _ in range(m)]
+    ys = [(x >= theta) != (rng.random() < noise) for x in xs]
+    best_t, best_err = 0.0, m + 1
+    for j in range(K + 1):
+        t = j / K
+        err = sum((x >= t) != y for x, y in zip(xs, ys))
+        if err < best_err:
+            best_t, best_err = t, err
+    return (1 - 2 * noise) * abs(best_t - theta)
+
+rng = random.Random(0)
+for m in (50, 200, 800):
+    vals = sorted(erm_thresholds(m, rng) for _ in range(200))
+    q95 = vals[int(0.95 * len(vals)) - 1]
+    bound = math.sqrt(2 * math.log(2 * 101 / 0.05) / m)
+    print(m, round(sum(vals) / len(vals), 4), round(q95, 4), round(bound, 4))
+```
+material: Starting code for option B. For a fixed sample, $R_S$ of the $\ell_2$ ball equals $\frac{B}{m}\mathbb{E}\lVert\sum_i\sigma_i\mathbf{x}_i\rVert_2$, which the code estimates by sampling sign vectors.
+```python
+import math
+import random
+
+def rademacher_ball(points, B, trials, rng):
+    """Monte Carlo estimate of R_S for the l2 ball of radius B."""
+    m, d = len(points), len(points[0])
+    total = 0.0
+    for _ in range(trials):
+        s = [0.0] * d
+        for x in points:
+            sign = rng.choice((-1, 1))
+            for k in range(d):
+                s[k] += sign * x[k]
+        total += B * math.sqrt(sum(v * v for v in s))
+    return total / trials / m
+
+rng = random.Random(1)
+pts = [[rng.gauss(0, 1) for _ in range(5)] for _ in range(100)]
+rho = max(math.sqrt(sum(v * v for v in x)) for x in pts)
+print(rademacher_ball(pts, 1.0, 500, rng), rho / math.sqrt(len(pts)))
+```
+material: Starting code for option C. Expert 0 has a slightly lower loss probability than the others, so the regret is measured against it (in hindsight, against the best expert on the realized losses).
+```python
+import math
+import random
+
+def hedge_regret(T, N, rng):
+    eta = math.sqrt(8 * math.log(N) / T)
+    cum = [0.0] * N
+    total = 0.0
+    for _ in range(T):
+        w = [math.exp(-eta * c) for c in cum]
+        z = sum(w)
+        loss = [1.0 if rng.random() < 0.5 - (0.1 if i == 0 else 0.0) else 0.0
+                for i in range(N)]
+        total += sum(wi / z * li for wi, li in zip(w, loss))
+        cum = [c + l for c, l in zip(cum, loss)]
+    return total - min(cum)
+
+rng = random.Random(2)
+for T in (100, 400, 1600):
+    print(T, round(hedge_regret(T, 10, rng), 2),
+          round(math.sqrt(T / 2 * math.log(10)), 2))
+```
+deliverable: A written proof (typeset or neat handwriting scanned) of the chosen result, with the exact statement and all lemmas.
+deliverable: The simulation code and the table of observed values against the bound, with the one variation you tried.
+deliverable: The two-page explanation of what the bound explains and does not explain about practice.
+deliverable: A five-minute explanation of the result aloud, without notes, to a classmate or a recording.
+rubric: The statement is exact, with the setting, quantifiers and constants, and the version is named.
+rubric: The proof is complete and correct line by line; every lemma is proved or is a named classical tool stated exactly.
+rubric: The learning algorithm, the measured quantity and the bound are implemented from scratch, with enough repetitions and a fixed seed, and the table reports the bound and the observation honestly.
+rubric: The diagnosis of the gap names a specific source of looseness and tests it.
+rubric: The two-page explanation separates what is proved from what is observed and identifies a real limit of the result for practice.
+tutor: I think my proof is complete. Where would a referee object, and which step relies on an unstated assumption?
+tutor: My simulation shows the bound is ten times larger than the observed value. Which parts of the proof could be responsible, and how can I test that?
+tutor: How do I explain, without notes, why the dependence on the sample size is $1/\sqrt{m}$ and not $1/m$ in my theorem?
+
+@review
+## Week by week
+
+**1. The learning problem and ERM.** True risk $L_{\mathcal{D}}$, empirical risk $L_S$, ERM, approximation and estimation error. Hoeffding: $P[|L_S(h) - L_{\mathcal{D}}(h)| > \epsilon] \le 2e^{-2m\epsilon^2}$. Lemma 1: an ERM output over an $\epsilon/2$-representative sample is $\epsilon$-optimal.
+
+**2. PAC learning, finite classes.** Realizable: $m \ge \ln(|\mathcal{H}|/\delta)/\epsilon$. Agnostic: $m \ge 2\ln(2|\mathcal{H}|/\delta)/\epsilon^2$. Quantifier order: $\epsilon, \delta$ first, then every distribution.
+
+**3. VC dimension.** Shattering, $\operatorname{VCdim}$, growth function $\Pi_{\mathcal{H}}(m)$. Two-step proofs: one shattered set, and no shattered larger set. Thresholds $1$, intervals $2$, rectangles $4$, affine halfspaces $d + 1$ (Radon).
+
+**4. Sauer and the fundamental theorem.** $\Pi_{\mathcal{H}}(m) \le \sum_{i \le d}\binom{m}{i} \le (em/d)^d$. Finite VC dimension is equivalent to PAC and agnostic learnability, uniform convergence and success of ERM. Rates $(d + \ln(1/\delta))/\epsilon^2$ and $(d + \ln(1/\delta))/\epsilon$ up to constants and logarithms.
+
+**5. Rademacher complexity.** $\mathbb{E}f \le \hat{\mathbb{E}}_Sf + 2R_m + \sqrt{\ln(1/\delta)/(2m)}$ (McDiarmid and symmetrization). Massart: $R(A) \le r\sqrt{2\ln|A|}/m$. Linear classes: $B\rho/\sqrt{m}$.
+
+**6. Bias-complexity and no free lunch.** For $m < |\mathcal{X}|/2$ every algorithm fails with probability $\ge 1/7$ to get error below $1/8$ on some realizable distribution. Infinite VC dimension implies not PAC learnable. Structural risk minimization.
+
+**7. Stability.** $\beta$-uniform stability implies expected gap $\le \beta$; RLM with a convex $\rho$-Lipschitz loss has $\beta = 2\rho^2/(\lambda m)$.
+
+**8. Margins.** Geometric margin, hard-margin SVM, perceptron bound $(R/\gamma)^2$, margin bound with ramp loss and contraction: complexity term $2B\rho/(\gamma\sqrt{m})$.
+
+**9. Boosting.** AdaBoost: $\alpha_t = \frac{1}{2}\ln\frac{1 - \epsilon_t}{\epsilon_t}$, training error $\le \prod_t 2\sqrt{\epsilon_t(1 - \epsilon_t)} \le e^{-2\sum\gamma_t^2}$; margin explanation and its limits.
+
+**10. Online learning.** Regret; Hedge: $\ln N/\eta + \eta T/8$, tuned $\sqrt{(T/2)\ln N}$; Hoeffding's lemma; online-to-batch.
+
+**11 and 12. Deep learning and reading papers.** Random labels, double descent, minimum-norm interpolation, benign overfitting, implicit bias: what is proved and what is open. Checklist: setting, quantifiers, constants, tightness, proof technique.
+
+## Self-check
+
+- Can you state, without notes, the definition of PAC learnability with the order of the quantifiers?
+- Can you prove Lemma 1, Sauer's lemma, Massart's lemma and the Hedge bound?
+- Can you say which bound you would use for a finite class, a VC class, a linear class and a regularized algorithm, and what each depends on?
+- Can you state three things the no-free-lunch theorem does and does not imply?
+
+## Common errors
+
+Applying a bound for a fixed hypothesis to a learned one; swapping the quantifiers; quoting a bound without its constants; proving only one half of a VC dimension claim; mixing Rademacher conventions; treating a vacuous bound as evidence against a method; stating open problems of deep learning as settled.
+
+@exam num
+prompt: A learner receives i.i.d. examples $z_1, \dots, z_T$, and runs Hedge (with the tuned rate, losses in $[0,1]$) over $N = 1024$ fixed hypotheses, then returns a hypothesis drawn from the average of the plays. The online-to-batch argument gives expected excess risk at most $R_T/T = \sqrt{\ln N/(2T)}$. What is the smallest integer $T$ for which this is at most $\epsilon = 0.05$?
+answer: 1387
+check: ceil(log(1024) / (2 * 0.05 ** 2))
+hint: Set $\sqrt{\ln N/(2T)} \le \epsilon$ and solve for $T$.
+solution: The condition is $T \ge \ln N/(2\epsilon^2) = \ln 1024/(2 \cdot 0.0025) = 6.931/0.005 = 1386.3$, so $T = 1387$. For comparison, the uniform convergence bound of week 2 asks for $2\ln(2N/\delta)/\epsilon^2$, which is about $8500$ for $\delta = 0.05$; the online route gives a guarantee in expectation, not with high probability, so the two are not directly comparable.
+
+@exam ms
+prompt: Which of these statements are true? Select all that apply.
+choice*: For binary classification with the 0-1 loss, a class is agnostic PAC learnable if and only if its VC dimension is finite.
+choice*: For any learning algorithm and $m < |\mathcal{X}|/2$, there is a distribution realizable by some function on which the algorithm has error at least $1/8$ with probability at least $1/7$.
+choice*: For regularized loss minimization with a convex $\rho$-Lipschitz loss and penalty $\lambda\lVert\mathbf{w}\rVert^2$, uniform stability improves as $\lambda m$ grows.
+choice*: The Rademacher complexity bound $B\rho/\sqrt{m}$ for the $\ell_2$ ball does not depend on the input dimension.
+choice: AdaBoost's training error bound $e^{-2\gamma^2T}$ holds if the weak learner has an edge $\gamma$ on the original, unweighted data.
+hint: Recall the conditions of each theorem; the last statement confuses weights with the original sample.
+solution: The first statement is the fundamental theorem, the second the no-free-lunch theorem, the third follows from $\beta = 2\rho^2/(\lambda m)$ and the fourth from the proof that uses only norms. The last is false: the boosting analysis needs an edge on every weighting $D_t$ that arises, because $\epsilon_t$ is the weighted error.
+
+@exam self
+prompt: Let $\mathcal{H} = \{h_1, \dots, h_N\}$ be a finite class and $\ell(h, z) \in [0,1]$ a loss. Examples $z_1, \dots, z_T$ are i.i.d. from $\mathcal{D}$. Run Hedge over the hypotheses with $\eta = \sqrt{8\ln N/T}$ and losses $\ell_t(i) = \ell(h_i, z_t)$, so that $\mathbf{p}_t$ depends only on $z_1, \dots, z_{t-1}$. Let $\bar{\mathbf{p}} = \frac{1}{T}\sum_t\mathbf{p}_t$ and let $I \sim \bar{\mathbf{p}}$ be drawn independently of the data. Prove that $\mathbb{E}\,L_{\mathcal{D}}(h_I) \le \min_i L_{\mathcal{D}}(h_i) + \sqrt{\ln N/(2T)}$, using the Hedge regret bound $\sqrt{(T/2)\ln N}$. Then say in two sentences how this compares with ERM and Theorem 2 of week 2.
+hint: The risk of the randomized predictor is linear in $\bar{\mathbf{p}}$. Use independence of $z_t$ from $\mathbf{p}_t$ to turn risks into the losses on the next example, then the regret bound for the realized sequence, then $\mathbb{E}\min \le \min\mathbb{E}$.
+solution: Write $L_i = L_{\mathcal{D}}(h_i)$. Conditioned on the data, $\mathbb{E}_I L_{\mathcal{D}}(h_I) = \sum_i\bar{p}(i)L_i = \frac{1}{T}\sum_t\langle \mathbf{p}_t, \mathbf{L}\rangle$, which is linear in $\bar{\mathbf{p}}$. The vector $\mathbf{p}_t$ is a function of $z_1, \dots, z_{t-1}$ and $z_t$ is independent of them, so $\mathbb{E}[\ell_t(i) \mid z_1, \dots, z_{t-1}] = L_i$ and hence $\mathbb{E}\langle \mathbf{p}_t, \mathbf{L}\rangle = \mathbb{E}\langle \mathbf{p}_t, \boldsymbol{\ell}_t\rangle$. The Hedge theorem holds for every loss sequence, in particular for the realized one: $\sum_t\langle \mathbf{p}_t, \boldsymbol{\ell}_t\rangle \le \min_i\sum_t\ell_t(i) + \sqrt{(T/2)\ln N}$. Taking expectations and using $\mathbb{E}\min_i\sum_t\ell_t(i) \le \min_i\mathbb{E}\sum_t\ell_t(i) = T\min_i L_i$, we get $\sum_t\mathbb{E}\langle \mathbf{p}_t, \boldsymbol{\ell}_t\rangle \le T\min_i L_i + \sqrt{(T/2)\ln N}$. Dividing by $T$ gives $\mathbb{E}\,L_{\mathcal{D}}(h_I) \le \min_i L_i + \sqrt{\ln N/(2T)}$. Compared with ERM and Theorem 2, the excess risk rate $\sqrt{\ln N/T}$ has the same dependence on $N$ and $T$ (up to constants), but the guarantee is in expectation over the data and the learner's randomization and the output is a randomized predictor rather than a single hypothesis, whereas Theorem 2 holds with probability $1 - \delta$ for a deterministic ERM output.
+rubric: Writes the risk of the randomized predictor as an average over rounds and uses independence of $z_t$ from $\mathbf{p}_t$ to convert it to the expected loss on the next example.
+rubric: Applies the regret bound to the realized sequence and uses $\mathbb{E}\min \le \min\mathbb{E}$ correctly.
+rubric: Reaches the stated bound by dividing by $T$ and gives an accurate comparison with Theorem 2 (expectation versus high probability, randomized versus deterministic output).

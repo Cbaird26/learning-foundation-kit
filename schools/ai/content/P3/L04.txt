@@ -55,7 +55,7 @@ Both grow as a power of $C$, with exponents $\beta/(\alpha+\beta)$ and $\alpha/(
 
 ### What was found
 
-Kaplan and colleagues reported that, at fixed compute, loss is improved most by growing the model quickly and training it on comparatively little data, and that larger models are more sample-efficient. Hoffmann and colleagues reached a different allocation: model size and tokens should grow in roughly equal proportion, and they showed that a smaller model trained on more tokens outperformed a much larger model trained with the same compute. A ratio of about 20 tokens per parameter is often quoted from their fits; it is a summary of one fit and depends on the details of data and fitting. Later analyses have argued that differences in how parameters were counted and how learning-rate schedules were set explain much of the gap between the two papers; treat the exact exponents as uncertain and the form of the analysis as the lasting lesson.
+Kaplan and colleagues reported that, at fixed compute, loss is improved most by growing the model quickly and training it on comparatively little data, and that larger models are more sample-efficient. Hoffmann and colleagues reached a different allocation: model size and tokens should grow in roughly equal proportion, and they showed that a smaller model trained on more tokens outperformed a much larger model trained with the same compute. A ratio of about 20 tokens per parameter is often quoted from their fits; it is a summary of one fit and depends on the details of data and fitting. Hoffmann and colleagues pointed to the learning-rate schedule as one reason their results differ from Kaplan and colleagues, and later analyses also pointed to how parameters are counted; treat the exact exponents as uncertain and the form of the analysis as the lasting lesson.
 
 ### Limits
 
@@ -171,31 +171,34 @@ hint: Take the logarithm of the ratio of the two losses and divide by the logari
 solution: $b = \ln(5.0/2.0)/\ln(10^{4}/10^{2}) = 0.9163/4.6052 \approx 0.199$.
 
 @quiz code
-prompt: Write `extrapolate(xs, ys, E, x_new)` for losses of the form $y = E + a x^{-b}$ with a known offset `E`. Fit $\log(y - E)$ against $\log x$ by least squares on the lists `xs` and `ys` (all $y > E$), and return the predicted $y$ at `x_new`.
+prompt: Write `size_for_target(xs, ys, E, target)` for losses of the form $y = E + a x^{-b}$ with a known offset `E`. Fit $\log(y - E)$ against $\log x$ by least squares on the lists `xs` and `ys` (all $y > E$), and return the size $x$ at which the fitted curve reaches the loss `target`. Return `None` if `target` is not greater than `E`, or if the fitted slope is not negative (the curve never falls to the target).
 starter:
 ```python
-def extrapolate(xs, ys, E, x_new):
+def size_for_target(xs, ys, E, target):
     return 0.0
 ```
 tests:
 ```python
-import math
 xs = [1e3, 1e4, 1e5, 1e6]
 ys = [1.2 + 30 * x ** -0.4 for x in xs]
-want = 1.2 + 30 * 1e8 ** -0.4
-assert abs(extrapolate(xs, ys, 1.2, 1e8) - want) < 1e-6
-assert abs(extrapolate(xs, ys, 1.2, 1e4) - ys[1]) < 1e-6
+assert abs(size_for_target(xs, ys, 1.2, 1.5) / 1e5 - 1) < 1e-6
+want = 1e7
+t = 1.2 + 30 * want ** -0.4
+assert abs(size_for_target(xs, ys, 1.2, t) / want - 1) < 1e-6
 ys2 = [2.0 + 5 * x ** -0.25 for x in [10.0, 100.0, 1000.0]]
-assert abs(extrapolate([10.0, 100.0, 1000.0], ys2, 2.0, 1e5) - (2.0 + 5 * 1e5 ** -0.25)) < 1e-6
-assert extrapolate(xs, ys, 1.2, 1e8) > 1.2
+t2 = 2.0 + 5 * 1e5 ** -0.25
+assert abs(size_for_target([10.0, 100.0, 1000.0], ys2, 2.0, t2) / 1e5 - 1) < 1e-6
+assert size_for_target(xs, ys, 1.2, 1.2) is None
+assert size_for_target(xs, ys, 1.2, 1.1) is None
+assert size_for_target([1.0, 10.0, 100.0], [1.5, 2.0, 2.5], 1.0, 1.2) is None
 ```
 model:
 ```python
 import math
 
 
-def extrapolate(xs, ys, E, x_new):
-    """Fit y = E + a * x**-b in log space and predict y at x_new."""
+def size_for_target(xs, ys, E, target):
+    """Fit y = E + a * x**-b in log space; return x where it reaches target."""
     lx = [math.log(x) for x in xs]
     ly = [math.log(y - E) for y in ys]
     n = len(xs)
@@ -204,11 +207,13 @@ def extrapolate(xs, ys, E, x_new):
     sxx = sum((u - mx) ** 2 for u in lx)
     sxy = sum((u - mx) * (v - my) for u, v in zip(lx, ly))
     slope = sxy / sxx
+    if target <= E or slope >= 0:
+        return None
     intercept = my - slope * mx
-    return E + math.exp(intercept + slope * math.log(x_new))
+    return math.exp((math.log(target - E) - intercept) / slope)
 ```
-hint: Subtract `E` before taking logs; then fit a line of log-reducible-loss against log-size and evaluate it at `log(x_new)`.
-solution: After subtracting the offset, the reducible loss is an exact power law in the test data, so the regression recovers it and extrapolation is exact; with the offset left in, the fit would be biased. The final step adds `E` back to the predicted reducible loss.
+hint: Subtract `E` before taking logs and fit a line of log-reducible-loss against log-size; then solve $\ln(\text{target} - E) = \text{intercept} + \text{slope} \cdot \ln x$ for $x$.
+solution: After subtracting the offset, the reducible loss is an exact power law in the test data, so the regression recovers its slope and intercept. Inverting the fitted line gives $\ln x = (\ln(\text{target} - E) - \text{intercept})/\text{slope}$; because the slope is negative, a smaller target loss gives a larger size. A target at or below the offset can never be reached, and a fit whose reducible loss does not fall with size has no size that reaches the target, so both return `None`.
 
 @quiz self
 prompt: A group fits a power law to the loss of models up to $10^{9}$ parameters and announces that a model of $10^{12}$ parameters "will" have a loss of a stated value, hence will "master" a particular task. Write a short critique naming at least three distinct problems with this inference.

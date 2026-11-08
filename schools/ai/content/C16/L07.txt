@@ -192,34 +192,39 @@ hint: The error is $8 - 6 = 2$. The right side of the tuple assignment is evalua
 solution: With $e = 2$, the new $p$ is $2 + 0.1 \cdot 2 \cdot 3 = 2.6$ and the new $q$ is $3 + 0.1 \cdot 2 \cdot 2 = 3.4$, using the old $p$ in the second formula. The program prints `2.6 3.4`.
 
 @quiz code
-prompt: Write `als_rank1(R, n_users, n_items, q0, lam, iters)` for rank-1 alternating least squares. `R` maps `(user, item)` to a rating; `q0` is the starting list of item factors; `lam` is positive. Each iteration first updates every user factor $p_u = \sum_{i \in \Omega_u} r_{ui} q_i / (\sum_{i \in \Omega_u} q_i^2 + \lambda)$ using the current `q`, then updates every item factor $q_i = \sum_{u} r_{ui} p_u / (\sum_{u} p_u^2 + \lambda)$ using the new `p`, where sums run over observed ratings only. Return `(p, q)` as lists of floats; with `iters = 0` return `([0.0] * n_users, list(q0))`.
+prompt: Write `als_objective_trace(R, n_users, n_items, q0, lam, iters)` for rank-1 alternating least squares. `R` maps `(user, item)` to a rating; `q0` is the starting list of item factors (length `n_items`); `lam` is positive. Each iteration first updates every user factor $p_u = \sum_{i \in \Omega_u} r_{ui} q_i / (\sum_{i \in \Omega_u} q_i^2 + \lambda)$ using the current `q` (starting from `q0`), then updates every item factor $q_i = \sum_{u} r_{ui} p_u / (\sum_{u} p_u^2 + \lambda)$ using the new `p`, where the sums run over observed ratings only (an item with no ratings gets factor 0). After each full iteration (a user update and an item update) compute the regularized objective $J = \sum_{(u,i) \in R} (r_{ui} - p_u q_i)^2 + \lambda (\sum_u p_u^2 + \sum_i q_i^2)$ with the current `p` and `q`, and return the list of these `iters` values; with `iters = 0` return `[]`. For example, `als_objective_trace({(0, 0): 2.0}, 1, 1, [1.0], 1.0, 2)` returns `[3.0, 3.0]`.
 starter:
 ```python
-def als_rank1(R, n_users, n_items, q0, lam, iters):
-    return [0.0] * n_users, list(q0)
+def als_objective_trace(R, n_users, n_items, q0, lam, iters):
+    return [sum(r * r for r in R.values())] * iters
 ```
 tests:
 ```python
-R = {(0, 0): 3, (0, 1): 1, (1, 1): 4, (2, 0): 2, (2, 2): 5}
-q0 = [1.0, 0.5, 2.0, 1.0]
-p, q = als_rank1(R, 3, 4, q0, 0.5, 1)
-assert all(abs(a - b) < 1e-9 for a, b in zip(p, [2.0, 2.6666666666666665, 2.1818181818181817]))
-want = [1.1191432396251675, 1.0909090909090908, 2.0738413197172036, 0.0]
-assert all(abs(a - b) < 1e-9 for a, b in zip(q, want))
-p, q = als_rank1(R, 3, 4, q0, 0.5, 3)
-want = [1.3807719873193678, 2.421608908810136, 1.9931698512249405]
-assert all(abs(a - b) < 1e-6 for a, b in zip(p, want))
-want = [1.2742322868085092, 1.3381188457883035, 2.22813763501793, 0.0]
-assert all(abs(a - b) < 1e-6 for a, b in zip(q, want))
-assert q[3] == 0.0
-assert als_rank1(R, 3, 4, q0, 0.5, 0) == ([0.0, 0.0, 0.0], q0)
+R = {(0, 0): 4, (0, 2): 1, (1, 1): 3, (1, 2): 2, (2, 0): 5, (2, 1): 2,
+     (3, 3): 3, (3, 2): 4}
+q0 = [2.0, -1.0, 0.5, 1.0, 3.0]
+want = [37.97716690991619, 17.153318287472526, 15.09045925282036,
+        15.020054364302858, 14.991759540678313, 14.978141969125279]
+got = als_objective_trace(R, 4, 5, q0, 0.5, 6)
+assert len(got) == 6 and all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+R2 = {(0, 0): 3, (0, 1): 1, (1, 1): 2, (2, 0): 4}
+got = als_objective_trace(R2, 3, 2, [1.0, 1.0], 2.0, 3)
+want = [20.32891556222389, 20.24350644142202, 20.24132770550876]
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, want))
+long_run = als_objective_trace(R, 4, 5, q0, 0.5, 30)
+assert len(long_run) == 30
+assert all(b <= a + 1e-9 for a, b in zip(long_run, long_run[1:]))
+assert long_run[0] < sum(r * r for r in R.values()) + 0.5 * sum(x * x for x in q0)
+assert abs(long_run[-1] - 14.965) < 1e-3
+assert als_objective_trace(R, 4, 5, q0, 0.5, 0) == []
 ```
 model:
 ```python
-def als_rank1(R, n_users, n_items, q0, lam, iters):
-    """Rank-1 ALS on the observed ratings in R."""
+def als_objective_trace(R, n_users, n_items, q0, lam, iters):
+    """Regularized objective after each full rank-1 ALS iteration."""
     p = [0.0] * n_users
     q = list(q0)
+    trace = []
     for _ in range(iters):
         for u in range(n_users):
             num = sum(q[i] * r for (uu, i), r in R.items() if uu == u)
@@ -229,10 +234,13 @@ def als_rank1(R, n_users, n_items, q0, lam, iters):
             num = sum(p[u] * r for (u, ii), r in R.items() if ii == i)
             den = sum(p[u] ** 2 for (u, ii), r in R.items() if ii == i)
             q[i] = num / (den + lam)
-    return p, q
+        error = sum((r - p[u] * q[i]) ** 2 for (u, i), r in R.items())
+        penalty = lam * (sum(a * a for a in p) + sum(b * b for b in q))
+        trace.append(error + penalty)
+    return trace
 ```
-hint: For each user, add up $q_i r_{ui}$ and $q_i^2$ over the items that user rated; divide by the sum of squares plus $\lambda$. Then do the same for each item with the new $p$.
-solution: The user step uses the old item factors and the item step uses the new user factors. Items with no ratings get $0/(0+\lambda) = 0$, which the fourth test checks; the later tests need several full rounds, so a function that updates only users or only items fails.
+hint: Run the two ALS updates as before; then, after the item update, add the squared errors over the observed ratings to $\lambda$ times the sum of all squared user and item factors, and append the total to a list.
+solution: Each iteration is the article's `als_round`, followed by an evaluation of $J$ with the new factors. Because the user update minimizes $J$ exactly over `p` and the item update minimizes it exactly over `q`, the recorded values can never increase, which the long-run test checks, and the first value is below the objective of the starting point (all user factors 0, item factors `q0`). Leaving out the penalty, or penalizing only the user factors, gives different values and fails the first two tests; so does recording after the user update only, or taking the root mean squared error instead of the sum. The `iters = 0` test checks the empty list, and the item with no ratings (item 4 in the first data set) checks that it gets factor 0 and so adds nothing to the penalty.
 
 @quiz ms
 prompt: Which statements about recommender systems based on matrix factorization are true? Select all that apply.

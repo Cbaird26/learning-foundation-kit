@@ -1,0 +1,188 @@
+@lesson
+title: Evaluation, contamination, hallucination and open problems
+summary: Design an evaluation with proper statistics, check it for contamination, discuss hallucination and calibration, and state the open problems of the field plainly.
+objective: Compute accuracy confidence intervals, a paired comparison, pass at k and a calibration error, and say what each does and does not show.
+objective: Implement an n-gram contamination check and an evaluation harness that reports clean and contaminated subsets separately.
+objective: Describe hallucination and the status of its proposed causes and mitigations, and list the questions this course leaves open.
+reading: Stanford CS336: Language Modeling from Scratch. Look up the material on evaluation; for contamination and benchmark design, look up survey papers on evaluating language models.
+
+@article
+A model scores 78 percent on a benchmark and the next model scores 81. Has anything improved? Perhaps: perhaps the second model was trained on the test set, or the prompt happened to suit it, or the 3-point gap is smaller than the noise of 500 test items, or the benchmark measures something other than the ability you care about. Evaluation is a measurement problem, and it is the part of the field in which a careful beginner can most easily out-reason a confident expert. This final lesson of the main sequence is about measuring well, and about what remains unknown.
+
+### What is measured
+
+Common evaluations include held-out **loss or perplexity** (cheap, smooth, tied to the training objective, silent about particular skills); **task benchmarks**, scored by multiple choice or exact match after normalization; **functional correctness** for code, where unit tests decide; **pairwise human preference**, summarized with a Bradley-Terry-type model of the kind in lesson 7; and **model-based judges**, which scale but are reported to have biases toward certain positions and lengths and toward their own style. For code, the standard estimator of **pass@$k$** (Chen and colleagues, 2021) draws $n \ge k$ samples per problem, counts the $c$ that pass, and computes $1 - \binom{n-c}{k}/\binom{n}{k}$, the probability that a random subset of $k$ samples contains a pass. With $n = 10$, $c = 3$, $k = 2$: $1 - 21/45 = 0.533$. Scoring by exact match needs a stated normalization:
+
+```python
+def exact_match(pred, ref):
+    """Case-insensitive match after removing punctuation and extra spaces."""
+    def norm(s):
+        s = "".join(ch for ch in s.lower() if ch.isalnum() or ch.isspace())
+        return " ".join(s.split())
+    return norm(pred) == norm(ref)
+```
+
+### Statistics
+
+An accuracy $\hat p$ on $n$ independent items has standard error $\sqrt{\hat p(1-\hat p)/n}$, and a normal-approximation 95 percent interval is $\hat p \pm 1.96\,\mathrm{SE}$. At $\hat p = 0.78$ on $n = 500$ items that is about $\pm 3.6$ points, so the 3-point gap above is within noise. Two models on the same items should be compared with a **paired** test, since the items are shared: among items where exactly one model is right, if $a$ favor model A and $b$ favor B, the sign-test statistic is $z = (a-b)/\sqrt{a+b}$. With $a = 30$ and $b = 18$, $z = 1.73$ and the normal approximation gives a two-sided $p \approx 0.083$, while the exact binomial calculation gives $0.111$; with few discordant items, prefer the exact test. Beyond sampling error, scores move with the prompt wording, the number and choice of examples, the random seed and the decoding settings; report these, or average over them.
+
+### Contamination
+
+**Contamination** means test items, or close copies of them, were in the training data. It can inflate scores, since the model may reproduce an answer it has seen. Because pretraining data are scraped from the web and benchmarks are published on the web, overlap happens without anyone intending it. The common check is **n-gram overlap**: split items and training documents into word n-grams and flag items that share them, as in the overlap analyses of the GPT-3 paper (Brown and colleagues, 2020). It has limits. A paraphrase, a translation or a reformatted copy shares few n-grams, so passing the check does not prove the data are clean; and for models whose training data are not released, the check cannot be run by outsiders at all. Other approaches: unique canary strings in published benchmarks that a model should not be able to complete; testing whether a model prefers the original item order or wording to a perturbed version (a hint of memorization); and **fresh** or regularly refreshed test sets written after the training data were collected, which help but age too. How much contamination has affected reported results across the field is not well known, and avoiding it entirely, without hiding the data, is an open problem.
+
+### Hallucination and calibration
+
+**Hallucination** is generated content that is unsupported by the source it should be based on, or false, stated fluently. Proposed contributors include: next-token training rewards plausible continuations whether or not the model has the knowledge; training text contains confident errors; the model may lack the information and not know that; and decoding can drift into error and then continue consistently. These are hypotheses with partial support, and the relative weights are not settled. Mitigations include retrieval (lesson 9), training the model to abstain or hedge when unsure, verifying outputs with tools, and decoding changes; each reduces some failures and none is a guarantee. **Calibration** asks whether stated confidence matches accuracy. The expected calibration error (ECE) bins predictions by confidence and averages the gap: $\mathrm{ECE} = \sum_b \frac{n_b}{N}\,\lvert \mathrm{acc}_b - \mathrm{conf}_b\rvert$. If half the answers have confidence 0.9 and accuracy 0.7 and the rest are calibrated, $\mathrm{ECE} = 0.5 \times 0.2 = 0.1$. How well a model knows what it knows has been studied with varying results across tasks and training stages.
+
+### What is open
+
+By the standards of this course, these are open: whether abilities emerge suddenly or only look so under some metrics (lesson 5); what in-context learning is (lesson 9); how far current models reason, and whether their written reasoning reflects their computation; how to evaluate without contamination and without saturating benchmarks; how to make models reliably say what they do not know; how training data shape behavior; what the best way to specify and elicit human values is; and how much further scale and data will carry the loss curves. This list will change faster than these lessons, so learn the **methods** (measurement, controls, statistics) that let you judge new claims.
+
+@example
+title: Comparing two models on shared items
+problem: Two models are tested on the same 200 items. 36 items are answered correctly by A only, and 22 by B only. Compute the sign-test statistic and say what it suggests.
+step: There are $a + b = 58$ discordant items.
+step: $z = (36 - 22)/\sqrt{58} = 14/7.616 = 1.84$.
+step: A two-sided normal approximation gives $p \approx 0.066$, which is above the common 0.05 threshold, so the data do not clearly separate the models.
+answer: $z \approx 1.84$; evidence that A is better but not conclusive at the 5 percent level.
+
+@example
+title: An overlap check by hand
+problem: A test item is "the capital of france is paris". A training document contains "everyone knows the capital of france is lovely". Use word trigrams. What fraction of the item's trigrams appear in the document?
+step: The item's trigrams: (the capital of), (capital of france), (of france is), (france is paris): 4 in all.
+step: The document's trigrams include (the capital of), (capital of france), (of france is), and others such as (france is lovely).
+step: Three of the four item trigrams appear, so the fraction is $3/4 = 0.75$; only the answer-bearing trigram is missing.
+answer: 0.75. A check that flags any shared trigram would flag this item.
+
+@mistakes
+- Reading a gap between two scores without an interval: on 500 items a 3-point gap is within sampling error.
+- Using an unpaired comparison for two models tested on the same items: pairing removes the item-difficulty noise.
+- Treating a clean n-gram check as proof of no contamination: paraphrases and translations pass it.
+- Reporting one prompt's score as the model's ability: scores vary with wording, examples and decoding.
+
+@practice num
+prompt: A model scores 50 percent on 400 independent test items. What is the half-width of a normal-approximation 95 percent confidence interval, in percentage points? Give the answer to one decimal place.
+answer: 4.9
+tol: 0.1
+unit: percentage points
+check: 100 * 1.96 * sqrt(0.5 * 0.5 / 400)
+hint: The standard error is $\sqrt{\hat p(1-\hat p)/n}$; multiply by 1.96.
+solution: $\mathrm{SE} = \sqrt{0.25/400} = 0.025$, so the half-width is $1.96 \times 0.025 = 0.049$, or 4.9 percentage points.
+
+@practice num
+prompt: A code model gives $n = 20$ samples for a problem and $c = 4$ pass the tests. What is the pass@3 estimate $1 - \binom{n-c}{k}/\binom{n}{k}$? Give the answer to three decimal places.
+answer: 0.509
+tol: 0.001
+check: 1 - comb(16, 3) / comb(20, 3)
+hint: $\binom{16}{3} = 560$ and $\binom{20}{3} = 1140$.
+solution: The probability that a random set of 3 samples contains no pass is $560/1140 = 0.4912$, so pass@3 $= 1 - 0.4912 \approx 0.509$.
+
+@practice mc
+prompt: A benchmark's test items show no overlap of 13-word sequences with a training corpus. Which conclusion is justified?
+choice*: No copies of the items that share long exact word sequences were found; paraphrased, translated or reformatted copies would not be detected.
+choice: The model cannot have seen the benchmark in any form, so its score is uncontaminated.
+choice: The benchmark is too easy to be useful for evaluation.
+choice: The score is guaranteed to measure reasoning rather than memorization.
+hint: What kind of copy does an exact n-gram match detect?
+solution: The check shows only that long exact word matches are absent. A paraphrase or translation, or a dataset that discusses the answers in different words, would pass, so absence of overlap lowers but does not eliminate the concern.
+
+@practice code
+prompt: Write `ngram_overlap(item, docs, n)`. `item` is a string and `docs` a list of strings. Lowercase each string and split it on whitespace into words. The item's n-grams are the **set** of tuples of `n` consecutive words. Return the fraction of the item's distinct n-grams that occur in at least one document, or `0.0` if the item has no n-grams (fewer than `n` words). For example, `ngram_overlap("the quick brown fox jumps", ["a quick brown fox runs"], 3)` returns `1/3`.
+starter:
+```python
+def ngram_overlap(item, docs, n):
+    return 1.0
+```
+tests:
+```python
+q = "the quick brown fox jumps"
+assert abs(ngram_overlap(q, ["a quick brown fox runs"], 3) - 1 / 3) < 1e-9
+assert abs(ngram_overlap(q, ["a quick brown fox runs", "Brown Fox JUMPS high"], 3) - 2 / 3) < 1e-9
+assert abs(ngram_overlap(q, ["a quick brown fox runs"], 1) - 0.6) < 1e-9
+assert ngram_overlap("two words", ["two words here"], 3) == 0.0
+assert abs(ngram_overlap("a a a a", ["a a"], 2) - 1.0) < 1e-9
+assert ngram_overlap(q, [], 2) == 0.0
+```
+model:
+```python
+def _ngrams(text, n):
+    words = text.lower().split()
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def ngram_overlap(item, docs, n):
+    """Fraction of the item's distinct n-grams found in any document."""
+    grams = _ngrams(item, n)
+    if not grams:
+        return 0.0
+    seen = set()
+    for doc in docs:
+        seen |= _ngrams(doc, n)
+    return len(grams & seen) / len(grams)
+```
+hint: Build a set of n-grams for the item and one for all documents together; the answer is the size of their intersection divided by the size of the item's set.
+solution: Using sets means a repeated n-gram in the item counts once, as the test with "a a a a" checks. The union of the documents' n-grams stands for the training corpus. Lowercasing makes the match case-insensitive, and an item shorter than `n` words has no n-grams, so the function returns 0.0 instead of dividing by zero.
+
+@practice self
+prompt: Design an evaluation of a model's ability to summarize clinical-style notes accurately, and plan how you would check it for contamination. State the items, the metrics and their limits, the statistics you would report, and two contamination checks, including one that does not depend on seeing the training data.
+hint: Decide what "accurately" means for a summary, how to measure it, and how many items you need to see a difference you care about.
+solution: Items: about 400 synthetic notes written from scratch by clinicians, each with a reference list of key facts that a good summary must contain and a list of facts it must not invent. I would write them after the model's data cutoff and never publish the references, so that the items are fresh. Metrics: (1) fact recall, the fraction of required facts present, and (2) unsupported-claim rate, the fraction of summary claims not in the note; both are scored by two clinicians who are blind to which model wrote the summary, with agreement measured (for example, Cohen's kappa) and disagreements adjudicated. Automatic overlap scores such as ROUGE are cheap secondary signals; they reward word overlap, not factual accuracy, and I would report them as such. Statistics: report each rate with a 95 percent interval, compare models with a paired test on the same notes, and evaluate with several prompt templates and report the spread; I would choose $n$ so that a 5-point difference in fact recall is detectable given the observed standard deviation. Contamination: (a) an n-gram overlap check of the notes and reference facts against any available training data or public corpora, with the limit that paraphrases evade it; (b) a check that works without the training data: freshness (notes written after the cutoff, with unique canary strings in any copy that is published) and a perturbation test comparing performance on the original notes and on versions with details changed, since a large drop on perturbed notes suggests memorized specifics. Limits I would state: synthetic notes may not match real notes, expert raters are costly, and a model that does well here is not shown to be safe for clinical use.
+rubric: Defines accuracy through concrete metrics (such as fact recall and unsupported claims) with blind, agreement-checked raters, and states metric limits.
+rubric: Specifies statistics: sample size reasoning, confidence intervals, a paired comparison, and variation over prompts.
+rubric: Gives two contamination checks, one not requiring the training data, and states the limits of each.
+
+@quiz num
+prompt: A model's predictions are binned by confidence. Bin 1 has 40 predictions with mean confidence 0.95 and accuracy 0.85; bin 2 has 40 with mean confidence 0.70 and accuracy 0.65; bin 3 has 20 with mean confidence 0.50 and accuracy 0.50. What is the expected calibration error? Give the answer to two decimal places.
+answer: 0.06
+tol: 0.01
+check: 0.4 * abs(0.85 - 0.95) + 0.4 * abs(0.65 - 0.70) + 0.2 * abs(0.5 - 0.5)
+hint: Weight each bin's absolute gap by its share of the 100 predictions.
+solution: The gaps are $0.10$, $0.05$ and $0$, weighted by $0.4$, $0.4$ and $0.2$: $0.04 + 0.02 + 0 = 0.06$.
+
+@quiz code
+prompt: Write `evaluate(preds, refs, flags)`, an evaluation harness. `preds` and `refs` are equal-length lists of strings and `flags` a list of booleans, where `True` marks an item flagged as contaminated. A prediction is correct if it equals its reference after normalization: lowercase, delete every character that is neither a letter, a digit nor whitespace, and collapse runs of whitespace to single spaces (and strip the ends). Return `(acc_all, acc_clean, acc_contaminated)`, the accuracy over all items, over items with flag `False`, and over items with flag `True`; return `None` for a subset with no items.
+starter:
+```python
+def evaluate(preds, refs, flags):
+    return None, None, None
+```
+tests:
+```python
+p = ["Paris.", "  london", "Rome", "Berlin"]
+r = ["paris", "London", "Madrid", "berlin!"]
+a, c, d = evaluate(p, r, [False, True, False, True])
+assert abs(a - 0.75) < 1e-9 and abs(c - 0.5) < 1e-9 and abs(d - 1.0) < 1e-9
+a, c, d = evaluate(["U.S.A."], ["usa"], [False])
+assert a == 1.0 and c == 1.0 and d is None
+a, c, d = evaluate(["new   york"], ["New York"], [True])
+assert a == 1.0 and c is None and d == 1.0
+assert evaluate(["x", "y"], ["x", "z"], [False, False])[0] == 0.5
+```
+model:
+```python
+def _norm(s):
+    kept = "".join(ch for ch in s.lower() if ch.isalnum() or ch.isspace())
+    return " ".join(kept.split())
+
+
+def evaluate(preds, refs, flags):
+    """Accuracy overall, on clean items and on flagged items."""
+    def acc(correct):
+        return sum(correct) / len(correct) if correct else None
+
+    ok = [_norm(p) == _norm(r) for p, r in zip(preds, refs)]
+    clean = [o for o, f in zip(ok, flags) if not f]
+    dirty = [o for o, f in zip(ok, flags) if f]
+    return acc(ok), acc(clean), acc(dirty)
+```
+hint: Normalize both strings, compare, then split the list of results by the flags and average each part (guarding against empty parts).
+solution: Deleting punctuation turns "U.S.A." into "usa", and splitting and rejoining on whitespace collapses runs of spaces. Reporting the clean and contaminated subsets separately is the point of the harness: a gap between them suggests the score is inflated by seen items. A subset with no items has no accuracy, which is why `None` is returned instead of dividing by zero.
+
+@quiz self
+prompt: A lab reports that its model "does not hallucinate" because it scored 97 percent on a question-answering benchmark. Write a short critique with at least three distinct problems with this claim and say what evidence would be more convincing.
+hint: Separate what the benchmark measures, whether it may be contaminated, and what the statistics say.
+solution: First, a benchmark score measures accuracy on its particular questions and style, whereas hallucination is about unsupported statements across the many situations in which the model is used, including open-ended generation and questions with no good answer; a high score on short factual questions does not cover long outputs, rare entities, or cases where the right behavior is to say the answer is unknown. Second, the benchmark may be contaminated, in which case a high score may reflect memorized items; the lab should report an overlap analysis and results on fresh items, and should say what it could not check. Third, the claim has no uncertainty: a score from a few hundred items has an interval of several points, and a 3 percent error rate on a deployment-scale number of queries is still many errors, which is not "does not hallucinate". Fourth, the result may depend on prompt and decoding settings that were tuned on the benchmark. More convincing evidence: human or tool-verified checks of the faithfulness of long outputs on a fresh, expert-written set that includes unanswerable questions; reports of unsupported-claim rates with intervals, split by difficulty and domain; calibration results; and a description of how the evaluation was shielded from tuning.
+rubric: Notes the gap between benchmark accuracy and hallucination as a behavior across contexts.
+rubric: Raises contamination and tuning on the benchmark as alternatives, and asks for fresh items.
+rubric: Notes missing uncertainty or the meaning of a residual error rate.
+rubric: Proposes more convincing evidence, such as fresh expert items with unanswerable questions.

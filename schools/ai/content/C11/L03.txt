@@ -127,40 +127,75 @@ hint: The result has one row and one column for each column of `A`, so it is `n`
 solution: The sum runs over the rows of `A` (index `k`) while `i` and `j` pick two columns, so the result has the size of the number of columns, not of rows. The first and fourth tests (4 by 3 and 3 by 2) catch computing $\mathbf{A}\mathbf{A}^\top$ by mistake, which would have the wrong shape; the single-row test catches filling only one triangle, since the outer product of a row with itself has all nine entries nonzero; the single-column test catches a result that is not a 1 by 1 matrix; the symmetry test catches a one-sided or mis-indexed result; and the last test catches code that changes `A`.
 
 @practice code
-prompt: Write `matmul(A, B)` that returns the product of matrices stored as lists of rows, using three nested loops. Raise `ValueError` if the number of columns of `A` differs from the number of rows of `B`. For example, `matmul([[1, 2]], [[3], [4]])` returns `[[11.0]]`.
+prompt: Computing $\mathbf{A}^k$ by multiplying by $\mathbf{A}$ again and again takes $k - 1$ matrix products; repeated squaring needs only about $2\log_2 k$. Write `matpow(A, k)` for a nonempty square matrix `A` (list of $n$ rows of $n$ numbers) and an integer `k >= 0`. It returns $\mathbf{A}^k$ as a new list of rows. For `k = 0` it returns the identity matrix (`1.0` on the diagonal, `0.0` elsewhere). The idea: keep `base` (starting as a copy of `A`) and `result` (starting as the identity); while `k > 0`, if `k` is odd multiply `result` by `base`, then square `base` and halve `k` (integer division). Use at most 20 matrix products for `k = 1000`; the tests check this by passing entries that count their multiplications, so use only `+` and `*` on entries (no `abs`, comparisons or `math.fsum` on them) and write a small helper that multiplies two matrices. Never modify `A`, and return a new matrix even when `k = 1`. For example, `matpow([[1, 1], [0, 1]], 3)` returns `[[1.0, 3.0], [0.0, 1.0]]`.
 starter:
 ```python
-def matmul(A, B):
+def matpow(A, k):
     pass
 ```
 tests:
 ```python
-assert matmul([[1, 2]], [[3], [4]]) == [[11.0]]
-C = matmul([[3, 1], [0, 2]], [[1, -2], [4, 5]])
-assert all(abs(C[i][j] - [[7, -1], [8, 10]][i][j]) < 1e-12 for i in range(2) for j in range(2))
-I = [[1.0, 0.0], [0.0, 1.0]]
-A = [[0.5, -1.5], [2.0, 4.0]]
-assert matmul(A, I) == A and matmul(I, A) == A
-assert len(matmul([[1], [2], [3]], [[1, 1]])) == 3
-assert matmul([[1, 2], [3, 4]], [[0, 1], [1, 0]]) != matmul([[0, 1], [1, 0]], [[1, 2], [3, 4]])
-assert raises(ValueError, matmul, [[1, 2, 3]], [[1, 2, 3]])
+def close(X, Y):
+    return len(X) == len(Y) and all(
+        len(r) == len(s) and all(abs(a - b) < 1e-9 for a, b in zip(r, s))
+        for r, s in zip(X, Y))
+
+class Num:
+    """A number that counts how many times it is multiplied."""
+    count = 0
+    def __init__(self, v):
+        self.v = v
+    def __add__(self, other):
+        return Num(self.v + (other.v if isinstance(other, Num) else other))
+    __radd__ = __add__
+    def __mul__(self, other):
+        Num.count += 1
+        return Num(self.v * (other.v if isinstance(other, Num) else other))
+    __rmul__ = __mul__
+
+C = [[1, 1, 0], [0, 1, 1], [1, 0, 1]]
+assert close(matpow(C, 0), [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+R = matpow(C, 1)
+assert close(R, C)
+R[0][0] = 99
+assert C[0][0] == 1
+assert close(matpow(C, 5), [[11, 10, 11], [11, 11, 10], [10, 11, 11]])
+assert close(matpow(C, 6), [[22, 21, 21], [21, 22, 21], [21, 21, 22]])
+assert close(matpow(C, 13), [[2731, 2731, 2730], [2730, 2731, 2731], [2731, 2730, 2731]])
+assert C == [[1, 1, 0], [0, 1, 1], [1, 0, 1]]
+assert close(matpow([[1, 1], [1, 0]], 30), [[1346269, 832040], [832040, 514229]])
+assert close(matpow([[0.5, -1.0], [2.0, 0.25]], 3), [[-2.375, 1.5625], [-3.125, -1.984375]])
+S = [[Num(x) for x in row] for row in [[0.5, 0.5, 0.0], [0.0, 0.5, 0.5], [0.5, 0.0, 0.5]]]
+P = matpow(S, 1000)
+assert all(abs(P[i][j].v - 1 / 3) < 1e-9 for i in range(3) for j in range(3))
+assert Num.count <= 20 * 27
 ```
 model:
 ```python
-def matmul(A, B):
-    """Matrix product of lists of rows, checking that the shapes match."""
-    m, n, p = len(A), len(B), len(B[0])
-    if len(A[0]) != n:
-        raise ValueError("shape mismatch")
-    C = [[0.0] * p for _ in range(m)]
-    for i in range(m):
-        for j in range(p):
+def _matmul(A, B):
+    """Product of two square matrices stored as lists of rows."""
+    n = len(A)
+    C = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
             for k in range(n):
                 C[i][j] += A[i][k] * B[k][j]
     return C
+
+def matpow(A, k):
+    """A**k for a square matrix by repeated squaring (k >= 0)."""
+    n = len(A)
+    result = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    base = [list(row) for row in A]
+    while k > 0:
+        if k % 2 == 1:
+            result = _matmul(result, base)
+        base = _matmul(base, base)
+        k //= 2
+    return result
 ```
-hint: Check `len(A[0]) == len(B)` first. Then for each `i` and `j`, add up `A[i][k] * B[k][j]` over `k` into `C[i][j]`.
-solution: The three loops are exactly the formula $C_{ij} = \sum_k A_{ik}B_{kj}$. The identity test checks the indexing, the shape test catches a transposed index, and the noncommuting pair shows that the order of arguments matters.
+hint: Write the binary expansion of `k` in your head: each time `k` is odd, the current `base` (which equals `A` raised to a power of two) belongs in the product. Start `result` as the identity, so that `k = 0` needs no special case.
+solution: If $k = \sum_b 2^b$ over the set bits of $k$, then $\mathbf{A}^k = \prod_b \mathbf{A}^{2^b}$, and the successive squarings of `base` produce exactly the factors $\mathbf{A}^{2^b}$; multiplying `result` by `base` whenever the current bit is 1 collects them, for about $2\log_2 k$ products in all. With `result` starting as the identity, `k = 0` returns the identity with no extra case. The tests with `k` equal to 5, 6 and 13 catch code that ignores the odd bits or squares once too often, the nonsymmetric float matrix catches raising the entries to the power `k` one by one, the counting test with `k = 1000` catches the $k - 1$ product loop (about 999 products against the 20 allowed), the `k = 1` and unchanged-matrix tests catch returning or squaring `A` in place, and the first test catches a wrong answer for `k = 0`.
 
 @quiz code
 prompt: Write `matmul_count(A, B)` that multiplies matrices stored as lists of rows (inner sizes assumed to match) with three nested loops and returns a tuple `(C, mults)`, where `C` is the product and `mults` is the number of scalar multiplications performed. Count every multiplication, including those by zero.

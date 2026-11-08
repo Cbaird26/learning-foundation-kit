@@ -33,9 +33,9 @@ $$\frac{2(p - 1)}{p}\, S \text{ bytes,}$$
 
 almost independent of $p$, which is why it scales. For $S = 2 \times 10^9$ bytes (1 billion fp16 gradients) and $p = 8$ that is $2 \cdot \tfrac{7}{8} \cdot 2 \times 10^9 = 3.5 \times 10^9$ bytes; at a link speed of $10^{11}$ bytes per second this takes $0.035$ s. If a step computes for $0.5$ s and communication is not overlapped with computation, the step takes $0.535$ s and the **scaling efficiency**
 
-$$\text{efficiency} = \frac{\text{speedup}}{\text{devices}} = \frac{T_1}{p\, T_p}$$
+$$\text{efficiency} = \frac{\text{ideal time}}{\text{actual time}}$$
 
-is $0.5/0.535 \approx 0.93$ relative to ideal. Frameworks hide much communication by starting the all-reduce of early layers while later layers are still computing gradients.
+For a fixed total workload the ideal time on $p$ devices is $T_1/p$, so the efficiency is $T_1/(p\, T_p)$ (speedup divided by devices). Here each device keeps the same share of work, so the ideal step time stays $0.5$ s and the efficiency is $0.5/0.535 \approx 0.93$. Frameworks hide much communication by starting the all-reduce of early layers while later layers are still computing gradients.
 
 ### When the model does not fit
 
@@ -59,7 +59,7 @@ title: Sharding the optimizer state of a 7-billion-parameter model
 problem: A model with $7 \times 10^9$ parameters is trained in mixed precision with Adam on 8 devices of 80 GB each. Compare the per-device parameter-state memory with plain data parallelism and with the optimizer state sharded across all 8 devices.
 step: Plain data parallelism stores 16 bytes per parameter on every device: $7 \times 10^9 \times 16 = 1.12 \times 10^{11}$ bytes, or 112 GB, which exceeds 80 GB.
 step: With the optimizer state sharded across $d = 8$ devices, each device stores $2 + 2 + 12/8 = 5.5$ bytes per parameter.
-step: That is $7 \times 10^9 \times 5.5 = 3.85 \times 10^{10}$ bytes, or 38.5 GB, leaving about 41 GB on an 80 GB device for activations and buffers.
+step: That is $7 \times 10^9 \times 5.5 = 3.85 \times 10^{10}$ bytes, or 38.5 GB, leaving about 41.5 GB on an 80 GB device for activations and buffers.
 step: The price is extra communication to gather the sharded values, so measure the step time after sharding rather than assuming it is unchanged.
 answer: 112 GB per device without sharding (too much) and 38.5 GB with the optimizer state sharded over 8 devices.
 @mistakes
@@ -156,7 +156,7 @@ def microbatches_needed(stages, max_bubble):
 hint: Start at m = 1 and increase it while the bubble fraction is still above the limit.
 solution: The bubble decreases as `m` grows, so the first `m` that satisfies the limit is the smallest. A bubble of exactly the limit is allowed (the first test has $3/12 = 0.25$), a single stage has no bubble, and a limit of zero can never be met with more than one stage.
 @quiz code
-prompt: Write `per_device_gb(n_params, devices, shard_optimizer, shard_gradients, shard_weights)` returning the training-state memory per device in GB (1 GB = $10^9$ bytes) in mixed precision. The state per parameter is 2 bytes of weights, 2 bytes of gradients and 12 bytes of optimizer state; each component that is sharded is divided by `devices`, the others are replicated. For example, `per_device_gb(7e9, 8, True, False, False)` returns `38.5`.
+prompt: Write `per_device_gb(n_params, devices, shard_optimizer, shard_gradients, shard_weights)` returning the training-state memory per device in GB (1 GB = $10^9$ bytes) in mixed precision. The state per parameter is 2 bytes of weights, 2 bytes of gradients and 12 bytes of optimizer state; each component that is sharded is divided by `devices`, the others are replicated. For example, `per_device_gb(3e9, 4, True, False, False)` returns `21.0`.
 starter:
 ```python
 def per_device_gb(n_params, devices, shard_optimizer, shard_gradients,
@@ -165,9 +165,9 @@ def per_device_gb(n_params, devices, shard_optimizer, shard_gradients,
 ```
 tests:
 ```python
-assert abs(per_device_gb(7e9, 8, True, False, False) - 38.5) < 1e-9
-assert abs(per_device_gb(7e9, 8, False, False, False) - 112.0) < 1e-9
-assert abs(per_device_gb(7e9, 8, True, True, True) - 14.0) < 1e-9
+assert abs(per_device_gb(3e9, 4, True, False, False) - 21.0) < 1e-9
+assert abs(per_device_gb(3e9, 4, False, False, False) - 48.0) < 1e-9
+assert abs(per_device_gb(3e9, 4, True, True, True) - 12.0) < 1e-9
 assert abs(per_device_gb(1e9, 4, True, True, False) - 5.5) < 1e-9
 assert abs(per_device_gb(2e9, 1, True, True, True) - 32.0) < 1e-9
 ```

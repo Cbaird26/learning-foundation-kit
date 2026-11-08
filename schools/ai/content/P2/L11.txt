@@ -1,0 +1,169 @@
+@lesson
+title: Evaluating generative models
+summary: Compute and compare likelihood, Inception score, Fréchet distance, maximum mean discrepancy and precision and recall on small samples, and explain what each can and cannot detect.
+objective: Explain why held-out likelihood alone does not measure sample quality, and what the main sample-based metrics estimate.
+objective: Compute a one-dimensional Fréchet distance, an unbiased MMD estimate, an Inception score and precision and recall on tiny examples.
+objective: Design an evaluation that reports several metrics with uncertainty and checks for memorization.
+reading: Probabilistic Machine Learning: Advanced Topics (Murphy): look up the discussion of evaluating generative models and sample-based metrics.
+
+@article
+You have now met five ways to build a generative model. Which is best? The honest answer starts with a harder question: what does "good" mean? A model can assign high probability to the test set and produce poor samples; it can produce stunning samples while ignoring half of the data. There is no single number, and a graduate student in this area should be able to say, for each metric, what it estimates, what it ignores, and how it can be gamed.
+
+### Likelihood
+
+For models with tractable likelihoods (autoregressive models, flows) the held-out log-likelihood, often reported in bits per dimension, is the natural measure: it is the cross-entropy between the data and the model, a proper scoring rule, and it penalizes missing a region of the data (assigning it near-zero probability) severely. For VAEs one reports the ELBO or an importance-weighted bound; for GANs there is no likelihood at all. But likelihood has two known limits (Theis and colleagues made them precise in a widely cited note on evaluation). First, a model that mixes a good model with weight $\epsilon$ and a bad one with weight $1-\epsilon$ loses at most $\log(1/\epsilon)$ nats per example, because $\log(\epsilon p + (1-\epsilon)q)\ge\log\epsilon+\log p$. In high dimensions, where the log-likelihood of an image is in the hundreds or thousands of nats, a model can be mostly garbage at a small cost. Second, a model can have good samples and a poor likelihood, for example by memorizing training images and assigning little mass elsewhere. Likelihood, sample quality and coverage measure different things.
+
+### Sample-based metrics
+
+Given a set of real samples $\{\mathbf{x}_i\}$ and generated samples $\{\mathbf{y}_j\}$, a sample-based metric compares the two sets.
+
+**Inception score** (Salimans and colleagues, 2016). A pretrained classifier gives class probabilities $p(y\mid\mathbf{x})$ for each generated image. With $p(y) = \mathbb{E}_{\mathbf{x}}[p(y\mid\mathbf{x})]$,
+$$\mathrm{IS} = \exp\Big(\mathbb{E}_{\mathbf{x}}\,\mathrm{KL}\big(p(y\mid\mathbf{x})\,\Vert\,p(y)\big)\Big).$$
+It is high when each image is confidently classified (quality) and the classes are balanced (diversity). It never looks at real data, so it cannot detect a collapse inside a class, and it depends on the classifier's label set.
+
+**Fréchet distance** (the Fréchet inception distance, FID; Heusel and colleagues, 2017). Map both sets into a feature space, fit a Gaussian $\mathcal{N}(\boldsymbol{\mu},\boldsymbol{\Sigma})$ to each, and compute the squared Fréchet (2-Wasserstein) distance between the Gaussians:
+$$\mathrm{FID} = \lVert\boldsymbol{\mu}_r-\boldsymbol{\mu}_g\rVert^2 + \operatorname{Tr}\big(\boldsymbol{\Sigma}_r+\boldsymbol{\Sigma}_g - 2(\boldsymbol{\Sigma}_r\boldsymbol{\Sigma}_g)^{1/2}\big).$$
+In one dimension with standard deviations $\sigma_r,\sigma_g$ this is $(\mu_r-\mu_g)^2 + (\sigma_r-\sigma_g)^2$. Lower is better. Its caveats: it depends on the feature extractor, it summarizes each set by two moments, and the estimate is biased upward for small samples, so numbers from different sample sizes or implementations are not comparable.
+
+**Maximum mean discrepancy** (MMD; Gretton and colleagues, 2012). For a kernel $k$,
+$$\mathrm{MMD}^2(P,Q) = \mathbb{E}\,k(x,x') + \mathbb{E}\,k(y,y') - 2\,\mathbb{E}\,k(x,y),$$
+the squared distance between the mean embeddings of $P$ and $Q$ in a kernel feature space; for a characteristic kernel such as the RBF kernel it is zero if and only if $P=Q$. The **unbiased estimator** from $n$ real and $m$ generated samples leaves out the diagonal terms:
+$$\widehat{\mathrm{MMD}}^2 = \frac{1}{n(n-1)}\sum_{i\ne j}k(x_i,x_j) + \frac{1}{m(m-1)}\sum_{i\ne j}k(y_i,y_j) - \frac{2}{nm}\sum_{i,j}k(x_i,y_j).$$
+It can be negative for small samples (that is a sign of noise, not of a model better than perfect), and it depends on the kernel bandwidth. For $x = (0,1)$, $y = (2,3)$ and an RBF kernel with $\ell = 1$: $0.6065 + 0.6065 - 2(0.2221) = 0.769$.
+
+**Precision and recall for distributions** (Sajjadi and colleagues, 2018; Kynkäänniemi and colleagues, 2019). Separate fidelity from coverage. One common definition uses neighborhoods: precision is the fraction of generated samples that fall within some radius $r$ of a real sample (or inside the nearest-neighbor balls of real samples), and recall is the fraction of real samples within $r$ of a generated sample. Precision penalizes unrealistic samples; recall penalizes missing modes. The neighborhood radius is a choice that can change the answer.
+
+### Checking for memorization
+
+A model can score well by reproducing its training data. Standard checks compare each generated sample with its nearest training example (in pixel or feature space) and inspect the closest pairs; they matter especially for models trained on private data, where reproducing training examples is a privacy risk.
+
+### Human and downstream evaluation
+
+For many uses the real question is whether people prefer or can trust the outputs, or whether generated data help a downstream task. Human studies need care: the number and selection of raters, the prompts, order effects, and the fraction of disagreement all affect conclusions. Downstream tests (train a classifier on synthetic data and test on real data) are concrete and often more informative than a generic score.
+
+### A practical protocol
+
+Report several metrics that cover different failure modes (a likelihood or bound where available, a distance such as FID or MMD, precision and recall), say how they were computed (feature extractor, kernel, sample sizes), report variation across seeds or bootstrap resamples, add a nearest-neighbor check for memorization, and show non-cherry-picked samples. A difference between two models is meaningful only relative to that variation.
+
+```python
+from math import sqrt
+
+def fid_1d(real, fake):
+    def mean_std(v):
+        m = sum(v) / len(v)
+        return m, sqrt(sum((a - m) ** 2 for a in v) / len(v))
+    mr, sr = mean_std(real)
+    mg, sg = mean_std(fake)
+    return (mr - mg) ** 2 + (sr - sg) ** 2
+
+real = [0.0, 1.0, 2.0, 3.0]
+print(fid_1d(real, [1.0, 2.0, 3.0, 4.0]))   # a pure shift
+print(fid_1d(real, [1.5, 1.5, 1.5, 1.5]))   # a collapsed generator
+```
+
+@example
+title: Inception score on two images
+problem: A classifier with two classes gives $p(y\mid\mathbf{x}_1) = (0.9, 0.1)$ and $p(y\mid\mathbf{x}_2) = (0.1, 0.9)$ for two generated images. Compute the Inception score.
+step: The marginal is the average: $p(y) = (0.5, 0.5)$.
+step: $\mathrm{KL}((0.9,0.1)\Vert(0.5,0.5)) = 0.9\ln\frac{0.9}{0.5} + 0.1\ln\frac{0.1}{0.5} = 0.9(0.5878) + 0.1(-1.6094) = 0.3681$ nats. By symmetry the second image gives the same value.
+step: The average KL is $0.3681$, so $\mathrm{IS} = e^{0.3681} = 1.445$.
+step: Interpret: the maximum with two classes is $2$, reached when each image is classified with certainty and the classes are balanced. If both images were $(0.9, 0.1)$, the marginal would equal each conditional, the KL would be $0$ and $\mathrm{IS} = 1$: confident but not diverse.
+answer: $\mathrm{IS}\approx 1.445$.
+
+@mistakes
+- Comparing numbers computed with different feature extractors, sample sizes or kernels: FID, IS and MMD values are only comparable under the same protocol.
+- Reading a higher likelihood as better samples (or the reverse): the two can move in opposite directions.
+- Treating a negative unbiased MMD estimate as an error to be clipped silently, or as evidence of a perfect model: it is sampling noise around a value near zero.
+- Reporting precision and recall without the radius or neighborhood size: both change with it.
+
+@practice num
+prompt: Real one-dimensional samples are $0, 2, 4$ and a collapsed generator outputs the constant $1, 1, 1$. Using the Gaussian (population-variance) Fréchet distance $(\mu_r-\mu_g)^2 + (\sigma_r-\sigma_g)^2$, what is the FID? Give your answer to three decimal places.
+answer: 3.667
+tol: 0.001
+check: ((0 + 2 + 4) / 3 - 1) ** 2 + (sqrt(sum((v - 2) ** 2 for v in [0, 2, 4]) / 3) - 0) ** 2
+hint: The real mean is 2 and its population variance is $8/3$; the generator has mean 1 and standard deviation 0.
+solution: The mean term is $(2-1)^2 = 1$. The real standard deviation is $\sqrt{8/3} = 1.633$ and the generator's is 0, so the spread term is $8/3 = 2.667$. The total is $3.667$.
+
+@practice num
+prompt: Real samples are $0, 1, 5, 6$ and generated samples are $0.2, 1.1, 9.0$. Define recall as the fraction of real samples that lie within distance $r = 0.5$ of at least one generated sample. What is the recall?
+answer: 0.5
+check: sum(any(abs(g - r) <= 0.5 for g in [0.2, 1.1, 9.0]) for r in [0, 1, 5, 6]) / 4
+hint: Check each real sample against its nearest generated sample.
+solution: The real sample 0 is within $0.2$ of the generated $0.2$, and 1 is within $0.1$ of $1.1$. The samples 5 and 6 have no generated sample within $0.5$ (the nearest is 9.0). So recall is $2/4 = 0.5$; the precision for the same radius is $2/3$, because the generated 9.0 is not near any real sample.
+
+@practice mc
+prompt: A model has a better held-out log-likelihood than a competitor but visibly worse samples. Which explanation is consistent with known limitations of likelihood-based evaluation?
+choice*: Log-likelihood loses at most a few nats by mixing a good model with a small fraction of poor samples, so it can hide poor sample quality in high dimensions.
+choice: Log-likelihood is only defined for models that produce good samples.
+choice: A better log-likelihood implies a lower Fréchet distance for every feature extractor.
+choice: Log-likelihood cannot be computed on held-out data.
+hint: Consider $\log(\epsilon p + (1-\epsilon)q)\ge\log\epsilon + \log p$ and compare $\log(1/\epsilon)$ with the size of image log-likelihoods.
+solution: Mixing a good model with weight $\epsilon$ costs at most $\log(1/\epsilon)$ nats, which is small compared with the hundreds or thousands of nats of a typical image log-likelihood, so a model can be mostly poor in sample quality at little cost to likelihood. Likelihood is defined for any normalized model, and no inequality ties it to Fréchet distance.
+
+@practice code
+prompt: Write `mmd2_unbiased(xs, ys, ell)` that returns the unbiased estimate of the squared maximum mean discrepancy between two lists of floats `xs` (length $n\ge 2$) and `ys` (length $m\ge 2$), using the RBF kernel $k(a,b) = \exp(-(a-b)^2/(2\ell^2))$. The within-sample terms average the kernel over pairs $i\ne j$ (divide by $n(n-1)$ and $m(m-1)$), and the cross term averages over all $nm$ pairs. For example, `mmd2_unbiased([0.0, 0.0], [1.0, 1.0], 1.0)` is $1 + 1 - 2e^{-1/2}\approx 0.7869$.
+starter:
+```python
+from math import exp
+
+def mmd2_unbiased(xs, ys, ell):
+    return 0.0
+```
+tests:
+```python
+assert abs(mmd2_unbiased([0.0, 0.0], [1.0, 1.0], 1.0) - 0.7869386805747332) < 1e-6
+assert abs(mmd2_unbiased([0.0, 1.0, 2.0], [3.0, 4.0, 5.0], 1.0) - 0.6964415422835726) < 1e-6
+assert abs(mmd2_unbiased([0.0, 1.0, 2.0], [0.0, 1.0, 2.0], 1.0) - (-0.3670229771862489)) < 1e-6
+got = mmd2_unbiased([0.0, 1.0, 2.0, 3.0], [0.5, 1.5, 2.5], 2.0)
+assert abs(got - (-0.1370285190093783)) < 1e-6
+```
+model:
+```python
+from math import exp
+
+def mmd2_unbiased(xs, ys, ell):
+    """Unbiased squared MMD with an RBF kernel of length scale ell."""
+    def k(a, b):
+        return exp(-(a - b) ** 2 / (2 * ell ** 2))
+
+    n, m = len(xs), len(ys)
+    kxx = sum(k(xs[i], xs[j]) for i in range(n) for j in range(n) if i != j)
+    kyy = sum(k(ys[i], ys[j]) for i in range(m) for j in range(m) if i != j)
+    kxy = sum(k(a, b) for a in xs for b in ys)
+    return kxx / (n * (n - 1)) + kyy / (m * (m - 1)) - 2 * kxy / (n * m)
+```
+hint: Compute three sums: kernel over ordered pairs $i\ne j$ in `xs`, the same in `ys`, and over all cross pairs; divide each by its count and combine with a factor $-2$ on the cross term.
+solution: The estimator is a U-statistic: excluding the diagonal $k(x_i,x_i) = 1$ removes the bias that the plug-in (biased) estimate has. The first test has two identical points in each sample, so each within-sample term is $k(0,0) = k(1,1) = 1$ and the cross term is $k(0,1) = e^{-1/2}$, giving $1 + 1 - 2e^{-1/2} = 0.787$; the third test compares a sample with itself and shows that the unbiased estimate can be negative.
+
+@practice self
+prompt: A paper claims that its new generative model is better than a baseline because its FID is $11.9$ against $12.3$, computed from 5,000 generated images against 50,000 real images, one run each. Write a referee's paragraph that says what additional information or experiments you would require before accepting the claim, and what other metrics you would ask for and why.
+hint: Think about variability across runs, the sample size dependence of FID, what FID ignores, and metrics that address fidelity, coverage and memorization.
+solution: A difference of $0.4$ from a single run cannot be interpreted without an estimate of the metric's variability: I would ask for several training seeds and several draws of the generated sample, with means and intervals, since FID varies from run to run by amounts that can be comparable to such a gap. FID is also biased upward for small sample sizes, so the claim needs both models evaluated with the same sample size, feature extractor, preprocessing and implementation, and the numbers should be compared with a reference FID between two disjoint halves of the real data. FID summarizes each set by a mean and covariance of features, so it can miss mode dropping within the Gaussian approximation or differences in the tails; I would ask for precision and recall (with the neighborhood size stated) to separate fidelity from coverage, an MMD or similar test with a stated kernel, a nearest-neighbor check against the training set for memorization, and, if the claim is about perceived quality, a human study with a described protocol. I would also ask for uncurated samples, and for a downstream evaluation if the model is meant for a specific use. A claim of improvement is credible if it holds across seeds and under at least two metrics that measure different things.
+rubric: Requires variability estimates across seeds and sample draws before accepting a $0.4$ difference.
+rubric: Notes dependence of FID on sample size, feature extractor and implementation, and asks for a controlled comparison.
+rubric: Requests complementary metrics (precision and recall, MMD, memorization checks, human or downstream evaluation) with reasons.
+
+@quiz num
+prompt: A classifier with three classes gives these class probabilities for three generated images: $(0.7, 0.2, 0.1)$, $(0.1, 0.8, 0.1)$ and $(0.2, 0.2, 0.6)$. What is the Inception score $\exp\big(\mathbb{E}_{\mathbf{x}}\mathrm{KL}(p(y\mid\mathbf{x})\Vert p(y))\big)$? Give your answer to three decimal places.
+answer: 1.334
+tol: 0.001
+check: (lambda rows: exp(sum(sum(p * log(p / m) for p, m in zip(r, [sum(q[i] for q in rows) / 3 for i in range(3)])) for r in rows) / 3))([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.2, 0.2, 0.6]])
+hint: First average the three probability vectors to get $p(y)$, then average the three KL divergences from $p(y)$.
+solution: The marginal is $(0.3333, 0.4, 0.2667)$. The three KL divergences are about $0.2826$, $0.3360$ and $0.2458$, with mean $0.2881$, and $e^{0.2881} = 1.334$.
+
+@quiz mc
+prompt: Which statement about the Fréchet distance used in FID is correct?
+choice*: It fits a Gaussian to the features of each sample set and measures the distance between the two Gaussians, so it depends on the feature extractor and on the sample size.
+choice: It is an unbiased estimator of the distance between the two underlying distributions for any sample size.
+choice: It compares each generated sample with its nearest real sample.
+choice: It is computed from the log-likelihood that the generative model assigns to held-out data.
+hint: Recall the formula with the means and covariances of the two feature sets.
+solution: FID uses the sample means and covariances of features, so changing the extractor or the number of samples changes the value, and the estimate is biased for small samples. It does not use nearest neighbors (that is precision and recall) or the model's likelihood.
+
+@quiz self
+prompt: Two generators produce one-dimensional samples for real data $0, 1, 2, 3$. Generator A outputs $1, 2, 3, 4$ and generator B outputs $1.5, 1.5, 1.5, 1.5$. Compute the Fréchet distance (population variances) for each, and precision and recall with radius $r = 0.5$ for each (precision: fraction of generated samples within $r$ of a real sample; recall: fraction of real samples within $r$ of a generated sample). Which generator would you prefer under each metric, and what does the disagreement teach?
+hint: The real samples have mean $1.5$ and population variance $1.25$; generator A is a shifted copy and generator B is a single point at the real mean.
+solution: Real: mean 1.5, standard deviation $\sqrt{1.25} = 1.118$. Generator A has mean 2.5 and the same spread, so $\mathrm{FID}_A = 1^2 + 0 = 1.0$. Generator B has mean 1.5 and standard deviation 0, so $\mathrm{FID}_B = 0 + 1.25 = 1.25$. By FID, A is better. For precision and recall at $r = 0.5$: for A, the generated 1, 2, 3 are real points and 4 is not (nearest real is 3, at distance 1), so precision is $3/4$; the real 1, 2, 3 are matched and 0 is not (nearest generated is 1), so recall is $3/4$. For B, 1.5 is within 0.5 of the real 1 and 2, so precision is $4/4 = 1$; the real 1 and 2 are within 0.5 of 1.5 and 0 and 3 are not, so recall is $2/4 = 0.5$. By precision B looks perfect, by recall it is worse than A, and by FID A is better: the collapsed generator B has every sample realistic yet covers half of the data. The lesson is that each metric answers a different question, FID blends fidelity and coverage through two moments, and a report with several metrics exposes failure modes that one number hides.
+rubric: Computes both Fréchet distances correctly ($1.0$ and $1.25$).
+rubric: Computes precision and recall for both generators correctly ($0.75, 0.75$ and $1.0, 0.5$).
+rubric: Explains that the metrics disagree because they measure fidelity and coverage differently, and draws the conclusion that several metrics should be reported.

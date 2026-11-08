@@ -1,0 +1,175 @@
+@lesson
+title: Online learning: experts, regret and multiplicative weights
+summary: Set up prediction with expert advice, define regret, prove the regret bound of the multiplicative weights (Hedge) algorithm from Hoeffding's lemma, and connect online guarantees to statistical ones.
+objective: Define regret in prediction with expert advice and explain why randomization or fractional predictions are necessary.
+objective: State the Hedge algorithm and prove the bound $\ln N/\eta + \eta T/8$ and its tuned form $\sqrt{(T/2)\ln N}$, including Hoeffding's lemma.
+objective: Compute regret bounds for given $N$, $T$ and $\eta$, run the algorithm by hand and in code, and prove an online-to-batch conversion.
+reading: Understanding Machine Learning (Shalev-Shwartz and Ben-David), the chapter "Online Learning"; for the experts setting, the multiplicative weights literature (Cesa-Bianchi and Lugosi, Prediction, Learning, and Games).
+
+@article
+Statistical learning assumes the data are drawn i.i.d. from a fixed distribution. Online learning removes that assumption entirely and still gets guarantees. The setting is a game. In each round $t = 1, \dots, T$ the learner chooses a probability vector $\mathbf{p}_t$ over $N$ **experts**; then an adversary, who may know the learner's algorithm and the whole past, reveals a loss vector $\boldsymbol{\ell}_t \in [0,1]^N$; the learner suffers the expected loss $\langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle$. Its **regret** after $T$ rounds is
+$$\text{Regret}_T = \sum_{t=1}^{T}\langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle - \min_{i \in [N]}\sum_{t=1}^{T}\ell_t(i),$$
+the excess over the best single expert in hindsight. A regret that grows like $o(T)$ means that the average loss per round approaches that of the best expert, on *every* loss sequence.
+
+Randomization is needed. With two experts and $\{0,1\}$ losses, a learner that deterministically follows one expert in each round can be given loss $1$ every round by an adversary that sets the chosen expert's loss to $1$ and the other's to $0$. The learner loses $T$, the two experts together lose $T$, so the better expert loses at most $T/2$: the regret is at least $T/2$.
+
+### The multiplicative weights (Hedge) algorithm
+
+Weighted majority (Littlestone and Warmuth, 1994) and Hedge (Freund and Schapire, 1997) keep a weight per expert and shrink the weights of experts that lose. With a learning rate $\eta > 0$: set $w_1(i) = 1$; in round $t$ play $p_t(i) = w_t(i)/W_t$ where $W_t = \sum_j w_t(j)$; after seeing $\boldsymbol{\ell}_t$ set $w_{t+1}(i) = w_t(i)\,e^{-\eta\ell_t(i)}$.
+
+```python
+from math import exp
+
+def hedge_distributions(losses, eta):
+    """The distributions p_1, ..., p_T that Hedge plays on a loss table."""
+    n = len(losses[0])
+    w = [1.0] * n
+    plays = []
+    for loss in losses:
+        total = sum(w)
+        plays.append([x / total for x in w])
+        w = [x * exp(-eta * l) for x, l in zip(w, loss)]
+    return plays
+
+for p in hedge_distributions([(1, 0), (1, 0)], 1.0):
+    print([round(x, 4) for x in p])
+```
+
+The program prints `[0.5, 0.5]` then `[0.2689, 0.7311]`: after expert 0 loses once, its weight is multiplied by $e^{-1}$.
+
+### The regret bound
+
+**Theorem (Hedge).** For any $N \ge 2$, $\eta > 0$ and any sequence of loss vectors in $[0,1]^N$ (chosen adaptively if you like),
+$$\text{Regret}_T \le \frac{\ln N}{\eta} + \frac{\eta T}{8}.$$
+With $\eta = \sqrt{8\ln N/T}$ this is $\text{Regret}_T \le \sqrt{(T/2)\ln N}$.
+
+The statement is deterministic: there is no probability, no assumption about the sequence and no dependence on the number of examples beyond $T$. The proof tracks the potential $W_t$. The second example gives it in full; it uses **Hoeffding's lemma**: if $X \in [0,1]$ and $s \in \mathbb{R}$, then $\ln\mathbb{E}\,e^{sX} \le s\,\mathbb{E}X + s^2/8$, which the first example proves. This is the version with constant $1/8$; weaker lemmas give bounds with larger constants.
+
+A numerical run: three experts, $\eta = 0.5$, loss vectors $(1, 0, 0.5)$, $(1, 0, 1)$, $(0, 1, 0.5)$. Hedge plays $(0.333, 0.333, 0.333)$, then $(0.254, 0.419, 0.327)$, then $(0.200, 0.543, 0.257)$, for a total expected loss of $1.7525$. The best expert (the second) loses $1$, so the regret is $0.7525$, below the bound $\ln 3/0.5 + 0.5 \cdot 3/8 = 2.385$.
+
+### What the bound says, and what lies around it
+
+The dependence on the number of experts is only logarithmic, so Hedge can compete with exponentially many experts if the weights can be maintained efficiently. Lower bounds of order $\sqrt{T\ln N}$ hold for any algorithm (see Cesa-Bianchi and Lugosi), so the rate is optimal up to constants. Tuning $\eta$ needs to know $T$; a doubling trick or a time-varying learning rate gives bounds of the same order without it, with larger constants. In the realizable mistake-bound model with a finite class, the **halving algorithm** (predict by majority vote of the consistent hypotheses) makes at most $\log_2|\mathcal{H}|$ mistakes, and Littlestone (1988) characterized the optimal mistake bound by a combinatorial dimension that now bears his name. AdaBoost of last week is multiplicative weights over the examples.
+
+Online guarantees also give statistical ones. If the examples are i.i.d. and the losses are convex, averaging the iterates of an online algorithm with regret $R_T$ gives a predictor whose expected risk exceeds the best in the class by at most $R_T/T$. The practice problems ask you to prove this online-to-batch conversion, which is how stochastic gradient descent guarantees are usually derived.
+
+@example
+title: Hoeffding's lemma
+problem: Prove that if $X \in [0,1]$ with mean $\mu$, then for every real $s$, $\ln\mathbb{E}\,e^{sX} \le s\mu + s^2/8$.
+step: Convexity of $x \mapsto e^{sx}$ on $[0,1]$ gives $e^{sx} \le (1 - x) + x e^{s}$. Taking expectations, $\mathbb{E}\,e^{sX} \le 1 - \mu + \mu e^{s}$.
+step: Define $\varphi(s) = \ln(1 - \mu + \mu e^{s}) - s\mu$. It suffices to show $\varphi(s) \le s^2/8$. We have $\varphi(0) = 0$.
+step: Differentiate: $\varphi'(s) = \dfrac{\mu e^{s}}{1 - \mu + \mu e^{s}} - \mu$, so $\varphi'(0) = 0$. Let $q(s) = \dfrac{\mu e^{s}}{1 - \mu + \mu e^{s}} \in (0,1)$. Then $\varphi'(s) = q(s) - \mu$ and $q'(s) = q(s)(1 - q(s))$, hence $\varphi''(s) = q(s)(1 - q(s)) \le 1/4$.
+step: By Taylor's theorem with the Lagrange remainder, $\varphi(s) = \varphi(0) + s\varphi'(0) + \frac{s^2}{2}\varphi''(\xi) \le \frac{s^2}{2}\cdot\frac{1}{4} = \frac{s^2}{8}$ for some $\xi$ between $0$ and $s$. (The degenerate cases $\mu \in \{0, 1\}$ are trivial.)
+answer: $\ln\mathbb{E}\,e^{sX} \le s\mu + s^2/8$.
+
+@example
+title: Proof of the Hedge regret bound
+problem: Prove that Hedge satisfies $\text{Regret}_T \le \ln N/\eta + \eta T/8$ for all loss sequences in $[0,1]^N$.
+step: Potential. Let $W_t = \sum_i w_t(i)$, so $W_1 = N$. Then $\dfrac{W_{t+1}}{W_t} = \sum_i \dfrac{w_t(i)}{W_t}e^{-\eta\ell_t(i)} = \mathbb{E}_{i \sim \mathbf{p}_t}\,e^{-\eta\ell_t(i)}$.
+step: Apply Hoeffding's lemma to the random variable $X = \ell_t(i)$ with $i \sim \mathbf{p}_t$, which lies in $[0,1]$ and has mean $\langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle$, with $s = -\eta$: $\dfrac{W_{t+1}}{W_t} \le \exp\big(-\eta\langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle + \eta^2/8\big)$.
+step: Multiply over $t = 1, \dots, T$ and take logarithms: $\ln\dfrac{W_{T+1}}{W_1} \le -\eta\sum_{t}\langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle + \dfrac{\eta^2 T}{8}$.
+step: Lower bound the potential by the weight of the best expert $i^\star$: $W_{T+1} \ge w_{T+1}(i^\star) = \exp\big(-\eta L^\star\big)$, where $L^\star = \sum_t \ell_t(i^\star)$ is the best cumulative loss. Therefore $\ln(W_{T+1}/W_1) \ge -\eta L^\star - \ln N$.
+step: Combine the two bounds: $-\eta L^\star - \ln N \le -\eta L_{\text{alg}} + \eta^2 T/8$, where $L_{\text{alg}} = \sum_t\langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle$. Rearranging and dividing by $\eta$ gives $L_{\text{alg}} - L^\star \le \ln N/\eta + \eta T/8$. The choice $\eta = \sqrt{8\ln N/T}$ makes both terms equal to $\sqrt{T\ln N/8}$, whose sum is $\sqrt{(T/2)\ln N}$.
+answer: $\text{Regret}_T \le \ln N/\eta + \eta T/8$, and $\le \sqrt{(T/2)\ln N}$ for the tuned $\eta$.
+
+@mistakes
+- Treating the regret bound as a statement about expected behavior under a distribution: it holds for every sequence of losses, including adaptive ones, because the expectation is over the learner's own randomization only.
+- Forgetting that the tuned learning rate depends on $T$: with a wrong $\eta$ the bound is $\ln N/\eta + \eta T/8$, which can be linear in $T$ if $\eta$ does not shrink.
+- Confusing regret with loss: a regret of $\sqrt{(T/2)\ln N}$ can accompany a very large total loss if all experts are poor.
+
+@practice num
+prompt: Hedge is run with $N = 16$ experts, learning rate $\eta = 0.05$, and $T = 2000$ rounds of losses in $[0,1]$. What does the bound $\ln N/\eta + \eta T/8$ give for the regret? Give one decimal place.
+answer: 68.0
+tol: 0.1
+check: log(16) / 0.05 + 0.05 * 2000 / 8
+hint: Compute the two terms separately: $\ln 16/0.05$ and $0.05 \cdot 2000/8$.
+solution: $\ln 16 \approx 2.7726$, so the first term is $55.45$, and the second is $100/8 = 12.5$. The sum is $67.95 \approx 68.0$. The tuned rate $\sqrt{8\ln 16/2000} = 0.105$ would give the smaller bound $\sqrt{1000 \ln 16} = 52.6$.
+
+@practice num
+prompt: With the tuned learning rate $\eta = \sqrt{8\ln N/T}$, Hedge has regret at most $\sqrt{(T/2)\ln N}$. What is this bound for $N = 100$ experts and $T = 5000$ rounds? Give one decimal place.
+answer: 107.3
+tol: 0.1
+check: sqrt(5000 / 2 * log(100))
+hint: Compute $(T/2)\ln N = 2500 \cdot 4.605$ and take the square root.
+solution: $\ln 100 \approx 4.6052$, so $(T/2)\ln N \approx 11512.9$ and the square root is $107.3$, about $2.1$ percent of $T$.
+
+@practice mc
+prompt: Two experts with $\{0,1\}$ losses. The learner must pick one expert deterministically in each round, and the adversary sees the choice before assigning the losses. Which regret can the adversary force over $T$ rounds?
+choice*: At least $T/2$.
+choice: At most $\ln 2$.
+choice: Order $\sqrt{T}$, as for Hedge.
+choice: Zero, because the learner can switch to the better expert after seeing one loss.
+hint: Let the adversary give loss $1$ to the chosen expert and $0$ to the other. Compare the learner's total loss with the sum of the two experts' losses.
+solution: If each round gives loss $1$ to the chosen expert and $0$ to the other, the learner loses $T$ in total while the two experts together lose $T$, so one of them loses at most $T/2$. The regret is at least $T - T/2 = T/2$, which is linear in $T$. Randomized (fractional) play defeats this adversary because the adversary cannot predict the realized choice.
+
+@practice code
+prompt: The learning rate of Hedge can be made to depend on the round. Write `anytime_hedge_loss(losses)` where `losses` is a nonempty list of rounds, each a tuple of $N$ losses in $[0,1]$. In round $t = 1, 2, \dots$ use $\eta_t = \sqrt{8\ln N / t}$ and play $p_t(i) \propto \exp(-\eta_t L_{t-1}(i))$, where $L_{t-1}(i)$ is the cumulative loss of expert $i$ over rounds $1, \dots, t-1$ (zero in the first round). Return the learner's total expected loss $\sum_t \langle \mathbf{p}_t, \boldsymbol{\ell}_t \rangle$. For $N = 1$ every $\eta_t$ is $0$ and the result is the sum of the losses. For example `anytime_hedge_loss([(0.5, 0.5)])` returns `0.5`.
+starter:
+```python
+from math import exp, log, sqrt
+
+def anytime_hedge_loss(losses):
+    pass
+```
+tests:
+```python
+assert abs(anytime_hedge_loss([(0.5, 0.5)]) - 0.5) < 1e-9
+assert abs(anytime_hedge_loss([(0.3,), (0.4,)]) - 0.7) < 1e-9
+assert abs(anytime_hedge_loss([(1, 0), (1, 0)]) - 0.6590773) < 1e-6
+assert abs(anytime_hedge_loss([(0, 1), (1, 0), (0, 1)]) - 1.8409227) < 1e-6
+assert abs(anytime_hedge_loss([(1, 0, 0), (0, 1, 0), (0, 0, 1)]) - 1.5390591) < 1e-6
+```
+model:
+```python
+from math import exp, log, sqrt
+
+def anytime_hedge_loss(losses):
+    """Total expected loss of Hedge with learning rate sqrt(8 ln N / t)."""
+    n = len(losses[0])
+    cum = [0.0] * n
+    total = 0.0
+    for t, loss in enumerate(losses, start=1):
+        eta = sqrt(8 * log(n) / t)
+        w = [exp(-eta * c) for c in cum]
+        z = 0.0
+        for x in w:
+            z += x
+        total += sum(x / z * l for x, l in zip(w, loss))
+        cum = [c + l for c, l in zip(cum, loss)]
+    return total
+```
+hint: Keep the cumulative losses `cum` of the experts; in round `t` compute the weights from `cum` with $\eta_t$, accumulate the expected loss, and only then add the round's losses to `cum`.
+solution: Unlike fixed-rate Hedge, the weights are recomputed from the cumulative losses with the current rate, not updated multiplicatively, since the rate changes. The weights in round $t$ use losses up to round $t - 1$ only: adding the current loss before computing the play would let the learner see the adversary's move. In the first round all cumulative losses are zero, so the play is uniform. The test with one expert checks that nothing breaks when $\ln N = 0$.
+
+@practice self
+prompt: Let $\mathcal{W}$ be a convex set, $\ell(\mathbf{w}, z)$ convex in $\mathbf{w}$, and $z_1, \dots, z_T$ i.i.d. from $\mathcal{D}$, with $L_{\mathcal{D}}(\mathbf{w}) = \mathbb{E}_z\ell(\mathbf{w}, z)$. An online algorithm produces $\mathbf{w}_t \in \mathcal{W}$ as a function of $z_1, \dots, z_{t-1}$ only, and satisfies $\sum_{t}\ell(\mathbf{w}_t, z_t) - \sum_t\ell(\mathbf{u}, z_t) \le R_T$ for every sequence $z_1, \dots, z_T$ and every $\mathbf{u} \in \mathcal{W}$. Prove that $\bar{\mathbf{w}} = \frac{1}{T}\sum_t\mathbf{w}_t$ satisfies $\mathbb{E}\,L_{\mathcal{D}}(\bar{\mathbf{w}}) \le \min_{\mathbf{u} \in \mathcal{W}}L_{\mathcal{D}}(\mathbf{u}) + R_T/T$.
+hint: Use convexity of $L_{\mathcal{D}}$ to compare $L_{\mathcal{D}}(\bar{\mathbf{w}})$ with the average of $L_{\mathcal{D}}(\mathbf{w}_t)$, and use independence of $z_t$ from $\mathbf{w}_t$ to replace $L_{\mathcal{D}}(\mathbf{w}_t)$ by $\ell(\mathbf{w}_t, z_t)$ in expectation.
+solution: Fix $\mathbf{u} \in \mathcal{W}$. Since $\ell(\cdot, z)$ is convex for each $z$, $L_{\mathcal{D}}$ is convex, so by Jensen's inequality $L_{\mathcal{D}}(\bar{\mathbf{w}}) \le \frac{1}{T}\sum_t L_{\mathcal{D}}(\mathbf{w}_t)$. The iterate $\mathbf{w}_t$ is a function of $z_1, \dots, z_{t-1}$ and $z_t$ is independent of them, so $\mathbb{E}[\ell(\mathbf{w}_t, z_t) \mid z_1, \dots, z_{t-1}] = L_{\mathcal{D}}(\mathbf{w}_t)$ and hence $\mathbb{E}\,L_{\mathcal{D}}(\mathbf{w}_t) = \mathbb{E}\,\ell(\mathbf{w}_t, z_t)$. Taking expectations of the regret inequality, which holds for every sequence, gives $\sum_t\mathbb{E}\,\ell(\mathbf{w}_t, z_t) \le \sum_t\mathbb{E}\,\ell(\mathbf{u}, z_t) + R_T = T\,L_{\mathcal{D}}(\mathbf{u}) + R_T$. Combining, $\mathbb{E}\,L_{\mathcal{D}}(\bar{\mathbf{w}}) \le \frac{1}{T}\sum_t\mathbb{E}\,\ell(\mathbf{w}_t, z_t) \le L_{\mathcal{D}}(\mathbf{u}) + R_T/T$. Since $\mathbf{u}$ was arbitrary, the bound holds for the minimum over $\mathcal{W}$. An algorithm with regret $O(\sqrt{T})$ therefore gives excess risk $O(1/\sqrt{T})$.
+rubric: Uses convexity (Jensen) to bound the risk of the average iterate by the average of the iterates' risks.
+rubric: Uses the independence of $z_t$ from $\mathbf{w}_t$ to replace the risk by the loss on the next example in expectation.
+rubric: Takes expectations of the regret inequality for a fixed comparator, divides by $T$, and concludes for the minimizer.
+
+@quiz num
+prompt: Hedge is run with the tuned rate for $N = 50$ experts over $T = 2000$ rounds. What is the regret bound $\sqrt{(T/2)\ln N}$? Give one decimal place.
+answer: 62.5
+tol: 0.1
+check: sqrt(2000 / 2 * log(50))
+hint: Compute $1000 \cdot \ln 50$.
+solution: $\ln 50 \approx 3.912$, so the bound is $\sqrt{3912} \approx 62.5$.
+
+@quiz num
+prompt: What is the tuned learning rate $\eta = \sqrt{8\ln N/T}$ for $N = 10$ experts and $T = 10000$ rounds? Give four decimal places.
+answer: 0.0429
+tol: 0.0001
+check: sqrt(8 * log(10) / 10000)
+hint: $8\ln 10 \approx 18.42$.
+solution: $\sqrt{18.42/10000} = \sqrt{0.001842} \approx 0.0429$.
+
+@quiz ms
+prompt: Which of these statements about the Hedge regret bound are true? Select all that apply.
+choice*: It holds for every sequence of loss vectors in $[0,1]^N$, including sequences chosen by an adversary that sees the learner's past plays.
+choice*: With the tuned learning rate, the average regret $\text{Regret}_T/T$ tends to $0$ as $T \to \infty$ for fixed $N$.
+choice*: Doubling the number of experts changes the tuned bound $\sqrt{(T/2)\ln N}$ only through $\ln N$.
+choice: It requires the loss vectors to be independent and identically distributed.
+hint: Read the statement of the theorem: which assumptions does it make on the sequence?
+solution: The proof is a deterministic potential argument that never mentions how the losses are produced, so it covers adaptive adversaries. The tuned bound is $O(\sqrt{T\ln N})$, so the average regret is $O(\sqrt{\ln N/T}) \to 0$, and the number of experts enters only through $\ln N$. No i.i.d. assumption is needed, which is the point of the online setting.
