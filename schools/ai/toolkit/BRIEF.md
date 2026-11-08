@@ -30,7 +30,7 @@ Lesson file sections, in order:
 - `@article` — markdown: paragraphs, `###` subheadings, **bold**, lists, tables, code blocks, `$math$`. Length by level (see below).
 - `@example` ×1–2 — `title:`, `problem:`, `step:` ×2–6 (each step is revealed one at a time, Khan-style; a step may contain a table or a code block), optional `answer:`.
 - `@mistakes` — 2–4 lines starting with `- `.
-- `@practice <type>` ×5 — ordered easy → hard, each with its own data and numbers: never reuse a worked example, the article's own data or its numbers (also in code items' example calls and tests), so learners must apply the idea rather than recognize an answer they have seen.
+- `@practice <type>` ×5 — ordered easy → hard, each with its own data and numbers: never reuse a worked example, the article's own data or its numbers (also in code items' example calls and tests), so learners must apply the idea rather than recognize an answer they have seen. A code item never asks for a function the article already gives in full: ask for a variant, an extension or the next step (a different separator, a second dimension, a stopping rule, an edge case the article's version mishandles).
 - `@quiz <type>` ×2–3 — new problems used only in unit quizzes, the midterm and the final. Never near-copies of practice items, and never the data of a worked example.
 
 ## Item types

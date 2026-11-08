@@ -1,0 +1,322 @@
+@lesson
+title: Gradient boosting
+summary: Build a model as a sum of small trees, each fit to the negative gradient of the loss at the current predictions, and implement boosted decision stumps from scratch.
+objective: Explain boosting as gradient descent in function space and derive the pseudo-residuals for squared and logistic loss.
+objective: Implement a regression stump and a gradient boosting loop in plain Python, and trace how the training error falls round by round.
+objective: Explain the roles of the learning rate, the number of rounds and the weak learner's depth, and contrast boosting with bagging.
+reading: The Elements of Statistical Learning, the chapter on boosting and additive trees: the sections on boosting, gradient boosting and the regularization of boosting.
+@article
+Bagging averaged many deep trees to cut variance. **Boosting** goes the opposite way: it adds many very small trees, one after another, each correcting the mistakes of the ensemble so far. Early boosting, AdaBoost (Freund and Schapire, 1997), reweighted the examples the ensemble got wrong. Friedman (2001) showed that this is a form of gradient descent, and the resulting **gradient boosting** works for any differentiable loss.
+
+### Gradient descent on functions
+
+We build a model $F(\mathbf{x})$ stage by stage, starting from a constant $F_0$ and setting
+
+$$F_m(\mathbf{x}) = F_{m-1}(\mathbf{x}) + \nu\, h_m(\mathbf{x}),$$
+
+where $h_m$ is a small tree and $\nu \in (0, 1]$ is the **learning rate** (or shrinkage). How should $h_m$ be chosen? The training loss $\sum_i \ell(y_i, F(\mathbf{x}_i))$ depends on the model only through its values $F_i$ at the training points. Treat those $n$ values as parameters: gradient descent would move each by $-\eta\,\partial\ell/\partial F_i$. So compute the **pseudo-residual** at each example,
+
+$$r_{im} = -\left.\frac{\partial \ell(y_i, F)}{\partial F}\right|_{F = F_{m-1}(\mathbf{x}_i)},$$
+
+and fit $h_m$ by least squares to the pairs $(\mathbf{x}_i, r_{im})$. The tree is a smooth version of the ideal gradient step: it moves similar points the same way, and it can be evaluated at new points.
+
+For squared error $\ell = \tfrac{1}{2}(y - F)^2$ the negative gradient is $y - F$, the ordinary residual. For logistic loss with $F$ the log-odds and $p = \sigma(F)$, the negative gradient is $y - p$ for $y \in \{0, 1\}$: at $F = 0.8$ and $y = 1$ it is $1 - 0.690 = 0.310$. For absolute error it is $\operatorname{sign}(y - F)$. Friedman's method also re-optimizes the value in each leaf, with a Newton step for logistic loss; fitting the mean of the residuals, as below, is the simplest version.
+
+### The algorithm
+
+1. Start from $F_0 = \bar{y}$ (for squared error, the best constant).
+2. For $m = 1, \dots, M$: compute the residuals $r_{im} = y_i - F_{m-1}(\mathbf{x}_i)$, fit a small regression tree $h_m$ to them, and set $F_m = F_{m-1} + \nu h_m$.
+
+A **regression stump** (a tree with one split) predicts the mean residual on each side of a threshold, chosen to minimize the sum of squared errors. Each tree is a **weak learner**: slightly better than nothing. The sum of many of them is flexible, because each round fits whatever structure the earlier rounds missed.
+
+### An example
+
+Six points $x = 1, \dots, 6$ have targets $1, 2, 1.5, 5, 6, 5.5$, whose mean is $3.5$. Boosting stumps with $\nu = 0.5$:
+
+| round | split | left value | right value | training MSE |
+|---|---|---|---|---|
+| 0 | | | | $4.167$ |
+| 1 | $x \le 3.5$ | $-2.0$ | $+2.0$ | $1.167$ |
+| 2 | $x \le 3.5$ | $-1.0$ | $+1.0$ | $0.417$ |
+| 3 | $x \le 4.5$ | $-0.375$ | $0.75$ | $0.206$ |
+| 4 | $x \le 1.5$ | $-0.8125$ | $0.1625$ | $0.107$ |
+| 5 | $x \le 3.5$ | $-0.231$ | $0.231$ | $0.067$ |
+| 6 | $x \le 1.5$ | $-0.291$ | $0.058$ | $0.054$ |
+
+Round 1 finds the big jump between $x = 3$ and $x = 4$. Round 2 finds it again, because $\nu = 0.5$ took only half the correction. Later rounds chase finer detail, and the training error keeps falling, which is why the number of rounds matters.
+
+### Controlling overfitting
+
+Boosting reduces **bias**, and enough rounds will fit the training set arbitrarily well, so it can overfit. The controls are: a small learning rate (many small steps generalize better than few large ones, at the price of more rounds), the number of rounds $M$ (chosen with validation data, stopping when validation error stops falling: **early stopping**), the depth of each tree (stumps give additive models; depth $d$ allows interactions of order $d$), and subsampling the rows for each tree. Compare bagging: it averages independent deep trees to reduce variance; boosting adds dependent shallow trees to reduce bias.
+
+### In code
+
+```python
+x = [1, 2, 3, 4, 5, 6]
+y = [1.0, 2.0, 1.5, 5.0, 6.0, 5.5]
+
+def fit_stump(xs, ys):
+    values = sorted(set(xs))
+    best = None
+    for lo, hi in zip(values, values[1:]):
+        t = (lo + hi) / 2
+        left = [r for v, r in zip(xs, ys) if v <= t]
+        right = [r for v, r in zip(xs, ys) if v > t]
+        ml, mr = sum(left) / len(left), sum(right) / len(right)
+        sse = (sum((r - ml) ** 2 for r in left)
+               + sum((r - mr) ** 2 for r in right))
+        if best is None or sse < best[0] - 1e-12:
+            best = (sse, t, ml, mr)
+    return best[1:]
+
+def stump_predict(stump, v):
+    t, ml, mr = stump
+    return ml if v <= t else mr
+
+def boost(xs, ys, rounds, lr):
+    F = [sum(ys) / len(ys)] * len(ys)
+    stumps = []
+    for m in range(rounds):
+        resid = [t - f for t, f in zip(ys, F)]
+        s = fit_stump(xs, resid)
+        stumps.append(s)
+        F = [f + lr * stump_predict(s, v) for f, v in zip(F, xs)]
+        mse = sum((t - f) ** 2 for t, f in zip(ys, F)) / len(ys)
+        print(m + 1, s, round(mse, 4))
+    return stumps, F
+
+stumps, F = boost(x, y, 6, 0.5)
+print([round(f, 3) for f in F])
+```
+
+Production libraries add second-order information, regularized leaf values, histogram-based split finding and column sampling, but the loop above is the core. Choosing $\nu$, $M$ and the depth by cross-validation is the subject of week 12.
+
+@example
+title: One round of boosting by hand
+problem: Targets are $y = (3, 5, 10)$ at $x = 1, 2, 3$. Starting from the mean, fit one stump to the residuals and update with $\nu = 0.5$. Report the training MSE before and after.
+step: $F_0 = \bar{y} = 6$ for every point. The residuals are $(-3, -1, 4)$, and the initial MSE is $(9 + 1 + 16)/3 = 8.667$.
+step: Try thresholds: at $1.5$ the right side $(-1, 4)$ has mean $1.5$ and the SSE is $6.25 + 6.25 = 12.5$; at $2.5$ the left side $(-3, -1)$ has mean $-2$ and the SSE is $2$, the right side $(4)$ adds 0. The best split is $x \le 2.5$.
+step: The stump outputs $-2$ on the left and $+4$ on the right.
+step: Update: $F_1 = F_0 + 0.5\,h_1 = (6 - 1, 6 - 1, 6 + 2) = (5, 5, 8)$.
+step: The new errors are $(-2, 0, 2)$, so the MSE is $(4 + 0 + 4)/3 = 2.667$, down from $8.667$. Each residual moved by half of what the stump predicted.
+answer: $F_1 = (5, 5, 8)$ and the MSE falls from $8.667$ to $2.667$.
+
+@example
+title: Pseudo-residuals for logistic loss
+problem: A boosted classifier has log-odds scores $F = (0, 2, -1)$ for examples with labels $y = (1, 1, 0)$. Compute the pseudo-residuals $y - \sigma(F)$.
+step: Compute the probabilities $\sigma(F)$: $\sigma(0) = 0.5$, $\sigma(2) \approx 0.881$ and $\sigma(-1) \approx 0.269$.
+step: The residuals are $1 - 0.5 = 0.5$, $1 - 0.881 = 0.119$ and $0 - 0.269 = -0.269$.
+step: Read them: the first example is the most under-predicted, so the next tree is pushed hardest to raise its score; the confident correct second example barely matters; the third is pushed down.
+answer: Pseudo-residuals $\approx (0.5, 0.119, -0.269)$.
+
+@mistakes
+- Fitting each new tree to the original targets instead of the current residuals: the ensemble then just repeats the same tree.
+- Using a learning rate of 1 and many rounds, then wondering why validation error rises after a while: use a small rate with early stopping on validation data.
+- Using the training error to pick the number of rounds: it falls with every round.
+- Forgetting that for classification the pseudo-residuals are $y - \sigma(F)$ with $F$ on the log-odds scale, and averaging probabilities of trees instead of adding scores.
+
+@practice num
+prompt: A boosted classifier gives an example with label $y = 1$ the log-odds score $F = 0.8$. Using logistic loss, what is the pseudo-residual $y - \sigma(F)$? Give three decimal places.
+answer: 0.31
+tol: 0.001
+check: 1 - 1 / (1 + math.exp(-0.8))
+hint: First compute $\sigma(0.8)$; it is about $0.690$.
+solution: $\sigma(0.8) = 1/(1 + e^{-0.8}) \approx 0.690$, so the pseudo-residual is $1 - 0.690 = 0.310$. A positive residual says the score should increase.
+
+@practice num
+prompt: Targets are $y = (4, 6, 14)$. Gradient boosting with squared loss starts at the mean. Round 1 fits a stump to the residuals that predicts the left-group mean on the first two points and the right-group mean on the third. With learning rate $\nu = 0.5$, what is the training MSE after round 1? Give three decimal places.
+answer: 5.167
+tol: 0.001
+check: (lambda F: sum((t - f) ** 2 for t, f in zip([4, 6, 14], F)) / 3)([8 + 0.5 * (-3), 8 + 0.5 * (-3), 8 + 0.5 * 6])
+hint: The start is $F_0 = 8$ with residuals $(-4, -2, 6)$; the stump predicts $-3$ on the first two points and $6$ on the third.
+solution: $F_1 = (8 - 1.5, 8 - 1.5, 8 + 3) = (6.5, 6.5, 11)$. The errors $y - F_1$ are $(-2.5, -0.5, 3)$, so the MSE is $(6.25 + 0.25 + 9)/3 = 5.167$, down from $(16 + 4 + 36)/3 = 18.667$.
+
+@practice mc
+prompt: In gradient boosting with squared loss, what does each new tree $h_m$ fit?
+choice*: The residuals $y_i - F_{m-1}(\mathbf{x}_i)$ of the current ensemble, which are the negative gradient of the loss.
+choice: The original targets $y_i$, on a bootstrap sample of the data.
+choice: The residuals of the previous tree alone, ignoring the earlier trees.
+choice: The signs of the errors only, whatever the loss.
+hint: Think of gradient descent on the values $F(\mathbf{x}_i)$: which quantity is the downhill direction for squared error?
+solution: For $\ell = \tfrac{1}{2}(y - F)^2$ the negative gradient with respect to $F$ is $y - F$, evaluated at the current ensemble's predictions, so each tree is fit to the residuals of the whole current model. Fitting the targets on bootstrap samples describes bagging; the sign of the error is the negative gradient only for absolute-error loss.
+
+@practice code
+prompt: Write `fit_reg_stump(xs, ys)` that fits a regression stump to one numeric feature. `xs` and `ys` are lists of numbers. Try thresholds halfway between consecutive distinct sorted values of `xs`; examples with `x <= t` go left. Each side predicts the mean of its targets, and the cost is the total sum of squared errors of both sides. Return `(t, left_mean, right_mean)` for the cheapest threshold, taking the first on ties (replace the best only if smaller by more than $10^{-12}$). If all values of `xs` are equal, return `(xs[0], m, m)` with `m` the mean of `ys`.
+starter:
+```python
+def fit_reg_stump(xs, ys):
+    pass
+```
+tests:
+```python
+t, a, b = fit_reg_stump([1, 2, 3, 4], [1, 1, 1, 5])
+assert abs(t - 3.5) < 1e-9 and abs(a - 1.0) < 1e-9 and abs(b - 5.0) < 1e-9
+t, a, b = fit_reg_stump([3, 1, 2, 4, 5], [6, 0, 1, 7, 8])
+assert abs(t - 2.5) < 1e-9 and abs(a - 0.5) < 1e-9 and abs(b - 7.0) < 1e-9
+t, a, b = fit_reg_stump([1, 2, 3, 4, 5], [0, 0, 0, 0, 0])
+assert abs(t - 1.5) < 1e-9 and a == 0 and b == 0
+t, a, b = fit_reg_stump([7, 7, 7], [1.0, 2.0, 6.0])
+assert t == 7 and abs(a - 3.0) < 1e-9 and abs(b - 3.0) < 1e-9
+```
+model:
+```python
+def fit_reg_stump(xs, ys):
+    """Best single-threshold regression stump by squared error."""
+    values = sorted(set(xs))
+    best = None
+    for lo, hi in zip(values, values[1:]):
+        t = (lo + hi) / 2
+        left = [r for v, r in zip(xs, ys) if v <= t]
+        right = [r for v, r in zip(xs, ys) if v > t]
+        ml = sum(left) / len(left)
+        mr = sum(right) / len(right)
+        sse = (sum((r - ml) ** 2 for r in left)
+               + sum((r - mr) ** 2 for r in right))
+        if best is None or sse < best[0] - 1e-12:
+            best = (sse, t, ml, mr)
+    if best is None:
+        m = sum(ys) / len(ys)
+        return (xs[0], m, m)
+    return best[1:]
+```
+hint: For each midpoint split the targets into two lists, take each list's mean, and add up the squared deviations from those means.
+solution: The cost of a split is the sum of squared deviations from each side's own mean. The third test has equal costs at every threshold, so the first threshold wins; the last test has no valid threshold and must fall back on the overall mean.
+
+@practice code
+prompt: Write `gradient_boost(xs, ys, rounds, lr)` that runs gradient boosting with squared loss on one numeric feature and returns the final predictions on the training points as a list (in the order of `xs`). Start every prediction at the mean of `ys`; in each of `rounds` rounds compute the residuals, fit a stump to them with the provided `fit_reg_stump`, and add `lr` times the stump's output (`a` if `x <= t` else `b`) to every prediction.
+starter:
+```python
+def fit_reg_stump(xs, ys):
+    values = sorted(set(xs))
+    best = None
+    for lo, hi in zip(values, values[1:]):
+        t = (lo + hi) / 2
+        left = [r for v, r in zip(xs, ys) if v <= t]
+        right = [r for v, r in zip(xs, ys) if v > t]
+        ml = sum(left) / len(left)
+        mr = sum(right) / len(right)
+        sse = (sum((r - ml) ** 2 for r in left)
+               + sum((r - mr) ** 2 for r in right))
+        if best is None or sse < best[0] - 1e-12:
+            best = (sse, t, ml, mr)
+    if best is None:
+        m = sum(ys) / len(ys)
+        return (xs[0], m, m)
+    return best[1:]
+
+def gradient_boost(xs, ys, rounds, lr):
+    pass
+```
+tests:
+```python
+xs = [1, 2, 3, 4]
+ys = [0, 0, 4, 4]
+def close(a, b):
+    return all(abs(u - v) < 1e-9 for u, v in zip(a, b)) and len(a) == len(b)
+assert close(gradient_boost(xs, ys, 0, 1.0), [2.0] * 4)
+assert close(gradient_boost(xs, ys, 1, 1.0), [0.0, 0.0, 4.0, 4.0])
+assert close(gradient_boost(xs, ys, 1, 0.5), [1.0, 1.0, 3.0, 3.0])
+assert close(gradient_boost(xs, ys, 2, 0.5), [0.5, 0.5, 3.5, 3.5])
+assert close(gradient_boost([1, 2, 3, 4, 5], [1, 3, 2, 8, 9], 3, 0.5),
+             [1.825, 2.85625, 2.85625, 7.73125, 7.73125])
+assert close(gradient_boost([5, 1, 3], [7, 1, 4], 2, 1.0), [7.0, 0.25, 4.75])
+```
+model:
+```python
+def fit_reg_stump(xs, ys):
+    values = sorted(set(xs))
+    best = None
+    for lo, hi in zip(values, values[1:]):
+        t = (lo + hi) / 2
+        left = [r for v, r in zip(xs, ys) if v <= t]
+        right = [r for v, r in zip(xs, ys) if v > t]
+        ml = sum(left) / len(left)
+        mr = sum(right) / len(right)
+        sse = (sum((r - ml) ** 2 for r in left)
+               + sum((r - mr) ** 2 for r in right))
+        if best is None or sse < best[0] - 1e-12:
+            best = (sse, t, ml, mr)
+    if best is None:
+        m = sum(ys) / len(ys)
+        return (xs[0], m, m)
+    return best[1:]
+
+def gradient_boost(xs, ys, rounds, lr):
+    """Boosted regression stumps with squared loss; returns fitted values."""
+    F = [sum(ys) / len(ys)] * len(ys)
+    for _ in range(rounds):
+        resid = [t - f for t, f in zip(ys, F)]
+        thr, a, b = fit_reg_stump(xs, resid)
+        F = [f + lr * (a if v <= thr else b) for f, v in zip(F, xs)]
+    return F
+```
+hint: Inside the loop, compute residuals from the current predictions, fit a stump to those residuals, and add `lr` times its output to every prediction.
+solution: Each round fits the current residuals, not the targets, and applies only a fraction `lr` of the stump's output. In the second test, one full step ($\nu = 1$) fits the two-level data exactly; with $\nu = 0.5$ half of each residual remains, and a second round removes half of that, giving $0.5$ and $3.5$.
+
+@quiz code
+prompt: Write `pseudo_residuals(y, F, loss)` returning the list of negative gradients of the loss with respect to the current scores `F`. For `loss == "squared"` (the loss $\tfrac{1}{2}(y - F)^2$) it is $y_i - F_i$. For `loss == "logistic"` (labels $y_i \in \{0, 1\}$ and `F` the log-odds) it is $y_i - \sigma(F_i)$; the sigmoid must not overflow for scores such as $-800$ or $800$. For `loss == "absolute"` it is $+1$ if $y_i > F_i$, $-1$ if $y_i < F_i$ and $0$ if equal. Raise `ValueError` for any other loss name.
+starter:
+```python
+import math
+
+def pseudo_residuals(y, F, loss):
+    pass
+```
+tests:
+```python
+assert all(abs(a - b) < 1e-9 for a, b in
+           zip(pseudo_residuals([3, 1], [2.5, 4.0], "squared"), [0.5, -3.0]))
+got = pseudo_residuals([1, 1, 0], [0.0, 2.0, -1.0], "logistic")
+assert all(abs(a - b) < 1e-3 for a, b in zip(got, [0.5, 0.119, -0.269]))
+got = pseudo_residuals([1, 0], [-800.0, 800.0], "logistic")
+assert abs(got[0] - 1.0) < 1e-9 and abs(got[1] + 1.0) < 1e-9
+assert pseudo_residuals([2, 1, 5], [1, 1, 9], "absolute") == [1, 0, -1]
+assert raises(ValueError, pseudo_residuals, [1], [0.0], "hinge")
+```
+model:
+```python
+import math
+
+def pseudo_residuals(y, F, loss):
+    """Negative gradient of the loss at the current scores."""
+    if loss == "squared":
+        return [t - f for t, f in zip(y, F)]
+    if loss == "logistic":
+        out = []
+        for t, f in zip(y, F):
+            if f >= 0:
+                p = 1 / (1 + math.exp(-f))
+            else:
+                e = math.exp(f)
+                p = e / (1 + e)
+            out.append(t - p)
+        return out
+    if loss == "absolute":
+        return [(t > f) - (t < f) for t, f in zip(y, F)]
+    raise ValueError("unknown loss: " + loss)
+```
+hint: Handle each loss name separately; for the logistic case use a sigmoid that exponentiates only non-positive numbers.
+solution: The three losses give residual, probability error and sign of the error respectively. The sigmoid is computed from `exp(-f)` when `f >= 0` and from `exp(f)` otherwise, so it never overflows; the test at $\pm 800$ fails for the naive formula.
+
+@quiz text
+prompt: What does this program print?
+```python
+y = [2.0, 4.0, 9.0]
+F = [5.0] * 3
+for _ in range(2):
+    r = [t - f for t, f in zip(y, F)]
+    F = [f + 0.5 * v for f, v in zip(F, r)]
+print(F)
+```
+answer: [2.75, 4.25, 8.0]
+check: run("y = [2.0, 4.0, 9.0]\nF = [5.0] * 3\nfor _ in range(2):\n    r = [t - f for t, f in zip(y, F)]\n    F = [f + 0.5 * v for f, v in zip(F, r)]\nprint(F)")
+hint: Each round moves every prediction halfway to its target, as if a weak learner fit the residuals perfectly with $\nu = 0.5$.
+solution: Round 1: the residuals are $(-3, -1, 4)$, so $F = (3.5, 4.5, 7)$. Round 2: the residuals are $(-1.5, -0.5, 2)$, so $F = (2.75, 4.25, 8)$. The distance to each target halves every round.
+
+@quiz num
+prompt: A weak learner fits the residuals perfectly in every round, and the learning rate is $\nu = 0.3$. The initial error $y - F_0$ at one example is 8. What is the error $y - F_5$ at that example after 5 rounds? Give three decimal places.
+answer: 1.345
+tol: 0.001
+check: 8 * (1 - 0.3) ** 5
+hint: Each round multiplies the remaining error by $1 - \nu$.
+solution: The update $F \leftarrow F + \nu(y - F)$ leaves an error of $(1 - \nu)(y - F)$, so after 5 rounds the error is $8 \times 0.7^5 = 8 \times 0.16807 \approx 1.345$.

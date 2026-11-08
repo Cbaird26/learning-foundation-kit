@@ -1,0 +1,281 @@
+@lesson
+title: Hierarchical and density-based clustering
+summary: Build agglomerative clusterings with single, complete and average linkage and find density-based clusters and noise with DBSCAN, then compare them with k-means on the same data.
+objective: Run agglomerative clustering by hand and read the merge heights of a dendrogram.
+objective: Explain how single, complete and average linkage differ, including chaining.
+objective: Implement DBSCAN with core, border and noise points, and choose between k-means, hierarchical clustering and DBSCAN.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the chapter on clustering: the sections on hierarchical agglomerative clustering, and look up DBSCAN (density-based spatial clustering of applications with noise).
+
+@article
+k-means needs the number of clusters in advance and finds round, similar-sized blobs. Two other families of methods relax those limits: **hierarchical clustering** builds a whole tree of clusterings, and **density-based clustering** lets clusters have any shape and leaves outliers unassigned.
+
+### Agglomerative clustering
+
+**Agglomerative** (bottom-up) clustering starts with every point as its own cluster and repeatedly merges the two closest clusters until one remains. The only choice is how to measure the distance $d(A, B)$ between two clusters, called the **linkage**:
+
+| linkage | distance between clusters $A$ and $B$ |
+|---|---|
+| single | $\min_{a \in A,\, b \in B} d(a, b)$ |
+| complete | $\max_{a \in A,\, b \in B} d(a, b)$ |
+| average | $\frac{1}{\lvert A \rvert \lvert B \rvert} \sum_{a \in A} \sum_{b \in B} d(a, b)$ |
+
+Take the one-dimensional points $1, 2, 4, 8, 9, 15$ with $d(a, b) = \lvert a - b \rvert$. The first merges are the same for every linkage: $\{8, 9\}$ and $\{1, 2\}$, each at height 1. Next, $\{1,2\}$ and $4$ merge: at height 2 for single linkage (closest pair 2 and 4), 3 for complete (farthest pair 1 and 4) and $(3+2)/2 = 2.5$ for average. The merge heights of the whole run are
+
+| linkage | heights of the five merges |
+|---|---|
+| single | 1, 1, 2, 4, 6 |
+| complete | 1, 1, 3, 7, 14 |
+| average | 1, 1, 2.5, 6.17, 10.2 |
+
+The record of merges and their heights is a **dendrogram**. Cutting it at a height $h$ gives a flat clustering: with single linkage and $h = 3$ we keep the merges at heights 1, 1 and 2 and get the clusters $\{1, 2, 4\}$, $\{8, 9\}$ and $\{15\}$.
+
+**Single linkage** merges clusters through their closest pair, so a chain of points, each close to the next, links into one long cluster ("chaining"). **Complete linkage** looks at the farthest pair and prefers compact clusters of similar diameter. **Average linkage** is a compromise. Naive agglomerative clustering takes $O(n^3)$ time, or $O(n^2 \log n)$ with a priority queue, and needs the $n \times n$ distance matrix, so it suits thousands of points, not millions.
+
+### DBSCAN
+
+**DBSCAN** (Ester and colleagues, 1996) defines clusters as dense regions. It has two parameters: a radius $\varepsilon$ and a count $m$ (`min_pts`). The $\varepsilon$-neighborhood of a point contains every point within distance $\varepsilon$ of it, **including the point itself**.
+
+- A point is a **core point** if its neighborhood has at least $m$ points.
+- A point is **directly reachable** from a core point if it lies in that core point's neighborhood. A **cluster** is a maximal set of core points connected through such steps, plus the non-core points reachable from them, called **border points**.
+- A point that belongs to no cluster is **noise**.
+
+The algorithm scans the points in order. An unlabeled core point starts a new cluster, which is grown by repeatedly adding the neighbors of every core point reached; points first labeled noise can become border points later. On $1, 2, 4, 8, 9, 15$ with $\varepsilon = 2$ and $m = 3$, only the point 2 has three points in its neighborhood ($\{1, 2, 4\}$), so it is the only core point; the cluster is $\{1, 2, 4\}$ and the points 8, 9 and 15 are noise. DBSCAN needs no number of clusters, finds non-convex shapes such as two interleaved crescents, and flags outliers, but it struggles when clusters have very different densities, because one $\varepsilon$ cannot fit all of them. A borderline point can be reached from two clusters, in which case the result depends on scan order.
+
+### In code
+
+```python
+def neighbors(points, i, eps):
+    return [j for j, q in enumerate(points) if abs(points[i] - q) <= eps]
+
+def dbscan(points, eps, min_pts):
+    labels = [None] * len(points)
+    cluster = 0
+    for i in range(len(points)):
+        if labels[i] is not None:
+            continue
+        if len(neighbors(points, i, eps)) < min_pts:
+            labels[i] = -1
+            continue
+        labels[i] = cluster
+        queue = neighbors(points, i, eps)
+        while queue:
+            j = queue.pop(0)
+            if labels[j] == -1:
+                labels[j] = cluster
+            if labels[j] is not None:
+                continue
+            labels[j] = cluster
+            if len(neighbors(points, j, eps)) >= min_pts:
+                queue.extend(neighbors(points, j, eps))
+        cluster += 1
+    return labels
+
+print(dbscan([1, 2, 4, 8, 9, 15], 2, 3))
+```
+
+This prints `[0, 0, 0, -1, -1, -1]`. In practice you would use `scipy.cluster.hierarchy` and `sklearn.cluster.DBSCAN`, which use spatial indexes to find neighbors quickly.
+
+@example
+title: Single and complete linkage on six numbers
+problem: Run agglomerative clustering on the points $0, 1, 3, 7, 8, 10$ with single and with complete linkage. Write the merge heights, and say how many clusters a cut at height $2.5$ leaves in each.
+step: Both linkages start the same way: $\{0, 1\}$ at height 1 and $\{7, 8\}$ at height 1.
+step: Single linkage next merges $\{0,1\}$ with $3$ at height 2 (closest pair 1 and 3), and $\{7,8\}$ with $10$ at height 2 (closest pair 8 and 10). The last merge joins $\{0,1,3\}$ and $\{7,8,10\}$ at height 4 (closest pair 3 and 7). Heights: $1, 1, 2, 2, 4$.
+step: Complete linkage measures farthest pairs: $\{0,1\}$ to $3$ is 3, and $\{7,8\}$ to $10$ is 3, so both merge at height 3. The last merge has farthest pair 0 and 10, so its height is 10. Heights: $1, 1, 3, 3, 10$.
+step: Cut at $2.5$. Single linkage keeps the merges at heights 1, 1, 2, 2 and leaves 2 clusters, $\{0,1,3\}$ and $\{7,8,10\}$. Complete linkage keeps only the merges at height 1 and leaves 4 clusters: $\{0,1\}$, $\{3\}$, $\{7,8\}$ and $\{10\}$.
+answer: Single: heights 1, 1, 2, 2, 4 and 2 clusters. Complete: heights 1, 1, 3, 3, 10 and 4 clusters.
+
+@example
+title: DBSCAN on eight numbers
+problem: Run DBSCAN with $\varepsilon = 1.5$ and $m = 3$ on the points $0, 1, 2, 3, 10, 11, 12, 20$ (neighborhoods include the point itself).
+step: Neighborhood sizes: the point 0 has $\{0, 1\}$ (2 points); 1 has $\{0, 1, 2\}$ (3); 2 has $\{1, 2, 3\}$ (3); 3 has $\{2, 3\}$ (2); 10 has $\{10, 11\}$ (2); 11 has $\{10, 11, 12\}$ (3); 12 has $\{11, 12\}$ (2); 20 has only itself (1).
+step: Core points (size at least 3): 1, 2 and 11.
+step: Cluster 0 starts at the core point 1 and reaches 0 and 2; the core point 2 reaches 3. Cluster 1 starts at the core point 11 and reaches 10 and 12. The points 0, 3, 10 and 12 are border points, and 20 is noise.
+answer: Labels in input order: `[0, 0, 0, 0, 1, 1, 1, -1]`.
+
+@mistakes
+- Forgetting that the $\varepsilon$-neighborhood includes the point itself, which shifts every core-point count by one.
+- Reading single linkage heights as cluster diameters: with chaining, a single-linkage cluster can be very long even though its merge heights are small.
+- Using one $\varepsilon$ for clusters of very different density: a value that separates the dense clusters merges or drops the sparse ones.
+- Treating DBSCAN noise as a cluster: the label $-1$ means "no cluster", and noise points are not similar to one another.
+
+@practice num
+prompt: Cluster $A = \{1, 2\}$ and cluster $B = \{6, 9\}$ lie on a line, with distance $\lvert a - b \rvert$. What is the average-linkage distance between $A$ and $B$?
+answer: 6
+tol: 0.001
+check: sum(abs(a - b) for a in [1, 2] for b in [6, 9]) / 4
+hint: Average the four distances between a point of $A$ and a point of $B$.
+solution: The distances are $5, 8, 4, 7$, which sum to 24, and $24/4 = 6$.
+
+@practice mc
+prompt: A data set contains two dense groups joined by a thin bridge of evenly spaced points, each only slightly farther from its neighbor than the points within a group. Which linkage is most likely to merge the two groups early into a single long cluster?
+choice*: Single linkage, because it merges clusters through their closest pair of points.
+choice: Complete linkage, because it merges clusters through their closest pair of points.
+choice: Complete linkage, because it uses the average of all pairwise distances.
+choice: Average linkage, because it always uses the largest pairwise distance.
+hint: Chaining happens when the distance between clusters is decided by one close pair.
+solution: Single linkage uses the minimum pairwise distance, so each bridge point links to the next and the groups merge at a low height. Complete linkage uses the maximum distance, and average linkage uses the mean, so both resist the bridge; the other choices also describe the linkages incorrectly.
+
+@practice code
+prompt: Write `cluster_distance(A, B, method)` that returns the distance between two nonempty clusters of one-dimensional points, with `A` and `B` lists of numbers, the point distance $\lvert a - b \rvert$, and `method` one of `"single"`, `"complete"` or `"average"`. For example, `cluster_distance([1, 2], [6, 9], "single")` returns `4`.
+starter:
+```python
+def cluster_distance(A, B, method):
+    pass
+```
+tests:
+```python
+assert abs(cluster_distance([1, 2], [6, 9], "single") - 4) < 1e-9
+assert abs(cluster_distance([1, 2], [6, 9], "complete") - 8) < 1e-9
+assert abs(cluster_distance([1, 2], [6, 9], "average") - 6) < 1e-9
+assert abs(cluster_distance([3], [5], "average") - 2) < 1e-9
+assert abs(cluster_distance([0, 10], [4, 5, 20], "average") - 50 / 6) < 1e-9
+assert abs(cluster_distance([5, 6], [1, 2], "single") - 3) < 1e-9
+```
+model:
+```python
+def cluster_distance(A, B, method):
+    """Single, complete or average linkage distance for 1-D clusters."""
+    dists = [abs(a - b) for a in A for b in B]
+    if method == "single":
+        return min(dists)
+    if method == "complete":
+        return max(dists)
+    return sum(dists) / len(dists)
+```
+hint: Build the list of all $\lvert A \rvert \lvert B \rvert$ pairwise distances, then take its minimum, maximum or mean according to `method`.
+solution: All three linkages are summaries of the same list of pairwise distances: the minimum, the maximum and the mean. The fifth test has unequal cluster sizes, so an average that divides by the wrong count fails it.
+
+@practice code
+prompt: Write `dbscan(points, eps, min_pts)` for one-dimensional points that returns a list of labels in input order. A point's neighborhood is every point (including itself) at distance at most `eps`; a point is a core point if its neighborhood has at least `min_pts` points. Scan the points in input order; an unlabeled core point starts a new cluster, numbered 0, 1, 2, ... in order of creation, and the cluster grows through the neighborhoods of its core points; a non-core point reached by a cluster joins it as a border point; a point in no cluster gets the label `-1`. A point first labeled `-1` can later be claimed as a border point. For example, `dbscan([0, 1, 2, 9], 1.5, 3)` returns `[0, 0, 0, -1]`.
+starter:
+```python
+def dbscan(points, eps, min_pts):
+    return [-1 for _ in points]
+```
+tests:
+```python
+assert dbscan([0, 1, 2, 9], 1.5, 3) == [0, 0, 0, -1]
+assert dbscan([0, 1, 2, 3, 10, 11, 12, 20], 1.5, 3) == [0, 0, 0, 0, 1, 1, 1, -1]
+assert dbscan([5, 0, 1, 2, 6, 7, 3, 30], 1.5, 3) == [1, 0, 0, 0, 1, 1, 0, -1]
+assert dbscan([0, 1, 2.5, 4], 1.5, 3) == [0, 0, 0, 0]
+assert dbscan([0, 1], 1.5, 2) == [0, 0]
+assert dbscan([0, 1], 1.5, 3) == [-1, -1]
+assert dbscan([], 1, 2) == []
+```
+model:
+```python
+def dbscan(points, eps, min_pts):
+    """DBSCAN for 1-D points; returns cluster labels, -1 for noise."""
+    n = len(points)
+
+    def nbrs(i):
+        return [j for j in range(n) if abs(points[i] - points[j]) <= eps]
+
+    labels = [None] * n
+    cluster = 0
+    for i in range(n):
+        if labels[i] is not None:
+            continue
+        if len(nbrs(i)) < min_pts:
+            labels[i] = -1
+            continue
+        labels[i] = cluster
+        queue = nbrs(i)
+        while queue:
+            j = queue.pop(0)
+            if labels[j] == -1:
+                labels[j] = cluster
+            if labels[j] is not None:
+                continue
+            labels[j] = cluster
+            if len(nbrs(j)) >= min_pts:
+                queue.extend(nbrs(j))
+        cluster += 1
+    return labels
+```
+hint: Keep a queue of points to visit. Label a point with the current cluster when it is reached, and add its neighbors to the queue only if it is a core point.
+solution: A noise point stays `-1` unless a cluster reaches it, which turns it into a border point; only core points extend the queue, so border points never grow the cluster. The third test starts with non-core points that are claimed later, and the fifth and sixth check that the neighborhood counts the point itself.
+
+@practice num
+prompt: DBSCAN is run with $\varepsilon = 1.5$ and $m = 3$ on the points $0, 1, 2, 3.5, 5$ (neighborhoods include the point itself and use distance at most $\varepsilon$). How many of the points are core points?
+answer: 3
+check: sum(1 for p in [0, 1, 2, 3.5, 5] if sum(1 for q in [0, 1, 2, 3.5, 5] if abs(p - q) <= 1.5) >= 3)
+hint: Count, for each point, how many points (itself included) lie within 1.5 of it.
+solution: The neighborhood sizes are 2 for the point 0, 3 for 1, 3 for 2 (the point 3.5 is exactly 1.5 away), 3 for 3.5 and 2 for 5. The points 1, 2 and 3.5 are core points, so the count is 3.
+
+@quiz text
+prompt: What does this program print?
+```python
+pts = [0, 1, 2, 6, 7, 9]
+eps = 1.5
+counts = [sum(1 for q in pts if abs(p - q) <= eps) for p in pts]
+print(counts)
+```
+answer: [2, 3, 2, 2, 2, 1]
+check: run("pts = [0, 1, 2, 6, 7, 9]\neps = 1.5\ncounts = [sum(1 for q in pts if abs(p - q) <= eps) for p in pts]\nprint(counts)")
+hint: Each count includes the point itself. The point 9 is 2 away from 7.
+solution: The point 0 sees $\{0, 1\}$, 1 sees $\{0, 1, 2\}$, 2 sees $\{1, 2\}$, 6 sees $\{6, 7\}$, 7 sees $\{6, 7\}$ and 9 sees only itself, so the program prints `[2, 3, 2, 2, 2, 1]`. These are the neighborhood sizes that DBSCAN compares with `min_pts`.
+
+@quiz code
+prompt: Write `agglomerate(points, k, method)` that runs agglomerative clustering on one-dimensional points (distance $\lvert a - b \rvert$) until `k` clusters remain, merging at each step the two clusters with the smallest linkage distance, where `method` is `"single"`, `"complete"` or `"average"`. Return the clusters as a list of sorted lists, ordered by their smallest member. The tests avoid ties between candidate merges. For example, `agglomerate([0, 1, 9], 2, "single")` returns `[[0, 1], [9]]`.
+starter:
+```python
+def agglomerate(points, k, method):
+    return [[p] for p in sorted(points)]
+```
+tests:
+```python
+assert agglomerate([0, 1, 9], 2, "single") == [[0, 1], [9]]
+P = [0, 1, 3.5, 6.5, 10.5]
+assert agglomerate(P, 3, "single") == [[0, 1, 3.5], [6.5], [10.5]]
+assert agglomerate(P, 3, "complete") == [[0, 1], [3.5, 6.5], [10.5]]
+assert agglomerate(P, 5, "average") == [[0], [1], [3.5], [6.5], [10.5]]
+Q = [0, 1, 2, 5, 6, 7, 8.5, 20]
+assert agglomerate(Q, 2, "average") == [[0, 1, 2, 5, 6, 7, 8.5], [20]]
+assert agglomerate([30, 0, 11, 1, 10], 3, "single") == [[0, 1], [10, 11], [30]]
+```
+model:
+```python
+def agglomerate(points, k, method):
+    """Agglomerative clustering of 1-D points down to k clusters."""
+
+    def linkage(A, B):
+        dists = [abs(a - b) for a in A for b in B]
+        if method == "single":
+            return min(dists)
+        if method == "complete":
+            return max(dists)
+        return sum(dists) / len(dists)
+
+    clusters = [[p] for p in points]
+    while len(clusters) > k:
+        best = None
+        for i in range(len(clusters)):
+            for j in range(i + 1, len(clusters)):
+                d = linkage(clusters[i], clusters[j])
+                if best is None or d < best[0]:
+                    best = (d, i, j)
+        _, i, j = best
+        clusters[i] = clusters[i] + clusters[j]
+        del clusters[j]
+    return sorted(sorted(c) for c in clusters)
+```
+hint: Keep a list of clusters, find the closest pair under the chosen linkage, merge it, and stop when the list has length `k`.
+solution: Each round scans all pairs of clusters, merges the closest pair and removes the other one. The second and third tests use the same points with different linkages and need different answers, so a function that always uses the minimum fails the complete-linkage test.
+
+@quiz ms
+prompt: Which of these statements about clustering methods are true? Select all that apply.
+choice*: DBSCAN can label points as noise, but k-means assigns every point to a cluster.
+choice*: Cutting a dendrogram at a different height gives a different number of clusters without rerunning the merging.
+choice*: With complete linkage the distance between two clusters is the largest distance between a point in one and a point in the other.
+choice: DBSCAN requires the number of clusters to be given in advance, like k-means.
+hint: Think about what each method takes as parameters and what each returns for an outlier.
+solution: DBSCAN has a noise label, whereas k-means partitions all points. A dendrogram stores every merge, so any cut is available. Complete linkage uses the maximum pairwise distance. DBSCAN takes $\varepsilon$ and $m$, not the number of clusters.
+
+@quiz self
+prompt: The one-dimensional points are $0, 1, 2, 5, 6, 7, 8.5, 20$. Cluster them three ways: k-means with $k = 2$ starting from the centers 0 and 20; single-linkage agglomerative clustering cut to three clusters; and DBSCAN with $\varepsilon = 1.5$ and $m = 3$. Report each result and explain in two or three sentences which one you would trust for a data set like this and why.
+hint: Start k-means from the two centers and watch where the point 20 goes; for the other two methods, look at the gaps between consecutive points.
+solution: k-means with centers 0 and 20: the first assignment puts 0, 1, 2, 5, 6, 7 and 8.5 with the center 0 and only 20 with the center 20, and the update gives centers about 4.21 and 20, which is stable, so the clustering is $\{0,\dots,8.5\}$ and $\{20\}$ with $J \approx 62.9$. Single linkage cut to three clusters gives $\{0,1,2\}$, $\{5,6,7,8.5\}$ and $\{20\}$, because the largest gaps are 20 to 8.5 and 2 to 5. DBSCAN gives the clusters $\{0,1,2\}$ and $\{5,6,7,8.5\}$ and labels 20 as noise. The last two methods agree on the two natural groups and treat 20 as an outlier; k-means with $k = 2$ spends its second center on the outlier and merges the two real groups, so with this data I would trust single linkage or DBSCAN, and k-means only with $k = 3$ or after removing the outlier.
+rubric: Reports the three clusterings correctly: the outlier alone with k-means, three clusters with single linkage, two clusters plus noise with DBSCAN.
+rubric: Explains why k-means with $k = 2$ is pulled toward the outlier.
+rubric: Gives a justified preference that refers to the data (a gap, an outlier, equal density) rather than to a method's popularity.

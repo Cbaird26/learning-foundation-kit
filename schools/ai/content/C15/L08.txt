@@ -1,0 +1,266 @@
+@lesson
+title: Bagging and random forests
+summary: Reduce the variance of decision trees by averaging many trees fit on bootstrap samples, add random feature subsets to decorrelate them, and estimate the error without a test set.
+objective: Derive the variance of an average of correlated predictors and explain why bagging helps high-variance, low-bias models.
+objective: Draw bootstrap samples, compute out-of-bag sets, combine models by voting, and compute the out-of-bag error.
+objective: Explain how random feature selection at each split turns bagged trees into a random forest and what it changes.
+reading: The Elements of Statistical Learning, the chapters on model inference and averaging (bagging) and on random forests.
+@article
+Last week's fully grown tree fit its training set perfectly and still disagreed with itself: change a few training points and the tree can look completely different. That instability is **variance**. If we could train many trees on many fresh data sets and average their votes, the noise in each would partly cancel. We have only one data set, but we can imitate fresh ones by resampling it.
+
+### Bootstrap and bagging
+
+A **bootstrap sample** of a data set of size $n$ draws $n$ examples **with replacement**. Each example is missed by one draw with probability $1 - 1/n$, so it is absent from the whole sample with probability $(1 - 1/n)^n$. For $n = 5$ this is $0.8^5 = 0.328$; as $n$ grows it approaches $e^{-1} \approx 0.368$. So a bootstrap sample contains about 63.2 percent of the distinct examples, and the other 36.8 percent are its **out-of-bag** (OOB) examples.
+
+**Bagging** (bootstrap aggregating; Breiman, 1996) fits one model on each of $B$ bootstrap samples and combines them: the average for regression, a majority vote for classification. The trees are grown deep, so each has low bias and high variance.
+
+### Why averaging helps
+
+Suppose $B$ predictors each have variance $\sigma^2$ at a point, and every pair has correlation $\rho$. The variance of their average is
+
+$$\operatorname{Var}\!\left(\frac{1}{B}\sum_{b=1}^{B}\hat f_b\right) = \frac{1}{B^2}\Big(B\sigma^2 + B(B-1)\rho\sigma^2\Big) = \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2 .$$
+
+Only the second term shrinks with $B$. With $\sigma^2 = 4$ and $\rho = 0.5$ the variance is $4$ for one tree, $2.2$ for $B = 10$, $2.02$ for $B = 100$, and it never goes below $\rho\sigma^2 = 2$. The expectation of the average equals each model's expectation, so bagging leaves the bias about where it was: it helps models that are accurate on average but unstable, and does little for a stable model such as a linear fit. Trees grown on overlapping bootstrap samples are correlated, which sets the floor $\rho\sigma^2$.
+
+### Random forests
+
+A **random forest** (Breiman, 2001) lowers $\rho$. At every split in every tree, only a random subset of $m$ of the $p$ features is considered as candidates. A single dominant feature then cannot be used at the top of every tree, and the trees become less alike. Common defaults, mentioned in the textbook reading, are about $\sqrt{p}$ features for classification and $p/3$ for regression; $m = p$ gives plain bagging. Smaller $m$ decorrelates the trees but makes each one weaker, so $m$ is a hyperparameter. Adding more trees never causes overfitting in the sense of a rising variance term, though the floor stays; the forest's bias is that of one deep tree.
+
+### Out-of-bag error
+
+Each tree has about 37 percent of the examples out of bag, so we can score an example using only the trees that never trained on it: collect their votes and compare the majority with the true label. The fraction of mistakes is the **OOB error**, a nearly free estimate of test error close in spirit to cross-validation. Examples that happen to be in every bootstrap sample are skipped.
+
+Take six points $x = 1, \dots, 6$ with labels $0,0,1,0,1,1$, and five stumps (one-split trees) fit on the bootstrap index lists in the code below. Three stumps split at $2.5$ and two at $4.5$; each predicts 0 on the left and 1 on the right. Point $x = 3$ (index 2) is out of bag only for the stump on the fifth sample (split at $4.5$), which predicts 0 against the true label 1; point $x = 4$ (index 3) is out of bag only for the stump on the second sample (split at $2.5$), which predicts 1 against the true 0. The other four points are correct, so the OOB error is $2/6 = 0.333$.
+
+```python
+x = [1, 2, 3, 4, 5, 6]
+y = [0, 0, 1, 0, 1, 1]
+samples = [[5, 5, 3, 2, 1, 0], [5, 2, 2, 0, 5, 1], [2, 0, 3, 1, 5, 1],
+           [4, 2, 3, 4, 3, 1], [0, 4, 5, 0, 5, 3]]
+
+def gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def majority(labels):
+    return max(sorted(set(labels)), key=labels.count)
+
+def fit_stump(xs, ys):
+    values = sorted(set(xs))
+    best = None
+    for lo, hi in zip(values, values[1:]):
+        t = (lo + hi) / 2
+        left = [c for v, c in zip(xs, ys) if v <= t]
+        right = [c for v, c in zip(xs, ys) if v > t]
+        score = len(left) * gini(left) + len(right) * gini(right)
+        if best is None or score < best[0] - 1e-12:
+            best = (score, t, majority(left), majority(right))
+    if best is None:
+        return (0.0, majority(ys), majority(ys))
+    return best[1:]
+
+def vote(stump, v):
+    t, lo, hi = stump
+    return lo if v <= t else hi
+
+stumps = [fit_stump([x[i] for i in idx], [y[i] for i in idx])
+          for idx in samples]
+print(stumps)
+
+wrong = 0
+for i in range(len(x)):
+    oob = [s for s, idx in zip(stumps, samples) if i not in idx]
+    votes = [vote(s, x[i]) for s in oob]
+    pred = majority(votes)
+    wrong += pred != y[i]
+    print(i, votes, pred, y[i])
+print("OOB error:", wrong / len(x))
+```
+
+The sample lists are written out so the output is the same on every run; in practice they come from `random.Random(seed).randrange(n)` called $n$ times. In a library a forest also reports **feature importance**, for instance the drop in accuracy when one feature's values are shuffled; treat it with care, because correlated features share importance, and importances describe the model rather than causal effects.
+
+@example
+title: How much does averaging help?
+problem: $B$ trees each have prediction variance $\sigma^2 = 4$ at a point, with pairwise correlation $\rho = 0.5$. Compute the variance of their average for $B = 1, 10, 100$, and its limit as $B \to \infty$.
+step: Use $\operatorname{Var} = \rho\sigma^2 + \frac{1-\rho}{B}\sigma^2$ with $\rho\sigma^2 = 2$ and $(1 - \rho)\sigma^2 = 2$.
+step: For $B = 1$: $2 + 2/1 = 4$, the variance of one tree, as it should be.
+step: For $B = 10$: $2 + 2/10 = 2.2$. For $B = 100$: $2 + 2/100 = 2.02$.
+step: As $B \to \infty$ the second term vanishes, leaving $\rho\sigma^2 = 2$. Going from 10 to 100 trees buys only $0.18$; the way to go lower is to reduce $\rho$, which is what random feature selection does.
+answer: $4$, $2.2$, $2.02$, with limit $2$.
+
+@example
+title: Out-of-bag error by hand
+problem: Four training points have labels $y = (0, 1, 1, 0)$. Three models were trained on bootstrap index lists $[0,0,1,3]$, $[1,2,2,3]$ and $[0,2,3,3]$. Their predictions on all four points are $(0,1,1,0)$, $(0,1,1,1)$ and $(0,0,1,0)$. Compute the OOB error.
+step: Find the OOB models for each point. Point 0 is absent from the second list only. Point 1 is absent from the third only. Point 2 is absent from the first only. Point 3 appears in every list, so it is skipped.
+step: Point 0: the second model predicts 0, true label 0, correct.
+step: Point 1: the third model predicts 0, true label 1, wrong.
+step: Point 2: the first model predicts 1, true label 1, correct.
+step: Three points were scored and one was wrong, so the OOB error is $1/3 \approx 0.333$. The skipped point is not counted as an error or a success.
+answer: OOB error $= 1/3$.
+
+@mistakes
+- Averaging models trained on the same data: without resampling or other randomness the trees are identical and nothing is gained.
+- Believing that more trees overfit: the variance term $\rho\sigma^2$ stays, but adding trees does not make the forest worse; the cost is time and memory.
+- Counting skipped points (never out of bag) as errors when computing the OOB error, or voting with trees that did train on the point.
+- Reading feature importance as causal: a feature that stands in for another correlated feature can look important or unimportant for reasons unrelated to cause.
+
+@practice num
+prompt: $B = 25$ trees each have prediction variance $\sigma^2 = 9$, with pairwise correlation $\rho = 0.2$. What is the variance of their average? Give three decimal places.
+answer: 2.088
+tol: 0.001
+check: 0.2 * 9 + (1 - 0.2) * 9 / 25
+hint: Use $\rho\sigma^2 + (1 - \rho)\sigma^2/B$.
+solution: $\rho\sigma^2 = 1.8$ and $(1 - \rho)\sigma^2/B = 7.2/25 = 0.288$, so the variance is $2.088$.
+
+@practice num
+prompt: A bootstrap sample of size 8 is drawn with replacement from 8 examples. What is the probability that a particular example is not in the sample? Give three decimal places.
+answer: 0.344
+tol: 0.001
+check: (7 / 8) ** 8
+hint: Each of the 8 draws misses the example with probability $7/8$, independently.
+solution: $(7/8)^8 \approx 0.344$. For large $n$ this tends to $e^{-1} \approx 0.368$.
+
+@practice mc
+prompt: In a random forest, why is only a random subset of the features considered at each split?
+choice*: It makes the trees less correlated with each other, which lowers the floor $\rho\sigma^2$ on the variance of the average.
+choice: It reduces the bias of each individual tree below that of a tree that sees all features.
+choice: It guarantees that every feature appears in the first split of some tree.
+choice: It makes each tree individually more accurate than a tree that sees all features.
+hint: Look at the variance formula for an average of correlated predictors: which term does feature subsampling shrink?
+solution: A dominant feature would otherwise be used near the root of every tree, making the trees alike and keeping $\rho$ high. Random subsets force variety, so the average has lower variance, at the cost of slightly weaker individual trees (a little more bias). It does not make single trees better, and it does not guarantee any feature a first split.
+
+@practice code
+prompt: Write `fit_stump(xs, ys)` that fits a one-split tree to one numeric feature. `xs` is a list of numbers and `ys` a list of labels. Try thresholds halfway between consecutive distinct sorted values of `xs`; for each, the weighted Gini impurity is $n_L G_L + n_R G_R$ (no division by $n$), where examples with `x <= t` go left. Pick the threshold with the lowest value, taking the first on ties (replace the best only if smaller by more than $10^{-12}$). Return `(t, left_label, right_label)` where each label is the majority label of its side, ties going to the smallest label. If all values of `xs` are equal, return `(xs[0], m, m)` with `m` the majority label of all of `ys`.
+starter:
+```python
+def fit_stump(xs, ys):
+    pass
+```
+tests:
+```python
+t, a, b = fit_stump([1, 2, 3, 4, 5, 6], [1, 0, 0, 1, 1, 1])
+assert abs(t - 3.5) < 1e-9 and a == 0 and b == 1
+t, a, b = fit_stump([1, 2, 3, 4], [0, 1, 0, 1])
+assert abs(t - 1.5) < 1e-9 and a == 0 and b == 1
+assert fit_stump([2, 2, 2], [0, 1, 1]) == (2, 1, 1)
+t, a, b = fit_stump([10, 11, 30, 31], ['no', 'no', 'yes', 'yes'])
+assert abs(t - 20.5) < 1e-9 and a == 'no' and b == 'yes'
+t, a, b = fit_stump([4, 1, 3, 2], [1, 0, 1, 0])
+assert abs(t - 2.5) < 1e-9 and a == 0 and b == 1
+```
+model:
+```python
+def _gini(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    return 1 - sum((labels.count(c) / n) ** 2 for c in set(labels))
+
+def _majority(labels):
+    return max(sorted(set(labels)), key=labels.count)
+
+def fit_stump(xs, ys):
+    """Best single threshold split by weighted Gini impurity."""
+    values = sorted(set(xs))
+    best = None
+    for lo, hi in zip(values, values[1:]):
+        t = (lo + hi) / 2
+        left = [c for v, c in zip(xs, ys) if v <= t]
+        right = [c for v, c in zip(xs, ys) if v > t]
+        score = len(left) * _gini(left) + len(right) * _gini(right)
+        if best is None or score < best[0] - 1e-12:
+            best = (score, t, _majority(left), _majority(right))
+    if best is None:
+        m = _majority(ys)
+        return (xs[0], m, m)
+    return best[1:]
+```
+hint: Loop over midpoints of consecutive sorted distinct values; the lists need not be sorted together, so build the left and right label lists by testing `v <= t` on each pair.
+solution: Each threshold splits the labels into two lists whose size-weighted impurities are added. The second test has a tie between thresholds $1.5$ and $3.5$, resolved toward the first; the last test has unsorted input, which must not matter.
+
+@practice code
+prompt: Write `majority_vote(all_preds)` that combines models by voting. `all_preds[m][i]` is the label that model `m` predicts for example `i`; return the list of voted labels, one per example. A tie goes to the smallest label (labels are comparable). Return `[]` when there are no examples.
+starter:
+```python
+def majority_vote(all_preds):
+    pass
+```
+tests:
+```python
+assert majority_vote([[0, 1, 1], [0, 0, 1], [1, 0, 1]]) == [0, 0, 1]
+assert majority_vote([[2, 1], [2, 1], [0, 1]]) == [2, 1]
+assert majority_vote([[1, 0], [0, 1]]) == [0, 0]
+assert majority_vote([['b'], ['a'], ['b']]) == ['b']
+assert majority_vote([[], []]) == []
+```
+model:
+```python
+def majority_vote(all_preds):
+    """Per-example majority label across models; ties go to the smallest."""
+    n = len(all_preds[0]) if all_preds else 0
+    result = []
+    for i in range(n):
+        column = [preds[i] for preds in all_preds]
+        result.append(max(sorted(set(column)), key=column.count))
+    return result
+```
+hint: For each example collect the column of votes `[preds[i] for preds in all_preds]`, then take the label with the highest count, scanning labels in sorted order.
+solution: `max` returns the first of equal maxima, so scanning the sorted labels sends ties to the smallest label, which the third test checks. The votes must be collected per example (column), not per model (row).
+
+@quiz code
+prompt: Write `oob_error(samples, preds, y)`. `samples[m]` is the list of bootstrap indices used to train model `m`; `preds[m][i]` is model `m`'s predicted label for training example `i`; `y[i]` is the true label. For each example, vote among the models whose sample does not contain it (ties to the smallest label). Skip examples that appear in every sample. Return the fraction of the scored examples whose vote differs from `y[i]`, or `None` if no example could be scored.
+starter:
+```python
+def oob_error(samples, preds, y):
+    pass
+```
+tests:
+```python
+y = [1, 0, 1, 0]
+samples = [[0, 0, 1, 1], [2, 2, 3, 3], [0, 1, 2, 2]]
+preds = [[1, 1, 0, 0], [0, 0, 1, 1], [1, 0, 0, 1]]
+assert abs(oob_error(samples, preds, y) - 0.5) < 1e-9
+assert oob_error([[0, 1, 2]], [[1, 1, 0]], [1, 0, 0]) is None
+assert abs(oob_error([[0, 0], [1, 1]], [[1, 0], [1, 0]], [1, 0])) < 1e-9
+assert abs(oob_error([[0, 0], [1, 1]], [[0, 1], [0, 1]], [1, 0]) - 1.0) < 1e-9
+```
+model:
+```python
+def oob_error(samples, preds, y):
+    """Out-of-bag error of an ensemble, ignoring never-out-of-bag points."""
+    scored = 0
+    wrong = 0
+    for i in range(len(y)):
+        votes = [p[i] for s, p in zip(samples, preds) if i not in s]
+        if not votes:
+            continue
+        label = max(sorted(set(votes)), key=votes.count)
+        scored += 1
+        wrong += label != y[i]
+    return wrong / scored if scored else None
+```
+hint: For each example `i`, keep only the predictions of models with `i not in samples[m]`; if none remain, skip it.
+solution: Only models that never saw the example may vote, which keeps the estimate honest. In the first test, example 3 has two OOB votes, 0 and 1, which tie and go to 0 (correct), while examples 0 and 2 are wrong and example 1 is right, giving $2/4$. The second test has every example in the only sample, so nothing can be scored.
+
+@quiz text
+prompt: What does this program print?
+```python
+data = ['a', 'b', 'c', 'd']
+sample = [3, 1, 3, 0]
+oob = [i for i in range(len(data)) if i not in sample]
+print([data[i] for i in sample], [data[i] for i in oob])
+```
+answer: ['d', 'b', 'd', 'a'] ['c']
+check: run("data = ['a', 'b', 'c', 'd']\nsample = [3, 1, 3, 0]\noob = [i for i in range(len(data)) if i not in sample]\nprint([data[i] for i in sample], [data[i] for i in oob])")
+hint: The sample keeps repeats and its order; the out-of-bag list holds the indices that never appear.
+solution: The sample picks indices 3, 1, 3, 0, giving `['d', 'b', 'd', 'a']`. Only index 2 is missing, so the out-of-bag list is `['c']`.
+
+@quiz num
+prompt: Grow a stump by hand. One feature takes the values $1, 2, 3, 4, 5, 6$ with labels $1, 0, 0, 1, 1, 1$ (the weighted impurity uses the usual weights $n_L/n$ and $n_R/n$). What is the weighted Gini impurity of the best threshold? Give three decimal places.
+answer: 0.222
+tol: 0.001
+check: (3 * (1 - ((2 / 3) ** 2 + (1 / 3) ** 2)) + 3 * 0) / 6
+hint: The best threshold is $3.5$: the left side holds labels $(1, 0, 0)$ and the right side $(1, 1, 1)$.
+solution: At $3.5$ the left side has $G = 1 - (4/9 + 1/9) = 4/9$ and the right is pure, so the weighted impurity is $\frac{3}{6}\cdot\frac{4}{9} = 0.222$. Thresholds $1.5$, $2.5$ and $4.5$ give $0.4$, $0.417$ and $0.333$.

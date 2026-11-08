@@ -33,3 +33,5 @@ Log:
 - batch 1 (Nov 7): C11 C12 C13 C14 C15
 - C14 done (0 errors, 4 long-line warnings, 96 + 3 exam, no nocheck; datasheets 2018 checked); review started C14; started C16
 - C13 done (0 errors, 0 warnings, 96 + 3 exam, code items in 8 lessons, no nocheck; Metropolis 1953, Hastings 1970, Efron 1979, Benjamini-Hochberg 1995, Dietterich 1998, Nadeau-Bengio without year); review started C13; started C17
+- C14 reviewed (16 fixes: items moved off article and worked-example data, long test lines split, a constant-ys pearson test, right-skew 'usually', tiny-sample quartile prompt fixed); follow-up by me: L02 parse_line practice now generalizes to any separator (it had copied the article's function); standard citations outside the brief list (Wickham 2011/2014, Tukey 1977, Cleveland-McGill 1984, Tufte 1983, Sweeney 2002) confirmed and kept.
+- C11 done (0 errors, 0 warnings, 96 + 3 exam, no nocheck; modified Gram-Schmidt tests well-conditioned only; explicit loops for rounding demos since CPython 3.12 sum() is compensated); review started C11; started C18; BRIEF and REVIEW now forbid code items that re-type an article's full function

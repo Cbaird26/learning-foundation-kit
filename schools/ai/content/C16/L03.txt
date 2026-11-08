@@ -1,0 +1,229 @@
+@lesson
+title: Gaussian mixture models
+summary: Write the density of a Gaussian mixture, compute responsibilities with Bayes' rule and evaluate the log-likelihood of data under a mixture.
+objective: Describe a Gaussian mixture model as a generative process with a hidden component label.
+objective: Compute mixture densities, responsibilities and the log-likelihood by hand and in code.
+objective: Explain how a mixture generalizes k-means and why its likelihood has no closed-form maximizer.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on Gaussian mixture models in the chapter on mixture models (and clustering).
+
+@article
+Heights of adults form two overlapping humps when men and women are measured together, but the data file has no sex column. A single bell curve fits badly, yet each hump alone is nearly a bell curve. A **Gaussian mixture model** (GMM) says the data came from several Gaussians, and that each point's component is a **latent** (hidden) variable that we never observe.
+
+### The model
+
+A GMM with $K$ components has parameters $\boldsymbol{\theta} = \{\pi_k, \mu_k, \sigma_k\}_{k=1}^{K}$: mixing weights $\pi_k \ge 0$ with $\sum_k \pi_k = 1$, means $\mu_k$ and standard deviations $\sigma_k$. In one dimension the density is
+
+$$p(x) = \sum_{k=1}^{K} \pi_k\, \mathcal{N}(x \mid \mu_k, \sigma_k^2), \qquad \mathcal{N}(x \mid \mu, \sigma^2) = \frac{1}{\sigma\sqrt{2\pi}} \exp\!\Big(-\frac{(x - \mu)^2}{2\sigma^2}\Big).$$
+
+It is a generative process: first draw a hidden label $z \sim \text{Categorical}(\pi)$, so $P(z = k) = \pi_k$; then draw $x \mid z = k \sim \mathcal{N}(\mu_k, \sigma_k^2)$. Summing out $z$ gives the density above. In $d$ dimensions each component has a mean vector $\boldsymbol{\mu}_k$ and a covariance matrix $\boldsymbol{\Sigma}_k$.
+
+### Responsibilities
+
+Given a point $x$, which component probably produced it? Bayes' rule gives the **posterior** over the label, called the **responsibility** of component $k$ for $x$:
+
+$$r_k(x) = P(z = k \mid x) = \frac{\pi_k\, \mathcal{N}(x \mid \mu_k, \sigma_k^2)}{\sum_{j=1}^{K} \pi_j\, \mathcal{N}(x \mid \mu_j, \sigma_j^2)} .$$
+
+The responsibilities of a point sum to 1. This is **soft clustering**: unlike k-means, a point in the overlap of two humps belongs to both, with probabilities.
+
+Take $K = 2$ with $\pi = (0.4, 0.6)$, means $(0, 5)$ and standard deviations $(1, 2)$, and the point $x = 1$. The component densities are $\mathcal{N}(1 \mid 0, 1) = 0.2420$ and $\mathcal{N}(1 \mid 5, 4) = 0.0270$ (a distance of 2 standard deviations from the mean 5). Weighted, they are $0.4 \times 0.2420 = 0.0968$ and $0.6 \times 0.0270 = 0.0162$, which sum to $p(1) = 0.1130$. So $r_1(1) = 0.0968 / 0.1130 \approx 0.857$ and $r_2(1) \approx 0.143$.
+
+### Likelihood
+
+For independent data $x_1, \dots, x_n$ the **log-likelihood** is
+
+$$\ell(\boldsymbol{\theta}) = \sum_{i=1}^{n} \log \sum_{k=1}^{K} \pi_k\, \mathcal{N}(x_i \mid \mu_k, \sigma_k^2).$$
+
+For a single Gaussian, setting the derivative to zero gives the sample mean and variance. For a mixture, the logarithm of a sum does not simplify, so there is no closed-form maximizer; the next lesson solves this with the EM algorithm. Three facts matter in practice.
+
+- **Label switching.** Swapping the labels of two components leaves $p(x)$ unchanged, so the parameters are identifiable only up to permutation.
+- **Singularities.** If a component's mean sits exactly on one data point and $\sigma_k \to 0$, the density at that point grows without bound and so does $\ell$. Practical fits add a small floor to the variances or a prior.
+- **Relation to k-means.** If all components are spherical with the same fixed variance $\sigma^2$ and equal weights, and $\sigma^2 \to 0$, the responsibilities become hard 0/1 assignments to the nearest mean, which are the k-means assignments. A GMM is k-means plus component sizes, shapes (through $\boldsymbol{\Sigma}_k$) and soft assignments.
+
+### Choosing $K$
+
+More components always raise the maximized likelihood, so likelihood on the training data cannot choose $K$. Common choices are held-out likelihood or a penalized score such as BIC (Lesson 12).
+
+### In code
+
+```python
+from math import exp, log, pi, sqrt
+
+def normal_pdf(x, mean, std):
+    return exp(-(x - mean) ** 2 / (2 * std ** 2)) / (std * sqrt(2 * pi))
+
+weights, means, stds = [0.4, 0.6], [0.0, 5.0], [1.0, 2.0]
+x = 1.0
+parts = [w * normal_pdf(x, m, s) for w, m, s in zip(weights, means, stds)]
+total = sum(parts)
+print(total, [p / total for p in parts])
+```
+
+With `exp` of very negative numbers, real implementations work with logarithms and the log-sum-exp trick to avoid underflow; the code above is fine for small examples.
+
+@example
+title: Responsibilities at one point
+problem: A mixture has weights $(0.3, 0.7)$, means $(0, 3)$ and both standard deviations equal to 1. Compute the responsibilities of the two components for $x = 1$.
+step: Component densities at $x = 1$: $\mathcal{N}(1 \mid 0, 1) = \frac{1}{\sqrt{2\pi}} e^{-1/2} \approx 0.24197$ and $\mathcal{N}(1 \mid 3, 1) = \frac{1}{\sqrt{2\pi}} e^{-2} \approx 0.05399$.
+step: Multiply by the weights: $0.3 \times 0.24197 = 0.07259$ and $0.7 \times 0.05399 = 0.03779$.
+step: Normalize by their sum $0.11038$: $r_1 = 0.07259 / 0.11038 \approx 0.658$ and $r_2 \approx 0.342$.
+step: Interpretation: although the weight of component 2 is larger, the point 1 is much closer to the mean 0, so component 1 is more responsible for it.
+answer: $r = (0.658, 0.342)$.
+
+@example
+title: Log-likelihood of two points
+problem: For the mixture with weights $(0.5, 0.5)$, means $(0, 4)$ and standard deviations $(1, 1)$, compute the log-likelihood of the data $x = 2$ and $x = 3$.
+step: At $x = 2$ both components are 2 standard deviations away, so $p(2) = 0.5(0.05399) + 0.5(0.05399) = 0.05399$.
+step: At $x = 3$ the distances are 3 and 1, so $p(3) = 0.5\,\mathcal{N}(3 \mid 0, 1) + 0.5\,\mathcal{N}(3 \mid 4, 1) = 0.5(0.004432) + 0.5(0.24197) = 0.12320$.
+step: Take logarithms and add: $\log 0.05399 + \log 0.12320 = -2.9189 + (-2.0940) = -5.0129$.
+answer: $\ell \approx -5.013$ nats.
+
+@mistakes
+- Taking the logarithm inside the sum: $\log \sum_k \pi_k \mathcal{N}_k \ne \sum_k \pi_k \log \mathcal{N}_k$; the mixture log-likelihood has the sum inside the log.
+- Mixing up variance and standard deviation: $\mathcal{N}(x \mid \mu, \sigma^2)$ divides by $\sigma\sqrt{2\pi}$ and by $2\sigma^2$ in the exponent, so passing $\sigma^2$ where $\sigma$ is expected gives wrong densities.
+- Forgetting the weights $\pi_k$ in the responsibilities: the point nearest to a component's mean is not necessarily that component's, if the component is rare.
+- Believing that more components is always better: the training likelihood rises with $K$ even when the extra components fit noise.
+
+@practice num
+prompt: What is the density of the normal distribution with mean 1 and variance 4 (so standard deviation 2) at $x = 2$? Give your answer to three decimal places.
+answer: 0.176
+tol: 0.001
+check: exp(-(2 - 1) ** 2 / (2 * 4)) / (2 * sqrt(2 * pi))
+hint: Use $\frac{1}{\sigma\sqrt{2\pi}} \exp(-(x-\mu)^2 / (2\sigma^2))$ with $\sigma = 2$, not $4$.
+solution: With $\sigma = 2$ the exponent is $-(1)^2 / 8 = -0.125$, and $e^{-0.125} = 0.8825$. Dividing by $2\sqrt{2\pi} = 5.013$ gives $0.176$.
+
+@practice mc
+prompt: Compared with k-means, a Gaussian mixture model fitted to the same data has which property?
+choice*: It gives each point a probability of belonging to each component, and can have components with different sizes and spreads.
+choice: It gives each point a single hard label, and all clusters must have the same spread.
+choice: It needs labeled examples to estimate the component means.
+choice: Its log-likelihood has a closed-form maximizer, which is why it is fast.
+hint: Recall the responsibilities and the role of $\pi_k$ and $\sigma_k$.
+solution: A GMM computes responsibilities (soft assignments) and has a weight and a spread for each component. It is unsupervised, and the logarithm of a sum has no closed-form maximizer, which is why the EM algorithm is used.
+
+@practice code
+prompt: Write `mixture_pdf(x, weights, means, stds)` that returns the density at `x` of a one-dimensional Gaussian mixture, where `weights`, `means` and `stds` are equal-length lists (the stds are standard deviations, not variances). For example, `mixture_pdf(0.0, [1.0], [0.0], [1.0])` returns about `0.39894`.
+starter:
+```python
+def mixture_pdf(x, weights, means, stds):
+    pass
+```
+tests:
+```python
+assert abs(mixture_pdf(0.0, [1.0], [0.0], [1.0]) - 0.3989422804014327) < 1e-9
+assert abs(mixture_pdf(0.0, [0.5, 0.5], [-1.0, 1.0], [1.0, 1.0]) - 0.24197072451914337) < 1e-9
+assert abs(mixture_pdf(1.0, [0.4, 0.6], [0.0, 5.0], [1.0, 2.0]) - 0.11298557976161377) < 1e-9
+assert abs(mixture_pdf(0.0, [1.0], [0.0], [2.0]) - 0.19947114020071635) < 1e-9
+assert abs(mixture_pdf(100.0, [0.5, 0.5], [0.0, 1.0], [1.0, 1.0])) < 1e-9
+```
+model:
+```python
+from math import exp, pi, sqrt
+
+
+def mixture_pdf(x, weights, means, stds):
+    """Density at x of a 1-D Gaussian mixture."""
+    total = 0.0
+    for w, m, s in zip(weights, means, stds):
+        total += w * exp(-(x - m) ** 2 / (2 * s ** 2)) / (s * sqrt(2 * pi))
+    return total
+```
+hint: Add up, over components, the weight times the normal density with the given mean and standard deviation.
+solution: Each component contributes $\pi_k \mathcal{N}(x \mid \mu_k, \sigma_k^2)$ and the contributions are added. The fourth test has $\sigma = 2$, which a function that divides by $\sigma^2$ instead of $\sigma$ in the normalizer gets wrong.
+
+@practice code
+prompt: Write `responsibilities(x, weights, means, stds)` that returns the list of posterior probabilities $P(z = k \mid x)$ for a one-dimensional Gaussian mixture, as in Bayes' rule: each component's weight times its density at `x`, divided by the sum over components. The stds are standard deviations. For example, `responsibilities(0.0, [0.5, 0.5], [-1.0, 1.0], [1.0, 1.0])` returns `[0.5, 0.5]`.
+starter:
+```python
+def responsibilities(x, weights, means, stds):
+    return [1.0 / len(weights) for _ in weights]
+```
+tests:
+```python
+got = responsibilities(0.0, [0.5, 0.5], [-1.0, 1.0], [1.0, 1.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.5, 0.5]))
+got = responsibilities(1.0, [0.4, 0.6], [0.0, 5.0], [1.0, 2.0])
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.8566428566536475, 0.14335714334635258]))
+got = responsibilities(2.0, [0.25, 0.75], [0.0, 2.0], [1.0, 0.5])
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.022058335362108918, 0.9779416646378911]))
+got = responsibilities(5.0, [0.9, 0.1], [0.0, 5.0], [3.0, 0.5])
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.2722129592105226, 0.7277870407894775]))
+assert abs(sum(responsibilities(0.3, [0.2, 0.3, 0.5], [0.0, 1.0, 2.0], [1.0, 1.0, 1.0])) - 1.0) < 1e-9
+```
+model:
+```python
+from math import exp, pi, sqrt
+
+
+def responsibilities(x, weights, means, stds):
+    """Posterior probability of each component for the point x."""
+    parts = [w * exp(-(x - m) ** 2 / (2 * s ** 2)) / (s * sqrt(2 * pi))
+             for w, m, s in zip(weights, means, stds)]
+    total = sum(parts)
+    return [p / total for p in parts]
+```
+hint: Compute the weighted density of each component, then divide each by the sum of all of them.
+solution: The numerators are $\pi_k \mathcal{N}(x \mid \mu_k, \sigma_k^2)$ and the denominator is their sum, which is the mixture density. The fourth test has a heavy wide component and a rare narrow one: at $x = 5$ the narrow component wins despite its weight of 0.1, and a function that ignores the weights gets it wrong.
+
+@practice num
+prompt: A mixture has weights $(0.7, 0.3)$, means $(1, 6)$ and standard deviations $(1, 2)$. What is the log-likelihood (natural logarithm) of the two points $x = 0$ and $x = 5$? Give your answer to three decimal places.
+answer: -4.711
+tol: 0.001
+check: sum(log(0.7 * exp(-(v - 1) ** 2 / 2) / sqrt(2 * pi) + 0.3 * exp(-(v - 6) ** 2 / 8) / (2 * sqrt(2 * pi))) for v in [0, 5])
+hint: Compute the mixture density at each point (both components), take its logarithm, and add the two logarithms.
+solution: At $x = 0$ the density is dominated by the first component: $0.7 \times 0.2420 + 0.3 \times 0.00066 \approx 0.1696$, with logarithm $-1.774$. At $x = 5$: $0.7 \times 0.000134 + 0.3 \times 0.1760 \approx 0.0529$, with logarithm $-2.940$. The sum is $-4.711$.
+
+@quiz text
+prompt: What does this program print?
+```python
+from math import exp
+def g(x, m):
+    return exp(-(x - m) ** 2 / 2)
+w = [0.5, 0.5]
+x = 0
+a = [w[0] * g(x, -1), w[1] * g(x, 1)]
+print(round(a[0] / sum(a), 3))
+```
+answer: 0.5
+check: run("from math import exp\ndef g(x, m):\n    return exp(-(x - m) ** 2 / 2)\nw = [0.5, 0.5]\nx = 0\na = [w[0] * g(x, -1), w[1] * g(x, 1)]\nprint(round(a[0] / sum(a), 3))")
+hint: The point 0 is the same distance from the means $-1$ and $1$, and the weights are equal.
+solution: Both components give the same value $e^{-1/2}$ times 0.5, so the first share of the total is exactly one half and the program prints `0.5`: the point is equally likely to have come from either component.
+
+@quiz code
+prompt: Write `log_likelihood(data, weights, means, stds)` that returns the natural-log likelihood of a list of one-dimensional points under a Gaussian mixture, that is, the sum over points of the logarithm of the mixture density. The stds are standard deviations. For example, `log_likelihood([1.0], [1.0], [1.0], [2.0])` returns `-1.6120857...`.
+starter:
+```python
+def log_likelihood(data, weights, means, stds):
+    return 0.0
+```
+tests:
+```python
+assert abs(log_likelihood([1.0], [1.0], [1.0], [2.0]) - (-1.612085713764618)) < 1e-9
+assert abs(log_likelihood([0.0, 2.0], [0.25, 0.75], [0.0, 2.0], [1.0, 0.5]) - (-2.7943903082369737)) < 1e-6
+assert abs(log_likelihood([-1.0, 1.0, 0.0], [0.5, 0.5], [-1.0, 1.0], [1.0, 1.0]) - (-4.389253938647963)) < 1e-6
+assert abs(log_likelihood([], [1.0], [0.0], [1.0])) < 1e-12
+```
+model:
+```python
+from math import exp, log, pi, sqrt
+
+
+def log_likelihood(data, weights, means, stds):
+    """Sum over points of log of the Gaussian mixture density."""
+    total = 0.0
+    for x in data:
+        density = sum(w * exp(-(x - m) ** 2 / (2 * s ** 2)) / (s * sqrt(2 * pi))
+                      for w, m, s in zip(weights, means, stds))
+        total += log(density)
+    return total
+```
+hint: For each point, sum the weighted component densities first, then take the logarithm, then add over points.
+solution: The sum over components is inside the logarithm, and the sum over data points is outside. Taking the logarithm of each component separately would give a different, wrong number, which the second and third tests catch.
+
+@quiz ms
+prompt: Which of these statements about Gaussian mixture models are true? Select all that apply.
+choice*: The responsibilities of one point over all components add up to 1.
+choice*: Swapping the parameters of two components gives the same density, so the component labels are arbitrary.
+choice*: Adding components never lowers the best achievable training log-likelihood, so the training likelihood alone cannot choose $K$.
+choice: The mixing weights $\pi_k$ are the means of the components.
+hint: Recall what normalizing in Bayes' rule does, and what $\pi_k$ means in the generative process.
+solution: Responsibilities are a posterior distribution over the label, so they sum to 1. The density is a sum over components, so it is symmetric under relabeling. A larger model contains the smaller one (give an extra component weight near 0), so the best training likelihood cannot fall. The weights $\pi_k$ are the probabilities of the labels, not means.

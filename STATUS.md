@@ -38,13 +38,13 @@ Decisions so far:
 <!-- ai-table -->
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
-| C11 | Numerical computing in Python for machine learning | 12/13 |  |  |
-| C12 | Optimization for machine learning | 11/13 |  |  |
+| C11 | Numerical computing in Python for machine learning | 13/13 | yes |  |
+| C12 | Optimization for machine learning | 13/13 | yes |  |
 | C13 | Probability, statistics and information theory for machine learning | 13/13 | yes |  |
-| C14 | Data science: wrangling, exploration and visualization | 13/13 | yes |  |
-| C15 | Supervised learning in depth | 8/13 |  |  |
-| C16 | Unsupervised learning and probabilistic models | 1/13 |  |  |
-| C17 | Deep learning foundations | 0/13 |  |  |
+| C14 | Data science: wrangling, exploration and visualization | 13/13 | yes | yes |
+| C15 | Supervised learning in depth | 9/13 |  |  |
+| C16 | Unsupervised learning and probabilistic models | 3/13 |  |  |
+| C17 | Deep learning foundations | 2/13 |  |  |
 | C18 | Deep learning architectures: convolution, recurrence and attention | 0/13 |  |  |
 | C19 | Natural language processing | 0/13 |  |  |
 | C20 | Computer vision | 0/13 |  |  |
@@ -87,3 +87,4 @@ Decisions so far:
 - 2026-11-07: AI school designed: 66 courses (46 reused, 20 new), brief, review template, validated example lesson, rebranded app. Next: write the 20 new courses.
 - 2026-11-07: C14 written (0 errors) and in review; C11, C12, C13, C15 and C16 being written.
 - 2026-11-07: C13 written (0 errors) and in review; C17 started.
+- 2026-11-07: C11 written (0 errors) and in review; C14 reviewed (16 fixes plus one follow-up); C18 started.
