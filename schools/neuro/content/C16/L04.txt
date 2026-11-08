@@ -1,0 +1,256 @@
+@lesson
+title: Psychometric functions and their fitting
+summary: Model detection performance as a psychometric function with a guess rate and a lapse rate, fit it by maximum likelihood on a grid, and read thresholds from the fit.
+objective: Write the psychometric function $\Psi(x) = \gamma + (1-\gamma-\lambda)F(x;\alpha,\beta)$ for the logistic and Weibull families and evaluate it.
+objective: Invert the function to find the stimulus level at a stated proportion correct.
+objective: Fit threshold and slope by maximizing a binomial log-likelihood over a grid, and compute a detectability curve from yes/no counts.
+reading: Neuroscience Online (UTHealth Houston): look up the sensory systems introduction; for psychometric functions and maximum-likelihood fitting, look up the psychometric function in a perception text or a psychophysics methods review.
+@article
+Week 1 estimated a threshold from a few reversals. A fuller description keeps every trial. For each stimulus level you count how often the observer was correct, and you want a smooth curve through the proportions that gives a threshold, a measure of how steeply performance rises, and an honest statement of uncertainty. That curve is the **psychometric function**.
+
+### The model
+
+Let $x$ be the stimulus level (for example percent contrast). The probability of a correct response is
+
+$$\Psi(x) = \gamma + (1 - \gamma - \lambda)\,F(x;\alpha,\beta).$$
+
+Here $\gamma$ is the **guess rate**, the floor: 0.5 in two-alternative forced choice, 0.25 in four-alternative forced choice, and near 0 in a yes/no task with no false alarms. The **lapse rate** $\lambda$ is the small chance of an error even for an obvious stimulus, from blinks or finger slips. $F$ rises from 0 to 1 and has two parameters: a location $\alpha$ (the threshold) and a spread $\beta$ (the slope, steeper for smaller $\beta$ in the first family below). Common choices:
+
+- **Logistic:** $F = 1/(1 + e^{-(x-\alpha)/\beta})$, with $F = 0.5$ at $x = \alpha$.
+- **Cumulative Gaussian:** $F = \Phi\big((x - \alpha)/\beta\big)$, closely related to signal detection theory (week 3), since $d'$ grows roughly linearly with level.
+- **Weibull** ($x > 0$): $F = 1 - e^{-(x/\alpha)^{\beta}}$, with $F = 1 - e^{-1} = 0.632$ at $x = \alpha$; here a larger $\beta$ gives a steeper curve. It is often used with a log-spaced stimulus axis.
+
+The **threshold** at a proportion correct $p$ is where $\Psi(x) = p$. Define $q = (p - \gamma)/(1 - \gamma - \lambda)$; for the logistic, $q = F$ gives
+
+$$x_p = \alpha + \beta \ln\frac{q}{1-q}.$$
+
+This is defined only for $\gamma < p < 1 - \lambda$.
+
+### Maximum likelihood
+
+At each level $x_i$ you showed $n_i$ trials and the observer was right $k_i$ times. If trials are independent, $k_i$ is binomial with success probability $\Psi(x_i)$. The **log-likelihood** of the parameters is
+
+$$\ell(\alpha,\beta) = \sum_i \Big[k_i \ln \Psi(x_i) + (n_i - k_i)\ln\big(1 - \Psi(x_i)\big)\Big],$$
+
+dropping the binomial coefficient, which does not depend on the parameters. The **maximum-likelihood estimate** is the pair that makes the observed counts most probable. With two parameters, a coarse **grid search** is simple and robust: evaluate $\ell$ at every pair on a grid and keep the largest. Researchers use optimizers (for instance `scipy.optimize.minimize`) or packages built for psychophysics, but a grid search shows exactly what is being maximized.
+
+### Uncertainty and lapses
+
+A fitted threshold has uncertainty. The standard approach is a **parametric bootstrap**: simulate many data sets from the fitted function with the same trial counts, refit each, and take the spread of the refitted thresholds (Wichmann and Hill, 2001, give the classic treatment). Fixing the lapse rate at zero is risky: a few errors at the highest levels, which a function forced to reach 100% cannot explain, can drag the fitted slope and threshold off. A small lapse rate (a few percent) is usually safer than none. With only a handful of levels the slope is poorly determined, so report it with its uncertainty.
+
+### In code
+
+Six contrasts (in percent, 1 to 6) each had 20 two-alternative trials, with $k = 11, 12, 15, 18, 19, 20$ correct.
+
+```python
+import math
+
+
+def logistic_psi(x, alpha, beta, gamma=0.5, lam=0.0):
+    """Probability correct for a logistic psychometric function."""
+    return gamma + (1 - gamma - lam) / (1 + math.exp(-(x - alpha) / beta))
+
+
+def log_likelihood(levels, correct, trials, alpha, beta):
+    """Binomial log-likelihood without the constant term."""
+    total = 0.0
+    for x, k, n in zip(levels, correct, trials):
+        p = logistic_psi(x, alpha, beta)
+        total += k * math.log(p) + (n - k) * math.log(1 - p)
+    return total
+
+
+def fit_logistic_grid(levels, correct, trials, alphas, betas):
+    """(log-likelihood, alpha, beta) of the best grid point."""
+    best = None
+    for a in alphas:
+        for b in betas:
+            ll = log_likelihood(levels, correct, trials, a, b)
+            if best is None or ll > best[0]:
+                best = (ll, a, b)
+    return best
+
+
+levels = [1, 2, 3, 4, 5, 6]
+alphas = [1.0 + 0.1 * i for i in range(51)]
+betas = [0.2 + 0.1 * j for j in range(19)]
+ll, a, b = fit_logistic_grid(levels, [11, 12, 15, 18, 19, 20], [20] * 6,
+                             alphas, betas)
+print(round(ll, 2), round(a, 1), round(b, 1))
+```
+
+This prints `-49.23 3.0 0.8`: a threshold at 75% correct of about 3.0% contrast (where $F = 0.5$ and $\Psi = 0.75$) and a slope parameter of 0.8. The 90% point is $3.0 + 0.8\ln 4 = 4.11$. The grid has 51 × 19 points and six levels, about 6,000 evaluations, so it runs instantly.
+@example
+title: Threshold at a stated proportion
+problem: In a four-alternative forced-choice task a logistic psychometric function has $\gamma = 0.25$, $\lambda = 0.02$, $\alpha = 5$ and $\beta = 1.5$. At what level is the proportion correct 0.625?
+step: Remove the floor and ceiling: $q = (0.625 - 0.25)/(1 - 0.25 - 0.02) = 0.375/0.73 = 0.5137$.
+step: Invert the logistic: $\ln\big(q/(1-q)\big) = \ln(0.5137/0.4863) = 0.0548$.
+step: Scale and shift: $x = 5 + 1.5 \times 0.0548 = 5.08$.
+step: Check: $q$ is just above 0.5, so $x$ should be just above $\alpha = 5$.
+answer: About $5.08$ (in the units of the stimulus axis).
+@example
+title: Comparing two parameter values by likelihood
+problem: At one level the observer was correct on 7 of 10 trials, and the model with a single success probability is considered at $p = 0.6$ and $p = 0.7$. Which has the higher log-likelihood?
+step: The log-likelihood is $k\ln p + (n-k)\ln(1-p)$ with $k = 7$, $n = 10$.
+step: For $p = 0.6$: $7\ln 0.6 + 3\ln 0.4 = -3.576 - 2.749 = -6.325$.
+step: For $p = 0.7$: $7\ln 0.7 + 3\ln 0.3 = -2.497 - 3.612 = -6.109$.
+step: The larger (less negative) value wins, here $p = 0.7$, which equals the observed proportion $7/10$.
+answer: $p = 0.7$ has the higher log-likelihood ($-6.11$ against $-6.32$), as the observed proportion always maximizes the binomial likelihood.
+@mistakes
+- Fitting a function that must go from 0 to 1 to forced-choice data: the floor is the guess rate ($0.5$ for 2AFC), so the threshold is defined at a proportion between $\gamma$ and $1 - \lambda$.
+- Taking $\alpha$ as "the 75% point" for every family and setting: $\alpha$ is where $F = 0.5$ for the logistic and where $F = 0.632$ for the Weibull, so compute the level at the proportion you want with the inverse.
+- Fitting a line to the proportions by least squares: the binomial variance depends on the level, and proportions near 0 or 1 are much more precise, so maximum likelihood is the standard method.
+@practice num
+prompt: A logistic psychometric function has guess rate $\gamma = 0.5$, lapse rate $\lambda = 0.02$, $\alpha = 3$ and $\beta = 0.5$. What is the probability correct at level $x = 3.5$? Give it to three decimal places.
+answer: 0.851
+tol: 0.001
+check: 0.5 + (1 - 0.5 - 0.02) / (1 + exp(-(3.5 - 3) / 0.5))
+hint: Compute $F = 1/(1 + e^{-(x-\alpha)/\beta})$ with $(x-\alpha)/\beta = 1$, then scale by $1 - \gamma - \lambda$ and add $\gamma$.
+solution: $F = 1/(1 + e^{-1}) = 0.7311$, so $\Psi = 0.5 + 0.48 \times 0.7311 = 0.851$.
+@practice num
+prompt: A two-alternative forced-choice logistic psychometric function has $\gamma = 0.5$, $\lambda = 0$, $\alpha = 2.4$ and $\beta = 0.4$. At what level is the proportion correct 0.9? Give it to two decimal places.
+answer: 2.95
+tol: 0.01
+check: 2.4 + 0.4 * log(((0.9 - 0.5) / (1 - 0.5)) / (1 - (0.9 - 0.5) / (1 - 0.5)))
+hint: First find $q = (p - \gamma)/(1 - \gamma - \lambda)$, then use $x = \alpha + \beta\ln\big(q/(1-q)\big)$.
+solution: $q = 0.4/0.5 = 0.8$, $\ln(0.8/0.2) = \ln 4 = 1.3863$, so $x = 2.4 + 0.4 \times 1.3863 = 2.95$.
+@practice mc
+prompt: An observer who sometimes responds at random (for example, from a blink) is tested at a very high contrast and still makes a few errors there. What is the main risk of fitting the data with a psychometric function that is forced to reach 100% correct?
+choice*: The few errors at the highest levels cannot be explained by the function, so they can bias the fitted slope and threshold.
+choice: The fitted function will no longer have a guess rate, so forced-choice floors are ignored.
+choice: The binomial likelihood becomes infinite, so a threshold cannot be computed.
+choice: The fit will always give a lower threshold, because errors at high contrast count as detections.
+hint: Consider how the likelihood treats errors at levels where the model says $\Psi \approx 1$.
+solution: When the model says $\Psi \approx 1$, an error is nearly impossible, so the likelihood punishes it severely and the fit compensates by shifting or flattening the curve, which biases the slope and threshold. Allowing a small lapse rate absorbs such errors. The guess rate and the lapse rate are separate parameters, and the direction of the bias is not fixed.
+@practice code
+prompt: Write `threshold_at(p, alpha, beta, gamma, lam)` for the logistic psychometric function $\Psi(x) = \gamma + (1-\gamma-\lambda)/(1+e^{-(x-\alpha)/\beta})$. It returns the level `x` at which $\Psi(x) = p$, and returns `None` when `p` is not strictly between `gamma` and `1 - lam`. For example, `threshold_at(0.75, 3.0, 0.5, 0.5, 0.0)` returns `3.0`.
+starter:
+```python
+def threshold_at(p, alpha, beta, gamma, lam):
+    pass
+```
+tests:
+```python
+import math
+assert abs(threshold_at(0.75, 3.0, 0.5, 0.5, 0.0) - 3.0) < 1e-9
+assert abs(threshold_at(0.9, 2.4, 0.4, 0.5, 0.0) - (2.4 + 0.4 * math.log(4))) < 1e-9
+assert abs(threshold_at(0.9, 3.0, 0.5, 0.5, 0.02) - 3.8047190) < 1e-6
+assert threshold_at(0.5, 1.0, 1.0, 0.5, 0.0) is None
+assert threshold_at(1.0, 1.0, 1.0, 0.5, 0.0) is None
+assert threshold_at(0.98, 1.0, 1.0, 0.5, 0.02) is None
+```
+model:
+```python
+import math
+
+
+def threshold_at(p, alpha, beta, gamma, lam):
+    """Level where the logistic psychometric function equals p."""
+    if not gamma < p < 1 - lam:
+        return None
+    q = (p - gamma) / (1 - gamma - lam)
+    return alpha + beta * math.log(q / (1 - q))
+```
+hint: Rescale $p$ to $q$ between 0 and 1 first, then solve $q = 1/(1 + e^{-(x-\alpha)/\beta})$ for $x$.
+solution: Solving $q = 1/(1 + e^{-u})$ gives $u = \ln\big(q/(1-q)\big)$, and $x = \alpha + \beta u$. The proportion must lie strictly between the floor and the ceiling; at either bound $q$ is 0 or 1 and the logarithm is undefined, so the function returns `None`.
+@practice code
+prompt: Write `fit_weibull_grid(levels, correct, trials, alphas, betas, gamma, lam)` that returns the tuple `(alpha, beta, loglik)` of the grid point with the highest binomial log-likelihood for the Weibull psychometric function $\Psi(x) = \gamma + (1-\gamma-\lambda)\big(1 - e^{-(x/\alpha)^{\beta}}\big)$. The log-likelihood is the sum over levels of `k * log(p) + (n - k) * log(1 - p)` with `p = Psi(x)`. Loop over `alphas` in the outer loop and `betas` in the inner loop; on ties keep the first pair found. Assume all levels are positive and that `lam` is large enough that no probability is exactly 0 or 1.
+starter:
+```python
+def fit_weibull_grid(levels, correct, trials, alphas, betas, gamma, lam):
+    pass
+```
+tests:
+```python
+x = [0.5, 1, 1.5, 2, 2.5, 3]
+n = [30] * 6
+alphas = [0.8 + 0.1 * i for i in range(25)]
+betas = [1 + 0.5 * j for j in range(9)]
+a, b, ll = fit_weibull_grid(x, [16, 19, 25, 28, 30, 29], n, alphas, betas,
+                            0.5, 0.02)
+assert abs(a - 1.4) < 1e-6 and abs(b - 3.0) < 1e-9
+assert abs(ll + 66.6134708) < 1e-5
+a, b, ll = fit_weibull_grid(x, [15, 17, 20, 26, 29, 30], n, alphas, betas,
+                            0.5, 0.02)
+assert abs(a - 1.8) < 1e-6 and abs(b - 4.0) < 1e-9
+assert abs(ll + 77.2583695) < 1e-5
+a, b, ll = fit_weibull_grid(x, [16, 19, 25, 28, 30, 29], n, [1.4], [3.0],
+                            0.5, 0.02)
+assert (a, b) == (1.4, 3.0) and abs(ll + 66.6134708) < 1e-5
+```
+model:
+```python
+import math
+
+
+def fit_weibull_grid(levels, correct, trials, alphas, betas, gamma, lam):
+    """Grid-search maximum likelihood for a Weibull psychometric function."""
+    best = None
+    for a in alphas:
+        for b in betas:
+            ll = 0.0
+            for x, k, n in zip(levels, correct, trials):
+                f = 1 - math.exp(-((x / a) ** b))
+                p = gamma + (1 - gamma - lam) * f
+                ll += k * math.log(p) + (n - k) * math.log(1 - p)
+            if best is None or ll > best[2]:
+                best = (a, b, ll)
+    return best
+```
+hint: For each grid point compute the probability at every level, accumulate the log-likelihood, and keep the best with a strict `>` comparison.
+solution: The Weibull scales its argument by $\alpha$ and raises it to $\beta$, so $\alpha$ is the level at which $F = 0.632$. The loop evaluates the log-likelihood over the whole grid and keeps the maximum, and the strict comparison keeps the first of any tied pair. The single-point grid test confirms that the returned log-likelihood is the value at that point.
+@quiz text
+prompt: What does this program print?
+```python
+import math
+k, n = 15, 20
+p = 0.7
+print(round(k * math.log(p) + (n - k) * math.log(1 - p), 3))
+```
+answer: -11.37
+check: run("import math\nk, n = 15, 20\np = 0.7\nprint(round(k * math.log(p) + (n - k) * math.log(1 - p), 3))")
+hint: Compute $15\ln 0.7 + 5\ln 0.3$ with natural logarithms.
+solution: $15 \times (-0.3567) + 5 \times (-1.2040) = -5.350 - 6.020 = -11.370$, which Python prints as `-11.37` after rounding to three places.
+@quiz code
+prompt: In a yes/no detection task, `hits[i]` of `n_signal` signal trials at level `levels[i]` were yes responses, and `false_alarms` of `n_noise` noise trials were yes responses (one noise count for the whole run). Write `dprime_threshold(levels, hits, n_signal, false_alarms, n_noise, target)` that computes $d'$ at each level with the log-linear rule ($H = (\text{hits} + 0.5)/(n_{signal}+1)$, $F = (\text{false alarms} + 0.5)/(n_{noise}+1)$, $d' = z(H) - z(F)$ with `statistics.NormalDist().inv_cdf`) and returns the level at which $d'$ first reaches `target`, found by linear interpolation between the first level at or above target and the level before it. Return the first level if the first $d'$ is already at or above target, and `None` if no level reaches it.
+starter:
+```python
+def dprime_threshold(levels, hits, n_signal, false_alarms, n_noise, target):
+    pass
+```
+tests:
+```python
+lv = [1, 2, 3, 4, 5]
+hs = [6, 12, 22, 32, 38]
+assert abs(dprime_threshold(lv, hs, 40, 4, 40, 1.0) - 2.4464364) < 1e-6
+assert dprime_threshold([1, 2, 3], [2, 5, 9], 20, 3, 20, 5.0) is None
+assert dprime_threshold([1, 2, 3], [19, 19, 19], 20, 2, 20, 1.0) == 1
+assert abs(dprime_threshold(lv, hs, 40, 4, 40, 2.0) - 3.9371135) < 1e-6
+```
+model:
+```python
+from statistics import NormalDist
+
+
+def dprime_threshold(levels, hits, n_signal, false_alarms, n_noise, target):
+    """Level at which d-prime reaches target, by linear interpolation."""
+    z = NormalDist().inv_cdf
+    f = (false_alarms + 0.5) / (n_noise + 1)
+    d = [z((h + 0.5) / (n_signal + 1)) - z(f) for h in hits]
+    for i, di in enumerate(d):
+        if di >= target:
+            if i == 0:
+                return levels[0]
+            frac = (target - d[i - 1]) / (di - d[i - 1])
+            return levels[i - 1] + frac * (levels[i] - levels[i - 1])
+    return None
+```
+hint: Compute the false-alarm $z$-score once, then one $d'$ per level, then interpolate like a constant-stimuli threshold.
+solution: Sensitivity grows with level, so the level where $d'$ first reaches the target is found by interpolating between the neighbors that bracket it, here between levels 2 and 3, where $d'$ rises from 0.72 to 1.35. A first level already above target returns immediately, and a $d'$ curve that stays below the target gives `None`.
+@quiz num
+prompt: A Weibull psychometric function has $\gamma = 0.25$, $\lambda = 0.04$, $\alpha = 2$ and $\beta = 3$. What is the probability correct at level $x = 2$ (that is, at $x = \alpha$)? Give it to three decimal places.
+answer: 0.699
+tol: 0.001
+check: 0.25 + (1 - 0.25 - 0.04) * (1 - exp(-1))
+hint: At $x = \alpha$ the Weibull argument $(x/\alpha)^\beta$ equals 1, whatever $\beta$ is.
+solution: At $x = \alpha$, $F = 1 - e^{-1} = 0.6321$, so $\Psi = 0.25 + 0.71 \times 0.6321 = 0.699$.
