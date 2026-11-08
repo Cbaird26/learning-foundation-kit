@@ -1,0 +1,146 @@
+@project
+title: Imaging analysis: a general linear model, contrasts and an event-related potential from scratch
+overview: You will analyze a small supplied fMRI-like data set (three regions, a design and time series) and a small EEG-like data set, writing the core steps in plain Python without imaging libraries. You will fit a general linear model with contrasts, compute an event-related potential, and write a methods and results section that reports corrections, effect sizes and limitations correctly.
+goal: Build task regressors by convolving event timing with a stated hemodynamic response function, fit a general linear model by the normal equations, and test contrasts.
+goal: Compute baseline-corrected, artifact-screened event-related potentials for two conditions and measure a component with a window chosen in advance.
+goal: Report the results the way a methods paper would: the model, the multiple-comparison correction, effect sizes in physical units, and the limitations of the inferences.
+step: Read the supplied design. Using the sampled HRF and the event onsets (in scans), build one stick-function regressor per condition and convolve each with the HRF, keeping the first 30 samples. Print the two regressors and check that each event produces the shape of the HRF starting at its onset scan.
+step: Write from scratch (no libraries for the core computation) a function that fits the model y = X beta + noise by the normal equations with Gauss–Jordan elimination, where X has the columns A, B, a constant and a linear drift (the scan index minus 14.5). Fit all three regions. Report each beta, the residual variance with its degrees of freedom (30 - 4 = 26), and the design factor c(X'X)^-1 c' for each contrast.
+step: Compute the t statistic for three contrasts in each region: A against baseline, B against baseline, and A minus B. Decide in advance your correction for the 3 regions times 3 contrasts, or justify a smaller family, and apply it (Bonferroni, and the Benjamini–Hochberg procedure for comparison). Use the t distribution with 26 degrees of freedom: you may compute p values with numerical integration of its density or with a library, and say which.
+step: Convert the effects to percent signal change. The peak of each convolved regressor is its maximum value; the effect of a condition at its peak is the beta times that peak, divided by the region's baseline (the constant), times 100. State which region is a negative control, and explain what would have been circular if you had chosen the region because of its A minus B result and then tested A minus B in the same data.
+step: Analyze the EEG-like data. The epochs are sampled at 100 Hz from -20 ms; the first two samples are the baseline. Write the baseline correction, a rejection rule based on the peak-to-peak amplitude with a threshold you justify before looking at which epochs it removes, the averaging, and the difference wave (target minus standard). Report the peak amplitude and latency of each ERP, and the mean amplitude between 20 and 60 ms (chosen in advance), with the number of epochs kept.
+step: With NumPy (or another library) reproduce your fits and your ERP, and confirm that the results agree to rounding. If anything differs, find the cause in your own code.
+step: Write the methods and results section (see the deliverables). Include one table of contrasts (effect in percent signal change, t, df, uncorrected p, corrected decision) and one table of ERP measures.
+deliverable: A Python file with the from-scratch functions (regressor construction, GLM fit, contrast t, baseline correction, rejection, averaging, mean amplitude) and a script that prints every number used in your write-up.
+deliverable: A methods and results section of 500 to 800 words with the two tables, stating the model, the HRF and its parameters, the correction used and why, the effect sizes in physical units, and a limitations paragraph.
+deliverable: A short note (150 to 250 words) on what the data cannot show: the inferences that are not licensed by the design, the preprocessing and sample-size limits, and what you would collect or check next.
+rubric: The regressors, the design matrix and the fit are correct (the betas, the degrees of freedom and the residual variance agree with a library fit), and the core steps are written without imaging libraries.
+rubric: Contrasts are specified correctly, a stated correction for multiple tests is applied, and the report distinguishes uncorrected from corrected decisions.
+rubric: Effects are reported as percent signal change or microvolts with units, not only as t or p, and the significance of a difference is tested as a difference.
+rubric: The ERP uses a baseline, a justified artifact rule and a pre-specified measurement window, and reports the number of epochs kept.
+rubric: The write-up states limitations honestly: simulated data, the assumptions of the HRF and of independent noise, the circularity of choosing a region by the tested effect, and the reverse-inference limits of what the signals show.
+safety: All data in this project are invented or simulated; no recording of any person is made or needed. If you extend the project with an open data set, use only data released for reuse, follow its license and its rules on privacy, and do not try to identify participants. Collecting new imaging or EEG recordings requires ethics review and trained staff and is outside this course.
+material: **Design and hemodynamic response.** TR = 2 s and the run has 30 scans, numbered 0 to 29. Condition A has events at scans 1, 9, 17 and 25; condition B has events at scans 5, 13, 21 and 29. The HRF used is the double-gamma $h(t) = t^5 e^{-t}/5! - \tfrac{1}{6}\,t^{15}e^{-t}/15!$ with $t$ in seconds, sampled every 2 s and rounded to three decimals for the first ten samples ($t = 0, 2, \dots, 18$ s):
+```python
+h = [0.0, 0.036, 0.156, 0.160, 0.090, 0.032, 0.001, -0.013, -0.016, -0.013]
+onsets_A = [1, 9, 17, 25]
+onsets_B = [5, 13, 21, 29]
+n_scans = 30
+```
+material: **fMRI-like data (arbitrary scanner units).** Three regions, one mean time series each, one row per scan. Region 3 is intended as a region with no task effect.
+```python
+region1 = [99.7, 100.1, 100.6, 101.3, 101.2, 101.0, 100.7, 100.9, 100.2, 100.2,
+           100.9, 101.9, 102.3, 101.5, 101.0, 100.9, 101.5, 100.8, 100.9, 101.9,
+           102.3, 101.7, 101.3, 101.4, 101.4, 101.5, 101.8, 102.7, 102.3, 102.3]
+region2 = [199.6, 200.1, 199.8, 200.5, 200.3, 200.5, 201.5, 201.8, 202.0, 200.9,
+           200.7, 201.1, 200.8, 200.8, 201.0, 201.9, 202.3, 201.4, 201.7, 201.2,
+           201.4, 201.1, 201.6, 202.4, 202.8, 202.0, 201.9, 201.9, 201.6, 201.3]
+region3 = [150.2, 150.2, 150.5, 150.1, 150.3, 150.3, 150.4, 150.4, 150.4, 150.3,
+           150.2, 150.5, 150.7, 151.1, 150.9, 151.1, 151.0, 151.0, 150.9, 151.1,
+           151.4, 151.0, 150.9, 151.7, 151.3, 151.4, 151.5, 151.0, 152.0, 151.8]
+```
+material: **EEG-like epochs (microvolts).** Eight epochs from one channel, sampled at 100 Hz. Each has 10 samples at -20, -10, 0, 10, ..., 70 ms. The first two samples are the baseline.
+| epoch | condition | samples (µV) |
+|---|---|---|
+| 1 | target | 0.4, -0.9, 1.7, 1.0, 3.7, 5.4, 1.6, 1.9, -0.5, -1.9 |
+| 2 | target | -2.1, -1.4, -2.5, -0.8, 2.1, 3.5, 1.2, 1.3, -1.5, -3.0 |
+| 3 | target | 1.9, 2.0, 1.2, 2.2, 4.6, 5.8, 4.7, 4.4, 1.7, -0.3 |
+| 4 | target | 0.6, 1.5, 2.3, 4.6, 4.0, 4.9, 5.3, 2.4, 1.5, 1.2 |
+| 5 | standard | -0.8, -1.1, -1.5, -0.9, -0.2, 0.4, -0.4, 0.5, -2.1, -1.8 |
+| 6 | standard | -0.2, -0.4, 0.1, 0.4, 1.4, 0.9, 2.8, 0.6, -0.8, 0.2 |
+| 7 | standard | -1.5, -1.9, -1.5, -1.6, -0.4, -1.3, 0.2, -1.8, -2.6, -1.7 |
+| 8 | standard | 2.1, 1.9, 1.6, 0.1, 4.5, 4.0, 3.2, 2.0, -0.3, -0.5 |
+tutor: I fitted my GLM and my betas disagree with a library fit in the third decimal place. How can I tell whether the difference is rounding in the HRF or a bug in my solver?
+tutor: How should I choose the family of tests to correct over, and how do I justify it before looking at the results?
+tutor: What is the difference between the peak amplitude and a pre-specified mean amplitude as ways of measuring an ERP component, and which is more robust here?
+
+@review
+This course followed an fMRI or EEG data set from the physics of the signal to the claims that can be made from it.
+
+**Week by week**
+- **1. BOLD.** Larmor frequency $f = \bar\gamma B_0$; signal $S = S_0 e^{-\mathrm{TE}/T_2^*}$; BOLD rises because flow overshoots oxygen use, lowering deoxyhemoglobin and lengthening $T_2^*$; percent signal change $100(S - S_0)/S_0$.
+- **2. HRF.** The double-gamma response peaks near 5 s, with an undershoot; the predicted series is the convolution $y[n] = \sum_k x[n-k]h[k]$, assuming linearity and time invariance.
+- **3. Designs.** Block designs have high detection efficiency; jittered event-related designs estimate response shape and allow sorting trials; efficiency is $1/\mathbf{c}(\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{c}^\top$.
+- **4. Preprocessing.** Framewise displacement, slice-timing interpolation, registration by a cost function, Gaussian smoothing with $\sigma = \text{FWHM}/2.3548$.
+- **5. GLM.** $\hat{\boldsymbol\beta} = (\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{X}^\top\mathbf{y}$, $\hat\sigma^2 = \text{RSS}/(n - p)$, $R^2 = 1 - \text{RSS}/\text{TSS}$.
+- **6. Contrasts.** $t = \mathbf{c}\hat{\boldsymbol\beta}/\sqrt{\hat\sigma^2\,\mathbf{c}(\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{c}^\top}$ with $n - p$ degrees of freedom; group t on subject effects with $N - 1$.
+- **7. Multiple comparisons.** Bonferroni $\alpha/m$; Benjamini–Hochberg step-up; clusters need a strict forming threshold or permutation; the maximum-statistic permutation threshold.
+- **8. ROIs.** Select and test on independent data (split, leave-one-run-out, localizer).
+- **9. MVPA.** Nearest centroid, leave-one-run-out accuracy, binomial p value, dissimilarity $1 - r$; decodable is not used.
+- **10. Connectivity.** Correlation, Fisher $z = \operatorname{arctanh} r$, partial correlation, confounds; not causal.
+- **11. ERPs.** Epoch, baseline-correct, reject, average; noise falls as $1/\sqrt{N}$; latency = start + index $\times 1000/f_s$.
+- **12. Time–frequency and sources.** Amplitude $2|X|/N$, resolution $f_s/N$, Nyquist $f_s/2$; evoked versus induced; the inverse problem and the minimum-norm estimate.
+
+**Self-check**
+- Can you build a regressor from event times and fit it by hand for two regressors?
+- Can you say, for any result, which correction was applied and what an uncorrected map would have shown?
+- Can you explain why a region chosen by a contrast cannot also be used to estimate that contrast's effect size?
+- Can you list what above-chance decoding, a correlation between regions, and a BOLD increase each do not show?
+
+**Common errors**
+- Dividing by $n$ instead of $n - p$ for the noise variance, or by $n$ instead of $n - 1$ for a standard deviation.
+- Reporting a $t$ or p value without an effect size and its units.
+- Concluding that A exceeds B from "A significant, B not".
+- Selecting voxels, windows or electrodes in the data used to test them.
+- Treating correlation or decoding accuracy as proof of mechanism.
+
+@exam code
+prompt: Write `task_t(onsets, n_scans, h, y)` that returns the t statistic of the task effect in a model with one task regressor and a constant. `onsets` is a list of scan indices with an event; build a stick function of length `n_scans` (1 at each onset, else 0) and convolve it with the sampled HRF `h` (keep the first `n_scans` samples, $r[i] = \sum_k x[i-k]h[k]$ over valid indices). Fit $y = b_0 + b_1 r$ by least squares, with $S_{xx} = \sum(r_i - \bar r)^2$, $S_{xy} = \sum(r_i - \bar r)(y_i - \bar y)$ and $S_{yy} = \sum (y_i - \bar y)^2$; then $b_1 = S_{xy}/S_{xx}$, $\text{RSS} = S_{yy} - b_1 S_{xy}$, $\hat\sigma^2 = \text{RSS}/(n - 2)$, and $t = b_1/\sqrt{\hat\sigma^2/S_{xx}}$. Assume the fit is not perfect. For example, `task_t([1, 4], 8, [0, 1, 0.5], [10.0, 10.4, 11.9, 11.3, 10.2, 11.8, 11.0, 10.1])` returns about `12.02`.
+starter:
+```python
+def task_t(onsets, n_scans, h, y):
+    pass
+```
+tests:
+```python
+y1 = [10.0, 10.4, 11.9, 11.3, 10.2, 11.8, 11.0, 10.1]
+assert abs(task_t([1, 4], 8, [0, 1, 0.5], y1) - 12.0208153) < 1e-4
+y2 = [3.1, 4.2, 3.4, 2.1, 2.8, 3.6, 4.1, 3.3, 2.2, 2.5]
+assert abs(task_t([0, 5], 10, [0.5, 1.0, 0.5], y2) - 8.8585554) < 1e-4
+y3 = [1.0, 2.1, 4.9, 1.2, 0.8, 1.5]
+assert abs(task_t([2], 6, [1.0], y3) - 6.4465275) < 1e-4
+assert task_t([1, 4], 8, [0, 1, 0.5], [-v for v in y1]) < 0
+```
+model:
+```python
+import math
+
+
+def task_t(onsets, n_scans, h, y):
+    """t statistic of the convolved task regressor in y = b0 + b1 * r."""
+    x = [0.0] * n_scans
+    for o in onsets:
+        x[o] = 1.0
+    r = []
+    for i in range(n_scans):
+        r.append(sum(x[i - k] * h[k] for k in range(len(h)) if i - k >= 0))
+    rm = sum(r) / n_scans
+    ym = sum(y) / n_scans
+    sxx = sum((v - rm) ** 2 for v in r)
+    sxy = sum((a - rm) * (b - ym) for a, b in zip(r, y))
+    syy = sum((b - ym) ** 2 for b in y)
+    b1 = sxy / sxx
+    rss = syy - b1 * sxy
+    sigma2 = rss / (n_scans - 2)
+    return b1 / math.sqrt(sigma2 / sxx)
+```
+hint: Build the regressor first, then use the sums of squares; the t statistic is the slope divided by its standard error $\sqrt{\hat\sigma^2/S_{xx}}$.
+solution: This chains lesson 2 (convolution), lesson 5 (least squares with a constant) and lesson 6 (the t statistic). With a constant in the model, the slope and the residual sum of squares can be computed from the centered sums. Negating the data flips the sign of $b_1$ and so of $t$, which the last test checks.
+
+@exam num
+prompt: In a region with baseline signal 100 (scanner units), a convolved task regressor has a peak value of 0.16 and the fitted task weight is $\hat\beta = 7.7$ scanner units per unit of regressor. What is the effect at the regressor's peak, in percent signal change, to two decimal places?
+answer: 1.23
+tol: 0.01
+unit: %
+check: 100 * 7.7 * 0.16 / 100
+hint: The fitted change at the peak is the weight times the peak value; divide by the baseline and multiply by 100.
+solution: The change at the peak is $7.7 \times 0.16 = 1.232$ scanner units; relative to a baseline of 100 this is $1.232\%$, which rounds to $1.23\%$.
+
+@exam self
+prompt: A lab reports: "We scanned 20 participants. In each, we selected the 50 voxels in the fusiform region most responsive to faces versus houses, then found that these voxels responded significantly more to faces than to houses ($p < 0.001$, uncorrected; peak effect 2.1% signal change). Because the region responds to faces, activity there shows that participants were thinking about identity." Write a critique of the analysis and the conclusion, using ideas from at least four different weeks of the course, and say what analysis you would run instead.
+hint: Look for a selection step, an uncorrected threshold, an effect size, and a reverse inference.
+solution: Four problems. First (week 8), the voxels were selected by the faces-versus-houses contrast and then tested on the same contrast, which is circular: the selected voxels have the largest noise in the favorable direction, so the test is guaranteed to look significant and the 2.1% effect is inflated. The fix is to define the region with independent data (a separate localizer run, an anatomical mask, or leave-one-run-out selection) and test on held-out data, reporting the effect size from the independent data. Second (week 7), the threshold is uncorrected: if the 50 voxels were found in a whole-brain search, thousands of tests were made, and an uncorrected $p < 0.001$ would give tens of false positives in a whole-brain null map; a familywise or false-discovery correction, or a permutation threshold, is needed for any claim of a location. Third (weeks 5 and 6), the claim concerns a difference, so it must be tested with the contrast faces minus houses at the group level (a random-effects test across the 20 participants with 19 degrees of freedom) rather than the effects against baseline, and the voxel-wise or ROI test must come with an effect and a confidence interval, with the design and the HRF model stated. Fourth (week 1 and the logic of inference), the conclusion is a reverse inference: the BOLD increase is an indirect vascular signal, and a region that responds more to faces may also be engaged by attention, familiarity or visual features, so its activity does not show that participants were thinking about identity; a stronger design would manipulate the cognitive process, include controls for low-level stimulus differences, and, if the claim is about information, use an independently validated decoding or encoding analysis. A better analysis: define a face-selective region in each person from a separate localizer, extract percent signal change in the main runs, test faces minus houses across participants with a one-sample t test and report the mean effect with its interval, and correct across all regions examined.
+rubric: Identifies the circular selection and test, and proposes independent data or cross-validation.
+rubric: Identifies the uncorrected threshold or multiple-comparison problem and names an appropriate correction.
+rubric: Notes that the claim is about a difference tested at the group level and reports an effect size with a measure of uncertainty.
+rubric: Identifies the reverse inference from activation to a cognitive process and proposes a better design or a more cautious conclusion.

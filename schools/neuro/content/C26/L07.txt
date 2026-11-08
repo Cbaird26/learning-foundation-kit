@@ -127,54 +127,60 @@ hint: Option 1 is updated twice and option 0 once; trace $q[1]$ through $0.7$ an
 solution: Trial 1 moves $q[1]$ to $0.7$, trial 2 to $0.42$, and trial 3 moves $q[0]$ from $0.5$ to $0.7$. The list is `[0.7, 0.42]`.
 
 @practice code
-prompt: Write `fit_q_learning(choices, rewards, alpha_grid, beta_grid, q0=0.5)` that returns the tuple `(alpha, beta, log_lik)` with the largest log-likelihood over all pairs (loop `alpha` outside; first found wins ties). The model: both values start at `q0`; on each trial, $p(1) = 1/(1+e^{-\beta(Q_1 - Q_0)})$ from the values before the trial, the log-likelihood adds the log of the probability of the actual choice, and then the chosen option's value is updated by $Q \leftarrow Q + \alpha(r - Q)$. For example, with `choices = [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]`, `rewards = [1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1]`, `alpha_grid` of `0.1, ..., 0.9` and `beta_grid` of `1, ..., 10`, the answer is `(0.4, 6, -6.3647)`.
+prompt: A common extension of the delta rule gives positive and negative prediction errors separate learning rates. Write `fit_dual_alpha(choices, rewards, alpha_grid, beta, q0=0.5)` that fits both rates by grid search with `beta` fixed and returns the tuple `(alpha_pos, alpha_neg, log_lik)` with the largest log-likelihood over all pairs drawn from `alpha_grid` (loop `alpha_pos` outside and `alpha_neg` inside; the first pair found wins ties). The model: both values start at `q0`; on each trial, $p(1) = 1/(1+e^{-\beta(Q_1 - Q_0)})$ from the values before the trial, and the log-likelihood adds the log of the probability of the actual choice; then, for the chosen option, $\delta = r - Q$, and $Q \leftarrow Q + \alpha_+\delta$ if $\delta > 0$ or $Q \leftarrow Q + \alpha_-\delta$ if $\delta < 0$, with no change if $\delta = 0$. For example, with `choices = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1]`, `rewards = [1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1]`, `alpha_grid = [0.1, 0.3, 0.5, 0.7, 0.9]` and `beta = 5`, the answer is `(0.3, 0.1, -9.7871)`.
 starter:
 ```python
 import math
 
 
-def fit_q_learning(choices, rewards, alpha_grid, beta_grid, q0=0.5):
+def fit_dual_alpha(choices, rewards, alpha_grid, beta, q0=0.5):
     pass
 ```
 tests:
 ```python
-_c = [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]
-_r = [1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1]
-_ag = [round(0.1 * i, 1) for i in range(1, 10)]
-_a, _b, _ll = fit_q_learning(_c, _r, _ag, list(range(1, 11)))
-assert _a == 0.4 and _b == 6 and abs(_ll - (-6.364669)) < 1e-5
-_a, _b, _ll = fit_q_learning(_c, _r, [0.4], [6])
-assert abs(_ll - (-6.364669)) < 1e-5
-_a, _b, _ll = fit_q_learning([0, 0], [1, 1], [0.5], [0, 2])
-assert _b == 2 and abs(_ll - (-0.693147 - 0.474077)) < 1e-4
-assert fit_q_learning([1], [1], [0.3, 0.6], [1.0])[0] == 0.3
+_c = [1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1]
+_r = [1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1]
+_p, _n, _ll = fit_dual_alpha(_c, _r, [0.1, 0.3, 0.5, 0.7, 0.9], 5.0)
+assert _p == 0.3 and _n == 0.1 and abs(_ll - (-9.787062)) < 1e-5
+_p, _n, _ll = fit_dual_alpha([1, 1, 1], [1, 1, 1], [0.1, 0.9], 3.0)
+assert (_p, _n) == (0.9, 0.1) and abs(_ll - (-1.127822)) < 1e-5
+_p, _n, _ll = fit_dual_alpha([1, 1], [1, 0], [0.2, 0.8], 2.0, q0=1.0)
+assert (_p, _n) == (0.2, 0.2) and abs(_ll - (-1.386294)) < 1e-5
+_c2 = [0, 0, 1, 0, 0, 1, 0, 0, 0, 1]
+_r2 = [1, 1, 0, 0, 1, 0, 1, 0, 1, 1]
+_p, _n, _ll = fit_dual_alpha(_c2, _r2, [0.2, 0.4, 0.6, 0.8], 4.0)
+assert (_p, _n) == (0.2, 0.6) and abs(_ll - (-6.516973)) < 1e-5
 ```
 model:
 ```python
 import math
 
 
-def fit_q_learning(choices, rewards, alpha_grid, beta_grid, q0=0.5):
-    """Grid-search maximum likelihood for the delta-rule softmax learner."""
-    def log_lik(alpha, beta):
+def fit_dual_alpha(choices, rewards, alpha_grid, beta, q0=0.5):
+    """Grid-search fit of separate learning rates for positive and negative errors."""
+    def log_lik(a_pos, a_neg):
         q = [q0, q0]
         total = 0.0
         for c, r in zip(choices, rewards):
             p1 = 1.0 / (1.0 + math.exp(-beta * (q[1] - q[0])))
             total += math.log(p1 if c == 1 else 1.0 - p1)
-            q[c] += alpha * (r - q[c])
+            delta = r - q[c]
+            if delta > 0:
+                q[c] += a_pos * delta
+            elif delta < 0:
+                q[c] += a_neg * delta
         return total
 
     best = None
-    for alpha in alpha_grid:
-        for beta in beta_grid:
-            ll = log_lik(alpha, beta)
+    for a_pos in alpha_grid:
+        for a_neg in alpha_grid:
+            ll = log_lik(a_pos, a_neg)
             if best is None or ll > best[2]:
-                best = (alpha, beta, ll)
+                best = (a_pos, a_neg, ll)
     return best
 ```
-hint: Write an inner function that returns the log-likelihood for one `(alpha, beta)` pair, then keep the best triple over the two nested loops.
-solution: The values must be recomputed from `q0` for every parameter pair, because they depend on both parameters through the history. The third test is a hand-checkable case: trial 1 has $p = 0.5$, and after the reward the repeat choice of 0 on trial 2 with $\beta = 2$ and $\alpha = 0.5$ has probability about $0.62$, so $\beta = 2$ beats $\beta = 0$.
+hint: Write an inner function that returns the log-likelihood for one `(alpha_pos, alpha_neg)` pair, choosing the rate by the sign of the prediction error, then keep the best triple over the two nested loops.
+solution: The values are recomputed from `q0` for every pair, and the sign of $\delta$ picks the rate. In the second test every reward is 1 and every value is below 1, so only $\alpha_+$ ever acts: the larger $\alpha_+ = 0.9$ raises option 1's value fastest and makes its repeated choice most probable, while every $\alpha_-$ gives the same likelihood and the first, 0.1, wins the tie (a solution that swaps the two rates returns `(0.1, 0.9)` here). In the third test both values start at 1, so the first choice has $p = 0.5$, its error is 0 and nothing changes, and the second choice again has $p = 0.5$: every pair ties at $2\ln 0.5 \approx -1.3863$, and the first pair wins.
 
 @quiz code
 prompt: Write `simulate_q_learner(reward_table, us, alpha, beta, q0)` that generates behavior from the delta-rule softmax learner. `reward_table[t][i]` is the reward option `i` would pay on trial `t`, and `us[t]` is a supplied uniform random number in $[0, 1)$. On each trial compute $p(1) = 1/(1+e^{-\beta(Q_1 - Q_0)})$ from the current values, choose `1` if `us[t] < p1` and `0` otherwise, receive `reward_table[t][choice]`, and update only the chosen value by $Q \leftarrow Q + \alpha(r - Q)$. Return the tuple `(choices, q)` where `q` is the final list of the two values. For example, with `reward_table = [[0, 1], [1, 0], [0, 1], [0, 1], [1, 1], [0, 0]]` and `us = [0.9, 0.2, 0.4, 0.7, 0.5, 0.1]`, `alpha = 0.5`, `beta = 2.0` and `q0 = 0.5`, the choices are `[0, 1, 1, 0, 1, 1]`.

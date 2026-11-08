@@ -1,0 +1,228 @@
+@lesson
+title: Time–frequency analysis and source localization in outline
+summary: Measure oscillation amplitude and power with a discrete Fourier transform written from scratch, explain evoked versus induced activity, and describe the inverse problem with a small minimum-norm example.
+objective: Compute the amplitude of an oscillation at a given frequency from a sampled signal, and state the frequency resolution and Nyquist limit of a recording.
+objective: Compute band power from the discrete Fourier transform and distinguish evoked from induced activity.
+objective: Explain why the EEG and MEG inverse problem has no unique solution and compute a minimum-norm estimate for a small lead field.
+reading: Andy's Brain Book is mostly about fMRI; for this week look up time-frequency analysis, Morlet wavelets, power spectra and minimum-norm source estimation in the free documentation and tutorials of an open-source EEG and MEG analysis package.
+@article
+Close your eyes and relax, and the EEG over the back of the head develops a strong rhythm of about ten cycles per second; open them and it shrinks. This was among the first observations Berger made with the human EEG. Much of the brain's electrical activity is oscillatory, and the *rhythm*, not only the waveform of an average, carries information. This lesson gives the tools for measuring rhythms, and a short outline of the other hard part of EEG and MEG: working out where in the brain a signal came from.
+
+### Frequencies and the discrete Fourier transform
+
+A signal $x_0, \dots, x_{N-1}$ sampled at $f_s$ Hz lasts $N/f_s$ seconds. Its **discrete Fourier transform** (DFT) at frequency $f$ is
+
+$$X(f) = \sum_{n=0}^{N-1} x_n\, e^{-2\pi i f n / f_s}.$$
+
+For a sine wave of amplitude $A$ at a frequency $f$ that fits a whole number of cycles in the window, $|X(f)| = AN/2$, so the **amplitude** is recovered as $A = 2|X(f)|/N$ (for $0 < f < f_s/2$), and the **power** of that oscillation (its mean square) is $A^2/2$. The DFT is evaluated at the frequencies $f_k = k f_s/N$, so the **frequency resolution** is $f_s/N = 1/T$ for a window of duration $T$: a one-second window resolves frequencies 1 Hz apart, and a half-second window 2 Hz apart. The highest frequency that can be represented is the **Nyquist frequency** $f_s/2$. A faster oscillation is **aliased**: sampled at 100 Hz, a 70 Hz oscillation appears at $|70 - 100| = 30$ Hz, which is why recordings are low-pass filtered before sampling.
+
+Convention names several **frequency bands**, with approximate edges: delta (about 1 to 4 Hz), theta (4 to 8 Hz), alpha (8 to 12 Hz), beta (13 to 30 Hz) and gamma (above about 30 Hz). The boundaries differ between studies. **Band power** is the sum of the power of the DFT bins inside the band.
+
+A worked check. Take 16 samples at $f_s = 16$ Hz (a one-second window): $x_n = 3 + 2\sin(2\pi\cdot 2\,n/16) + \cos(2\pi\cdot 4\,n/16)$. The DFT amplitude is $2.0$ at 2 Hz and $1.0$ at 4 Hz (and nothing at other frequencies except the constant 3). The band powers are $2^2/2 = 2.0$ in a band containing 2 Hz, and $1^2/2 = 0.5$ in one containing 4 Hz, and together they account for the variance of the signal, $2.5$; the constant 3 adds only to the mean.
+
+### Time-frequency analysis, evoked and induced activity
+
+The oscillations change in time. A **time–frequency** analysis applies the DFT in short sliding windows (after multiplying each window by a taper such as a Hann window, $w_n = \tfrac12\big(1 - \cos\frac{2\pi n}{N-1}\big)$, to reduce leakage of power into neighboring frequencies), or convolves the signal with a family of **wavelets** (a Morlet wavelet is a sinusoid at frequency $f$ multiplied by a Gaussian envelope). The result is power as a function of time and frequency. There is a trade-off: a long window resolves frequencies well but poorly resolves time, and a short window does the reverse.
+
+Averaging trials *before* computing power keeps only activity that is phase-locked to the stimulus, the **evoked** part, because oscillations whose phase varies from trial to trial cancel in the average. Computing power in each trial and then averaging keeps also the **induced** part, rhythmic activity that is time-locked in power but not in phase. For example, a decrease of alpha power after a stimulus (event-related desynchronization) is induced and would be missed in the ERP.
+
+### Source localization in outline
+
+The sensors measure a mixture of many sources. The **forward problem** predicts the sensor data $\mathbf{y}$ (length $M$, the sensors) from the source strengths $\mathbf{s}$ (length $S$, positions in the brain), using a head model for how currents spread through brain, skull and scalp:
+
+$$\mathbf{y} = \mathbf{L}\,\mathbf{s} + \text{noise},$$
+
+where $\mathbf{L}$ is the $M \times S$ **lead field** matrix. The forward problem has a solution. The **inverse problem** goes the other way, and it has none that is unique: there are many more candidate sources than sensors ($S \gg M$), so infinitely many source patterns give the same sensor data, and some patterns (for instance sources arranged so that their fields cancel) are invisible. Solving it needs extra assumptions. The **minimum-norm estimate** picks, among all patterns that fit the data, the one with the smallest total power, with a regularization $\lambda$ for noise:
+
+$$\hat{\mathbf{s}} = \mathbf{L}^\top(\mathbf{L}\mathbf{L}^\top + \lambda\mathbf{I})^{-1}\mathbf{y}.$$
+
+Take two sensors and three sources with $\mathbf{L} = \begin{pmatrix}1 & 0.5 & 0\\ 0 & 0.5 & 1\end{pmatrix}$, $\mathbf{y} = (1, 1)^\top$ and $\lambda = 0.25$. Then $\mathbf{L}\mathbf{L}^\top + \lambda\mathbf{I} = \begin{pmatrix}1.5 & 0.25\\ 0.25 & 1.5\end{pmatrix}$, whose inverse applied to $\mathbf{y}$ is $(0.5714,\ 0.5714)^\top$, so $\hat{\mathbf{s}} = (0.5714,\ 0.5714,\ 0.5714)$: the estimate spreads activity over all three sources, including the middle one that contributes to both sensors. This blurring and a bias toward superficial sources, which have large entries in $\mathbf{L}$, are typical of minimum-norm solutions. Other methods (dipole fitting, beamformers) use different assumptions, and each is correct only if its assumptions are. Source estimates are models, and the spread of a signal through the head (volume conduction) also inflates measures of connectivity computed between sensors.
+
+### In code
+
+```python
+import math
+
+def dft_parts(x, fs, f):
+    """Real and imaginary parts of the DFT of x at frequency f (Hz)."""
+    re = sum(v * math.cos(2 * math.pi * f * n / fs) for n, v in enumerate(x))
+    im = -sum(v * math.sin(2 * math.pi * f * n / fs) for n, v in enumerate(x))
+    return re, im
+
+x = [3 + 2 * math.sin(2 * math.pi * 2 * n / 16) for n in range(16)]
+re, im = dft_parts(x, 16, 2)
+print(round(2 * math.hypot(re, im) / len(x), 3))
+```
+
+This prints `2.0`. Real analyses use a fast Fourier transform (`np.fft.rfft`), which computes all the bins at once.
+
+@example
+title: Resolution and aliasing from the sampling parameters
+problem: A recording is sampled at $f_s = 200$ Hz and a window holds $N = 400$ samples. What is the frequency resolution, the Nyquist frequency, and the apparent frequency of a 130 Hz oscillation?
+step: The window lasts $400/200 = 2$ s, so the resolution is $f_s/N = 200/400 = 0.5$ Hz.
+step: The Nyquist frequency is $f_s/2 = 100$ Hz.
+step: A 130 Hz oscillation is above Nyquist, so it is aliased; its apparent frequency is $|130 - 200| = 70$ Hz.
+answer: Resolution $0.5$ Hz, Nyquist frequency $100$ Hz, and the 130 Hz oscillation appears at $70$ Hz.
+
+@mistakes
+- Using the ERP to study rhythms. Averaging in time cancels activity that is not phase-locked, so induced oscillations vanish; compute power per trial and then average.
+- Forgetting that the frequency resolution is the reciprocal of the window duration, and expecting to separate two frequencies that are closer than that.
+- Sampling too slowly for the frequencies of interest. Anything above $f_s/2$ is folded back into lower frequencies and cannot be removed afterward.
+- Treating a source-localization result as a direct image of the sources. It is one of many solutions consistent with the data, chosen by an assumption.
+
+@practice num
+prompt: A recording is sampled at 250 Hz and the analysis window contains $N = 500$ samples. What is the frequency resolution of its DFT, in hertz?
+answer: 0.5
+tol: 0.001
+unit: Hz
+check: 250 / 500
+hint: The resolution is $f_s/N$, the reciprocal of the window duration in seconds.
+solution: The window lasts $500/250 = 2$ s, so the resolution is $1/2 = 0.5$ Hz.
+
+@practice mc
+prompt: Why does the EEG and MEG inverse problem not have a unique solution?
+choice*: There are many more possible source locations than sensors, so many different patterns of sources produce the same sensor data, and some patterns produce no external field at all.
+choice: The skull absorbs the signals, so no information about sources reaches the sensors.
+choice: The forward model cannot be computed, because currents in the head are unpredictable.
+choice: The sampling rate of EEG is too low to resolve any sources.
+hint: Compare the number of unknowns with the number of measurements.
+solution: The unknown source strengths outnumber the sensor measurements, so the linear system is underdetermined, and some source patterns cancel and are invisible. The forward problem is well defined with a head model, and the sampling rate does not decide this. The skull blurs the EEG but does not remove its information.
+
+@practice code
+prompt: Write `hann_amplitude(x, fs, f)` that estimates the amplitude of the oscillation at frequency `f` Hz in the signal `x` (a list of floats in µV sampled at `fs` Hz) after tapering it with a Hann window. Use the weights $w_n = \tfrac12\big(1 - \cos(2\pi n/N)\big)$ for $n = 0, \dots, N-1$ with $N$ = `len(x)`; compute $X = \sum_n w_n x_n e^{-2\pi i f n/f_s}$ and return $2|X|/\sum_n w_n$. Assume $0 < f < f_s/2$. For example, with 40 samples of $3\sin(2\pi \cdot 10\, n/100)$ at `fs = 100`, `hann_amplitude(x, 100, 10)` returns about `3.0`.
+starter:
+```python
+def hann_amplitude(x, fs, f):
+    pass
+```
+tests:
+```python
+import math
+y = [3 * math.sin(2 * math.pi * 10 * n / 100) for n in range(40)]
+assert abs(hann_amplitude(y, 100, 10) - 3.0) < 1e-9
+assert abs(hann_amplitude(y, 100, 20)) < 1e-9
+z = [5 + 2 * math.cos(2 * math.pi * 3 * n / 24 + 1.0) for n in range(24)]
+assert abs(hann_amplitude(z, 24, 3) - 2.0) < 1e-9
+assert abs(hann_amplitude([1.0] * 8, 8, 2)) < 1e-9
+ramp = [1, 2, 3, 4, 5, 6, 7, 8]
+assert abs(hann_amplitude(ramp, 8, 1) - 5.353897) < 1e-6
+```
+model:
+```python
+import math
+
+
+def hann_amplitude(x, fs, f):
+    """Amplitude at frequency f after a periodic Hann taper."""
+    n_s = len(x)
+    w = [0.5 * (1 - math.cos(2 * math.pi * n / n_s)) for n in range(n_s)]
+    re = sum(w[n] * x[n] * math.cos(2 * math.pi * f * n / fs) for n in range(n_s))
+    im = -sum(w[n] * x[n] * math.sin(2 * math.pi * f * n / fs) for n in range(n_s))
+    return 2 * math.hypot(re, im) / sum(w)
+```
+hint: Build the weights first, multiply them into the samples inside the cosine and sine sums, and divide by the sum of the weights instead of by $N$.
+solution: The taper multiplies each sample before the transform, and the sum of the weights replaces $N$ in the scaling so a whole-cycle sinusoid still returns its amplitude. The ramp test has a trend that does not fit a whole number of cycles; its bin-1 value differs from the untapered one, which is the point of a taper: less leakage of the trend into the bins.
+
+@practice code
+prompt: Write `band_power(x, fs, f_lo, f_hi)` that returns the power of a signal in a frequency band. For each DFT bin $k = 1, \dots,$ `(len(x) + 1) // 2 - 1` (the bins strictly below the Nyquist frequency), with frequency $f_k = k f_s/N$, compute the amplitude $A_k = 2|X(f_k)|/N$ with $X(f) = \sum_n x_n e^{-2\pi i f n/f_s}$; add $A_k^2/2$ for every bin with `f_lo <= f_k < f_hi`. Return the sum. For example, `band_power([0, 1, 0, -1, 0, 1, 0, -1], 8, 1, 3)` returns `0.5`.
+starter:
+```python
+def band_power(x, fs, f_lo, f_hi):
+    pass
+```
+tests:
+```python
+import math
+x = [0, 1, 0, -1, 0, 1, 0, -1]
+assert abs(band_power(x, 8, 1, 3) - 0.5) < 1e-9
+assert abs(band_power(x, 8, 3, 4)) < 1e-9
+z = [3 + 2 * math.sin(2 * math.pi * 2 * n / 16) + math.cos(2 * math.pi * 4 * n / 16)
+     for n in range(16)]
+assert abs(band_power(z, 16, 1, 3) - 2.0) < 1e-9
+assert abs(band_power(z, 16, 3, 5) - 0.5) < 1e-9
+assert abs(band_power(z, 16, 1, 7) - 2.5) < 1e-9
+assert band_power(z, 16, 5, 7) < 1e-9
+```
+model:
+```python
+import math
+
+
+def band_power(x, fs, f_lo, f_hi):
+    """Sum of A**2 / 2 over the DFT bins with f_lo <= f < f_hi."""
+    n_s = len(x)
+    total = 0.0
+    for k in range(1, (n_s + 1) // 2):
+        f = k * fs / n_s
+        if f_lo <= f < f_hi:
+            re = sum(v * math.cos(2 * math.pi * f * n / fs) for n, v in enumerate(x))
+            im = -sum(v * math.sin(2 * math.pi * f * n / fs) for n, v in enumerate(x))
+            amp = 2 * math.hypot(re, im) / n_s
+            total += amp ** 2 / 2
+    return total
+```
+hint: Loop over the bin numbers, compute each bin's frequency, skip the bins outside the band, and add half the squared amplitude for the rest.
+solution: A sinusoid of amplitude $A$ has mean-square power $A^2/2$, so summing over bins gives the variance carried by the band; in the fifth test the two oscillations together give $2.0 + 0.5 = 2.5$, the variance of the signal around its mean. The band edge is half-open, so a bin exactly at `f_hi` is excluded; with 16 samples at 16 Hz the bins are at 1, 2, 3, ... Hz.
+
+@practice num
+prompt: A recording is sampled at 100 Hz. A 70 Hz oscillation is present in the brain and the signal was not low-pass filtered before sampling. At what frequency, in hertz, does it appear in the sampled data?
+answer: 30
+tol: 0.001
+unit: Hz
+check: abs(70 - 100)
+hint: Frequencies above half the sampling rate fold back about the sampling rate.
+solution: The Nyquist frequency is 50 Hz, so 70 Hz is aliased to $|70 - 100| = 30$ Hz, which cannot be told apart from a real 30 Hz oscillation.
+
+@quiz text
+prompt: What does this program print?
+```python
+fs = 200
+N = 100
+print(fs / N, fs / 2)
+```
+answer: 2.0 100.0
+check: run("fs = 200\nN = 100\nprint(fs / N, fs / 2)")
+hint: The first number is the frequency resolution in hertz and the second is the Nyquist frequency.
+solution: The resolution is $200/100 = 2.0$ Hz and the Nyquist frequency is $200/2 = 100.0$ Hz.
+
+@quiz code
+prompt: Write `min_norm(L, y, lam)` for a system with exactly two sensors: `L` is a $2 \times S$ lead field (a list of two rows of `S` floats), `y` is a list of two sensor values, and `lam` is the regularization $\lambda > 0$. Return the minimum-norm estimate $\hat{\mathbf{s}} = \mathbf{L}^\top(\mathbf{L}\mathbf{L}^\top + \lambda\mathbf{I})^{-1}\mathbf{y}$ as a list of `S` floats, computing the $2 \times 2$ inverse by hand. For example, `min_norm([[1, 0.5, 0], [0, 0.5, 1]], [1, 1], 0.25)` returns about `[0.5714, 0.5714, 0.5714]`.
+starter:
+```python
+def min_norm(L, y, lam):
+    pass
+```
+tests:
+```python
+def close(a, b, tol=1e-6):
+    return len(a) == len(b) and all(abs(u - v) < tol for u, v in zip(a, b))
+
+assert close(min_norm([[1, 0.5, 0], [0, 0.5, 1]], [1, 1], 0.25), [0.5714286] * 3)
+assert close(min_norm([[2, 1, 0], [0, 1, 2]], [2, 0], 1.0), [0.6857143, 0.2857143, -0.1142857])
+assert close(min_norm([[1, 0, 1], [0, 1, 1]], [1, 2], 0.5), [0.0952381, 0.7619048, 0.8571429])
+s = min_norm([[1, 0, 1], [0, 1, 1]], [1, 2], 1e-9)
+fit = [sum(L_ij * s_j for L_ij, s_j in zip(row, s)) for row in [[1, 0, 1], [0, 1, 1]]]
+assert close(fit, [1.0, 2.0], 1e-6)
+```
+model:
+```python
+def min_norm(L, y, lam):
+    """Minimum-norm source estimate for two sensors."""
+    a = sum(v * v for v in L[0]) + lam
+    d = sum(v * v for v in L[1]) + lam
+    b = sum(u * v for u, v in zip(L[0], L[1]))
+    det = a * d - b * b
+    w0 = (d * y[0] - b * y[1]) / det
+    w1 = (-b * y[0] + a * y[1]) / det
+    return [L[0][j] * w0 + L[1][j] * w1 for j in range(len(L[0]))]
+```
+hint: Form the 2 by 2 matrix $\mathbf{L}\mathbf{L}^\top + \lambda\mathbf{I}$ from dot products of the rows, invert it with the determinant formula, apply it to `y`, and then multiply by $\mathbf{L}^\top$.
+solution: Let $\mathbf{w} = (\mathbf{L}\mathbf{L}^\top + \lambda\mathbf{I})^{-1}\mathbf{y}$; then each source's estimate is $L_{0j}w_0 + L_{1j}w_1$. As $\lambda \to 0$ the estimate reproduces the sensor data exactly (the last test), and a larger $\lambda$ trades fit for a smaller solution, which is how noise is handled.
+
+@quiz self
+prompt: A study finds that alpha-band power decreases about 300 ms after a visual cue when computed per trial and averaged, but the trial-averaged ERP shows no sign of a change in alpha. Explain how both can be true, and what this implies about choosing between averaging first and computing power first.
+hint: Think about what averaging in time does to oscillations whose phase differs from trial to trial.
+solution: The alpha rhythm is present in each trial, but its phase relative to the cue differs from trial to trial. When trials are averaged first, oscillations with random phase cancel, so the ERP contains almost no alpha whether or not alpha power changed. When power is computed in each trial and then averaged, the phase no longer matters, so a change in the size of the oscillation, such as a decrease after the cue, is preserved. The decrease is therefore an induced effect: time-locked in power but not in phase. The choice depends on the question: to study activity that is phase-locked to the stimulus (evoked), average first; to study changes in the strength of ongoing rhythms, compute power per trial first. It is common to report both, and to subtract the evoked response before computing power when the aim is to isolate the induced part.
+rubric: Explains that random phase across trials cancels in the average, so the ERP hides the change.
+rubric: Names the induced versus evoked distinction and what each average preserves.
+rubric: States how the choice of analysis depends on the question, or that both can be reported.
