@@ -1,0 +1,224 @@
+@lesson
+title: Convolution and pooling
+summary: Compute 2D convolutions, strides, padding, output shapes, parameter counts and pooling by hand and in plain Python.
+objective: Slide a kernel over a small image and compute each output entry by hand.
+objective: Predict the output size of a convolution or pooling layer from the input size, kernel size, padding and stride.
+objective: Explain parameter sharing and why a convolutional layer has far fewer parameters than a fully connected one.
+objective: Implement convolution and max pooling from scratch.
+reading: Dive into Deep Learning, the chapters on convolutional neural networks: convolutions for images, padding and stride, and pooling.
+@article
+Suppose you want a program to find vertical edges in a photo. You could connect every pixel to every output unit, but a vertical edge looks the same wherever it appears. A better design uses one small detector and slides it across the image. That is a **convolutional layer**.
+
+### Cross-correlation, called convolution
+Take an input $\mathbf{X}$ of size $H \times W$ and a kernel $\mathbf{K}$ of size $k_h \times k_w$. The layer computes
+
+$$Y_{ij} = \sum_{a=0}^{k_h-1} \sum_{b=0}^{k_w-1} K_{ab}\, X_{i+a,\, j+b}.$$
+
+Strictly this is **cross-correlation**; a true mathematical convolution flips the kernel first. Deep learning libraries use the unflipped form and still call it convolution, because the kernel is learned and a flipped kernel is just another kernel. We follow that convention.
+
+Here is a $4 \times 4$ input and a $2 \times 2$ kernel:
+
+| | | | |
+|---|---|---|---|
+| 1 | 2 | 0 | 1 |
+| 0 | 1 | 3 | 1 |
+| 2 | 1 | 0 | 2 |
+| 1 | 0 | 1 | 3 |
+
+with kernel rows $(1, 0)$ and $(0, -1)$. The top-left output uses the top-left $2 \times 2$ patch: $1\cdot 1 + 2 \cdot 0 + 0 \cdot 0 + 1 \cdot (-1) = 0$. Sliding one column right gives $2 \cdot 1 + 0 + 0 + 3 \cdot(-1) = -1$. Continuing, the full $3 \times 3$ output has rows $(0, -1, -1)$, $(-1, 1, 1)$ and $(2, 0, -3)$. This kernel responds to a diagonal difference: it is large where the top-left pixel exceeds the bottom-right one.
+
+### Shapes: padding and stride
+With **padding** $p$ (zeros added around the border) and **stride** $s$ (the step of the window), the output size along one dimension is
+
+$$\left\lfloor \frac{n + 2p - k}{s} \right\rfloor + 1.$$
+
+A $4 \times 4$ input with a $2 \times 2$ kernel, $p = 0$ and $s = 1$ gives $4 + 0 - 2 + 1 = 3$, matching the table above. Padding keeps borders from shrinking away; with $k = 3$, $p = 1$, $s = 1$ the output has the same size as the input. Stride greater than 1 downsamples.
+
+### Parameter sharing
+A convolutional layer with $c_{\text{in}}$ input channels, $c_{\text{out}}$ output channels and a $k \times k$ kernel has $c_{\text{out}}(c_{\text{in}} k^2 + 1)$ parameters, counting one bias per output channel. The same weights are used at every position, so the count does not depend on the image size. Two consequences follow. A shifted input produces a shifted output: convolution is **translation equivariant**. And the layer is cheap: a fully connected layer from a $28 \times 28$ image to a same-sized map would need $784^2$ weights.
+
+With several input channels, each channel has its own kernel slice, and the per-channel results are added to produce one output channel.
+
+### Pooling
+**Max pooling** with window $m$ and stride $m$ replaces each non-overlapping $m \times m$ block by its maximum; **average pooling** uses the mean. For $\mathbf{X}$ of size $4 \times 4$ and $m = 2$ the output is $2 \times 2$. Pooling has no parameters and gives a little **translation invariance**: moving a feature by one pixel inside a block often leaves the pooled value unchanged. LeNet-style networks (LeCun and colleagues, 1989 and 1998) alternate convolution and pooling.
+
+### In code
+```python
+def conv2d(image, kernel):
+    """Valid cross-correlation of a list-of-rows image with a kernel."""
+    kh, kw = len(kernel), len(kernel[0])
+    out_h = len(image) - kh + 1
+    out_w = len(image[0]) - kw + 1
+    return [
+        [sum(kernel[a][b] * image[i + a][j + b]
+             for a in range(kh) for b in range(kw))
+         for j in range(out_w)]
+        for i in range(out_h)
+    ]
+
+X = [[1, 2, 0, 1], [0, 1, 3, 1], [2, 1, 0, 2], [1, 0, 1, 3]]
+print(conv2d(X, [[1, 0], [0, -1]]))
+```
+
+In PyTorch, `torch.nn.Conv2d` does this for batches of multi-channel images in one call, and the framework computes gradients for the kernel automatically.
+
+@example
+title: Convolve, then pool
+problem: Convolve the $3 \times 3$ input with rows $(3, 1, 2)$, $(0, 4, 1)$, $(2, 2, 5)$ with the kernel whose rows are $(1, -1)$ and $(2, 0)$, using stride 1 and no padding. Then apply $2 \times 2$ max pooling to the result.
+step: Find the output size: $3 - 2 + 1 = 2$ in each direction, so the output is $2 \times 2$.
+step: Top-left patch is $(3, 1; 0, 4)$: $1\cdot 3 + (-1)\cdot 1 + 2 \cdot 0 + 0 \cdot 4 = 2$. Top-right patch is $(1, 2; 4, 1)$: $1 - 2 + 8 + 0 = 7$.
+step: Bottom-left patch is $(0, 4; 2, 2)$: $0 - 4 + 4 + 0 = 0$. Bottom-right patch is $(4, 1; 2, 5)$: $4 - 1 + 4 + 0 = 7$.
+step: The feature map has rows $(2, 7)$ and $(0, 7)$. A $2 \times 2$ max pool over this single block returns $\max(2, 7, 0, 7) = 7$.
+answer: The convolution gives rows $(2, 7)$ and $(0, 7)$, and pooling gives the single value 7.
+
+@mistakes
+- Using the output-size formula without the floor, or forgetting that padding is added on both sides ($2p$, not $p$).
+- Flipping the kernel by habit: deep learning libraries compute cross-correlation, so the kernel is not flipped.
+- Thinking pooling has learnable weights, or that max pooling makes a network exactly shift invariant. Convolution is equivariant; pooling adds only approximate, local invariance.
+- Counting parameters as if each position had its own kernel; the kernel is shared across positions.
+
+@practice num
+prompt: A $32 \times 32$ image goes through a convolution with a $3 \times 3$ kernel, padding 1 and stride 2. What is the height of the output?
+answer: 16
+check: (32 + 2 * 1 - 3) // 2 + 1
+hint: Use $\lfloor (n + 2p - k)/s \rfloor + 1$ with $n = 32$.
+solution: $(32 + 2 - 3)/2 = 15.5$, whose floor is 15, and adding 1 gives 16.
+
+@practice num
+prompt: A $4 \times 4$ input has rows $(2, 0, 1, 3)$, $(1, 4, 0, 2)$, $(3, 1, 2, 0)$, $(0, 2, 5, 1)$. It is convolved with the $2 \times 2$ kernel with rows $(1, 0)$ and $(0, 1)$ using stride 2 and no padding. What is the output entry in row 1, column 0 (counting from 0)?
+answer: 5
+check: 3 + 2
+hint: With stride 2 the window for row 1, column 0 starts at input row 2, column 0.
+solution: The patch is $(3, 1; 0, 2)$. This kernel adds the top-left and bottom-right entries: $3 + 2 = 5$.
+
+@practice text
+prompt: What does this program print?
+```python
+x = [1, 3, 2, 0, 4]
+k = [2, -1]
+out = [sum(x[i + j] * k[j] for j in range(2)) for i in range(4)]
+print(out)
+```
+answer: [-1, 4, 4, -4]
+check: run("x = [1, 3, 2, 0, 4]\nk = [2, -1]\nout = [sum(x[i + j] * k[j] for j in range(2)) for i in range(4)]\nprint(out)")
+hint: Each output is twice the current element minus the next element.
+solution: The pairs give $2\cdot1-3=-1$, $2\cdot3-2=4$, $2\cdot2-0=4$ and $2\cdot0-4=-4$, so the program prints `[-1, 4, 4, -4]`.
+
+@practice code
+prompt: Write `maxpool2d(x, m)` that applies max pooling with window `m` and stride `m` to a list-of-rows matrix `x` of numbers. Blocks that would hang over the edge are dropped. For example, `maxpool2d([[1, 2], [3, 4]], 2)` returns `[[4]]`.
+starter:
+```python
+def maxpool2d(x, m):
+    pass
+```
+tests:
+```python
+assert maxpool2d([[1, 2], [3, 4]], 2) == [[4]]
+Z = [[2, 0, 1, 3], [1, 4, 0, 2], [3, 1, 2, 0], [0, 2, 5, 1]]
+assert maxpool2d(Z, 2) == [[4, 3], [3, 5]]
+assert maxpool2d(Z, 3) == [[4]]
+assert maxpool2d([[-3, -1], [-2, -5]], 1) == [[-3, -1], [-2, -5]]
+assert maxpool2d([[-3, -1], [-2, -5]], 2) == [[-1]]
+```
+model:
+```python
+def maxpool2d(x, m):
+    """Non-overlapping max pooling; incomplete edge blocks are dropped."""
+    out = []
+    for i in range(0, len(x) - m + 1, m):
+        row = []
+        for j in range(0, len(x[0]) - m + 1, m):
+            row.append(max(x[i + a][j + b] for a in range(m) for b in range(m)))
+        out.append(row)
+    return out
+```
+hint: Loop over block corners with `range(0, size - m + 1, m)` in both directions.
+solution: Each output entry is the maximum over one $m \times m$ block; the range bound `len(x) - m + 1` drops blocks that do not fit. The negative-number tests catch implementations that start the maximum at 0.
+
+@practice code
+prompt: Write `conv2d_strided(image, kernel, stride, padding)` that returns the cross-correlation of a list-of-rows `image` with a `kernel`, after adding `padding` zeros on every side, moving the window by `stride`. Windows that do not fit are dropped. For example, with a $1 \times 1$ kernel `[[2]]`, stride 1 and padding 0, `[[1, 2], [3, 4]]` becomes `[[2, 4], [6, 8]]`.
+starter:
+```python
+def conv2d_strided(image, kernel, stride, padding):
+    pass
+```
+tests:
+```python
+assert conv2d_strided([[1, 2], [3, 4]], [[2]], 1, 0) == [[2, 4], [6, 8]]
+Z = [[2, 0, 1, 3], [1, 4, 0, 2], [3, 1, 2, 0], [0, 2, 5, 1]]
+assert conv2d_strided(Z, [[1, 0], [0, 1]], 2, 0) == [[6, 3], [5, 3]]
+assert conv2d_strided([[1, 2], [3, 4]], [[1, 0], [0, 1]], 1, 1) == [[1, 2, 0], [3, 5, 2], [0, 3, 4]]
+assert conv2d_strided(Z, [[1, 1], [1, 1]], 1, 1)[3] == [3, 6, 10, 8, 1]
+assert len(conv2d_strided(Z, [[1, 1], [1, 1]], 3, 1)) == 2
+```
+model:
+```python
+def conv2d_strided(image, kernel, stride, padding):
+    """Cross-correlation with zero padding and a stride."""
+    w = len(image[0]) + 2 * padding
+    padded = [[0] * w for _ in range(padding)]
+    padded += [[0] * padding + list(r) + [0] * padding for r in image]
+    padded += [[0] * w for _ in range(padding)]
+    kh, kw = len(kernel), len(kernel[0])
+    out_h = (len(padded) - kh) // stride + 1
+    out_w = (len(padded[0]) - kw) // stride + 1
+    return [
+        [sum(kernel[a][b] * padded[i * stride + a][j * stride + b]
+             for a in range(kh) for b in range(kw))
+         for j in range(out_w)]
+        for i in range(out_h)
+    ]
+```
+hint: First build the zero-padded image, then use the output-size formula to decide how many window positions exist in each direction.
+solution: Pad the image with zeros, then each output $(i, j)$ is the kernel-weighted sum of the window whose corner is at $(i \cdot s, j \cdot s)$. The last test has a $6 \times 6$ padded input with a kernel of 2 and stride 3, so only 2 rows fit.
+
+@quiz mc
+prompt: A convolutional layer applies the same kernel at every position of its input. Which property follows directly?
+choice*: Shifting the input shifts the output feature map by the same amount (translation equivariance).
+choice: The output is unchanged by any shift of the input (exact translation invariance).
+choice: The number of parameters grows with the number of pixels in the image.
+choice: The layer is the same function as a fully connected layer with the same input and output sizes.
+hint: Think about what happens to the sliding window's outputs when the input pattern moves one pixel.
+solution: Because the same weights are applied at every window, a pattern that moves produces the same response at its new location, so the feature map shifts with it. Exact invariance needs extra structure such as global pooling, the parameter count is independent of image size, and a fully connected layer is a much larger family of functions.
+
+@quiz num
+prompt: A convolutional layer maps 3 input channels to 8 output channels with $3 \times 3$ kernels and one bias per output channel. How many parameters does it have?
+answer: 224
+unit: parameters
+check: 8 * (3 * 3 * 3 + 1)
+hint: Each output channel has a $3 \times 3$ kernel for each input channel, plus a bias.
+solution: Each output channel has $3 \cdot 9 = 27$ weights and 1 bias, which is 28; times 8 channels gives 224.
+
+@quiz code
+prompt: Write `conv2d_multi(channels, kernels)` for a single output channel. `channels` is a list of 2D images (lists of rows) of equal size, and `kernels` is a list of 2D kernels of equal size, one per channel. Return the sum over channels of the stride-1, no-padding cross-correlation of each channel with its kernel. For example, one channel `[[1, 2], [3, 4]]` with kernel `[[1, 0], [0, 1]]` gives `[[5]]`.
+starter:
+```python
+def conv2d_multi(channels, kernels):
+    pass
+```
+tests:
+```python
+assert conv2d_multi([[[1, 2], [3, 4]]], [[[1, 0], [0, 1]]]) == [[5]]
+A = [[1, 0, 2], [3, 1, 0], [0, 2, 1]]
+B = [[2, 1, 0], [0, 1, 3], [1, 0, 1]]
+assert conv2d_multi([A, B], [[[1, 1], [0, 1]], [[0, 2], [1, 0]]]) == [[4, 3], [9, 8]]
+assert conv2d_multi([A, B], [[[0, 0], [0, 0]], [[0, 0], [0, 0]]]) == [[0, 0], [0, 0]]
+assert conv2d_multi([A], [[[1]]]) == A
+```
+model:
+```python
+def conv2d_multi(channels, kernels):
+    """Sum of per-channel valid cross-correlations."""
+    kh, kw = len(kernels[0]), len(kernels[0][0])
+    out_h = len(channels[0]) - kh + 1
+    out_w = len(channels[0][0]) - kw + 1
+    return [
+        [sum(k[a][b] * ch[i + a][j + b]
+             for ch, k in zip(channels, kernels)
+             for a in range(kh) for b in range(kw))
+         for j in range(out_w)]
+        for i in range(out_h)
+    ]
+```
+hint: The window sum now also runs over channels: pair each channel with its own kernel.
+solution: Each output entry sums, over all channels, the kernel-weighted window of that channel. The second test has two different channels, so a solution that uses only the first channel fails it.

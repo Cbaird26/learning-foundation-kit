@@ -40,12 +40,12 @@ Decisions so far:
 | --- | --- | --- | --- | --- |
 | C11 | Numerical computing in Python for machine learning | 13/13 | yes |  |
 | C12 | Optimization for machine learning | 13/13 | yes |  |
-| C13 | Probability, statistics and information theory for machine learning | 13/13 | yes |  |
+| C13 | Probability, statistics and information theory for machine learning | 13/13 | yes | yes |
 | C14 | Data science: wrangling, exploration and visualization | 13/13 | yes | yes |
-| C15 | Supervised learning in depth | 9/13 |  |  |
-| C16 | Unsupervised learning and probabilistic models | 3/13 |  |  |
-| C17 | Deep learning foundations | 2/13 |  |  |
-| C18 | Deep learning architectures: convolution, recurrence and attention | 0/13 |  |  |
+| C15 | Supervised learning in depth | 10/13 |  |  |
+| C16 | Unsupervised learning and probabilistic models | 4/13 |  |  |
+| C17 | Deep learning foundations | 3/13 |  |  |
+| C18 | Deep learning architectures: convolution, recurrence and attention | 1/13 |  |  |
 | C19 | Natural language processing | 0/13 |  |  |
 | C20 | Computer vision | 0/13 |  |  |
 | C21 | Reinforcement learning | 0/13 |  |  |
@@ -88,3 +88,4 @@ Decisions so far:
 - 2026-11-07: C14 written (0 errors) and in review; C11, C12, C13, C15 and C16 being written.
 - 2026-11-07: C13 written (0 errors) and in review; C17 started.
 - 2026-11-07: C11 written (0 errors) and in review; C14 reviewed (16 fixes plus one follow-up); C18 started.
+- 2026-11-07: C12 written (0 errors) and in review; C13 reviewed (5 fixes plus follow-ups); C19 started.

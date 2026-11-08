@@ -1,0 +1,282 @@
+@lesson
+title: Calibration and probabilistic predictions
+summary: Measure whether predicted probabilities match observed frequencies with reliability tables, expected calibration error, the Brier score and log loss, and repair miscalibration with Platt scaling.
+objective: Define calibration and compute a reliability table and the expected calibration error from predictions and labels.
+objective: Compute and interpret the Brier score and log loss as proper scoring rules, and separate calibration from accuracy.
+objective: Fit a Platt-scaling map from scores to probabilities on held-out data and explain why it must not be fit on the training data.
+reading: The Elements of Statistical Learning, the chapter on model assessment and selection, for loss functions and error rates; calibration itself is covered in survey and tutorial articles, so look up reliability diagrams and Platt scaling.
+@article
+A weather model says "70 percent chance of rain" on 100 different days. If it rained on about 70 of them, the number meant what it said. If it rained on only 40, the model's probabilities cannot be used to plan: an umbrella at 70 percent is a bad bet. A classifier's accuracy tells us none of this, because accuracy looks only at which side of 0.5 each prediction falls. This week is about whether predicted probabilities can be taken at face value.
+
+### Calibration
+
+A probabilistic classifier with predicted probability $\hat{p}(\mathbf{x})$ for the positive class is **calibrated** if
+
+$$P\big(y = 1 \mid \hat{p}(\mathbf{x}) = q\big) = q \quad\text{for every } q \in [0, 1].$$
+
+Among all examples assigned probability $0.8$, about 80 percent should be positive. In practice we group predictions into bins and compare. A **reliability table** (the numbers behind a reliability diagram) has, for each bin, the count of examples, the mean predicted probability (the confidence) and the observed fraction of positives. A calibrated model has the last two close in every bin. The **expected calibration error** (ECE) averages the gaps, weighted by bin size:
+
+$$\mathrm{ECE} = \sum_{b=1}^{B}\frac{n_b}{n}\,\big|\,\mathrm{frac\_pos}_b - \mathrm{conf}_b\big| .$$
+
+ECE depends on the number and placement of bins and is noisy with few examples; use it as a diagnostic, not as an exact quantity.
+
+Ten predictions and their labels: $\hat{p} = 0.10, 0.25, 0.30, 0.35, 0.45, 0.65, 0.70, 0.85, 0.90, 0.95$ and $y = 0, 0, 1, 0, 1, 1, 0, 1, 1, 1$. With five equal-width bins:
+
+| bin | count | confidence | observed fraction |
+|---|---|---|---|
+| $[0, 0.2)$ | 1 | 0.100 | 0.000 |
+| $[0.2, 0.4)$ | 3 | 0.300 | 0.333 |
+| $[0.4, 0.6)$ | 1 | 0.450 | 1.000 |
+| $[0.6, 0.8)$ | 2 | 0.675 | 0.500 |
+| $[0.8, 1]$ | 3 | 0.900 | 1.000 |
+
+The ECE is $0.1(0.1) + 0.3(0.033) + 0.1(0.55) + 0.2(0.175) + 0.3(0.1) = 0.14$. With so few points the bins are noisy; the table shows the method, not a verdict.
+
+### Scoring rules
+
+Accuracy ignores confidence; **proper scoring rules** reward honest probabilities. The **Brier score** is the mean squared error of the probabilities, $\frac{1}{n}\sum_i(\hat{p}_i - y_i)^2$, between 0 (perfect) and 1. The **log loss** is the cross-entropy from week 3, $-\frac{1}{n}\sum_i\big[y_i\log\hat{p}_i + (1 - y_i)\log(1 - \hat{p}_i)\big]$, which punishes confident mistakes without bound. A scoring rule is proper when the expected score is optimized by reporting the true probability. For the ten predictions above, the Brier score is $0.1635$ and the log loss is $0.478$ nats; always predicting the base rate $0.6$ gives a Brier score of $0.24$.
+
+Calibration and discrimination are different things. A model that predicts the base rate for every example is perfectly calibrated and useless for ranking. A model that ranks perfectly (its ROC curve in week 11 reaches the corner) can still be badly calibrated: multiply every log-odds by three and the ranking is unchanged while every probability becomes overconfident. Both properties matter, and the Brier score and log loss reflect both.
+
+### Why models are miscalibrated, and how to fix them
+
+Models trained to minimize log loss, like logistic regression, are often reasonably calibrated on data like their training data. Scores from methods not trained on probabilities, such as a margin from a support vector machine or the vote fraction of a forest, are not probabilities by construction. Even models trained with log loss become overconfident when they overfit. Calibration can also degrade when the data distribution shifts.
+
+The standard remedy is **post-hoc recalibration**: fit a small map from the model's scores to probabilities on **held-out data** that was used neither to train the model nor to evaluate it. Fitting the map on the training data would reuse examples the model has already fit too well. **Platt scaling** fits $\hat{p} = \sigma(a s + b)$ for a score $s$, by logistic regression on the held-out pairs $(s_i, y_i)$ with two parameters. **Isotonic regression** fits a monotone step function and is more flexible but needs more data. For multiclass networks, **temperature scaling** divides all logits by one learned number before the softmax. All these keep the ranking of examples and change only how confident the model sounds.
+
+### In code
+
+Ten held-out scores $s$ (raw margins) with labels are mapped by $\sigma(as + b)$, starting from the identity map $a = 1$, $b = 0$ and using gradient descent on the mean log loss; the gradient is $\frac{1}{n}\sum(\hat{p}_i - y_i)s_i$ for $a$ and $\frac{1}{n}\sum(\hat{p}_i - y_i)$ for $b$.
+
+```python
+import math
+
+s = [-2.5, -1.8, -1.2, -0.4, -0.1, 0.3, 0.6, 1.0, 1.4, 2.2]
+y = [0, 0, 0, 1, 0, 1, 0, 1, 1, 1]
+
+def sigmoid(z):
+    return 1 / (1 + math.exp(-z))
+
+def log_loss(a, b):
+    total = 0.0
+    for v, t in zip(s, y):
+        p = sigmoid(a * v + b)
+        total -= math.log(p) if t else math.log(1 - p)
+    return total / len(s)
+
+a, b = 1.0, 0.0
+for step in range(1, 2001):
+    errs = [sigmoid(a * v + b) - t for v, t in zip(s, y)]
+    ga = sum(e * v for e, v in zip(errs, s)) / len(s)
+    gb = sum(errs) / len(s)
+    a -= 0.5 * ga
+    b -= 0.5 * gb
+    if step in (1, 10, 2000):
+        print(step, round(a, 4), round(b, 4), round(log_loss(a, b), 4))
+```
+
+The log loss falls from $0.4283$ at the identity map to $0.3959$ at $a \approx 1.743$, $b \approx -0.056$. Here $a > 1$ means the raw scores were slightly under-confident. In practice the fitted $a$ and $b$ would be evaluated on a third set; with ten points, this is only a demonstration of the mechanics.
+
+@example
+title: ECE and Brier score by hand
+problem: Eight predictions $\hat{p} = 0.9, 0.8, 0.8, 0.7, 0.2, 0.2, 0.3, 0.1$ have labels $y = 1, 1, 0, 1, 0, 1, 0, 0$. Compute the ECE with two bins, $[0, 0.5)$ and $[0.5, 1]$, and the Brier score.
+step: The upper bin holds the first four predictions: confidence $= (0.9 + 0.8 + 0.8 + 0.7)/4 = 0.8$, and three of the four labels are positive, so the observed fraction is $0.75$. The gap is $0.05$.
+step: The lower bin holds the last four: confidence $= (0.2 + 0.2 + 0.3 + 0.1)/4 = 0.2$, with one positive in four, so the observed fraction is $0.25$. The gap is $0.05$.
+step: Both bins have weight $4/8 = 0.5$, so $\mathrm{ECE} = 0.5(0.05) + 0.5(0.05) = 0.05$.
+step: The squared errors are $0.01, 0.04, 0.64, 0.09, 0.04, 0.64, 0.09, 0.01$, which sum to $1.56$. The Brier score is $1.56/8 = 0.195$.
+answer: $\mathrm{ECE} = 0.05$ and Brier score $= 0.195$.
+
+@example
+title: Same decisions, different quality
+problem: Labels are $y = (1, 1, 0, 0)$. Model A outputs $(0.95, 0.9, 0.9, 0.1)$ and model B outputs $(0.8, 0.7, 0.6, 0.3)$. Compare their accuracy at threshold $0.5$, Brier scores and log losses.
+step: Both models predict class 1 for the first three examples and class 0 for the last, so both are $3/4$ correct: accuracy cannot tell them apart.
+step: Brier score for A: $(0.0025 + 0.01 + 0.81 + 0.01)/4 = 0.208$. For B: $(0.04 + 0.09 + 0.36 + 0.09)/4 = 0.145$.
+step: Log loss for A: $-(\log 0.95 + \log 0.9 + \log 0.1 + \log 0.9)/4 = (0.051 + 0.105 + 2.303 + 0.105)/4 = 0.641$. For B: $-(\log 0.8 + \log 0.7 + \log 0.4 + \log 0.7)/4 = (0.223 + 0.357 + 0.916 + 0.357)/4 = 0.463$.
+step: Model A is overconfident: its single confident mistake (0.9 on a negative) costs $2.3$ nats. Model B hedges and scores better on both rules, even though the accuracies agree.
+answer: Equal accuracy ($0.75$); B wins on Brier ($0.145$ vs $0.208$) and log loss ($0.463$ vs $0.641$).
+
+@mistakes
+- Judging a probabilistic model by accuracy alone: two models with the same accuracy can differ greatly in calibration and in log loss.
+- Fitting the recalibration map on the training set (or on the test set): use separate held-out data for the map, and a further set to evaluate the result.
+- Reading a low ECE from a few examples as proof of calibration: with small bins the estimate is noisy, and it depends on the binning.
+- Assuming a calibrated model is a good model: always predicting the base rate is calibrated but cannot rank anyone.
+
+@practice num
+prompt: A model assigns the positive-class probabilities $0.8, 0.3, 0.6$ to three examples with labels $1, 0, 0$. What is the Brier score? Give three decimal places.
+answer: 0.163
+tol: 0.001
+check: ((0.8 - 1) ** 2 + (0.3 - 0) ** 2 + (0.6 - 0) ** 2) / 3
+hint: Square each difference between the probability and the 0/1 label, then average.
+solution: The squared errors are $0.04$, $0.09$ and $0.36$; their mean is $0.49/3 \approx 0.163$.
+
+@practice num
+prompt: Five predictions $\hat{p} = 0.2, 0.4, 0.6, 0.8, 0.9$ have labels $0, 1, 1, 1, 1$. Using two bins, $[0, 0.5)$ and $[0.5, 1]$, what is the expected calibration error? Give three decimal places.
+answer: 0.22
+tol: 0.001
+check: 2 / 5 * abs(1 / 2 - (0.2 + 0.4) / 2) + 3 / 5 * abs(1 - (0.6 + 0.8 + 0.9) / 3)
+hint: Compute confidence and observed fraction in each bin, then weight the gaps by $2/5$ and $3/5$.
+solution: Lower bin: confidence $0.3$, observed $0.5$, gap $0.2$, weight $2/5$ gives $0.08$. Upper bin: confidence $0.7667$, observed $1$, gap $0.2333$, weight $3/5$ gives $0.14$. The ECE is $0.22$.
+
+@practice mc
+prompt: A classifier is perfectly calibrated. Which statement must be true?
+choice*: Among the test examples for which it predicts probability $0.8$, about 80 percent are positive.
+choice: It has the highest possible accuracy among all classifiers.
+choice: Its predicted probabilities are all either close to 0 or close to 1.
+choice: Its ROC curve reaches the top-left corner.
+hint: Calibration relates stated probabilities to observed frequencies; it says nothing about how well the model separates the classes.
+solution: This is the definition of calibration. A model that outputs the base rate for every example is perfectly calibrated yet has poor accuracy, uninformative probabilities and a diagonal ROC curve.
+
+@practice code
+prompt: Write `reliability_table(p, y, bins)` for predicted probabilities `p` (floats in $[0, 1]$) and 0/1 labels `y`. Assign each prediction to bin `min(int(pi * bins), bins - 1)`. Return a list with one tuple `(bin, count, mean_p, frac_pos)` for each non-empty bin, in increasing bin order.
+starter:
+```python
+def reliability_table(p, y, bins):
+    pass
+```
+tests:
+```python
+t = reliability_table([0.1, 0.15, 0.9], [0, 1, 1], 2)
+assert len(t) == 2 and t[0][0] == 0 and t[0][1] == 2 and t[1][:2] == (1, 1)
+assert abs(t[0][2] - 0.125) < 1e-9 and abs(t[0][3] - 0.5) < 1e-9
+assert abs(t[1][2] - 0.9) < 1e-9 and abs(t[1][3] - 1.0) < 1e-9
+t = reliability_table([1.0, 0.0], [1, 0], 4)
+assert [r[0] for r in t] == [0, 3] and t[1][1] == 1
+t = reliability_table([0.6, 0.65, 0.7], [1, 0, 0], 5)
+assert len(t) == 1 and t[0][0] == 3 and t[0][1] == 3
+assert abs(t[0][2] - 0.65) < 1e-9 and abs(t[0][3] - 1 / 3) < 1e-9
+assert reliability_table([], [], 5) == []
+```
+model:
+```python
+def reliability_table(p, y, bins):
+    """Per-bin count, mean confidence and fraction of positives."""
+    groups = {}
+    for pi, yi in zip(p, y):
+        b = min(int(pi * bins), bins - 1)
+        groups.setdefault(b, []).append((pi, yi))
+    table = []
+    for b in sorted(groups):
+        pts = groups[b]
+        count = len(pts)
+        table.append((b, count,
+                      sum(q for q, _ in pts) / count,
+                      sum(t for _, t in pts) / count))
+    return table
+```
+hint: Group the pairs by bin index in a dictionary, then summarize each group; the clamp with `bins - 1` puts a prediction of exactly 1.0 in the top bin.
+solution: The bin index is `int(p * bins)`, clamped so that $p = 1.0$ lands in the last bin, as the second test checks. Only non-empty bins appear. The mean confidence and the fraction of positives are plain averages within each group.
+
+@practice code
+prompt: Write `ece(p, y, bins)` returning the expected calibration error $\sum_b \frac{n_b}{n}\,|\mathrm{frac\_pos}_b - \mathrm{conf}_b|$ over the non-empty bins, using the provided `reliability_table`. Return `0.0` for empty input.
+starter:
+```python
+def reliability_table(p, y, bins):
+    groups = {}
+    for pi, yi in zip(p, y):
+        b = min(int(pi * bins), bins - 1)
+        groups.setdefault(b, []).append((pi, yi))
+    table = []
+    for b in sorted(groups):
+        pts = groups[b]
+        count = len(pts)
+        table.append((b, count,
+                      sum(q for q, _ in pts) / count,
+                      sum(t for _, t in pts) / count))
+    return table
+
+def ece(p, y, bins):
+    pass
+```
+tests:
+```python
+assert abs(ece([0.2, 0.4, 0.6, 0.8, 0.9], [0, 1, 1, 1, 1], 2) - 0.22) < 1e-9
+assert abs(ece([0.9, 0.9, 0.9, 0.9, 0.9], [1, 1, 1, 1, 0], 10) - 0.1) < 1e-9
+assert abs(ece([0.5, 0.5], [1, 0], 5)) < 1e-9
+assert abs(ece([0.0, 1.0], [0, 1], 3)) < 1e-9
+assert ece([], [], 4) == 0.0
+```
+model:
+```python
+def reliability_table(p, y, bins):
+    groups = {}
+    for pi, yi in zip(p, y):
+        b = min(int(pi * bins), bins - 1)
+        groups.setdefault(b, []).append((pi, yi))
+    table = []
+    for b in sorted(groups):
+        pts = groups[b]
+        count = len(pts)
+        table.append((b, count,
+                      sum(q for q, _ in pts) / count,
+                      sum(t for _, t in pts) / count))
+    return table
+
+def ece(p, y, bins):
+    """Expected calibration error with equal-width bins."""
+    n = len(p)
+    if n == 0:
+        return 0.0
+    return sum(c / n * abs(f - m) for _, c, m, f in reliability_table(p, y, bins))
+```
+hint: Weight each bin's gap $|\mathrm{frac\_pos} - \mathrm{conf}|$ by its share $n_b/n$ of all examples and add them up.
+solution: Bins with more examples count more. The second test has one bin with confidence $0.9$ and observed fraction $0.8$, so the ECE is $0.1$. The empty input must return 0 rather than divide by zero.
+
+@quiz code
+prompt: Write `fit_platt(scores, y, lr, steps)` that fits $\hat{p} = \sigma(a s + b)$ by gradient descent on the mean log loss. Start from `a = 1.0`, `b = 0.0`, run exactly `steps` steps with step size `lr`, and return `(a, b)`. The gradient is $\frac{1}{n}\sum_i(\hat{p}_i - y_i)s_i$ for $a$ and $\frac{1}{n}\sum_i(\hat{p}_i - y_i)$ for $b$; update both from the same $\hat{p}$ values.
+starter:
+```python
+import math
+
+def fit_platt(scores, y, lr, steps):
+    a, b = 1.0, 0.0
+    return a, b
+```
+tests:
+```python
+assert fit_platt([-1.0, 1.0], [0, 1], 1.0, 0) == (1.0, 0.0)
+a, b = fit_platt([-1.0, 1.0], [0, 1], 1.0, 1)
+assert abs(a - 1.26894142) < 1e-6 and abs(b) < 1e-9
+a, b = fit_platt([-2, -1, 0, 1, 2], [0, 1, 0, 1, 1], 0.5, 2000)
+assert abs(a - 1.0904256) < 1e-4 and abs(b - 0.6226901) < 1e-4
+a, b = fit_platt([0.0, 0.0], [1, 0], 1.0, 5)
+assert abs(a - 1.0) < 1e-9 and abs(b) < 1e-9
+```
+model:
+```python
+import math
+
+def fit_platt(scores, y, lr, steps):
+    """Platt scaling by batch gradient descent on the mean log loss."""
+    n = len(scores)
+    a, b = 1.0, 0.0
+    for _ in range(steps):
+        errs = [1 / (1 + math.exp(-(a * s + b))) - t
+                for s, t in zip(scores, y)]
+        ga = sum(e * s for e, s in zip(errs, scores)) / n
+        gb = sum(errs) / n
+        a -= lr * ga
+        b -= lr * gb
+    return a, b
+```
+hint: In each step compute all the errors $\hat{p}_i - y_i$ first, then both gradients, then update `a` and `b` together.
+solution: With scores $-1$ and $1$ and labels $0$ and $1$, the errors are $\pm\sigma(-1)$, so the intercept gradient is zero and the slope gradient is $-\sigma(-1)$, which gives $a = 1.2689$ after one step with step size 1. The last test has balanced labels on identical scores, so no step changes the map.
+
+@quiz text
+prompt: What does this program print?
+```python
+p = [0.2, 0.7, 0.9, 0.4]
+bins = 2
+print([min(int(v * bins), bins - 1) for v in p])
+```
+answer: [0, 1, 1, 0]
+check: run("p = [0.2, 0.7, 0.9, 0.4]\nbins = 2\nprint([min(int(v * bins), bins - 1) for v in p])")
+hint: With two bins the index is $0$ for probabilities below $0.5$ and $1$ otherwise.
+solution: $0.2 \cdot 2 = 0.4$ gives bin 0, $0.7 \cdot 2 = 1.4$ gives bin 1, $0.9 \cdot 2 = 1.8$ gives bin 1 and $0.4 \cdot 2 = 0.8$ gives bin 0.
+
+@quiz num
+prompt: A model predicts the probabilities $0.7, 0.4, 0.1$ for three examples whose labels are $1, 0, 0$. What is its log loss in nats? Give three decimal places.
+answer: 0.324
+tol: 0.001
+check: -(math.log(0.7) + math.log(1 - 0.4) + math.log(1 - 0.1)) / 3
+hint: The loss of each example is $-\log$ of the probability assigned to the true label: $0.7$, $0.6$ and $0.9$.
+solution: $-(\log 0.7 + \log 0.6 + \log 0.9)/3 = (0.3567 + 0.5108 + 0.1054)/3 \approx 0.324$.
