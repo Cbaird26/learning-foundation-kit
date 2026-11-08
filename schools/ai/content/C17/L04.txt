@@ -91,7 +91,7 @@ step: The exp node sends $x.\text{grad} \mathrel{+}= u \cdot u.\text{grad} = 2.7
 answer: $dy/dx = 2e \approx 5.4366$.
 
 @mistakes
-- Visiting nodes in the wrong order (for example, the order they were created in a graph built by several functions) so that a node's `_backward` runs before all its contributions have arrived; reverse topological order prevents this.
+- Visiting nodes in the wrong order (for example, from the inputs toward the output, or a depth-first search that lists a node before its parents) so that a node's `_backward` runs before all its contributions have arrived; reverse topological order prevents this.
 - Calling `backward` a second time without resetting the gradients, so the new gradients are added to the old ones.
 - Using the output's local derivative formula with the wrong value: the local derivative of $\tanh$ is $1 - t^2$ with $t$ the output, and for a product it uses the *other* operand's `data`.
 - Thinking backpropagation is an approximation or a symbolic algebra system: it computes exact derivatives (up to floating-point rounding) numerically.
@@ -113,7 +113,7 @@ hint: Compare the number of sweeps needed by forward mode and by reverse mode wh
 solution: Reverse mode carries gradients from the single output back to all inputs in one sweep. It stores the forward values (so it uses extra memory), builds no formula, and is exact up to rounding, not approximate.
 
 @practice code
-prompt: Write `topo_order(root)` that returns a list of all nodes reachable from `root` through their `.parents` attributes (each node's `.parents` is a tuple or list of nodes), in a topological order: every node appears exactly once, after all of its parents, so `root` is last. Nodes are compared by identity. For example, if `c.parents == (a, b)` and `a` and `b` have no parents, a valid result is `[a, b, c]`.
+prompt: Write `topo_order(root)` that returns a list of all nodes reachable from `root` through their `.parents` attributes (each node's `.parents` is a tuple or list of nodes), in a topological order: every node appears exactly once, after all of its parents, so `root` is last. Nodes are compared by identity. Do not use recursion: the graph may be a chain of several thousand nodes, deeper than Python's recursion limit, so use an explicit stack. For example, if `c.parents == (a, b)` and `a` and `b` have no parents, a valid result is `[a, b, c]`.
 starter:
 ```python
 def topo_order(root):
@@ -137,29 +137,35 @@ for v in (c, d, e):
     assert all(pos[id(p)] < pos[id(v)] for p in v.parents)
 single = N()
 assert topo_order(single) == [single]
+chain = [N()]
+for _ in range(3000):
+    chain.append(N(chain[-1]))
+order = topo_order(chain[-1])
+assert len(order) == 3001 and all(u is v for u, v in zip(order, chain))
 ```
 model:
 ```python
 def topo_order(root):
-    """Depth-first topological order: parents before children, root last."""
-    order, seen = [], set()
-
-    def visit(node):
-        if id(node) in seen:
-            return
-        seen.add(id(node))
-        for p in node.parents:
-            visit(p)
-        order.append(node)
-
-    visit(root)
+    """Iterative depth-first topological order: parents first, root last."""
+    order, seen = [], {id(root)}
+    stack = [(root, iter(root.parents))]
+    while stack:
+        node, it = stack[-1]
+        for p in it:
+            if id(p) not in seen:
+                seen.add(id(p))
+                stack.append((p, iter(p.parents)))
+                break
+        else:
+            order.append(node)
+            stack.pop()
     return order
 ```
-hint: Do a depth-first search from `root`: mark a node as seen, visit its parents first, and only then append the node itself.
-solution: Appending a node after visiting its parents guarantees parents come first; the `seen` set (by `id`) stops a shared node from being listed twice, which matters in graphs like the test, where `c` and `a` have several children.
+hint: Keep a stack of (node, iterator over its parents); advance the top iterator, push an unseen parent, and append a node to the result only when its iterator is exhausted.
+solution: This is the same depth-first search as the recursive one, with the call stack replaced by an explicit stack so that deep graphs cannot overflow it. A node is appended only after all of its parents have been appended, and the `seen` set (by `id`) lists shared nodes once. The 3000-node chain would exceed CPython's default recursion limit with a recursive version.
 
 @practice code
-prompt: The class `Value` below supports `+` and `*` and records, in each result, a `_backward` function that adds the gradient contributions to its parents. Implement `backward(self)`: set `self.grad = 1.0`, then call `_backward()` on every node of the graph in reverse topological order, so that every gradient accumulates correctly. For example, with `a = Value(2.0)`, `b = Value(-3.0)` and `c = a * b + a`, calling `c.backward()` gives `a.grad == -2.0` and `b.grad == 2.0`.
+prompt: The class `Value` below supports `+` and `*` and records, in each result, a `_backward` function that adds the gradient contributions to its parents. Implement `backward(self)` so that it can be called more than once on the same graph with the same result: first set `grad = 0.0` on every node reachable from `self`, then set `self.grad = 1.0` and call `_backward()` on every node of the graph in reverse topological order, so that every gradient accumulates correctly. For example, with `a = Value(2.0)`, `b = Value(-3.0)` and `c = a * b + a`, calling `c.backward()` (even twice) gives `a.grad == -2.0` and `b.grad == 2.0`.
 starter:
 ```python
 class Value:
@@ -211,6 +217,11 @@ assert abs(u.grad - want_u) < 1e-9 and abs(v.grad - want_v) < 1e-9
 z = Value(5.0)
 z.backward()
 assert z.grad == 1.0
+c.backward()
+c.backward()
+assert abs(a.grad + 2.0) < 1e-9 and abs(b.grad - 2.0) < 1e-9
+r.backward()
+assert abs(u.grad - want_u) < 1e-9 and abs(v.grad - want_v) < 1e-9
 ```
 model:
 ```python
@@ -250,12 +261,14 @@ class Value:
                 order.append(node)
 
         visit(self)
+        for node in order:
+            node.grad = 0.0
         self.grad = 1.0
         for node in reversed(order):
             node._backward()
 ```
-hint: Build a topological order with a depth-first search (parents before the node), set the root's gradient to 1, and loop over the reversed order calling `_backward()`.
-solution: Reversing a topological order guarantees that when a node's `_backward` runs, every node that uses it has already added its contribution. The tests include a node used several times (`x * x * x`, and `u` and `p` in the last graph), which fails if gradients are assigned instead of accumulated or if the order is wrong.
+hint: Build a topological order with a depth-first search (parents before the node), set every gradient in it to 0, set the root's gradient to 1, and loop over the reversed order calling `_backward()`.
+solution: Reversing a topological order guarantees that when a node's `_backward` runs, every node that uses it has already added its contribution. The tests include a node used several times (`x * x * x`, and `u` and `p` in the last graph), which fails if gradients are assigned instead of accumulated or if the order is wrong; the repeated calls fail if the gradients are not reset first.
 
 @practice num
 prompt: A central finite difference with step $\epsilon = 0.1$ estimates the derivative of $f(x) = x^3$ at $x = 2$. What value does it give? Give your answer to three decimal places.
@@ -268,7 +281,7 @@ solution: $f(2.1) = 9.261$ and $f(1.9) = 6.859$, so the estimate is $2.402/0.2 =
 @quiz text
 prompt: What does this program print?
 ```python
-a, b = 2.0, 3.0
+a, b = 1.0, 4.0
 p = a * b
 q = p + a
 r = q * q
@@ -279,10 +292,10 @@ grad_a += b * grad_p
 grad_b = a * grad_p
 print(grad_a + grad_b)
 ```
-answer: 96.0
-check: run("a, b = 2.0, 3.0\np = a * b\nq = p + a\nr = q * q\ngrad_q = 2 * q\ngrad_p = grad_q\ngrad_a = grad_q\ngrad_a += b * grad_p\ngrad_b = a * grad_p\nprint(grad_a + grad_b)")
-hint: Here $p = 6$ and $q = 8$, so `grad_q` is 16; `a` gets a direct contribution and one through `p`.
-solution: `grad_q = 16`, `grad_p = 16`, and `grad_a` is the direct 16 plus $b \cdot 16 = 48$, i.e. 64; `grad_b = a * 16 = 32`. The sum is 96.0.
+answer: 60.0
+check: run("a, b = 1.0, 4.0\np = a * b\nq = p + a\nr = q * q\ngrad_q = 2 * q\ngrad_p = grad_q\ngrad_a = grad_q\ngrad_a += b * grad_p\ngrad_b = a * grad_p\nprint(grad_a + grad_b)")
+hint: Here $p = 4$ and $q = 5$, so `grad_q` is 10; `a` gets a direct contribution and one through `p`.
+solution: `grad_q = 2 * 5 = 10`, `grad_p = 10`, and `grad_a` is the direct 10 plus $b \cdot 10 = 40$, i.e. 50; `grad_b = a * 10 = 10`. The sum is 60.0.
 
 @quiz code
 prompt: The class `Value` below is a working scalar autograd engine for `+` and `*`. Add four methods: `__neg__` (returns $-x$), `__sub__(self, other)` (returns $x - \text{other}$, where `other` may be a `Value` or a number), `__pow__(self, k)` (returns $x^k$ for a constant number `k`) and `exp(self)` (returns $e^x$). Each must record a `_backward` that accumulates the correct local derivative with `+=`. For example, `(Value(3.0) ** 2)` has `data` 9.0 and after `backward()` its input's `grad` is 6.0.

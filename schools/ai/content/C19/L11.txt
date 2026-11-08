@@ -1,0 +1,234 @@
+@lesson
+title: Evaluating generated text: BLEU, ROUGE and human judgment
+summary: Compute BLEU, ROUGE-N and ROUGE-L for a generated sentence against a reference, measure agreement between human raters, and explain what automatic metrics can and cannot show.
+objective: Compute modified n-gram precision, the brevity penalty and BLEU by hand and in code.
+objective: Compute ROUGE-N and ROUGE-L scores from n-gram overlap and the longest common subsequence.
+objective: Compute Cohen's kappa for two raters and describe the limits of automatic metrics.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapter on machine translation: the section on MT evaluation; look up the topics ROUGE for summarization and inter-annotator agreement.
+@article
+A translation system outputs "the cat sat on a mat" and the reference says "the cat sat on the mat". Is the output right? A person would say it is nearly perfect. For a classifier we count correct labels, but for generated text there are many acceptable outputs. Evaluation therefore combines **automatic metrics**, which are cheap and repeatable, with **human judgment**, which is the standard they try to approximate.
+
+### BLEU
+
+**BLEU** (Papineni and colleagues, 2002) was designed for machine translation. It compares a candidate with one or more reference translations by n-gram overlap. The **modified n-gram precision** $p_n$ counts each candidate n-gram, but only up to the number of times it appears in the reference (this is **clipping**), and divides by the number of candidate n-grams:
+$$p_n = \frac{\sum_{g} \min\big(\mathrm{count}_{\text{cand}}(g),\ \mathrm{count}_{\text{ref}}(g)\big)}{\sum_{g} \mathrm{count}_{\text{cand}}(g)}.$$
+Without clipping, "the the the the" would get precision 1 against any reference containing "the". Precision alone rewards short outputs, so BLEU multiplies by a **brevity penalty** with candidate length $c$ and reference length $r$:
+$$\mathrm{BP} = \begin{cases} 1 & c > r \\ e^{1 - r/c} & c \le r \end{cases},\qquad \mathrm{BLEU} = \mathrm{BP}\cdot\exp\Big(\sum_{n=1}^{N} w_n \log p_n\Big),$$
+with uniform weights $w_n = 1/N$; the usual choice is $N = 4$, and the score is $0$ if any $p_n = 0$. For the candidate "the the the dog sat" and the reference "the dog sat on the mat" with $N = 2$: the unigram counts give $\min(3,2) + 1 + 1 = 4$ matches out of 5, so $p_1 = 0.8$; the candidate bigrams are the-the (twice), the-dog, dog-sat, and only the-dog and dog-sat occur in the reference, so $p_2 = 2/4 = 0.5$; $c = 5$, $r = 6$ gives $\mathrm{BP} = e^{-1/5} = 0.8187$. Then $\mathrm{BLEU} = 0.8187\sqrt{0.8 \times 0.5} = 0.518$.
+
+```python
+import math
+from collections import Counter
+
+def ngrams(tokens, n):
+    return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+def modified_precision(cand, ref, n):
+    c, r = ngrams(cand, n), ngrams(ref, n)
+    total = sum(c.values())
+    if total == 0:
+        return 0.0
+    return sum(min(count, r[g]) for g, count in c.items()) / total
+
+def bleu(cand, ref, max_n):
+    ps = [modified_precision(cand, ref, n) for n in range(1, max_n + 1)]
+    if min(ps) == 0:
+        return 0.0
+    bp = 1.0 if len(cand) > len(ref) else math.exp(1 - len(ref) / len(cand))
+    return bp * math.exp(sum(math.log(p) for p in ps) / max_n)
+```
+
+BLEU is computed over a whole test set (counts are summed before dividing), not as an average of sentence scores, because sentence-level BLEU is often zero for short sentences. Scores depend on the tokenization and on the number of references, so they are comparable only under the same settings.
+
+### ROUGE
+
+**ROUGE** (Lin, 2004) was designed for summarization and emphasizes **recall**: how much of the reference appears in the candidate. **ROUGE-N** uses clipped n-gram overlap divided by the number of reference n-grams. **ROUGE-L** uses the **longest common subsequence** (LCS): the longest sequence of words that appears in both texts in the same order, not necessarily contiguously. With LCS length $\ell$, candidate length $c$ and reference length $r$, the precision is $\ell/c$, the recall is $\ell/r$, and the score is the F-measure $2PR/(P+R)$. For the candidate and reference above, the LCS is "the dog sat" with $\ell = 3$, so $P = 3/5$, $R = 3/6$ and $F = 0.545$.
+
+### Human judgment and agreement
+
+People can rate outputs on scales such as fluency and adequacy (does it keep the meaning?), or compare two outputs and say which is better; pairwise comparison is often easier and more consistent than absolute ratings. Raters disagree, so we measure **agreement**. Raw agreement is misleading because two raters who both say "good" most of the time agree by chance. **Cohen's kappa** corrects for this: with observed agreement $p_o$ and the agreement $p_e$ expected if the raters labeled independently with their own label frequencies,
+$$\kappa = \frac{p_o - p_e}{1 - p_e}.$$
+Two raters judge 10 outputs as good or bad: both say good for 5, both bad for 2, rater A good and B bad for 2, A bad and B good for 1. Then $p_o = 0.7$; rater A says good 7 times and B 6 times, so $p_e = 0.7\cdot 0.6 + 0.3\cdot 0.4 = 0.54$ and $\kappa = 0.16/0.46 = 0.348$. A value of 1 is perfect agreement and 0 is chance level.
+
+### What the metrics cannot do
+
+Studies of machine translation and summarization have repeatedly found that overlap metrics correlate with human judgments better when averaging over many sentences or comparing systems of similar design than when scoring a single sentence, and that they can penalize a correct paraphrase and reward a fluent but wrong output. They cannot check truth, and they depend on the quality and number of references. They are best used to track progress on a fixed test set alongside human evaluation, with differences reported with confidence intervals (for example by bootstrap resampling of the test set), not as proof that one output is better.
+
+@example
+title: BLEU by hand
+problem: The candidate is "the cat sat on a mat" and the reference is "the cat sat on the mat". Compute BLEU with $N = 2$.
+step: Unigrams: the candidate has 6; all match except "a", so $p_1 = 5/6 = 0.8333$.
+step: Bigrams: the candidate has 5 (the-cat, cat-sat, sat-on, on-a, a-mat). The reference contains the first three, so $p_2 = 3/5 = 0.6$.
+step: Lengths are equal, $c = r = 6$, so $\mathrm{BP} = e^{0} = 1$.
+step: $\mathrm{BLEU} = \sqrt{0.8333 \times 0.6} = \sqrt{0.5} = 0.7071$.
+answer: $0.707$.
+
+@example
+title: ROUGE-2 recall
+problem: The reference is "a red car stopped here" and the candidate is "red car stopped stopped". Compute the ROUGE-2 recall and precision.
+step: Reference bigrams: a-red, red-car, car-stopped, stopped-here (4 of them).
+step: Candidate bigrams: red-car, car-stopped, stopped-stopped (3 of them).
+step: Clipped matches: red-car and car-stopped, so 2.
+step: Recall is $2/4 = 0.5$ and precision is $2/3 = 0.667$.
+answer: Recall $0.5$, precision $0.667$.
+
+@mistakes
+- Computing BLEU without clipping, so repeated words are rewarded.
+- Averaging sentence-level BLEU scores instead of pooling n-gram counts over the test set.
+- Comparing BLEU values obtained with different tokenizations or reference sets.
+- Reading high raw agreement between raters as high reliability: always compare with chance agreement.
+
+@practice num
+prompt: A candidate translation "red car stopped stopped" is compared with the reference "a red car stopped here". What is the modified (clipped) unigram precision $p_1$?
+answer: 0.75
+tol: 0.001
+check: (1 + 1 + min(2, 1)) / 4
+hint: Count each candidate word at most as many times as it appears in the reference; "stopped" appears once there.
+solution: The candidate has 4 words. "red" and "car" match once each, and "stopped" is clipped from 2 to 1, so the clipped matches number 3 and $p_1 = 3/4 = 0.75$.
+
+@practice num
+prompt: A candidate has 4 words and the (only) reference has 5. What is BLEU's brevity penalty? Give your answer to four decimal places.
+answer: 0.7788
+tol: 0.0001
+check: exp(1 - 5 / 4)
+hint: Use $\mathrm{BP} = e^{1 - r/c}$ because the candidate is not longer than the reference.
+solution: $\mathrm{BP} = e^{1 - 5/4} = e^{-0.25} \approx 0.7788$.
+
+@practice mc
+prompt: Why does BLEU clip n-gram counts at the number of times each n-gram appears in the reference?
+choice*: Without clipping, a candidate that repeats a common reference word many times would get a perfect precision.
+choice: To make the score independent of the candidate's length.
+choice: To reward n-grams that appear in several different references.
+choice: To penalize candidates that are longer than the reference.
+hint: Imagine the candidate "the the the the" against a reference that contains "the" twice.
+solution: Without clipping, each repeated "the" would count as a match, giving precision 1 for a meaningless output. Clipping caps the credit at the reference count. Length is handled by the brevity penalty, which penalizes short candidates, not long ones.
+
+@practice code
+prompt: Write `rouge_n(cand, ref, n)` for two lists of tokens. Count n-grams (tuples of `n` consecutive tokens) in each. The overlap is the sum over the candidate's n-grams of the smaller of its count in the candidate and its count in the reference. Return the tuple `(precision, recall, f1)`: precision is the overlap divided by the number of candidate n-grams, recall is the overlap divided by the number of reference n-grams, and F1 is their harmonic mean. If a denominator is zero the value is `0.0`.
+starter:
+```python
+def rouge_n(cand, ref, n):
+    return (0.0, 0.0, 0.0)
+```
+tests:
+```python
+c = "red car stopped stopped".split()
+r = "a red car stopped here".split()
+p, rec, f = rouge_n(c, r, 1)
+assert abs(p - 0.75) < 1e-9 and abs(rec - 0.6) < 1e-9 and abs(f - 2 * 0.75 * 0.6 / 1.35) < 1e-9
+p, rec, f = rouge_n(c, r, 2)
+assert abs(p - 2 / 3) < 1e-9 and abs(rec - 0.5) < 1e-9 and abs(f - 4 / 7) < 1e-9
+assert rouge_n(["a"], ["a", "b"], 2) == (0.0, 0.0, 0.0)
+assert rouge_n(["x", "y"], ["x", "y"], 1) == (1.0, 1.0, 1.0)
+assert rouge_n(["x", "x", "x"], ["x"], 1)[0] == 1 / 3
+```
+model:
+```python
+from collections import Counter
+
+
+def rouge_n(cand, ref, n):
+    """Clipped n-gram precision, recall and F1."""
+    def grams(tokens):
+        return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+    c, r = grams(cand), grams(ref)
+    overlap = sum(min(count, r[g]) for g, count in c.items())
+    n_c, n_r = sum(c.values()), sum(r.values())
+    precision = overlap / n_c if n_c else 0.0
+    recall = overlap / n_r if n_r else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return precision, recall, f1
+```
+hint: Build a `Counter` of n-grams for each text, add up `min` of the two counts over the candidate's n-grams, then divide.
+solution: The same clipped overlap gives precision (divide by the candidate's n-grams) and recall (divide by the reference's). The test with three copies of `x` against one shows clipping: the overlap is 1 of 3 candidate unigrams.
+
+@practice code
+prompt: Write `rouge_l(cand, ref)` for two lists of tokens: compute the length `l` of their longest common subsequence (words in the same order, not necessarily adjacent) by dynamic programming, then return the F-measure `2PR/(P+R)` with precision `l / len(cand)` and recall `l / len(ref)`. Return `0.0` if either list is empty or `l` is 0.
+starter:
+```python
+def rouge_l(cand, ref):
+    return 0.0
+```
+tests:
+```python
+c = "red car stopped stopped".split()
+r = "a red car stopped here".split()
+assert abs(rouge_l(c, r) - 2 / 3) < 1e-9
+assert abs(rouge_l(["x", "y", "z"], ["z", "y", "x"]) - 1 / 3) < 1e-9
+assert rouge_l([], ["a"]) == 0.0
+assert rouge_l(["a"], ["b"]) == 0.0
+assert abs(rouge_l(list("abcde"), list("ace")) - 0.75) < 1e-9
+```
+model:
+```python
+def rouge_l(cand, ref):
+    """ROUGE-L F-measure from the longest common subsequence."""
+    if not cand or not ref:
+        return 0.0
+    table = [[0] * (len(ref) + 1) for _ in range(len(cand) + 1)]
+    for i, a in enumerate(cand, 1):
+        for j, b in enumerate(ref, 1):
+            if a == b:
+                table[i][j] = table[i - 1][j - 1] + 1
+            else:
+                table[i][j] = max(table[i - 1][j], table[i][j - 1])
+    lcs = table[-1][-1]
+    if lcs == 0:
+        return 0.0
+    precision, recall = lcs / len(cand), lcs / len(ref)
+    return 2 * precision * recall / (precision + recall)
+```
+hint: Fill a table where cell (i, j) is the LCS length of the first i candidate words and the first j reference words: add 1 on a match, otherwise take the larger neighbor.
+solution: The table recurrence is the standard LCS dynamic program. For `abcde` against `ace` the LCS is `ace` (length 3), so $P = 3/5$, $R = 1$ and $F = 0.75$. Unlike ROUGE-N, the matched words need not be adjacent, only in order.
+
+@quiz code
+prompt: Write `cohen_kappa(a, b)` for two equal-length lists of labels from two raters. Observed agreement `p_o` is the fraction of positions where they agree. Expected agreement `p_e` is the sum over labels of (fraction of `a` with that label) times (fraction of `b` with that label). Return `(p_o - p_e) / (1 - p_e)`; if `p_e == 1` return `1.0`.
+starter:
+```python
+def cohen_kappa(a, b):
+    return 0.0
+```
+tests:
+```python
+a = ["y"] * 12 + ["n"] * 8
+b = ["y"] * 9 + ["n"] * 3 + ["y"] * 2 + ["n"] * 6
+assert abs(cohen_kappa(a, b) - 0.24 / 0.49) < 1e-9
+assert abs(cohen_kappa([1, 1, 0, 0], [1, 0, 1, 0])) < 1e-9
+assert cohen_kappa(["y", "y"], ["y", "y"]) == 1.0
+assert abs(cohen_kappa([1, 0, 1, 0], [1, 0, 1, 0]) - 1.0) < 1e-9
+assert cohen_kappa([1, 0], [0, 1]) == -1.0
+```
+model:
+```python
+from collections import Counter
+
+
+def cohen_kappa(a, b):
+    """Chance-corrected agreement between two raters."""
+    n = len(a)
+    p_o = sum(1 for x, y in zip(a, b) if x == y) / n
+    ca, cb = Counter(a), Counter(b)
+    p_e = sum(ca[label] / n * cb[label] / n for label in set(a) | set(b))
+    if p_e == 1:
+        return 1.0
+    return (p_o - p_e) / (1 - p_e)
+```
+hint: Compute the observed agreement, then the chance agreement from each rater's label frequencies, then apply the formula.
+solution: Kappa rescales agreement so that 0 means chance level and 1 perfect agreement; two raters who always disagree on two balanced labels get $-1$. Here, $p_o = 0.75$ and $p_e = 0.6 \cdot 0.55 + 0.4 \cdot 0.45 = 0.51$ in the first test, giving $0.24/0.49 \approx 0.49$.
+
+@quiz num
+prompt: For the candidate "the cat sat on a mat" and the reference "the cat sat on the mat", what is BLEU with $N = 2$ (uniform weights, the brevity penalty included)? Give your answer to three decimal places.
+answer: 0.707
+tol: 0.001
+check: sqrt((5 / 6) * (3 / 5))
+hint: Compute $p_1$ and $p_2$, check the lengths for the brevity penalty, then take the geometric mean.
+solution: $p_1 = 5/6$ and $p_2 = 3/5$; the lengths are equal so $\mathrm{BP} = 1$. Then $\mathrm{BLEU} = \sqrt{(5/6)(3/5)} = \sqrt{0.5} \approx 0.707$.
+
+@quiz mc
+prompt: Two raters label 100 outputs as acceptable or not, and 90% of both raters' labels are "acceptable". They agree on 82 of the 100 outputs. What does Cohen's kappa add to the raw agreement of 0.82?
+choice*: It accounts for the agreement expected by chance (here about 0.82 from the label frequencies), showing that the raters agree little more than chance would predict.
+choice: It converts the agreement into a percentage of correct outputs.
+choice: It measures whether the raters are right about the outputs.
+choice: It increases the agreement when the raters use few labels.
+hint: With 90% "acceptable" from each rater, compute $p_e = 0.9\cdot 0.9 + 0.1 \cdot 0.1$.
+solution: The chance agreement is $0.81 + 0.01 = 0.82$, so $\kappa = (0.82 - 0.82)/(1 - 0.82) = 0$: despite 82% raw agreement, the raters agree no more than chance. Kappa measures agreement between raters, not correctness.

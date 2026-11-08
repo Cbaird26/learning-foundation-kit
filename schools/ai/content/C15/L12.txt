@@ -137,92 +137,101 @@ hint: Ask which data the validation fold's features were allowed to influence.
 solution: Even without labels, the means and standard deviations come partly from validation examples, so the validation folds are no longer entirely unseen. The effect is often small for scaling but can be large for steps such as feature selection. The fix is to fit the scaler inside each training fold and apply it to the validation fold.
 
 @practice code
-prompt: Write `kfold_indices(n, k)` returning a list of `k` pairs `(train, val)`. For fold `f` in `range(k)`, `val` holds the indices `i` in `range(n)` with `i % k == f` and `train` holds all the others; both lists are in increasing order.
+prompt: Rare classes need stratified folds. Write `stratified_folds(y, k)` that returns a list of `k` lists of validation indices, one per fold. Sort the indices `0 .. len(y) - 1` by `(y[i], i)` (label first, then position); the `t`-th index in that order, counting from 0, goes to fold `t % k`. Each returned list must be in increasing order of index. Labels are comparable (numbers or strings). For example, `stratified_folds([0, 0, 1, 1], 2)` returns `[[0, 2], [1, 3]]`.
 starter:
 ```python
-def kfold_indices(n, k):
+def stratified_folds(y, k):
     pass
 ```
 tests:
 ```python
-assert kfold_indices(6, 3) == [([1, 2, 4, 5], [0, 3]), ([0, 2, 3, 5], [1, 4]),
-                               ([0, 1, 3, 4], [2, 5])]
-folds = kfold_indices(7, 3)
-assert [len(v) for _, v in folds] == [3, 2, 2]
-seen = sorted(i for _, v in folds for i in v)
-assert seen == list(range(7))
-assert all(set(t).isdisjoint(v) and len(t) + len(v) == 7 for t, v in folds)
-assert kfold_indices(4, 4)[2] == ([0, 1, 3], [2])
-assert kfold_indices(0, 2) == [([], []), ([], [])]
+assert stratified_folds([0, 0, 1, 1], 2) == [[0, 2], [1, 3]]
+assert stratified_folds([1, 0, 0, 1, 0, 0, 1, 0], 2) == [[1, 3, 4, 7], [0, 2, 5, 6]]
+assert stratified_folds(['a', 'a', 'a', 'b'], 2) == [[0, 2], [1, 3]]
+y = [0, 1] * 6
+folds = stratified_folds(y, 2)
+assert len(folds) == 2
+assert all(len(f) == 6 and sum(y[i] for i in f) == 3 for f in folds)
+assert sorted(i for f in folds for i in f) == list(range(12))
+assert stratified_folds([], 2) == [[], []]
 ```
 model:
 ```python
-def kfold_indices(n, k):
-    """Interleaved K-fold splits: example i is validated in fold i % k."""
-    folds = []
-    for f in range(k):
-        val = [i for i in range(n) if i % k == f]
-        train = [i for i in range(n) if i % k != f]
-        folds.append((train, val))
-    return folds
+def stratified_folds(y, k):
+    """Validation indices per fold, dealing each class out in turn."""
+    order = sorted(range(len(y)), key=lambda i: (y[i], i))
+    folds = [[] for _ in range(k)]
+    for t, i in enumerate(order):
+        folds[t % k].append(i)
+    return [sorted(f) for f in folds]
 ```
-hint: For each fold number `f`, build `val` from the indices with `i % k == f` and `train` from the rest.
-solution: Every index lands in exactly one validation list, and the training list is its complement. With $n = 7$ and $k = 3$ the validation sizes are $3, 2, 2$, as the second test shows. In practice you would shuffle the indices first with a fixed seed.
+hint: Sort the indices by label and position, deal them out to the folds in turn with `t % k`, and sort each fold's list at the end.
+solution: Because each class is contiguous in the sorted order, dealing the indices out in turn gives every fold its share of every class: in the alternating labels $0, 1, 0, 1, \dots$ every fold must hold three of each class, which a plain `i % k` split would not give (it would put all the zeros in the first fold). The final sort restores increasing index order within each fold.
 
 @practice code
-prompt: Write `cv_mse(xs, ys, k, folds)` returning the mean over folds of the mean squared error of $k$-nearest-neighbors regression, using the provided `knn_predict` (the mean target of the $k$ nearest training points, ties broken by position) and `kfold_indices`. For each fold, the training points are those in `train`, and the predictions are made for the points in `val`. `xs` and `ys` are lists of numbers.
+prompt: The helpers `knn_predict` (mean target of the `k` nearest training points, ties broken by position) and `kfold_indices` (a list of `(train, val)` index pairs) are provided. Write `cv_mean_se(xs, ys, k, folds)` for $k$-nearest-neighbors regression on one numeric feature. For each fold, predict the points in `val` from the points in `train` and compute the mean squared error of that fold. Return `(mean, se)`: the mean of the fold errors and their standard error $s/\sqrt{K}$ with $K$ the number of folds and $s$ the sample standard deviation of the fold errors (dividing by $K - 1$). Assume `folds >= 2`.
 starter:
 ```python
+import math
+
 def knn_predict(xs, ys, x0, k):
     order = sorted(range(len(xs)), key=lambda i: (abs(xs[i] - x0), i))
     return sum(ys[i] for i in order[:k]) / k
 
-def kfold_indices(n, k):
+def kfold_indices(n, folds):
     out = []
-    for f in range(k):
-        val = [i for i in range(n) if i % k == f]
-        train = [i for i in range(n) if i % k != f]
+    for f in range(folds):
+        val = [i for i in range(n) if i % folds == f]
+        train = [i for i in range(n) if i % folds != f]
         out.append((train, val))
     return out
 
-def cv_mse(xs, ys, k, folds):
+def cv_mean_se(xs, ys, k, folds):
     pass
 ```
 tests:
 ```python
-xs = [1, 2, 3, 4, 5, 6]
-ys = [2, 4, 6, 8, 10, 12]
-assert abs(cv_mse(xs, ys, 1, 3) - 4.0) < 1e-9
-assert abs(cv_mse(xs, ys, 2, 3) - 3.0) < 1e-9
-assert abs(cv_mse(xs, ys, 5, 3) - 16.18666666667) < 1e-6
-assert abs(cv_mse([1, 2, 3, 4], [5, 5, 5, 5], 2, 2)) < 1e-9
+xs = [1, 2, 3, 4, 5, 6, 7, 8]
+ys = [1, 3, 2, 5, 4, 7, 6, 9]
+m, se = cv_mean_se(xs, ys, 2, 4)
+assert abs(m - 3.84375) < 1e-9 and abs(se - 0.474273) < 1e-6
+m, se = cv_mean_se(xs, ys, 1, 4)
+assert abs(m - 4.75) < 1e-9 and abs(se - 1.831438) < 1e-6
+m, se = cv_mean_se([1, 2, 3, 4, 5, 6], [2, 4, 6, 8, 10, 12], 1, 3)
+assert abs(m - 4.0) < 1e-9 and abs(se) < 1e-9
+m, se = cv_mean_se([1, 2, 3, 4], [5, 5, 5, 5], 2, 2)
+assert abs(m) < 1e-9 and abs(se) < 1e-9
 ```
 model:
 ```python
+import math
+
 def knn_predict(xs, ys, x0, k):
     order = sorted(range(len(xs)), key=lambda i: (abs(xs[i] - x0), i))
     return sum(ys[i] for i in order[:k]) / k
 
-def kfold_indices(n, k):
+def kfold_indices(n, folds):
     out = []
-    for f in range(k):
-        val = [i for i in range(n) if i % k == f]
-        train = [i for i in range(n) if i % k != f]
+    for f in range(folds):
+        val = [i for i in range(n) if i % folds == f]
+        train = [i for i in range(n) if i % folds != f]
         out.append((train, val))
     return out
 
-def cv_mse(xs, ys, k, folds):
-    """Mean over folds of the validation MSE of k-NN regression."""
+def cv_mean_se(xs, ys, k, folds):
+    """CV mean squared error of k-NN regression and its standard error."""
     scores = []
     for train, val in kfold_indices(len(xs), folds):
         tx = [xs[i] for i in train]
         ty = [ys[i] for i in train]
         errs = [(knn_predict(tx, ty, xs[i], k) - ys[i]) ** 2 for i in val]
         scores.append(sum(errs) / len(errs))
-    return sum(scores) / len(scores)
+    mean = sum(scores) / len(scores)
+    var = sum((s - mean) ** 2 for s in scores) / (len(scores) - 1)
+    return mean, math.sqrt(var / len(scores))
 ```
-hint: For each fold build the training lists, predict every validation point from them, average the squared errors within the fold, and finally average over folds.
-solution: The model must see only the training indices of each split; predicting a validation point with itself in the training list would give zero error for $k = 1$. With perfectly linear data and $k = 1$, each prediction is off by one step of 2, so the squared error is 4 and the CV error is 4.0.
+hint: Compute the list of fold errors first (training points only for each prediction); then the mean, the sample variance with divisor $K - 1$, and $\sqrt{\text{variance}/K}$.
+solution: The standard error is the sample standard deviation of the fold errors divided by $\sqrt{K}$, and it needs the individual fold errors, not only their mean. The first test has fold errors $3.125, 3.125, 4, 5.125$. Predicting a validation point with itself in the training list would give zero error for $k = 1$, so each prediction must use `train` only.
 
 @quiz code
 prompt: Write `one_se_choice(candidates, means, ses)`. `candidates` lists hyperparameter values ordered from the simplest model to the most complex; `means[i]` and `ses[i]` are the CV error and its standard error for `candidates[i]`. Find the index `b` of the lowest mean (the first one on ties), and return the first candidate (in the given order) whose mean is at most `means[b] + ses[b]`.
@@ -234,7 +243,7 @@ def one_se_choice(candidates, means, ses):
 tests:
 ```python
 assert one_se_choice([1, 2, 3, 4, 5], [0.9, 0.5, 0.46, 0.49, 0.7], [0.1] * 5) == 2
-assert one_se_choice(['lo', 'mid', 'hi'], [0.50, 0.42, 0.40], [0.04, 0.05, 0.05]) == 'mid'
+assert one_se_choice(['lo', 'mid', 'hi'], [0.35, 0.28, 0.27], [0.03, 0.04, 0.04]) == 'mid'
 assert one_se_choice([0.1, 1, 10], [0.4, 0.3, 0.35], [0.05, 0.02, 0.1]) == 1
 assert one_se_choice([7], [1.0], [0.2]) == 7
 assert one_se_choice([1, 2], [0.5, 0.2], [0.0, 0.0]) == 2

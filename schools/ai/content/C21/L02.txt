@@ -1,0 +1,242 @@
+@lesson
+title: Upper confidence bounds and Thompson sampling
+summary: Choose actions by optimism in the face of uncertainty (UCB) or by sampling from a posterior (Thompson sampling), and compare them with epsilon-greedy.
+objective: Compute a UCB score and explain why its bonus shrinks as an arm is pulled.
+objective: Maintain Beta posteriors for Bernoulli arms and pick an arm by Thompson sampling.
+objective: Run UCB and Thompson sampling on small bandits with fixed reward tables and supplied random numbers.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the multi-armed bandits chapter: upper-confidence-bound action selection and gradient bandit algorithms; for Thompson sampling, look up the Bayesian approach to bandits.
+@article
+Epsilon-greedy explores blindly: it is as likely to retry an arm it has pulled 500 times as one it has pulled twice. Two arms with estimates $Q = 0.50$ look equally good, yet if one has been pulled 3 times and the other 300 times, the first deserves much more doubt. Both methods in this lesson spend exploration where the uncertainty is.
+
+### Upper confidence bounds
+
+The idea is **optimism in the face of uncertainty**: act as if each arm's value is as high as is plausible. The **UCB** rule picks
+
+$$A_t = \arg\max_a \left[\, Q_t(a) + c\sqrt{\frac{\ln t}{N_t(a)}} \,\right],$$
+
+where $N_t(a)$ is how many times arm $a$ has been pulled before step $t$, $t$ counts steps from 1, and $c > 0$ controls exploration. An arm with $N_t(a) = 0$ is treated as having an infinite score, so untried arms are pulled first (lowest index first). The term in the square root is a **confidence bonus**: it is large when $N_t(a)$ is small, shrinks as the arm is pulled, and grows slowly (like $\sqrt{\ln t}$) while the arm is ignored, so a neglected arm is eventually retried.
+
+With rewards in $[0, 1]$, the choice $c = \sqrt{2}$ gives the algorithm **UCB1** of Auer, Cesa-Bianchi and Fischer (2002). They proved that its regret grows only logarithmically in $T$, which is much better than the linear regret of a fixed $\varepsilon$. In practice $c$ is often tuned.
+
+A numeric case: at step $t = 20$ an arm has $Q = 0.4$ and $N = 5$. With $c = 1$ the score is $0.4 + \sqrt{\ln 20 / 5} = 0.4 + 0.774 = 1.174$; with $c = 2$ it is $0.4 + 2(0.774) = 1.948$. A larger $c$ rewards uncertainty more.
+
+### Thompson sampling
+
+**Thompson sampling** (Thompson, 1933) is Bayesian. Keep a posterior distribution over each arm's value, draw one sample from each posterior, and play the arm with the largest sample. Arms that are probably good are usually chosen, and uncertain arms still win occasionally because their posteriors are wide.
+
+For Bernoulli rewards, start with a uniform $\text{Beta}(1, 1)$ prior on each arm's success probability $\theta_a$. After $s$ successes and $f$ failures the posterior is $\text{Beta}(1 + s, 1 + f)$, whose mean is $(1 + s)/(2 + s + f)$. The update after a reward $r \in \{0, 1\}$ is $\alpha \leftarrow \alpha + r$, $\beta \leftarrow \beta + (1 - r)$.
+
+A small case: arm A has posterior $\text{Beta}(2, 1)$ after one success, and arm B is untouched at $\text{Beta}(1, 1)$, the uniform distribution. The density of A is $2x$, so $P(\theta_A > \theta_B) = \mathbb{E}[\theta_A] = 2/3$: Thompson sampling plays A two thirds of the time and B one third, even though A has only one pull.
+
+For rewards with unit variance, a Gaussian version works well and needs only a normal sample $z$: with a $N(0, 1)$ prior, an arm with $n$ pulls and reward total $S$ has posterior mean $S/(1 + n)$ and standard deviation $1/\sqrt{1 + n}$, so the sample is $S/(1 + n) + z/\sqrt{1 + n}$. This is the version we program with supplied values of $z$.
+
+### Comparing the three
+
+| method | explores | tuning | regret |
+|---|---|---|---|
+| $\varepsilon$-greedy | uniformly at random | $\varepsilon$ | linear for fixed $\varepsilon$ |
+| UCB | where bonus is large | $c$ | logarithmic for UCB1 |
+| Thompson sampling | in proportion to posterior uncertainty | prior | logarithmic in standard settings |
+
+### In code
+
+```python
+from math import log, sqrt
+
+def ucb_action(Q, N, t, c):
+    """UCB arm at step t (counting from 1); untried arms come first."""
+    for a in range(len(Q)):
+        if N[a] == 0:
+            return a
+    scores = [Q[a] + c * sqrt(log(t) / N[a]) for a in range(len(Q))]
+    best = 0
+    for a in range(1, len(Q)):
+        if scores[a] > scores[best]:
+            best = a
+    return best
+
+print(ucb_action([0.6, 0.5, 0.2], [4, 3, 1], 9, 1.0))
+```
+
+This prints `2`: the arm pulled once has the largest bonus.
+
+@example
+title: One UCB decision and one Thompson decision
+problem: At step $t = 9$ a 3-armed bandit has estimates $Q = (0.6, 0.5, 0.2)$ and counts $N = (4, 3, 1)$. Which arm does UCB with $c = 1$ choose? Then, for Bernoulli arms with $\text{Beta}(1,1)$ priors, arm A has 3 successes and 1 failure and arm B has 1 success and 2 failures. Give their posteriors and say which arm Thompson sampling plays if the drawn samples are $\theta_A = 0.55$ and $\theta_B = 0.62$.
+step: The bonuses use $\ln 9 = 2.197$: arm 0 has $\sqrt{2.197/4} = 0.741$, arm 1 has $\sqrt{2.197/3} = 0.856$ and arm 2 has $\sqrt{2.197/1} = 1.482$.
+step: The scores are $0.6 + 0.741 = 1.341$, $0.5 + 0.856 = 1.356$ and $0.2 + 1.482 = 1.682$. Arm 2 has the highest score, so UCB explores it despite its low estimate.
+step: Posteriors: A is $\text{Beta}(1 + 3, 1 + 1) = \text{Beta}(4, 2)$ with mean $2/3$, and B is $\text{Beta}(1 + 1, 1 + 2) = \text{Beta}(2, 3)$ with mean $0.4$.
+step: Thompson sampling plays the arm with the larger sample, which is B ($0.62 > 0.55$), although A has the higher mean. Over many draws A would win most of the time, but B's wide posterior lets it win sometimes.
+answer: UCB plays arm 2. The posteriors are Beta(4, 2) and Beta(2, 3), and Thompson sampling plays B for these samples.
+
+@mistakes
+- Using $\ln t$ with $t = 0$, or counting $t$ from 0: the formula needs $t \ge 1$, and arms with $N = 0$ must be handled separately.
+- Using the total number of steps in place of $N_t(a)$ in the denominator: the bonus depends on how often this arm was pulled.
+- Treating Thompson sampling as "play the arm with the highest posterior mean": that is greedy, and it does not explore.
+- Updating a Beta posterior with the wrong increments: a success adds 1 to $\alpha$ only, a failure adds 1 to $\beta$ only.
+
+@practice num
+prompt: At step $t = 20$ an arm has $Q = 0.4$ and has been pulled $N = 5$ times. With $c = 2$, what is its UCB score? Give your answer to three decimal places.
+answer: 1.948
+tol: 0.001
+check: 0.4 + 2 * sqrt(log(20) / 5)
+hint: The bonus is $c\sqrt{\ln t / N}$; $\ln 20 \approx 2.9957$.
+solution: $\ln 20 / 5 = 0.5991$, whose square root is $0.7740$. The bonus is $2 \times 0.7740 = 1.548$, so the score is $0.4 + 1.548 = 1.948$.
+
+@practice num
+prompt: A Bernoulli arm with a uniform $\text{Beta}(1, 1)$ prior has produced 4 successes and 5 failures. What is the mean of its posterior distribution? Give your answer to three decimal places.
+answer: 0.455
+tol: 0.001
+check: (1 + 4) / (2 + 4 + 5)
+hint: The posterior is $\text{Beta}(1 + s, 1 + f)$ and the mean of $\text{Beta}(\alpha, \beta)$ is $\alpha / (\alpha + \beta)$.
+solution: The posterior is $\text{Beta}(5, 6)$ with mean $5/11 \approx 0.455$. The uniform prior acts like one extra success and one extra failure.
+
+@practice mc
+prompt: In UCB action selection, what happens to the confidence bonus of an arm that is never chosen while $t$ keeps growing?
+choice*: The bonus grows, slowly, so the arm is eventually chosen again.
+choice: The bonus stays fixed, so the arm is never chosen again.
+choice: The bonus shrinks, because the total number of steps is larger.
+choice: The bonus becomes zero after the first pull.
+hint: Look at how $t$ and $N_t(a)$ appear in $\sqrt{\ln t / N_t(a)}$ when $N_t(a)$ does not change.
+solution: With $N_t(a)$ fixed, the bonus $c\sqrt{\ln t / N_t(a)}$ increases with $\ln t$, so the score of a neglected arm eventually exceeds the best arm's score. This is how UCB guarantees continued exploration with only a logarithmic cost.
+
+@practice code
+prompt: Write `beta_params(history, k, prior)` for Bernoulli arms. `history` is a list of `(arm, reward)` pairs with reward 0 or 1, `k` is the number of arms, and `prior` is a pair `(a0, b0)`. Return a list of `k` pairs `(alpha, beta)`: for each arm, `alpha = a0 + successes` and `beta = b0 + failures`. For example, `beta_params([(0, 1), (0, 0)], 2, (1, 1))` returns `[(2, 2), (1, 1)]`.
+starter:
+```python
+def beta_params(history, k, prior):
+    pass
+```
+tests:
+```python
+assert beta_params([(0, 1), (0, 0)], 2, (1, 1)) == [(2, 2), (1, 1)]
+assert beta_params([], 3, (1, 1)) == [(1, 1), (1, 1), (1, 1)]
+assert beta_params([(2, 1), (2, 1), (1, 0), (2, 0)], 3, (2, 3)) == \
+    [(2, 3), (2, 4), (4, 4)]
+assert beta_params([(1, 1)], 2, (0.5, 0.5)) == [(0.5, 0.5), (1.5, 0.5)]
+```
+model:
+```python
+def beta_params(history, k, prior):
+    """Beta posterior parameters of k Bernoulli arms."""
+    a0, b0 = prior
+    alpha = [a0] * k
+    beta = [b0] * k
+    for arm, reward in history:
+        alpha[arm] += reward
+        beta[arm] += 1 - reward
+    return list(zip(alpha, beta))
+```
+hint: Start every arm at the prior and, for each observation, add `reward` to alpha and `1 - reward` to beta.
+solution: Keep one alpha and one beta per arm, start both at the prior values, and walk through the history once: a success adds 1 to alpha and a failure adds 1 to beta. The third test uses a nonuniform prior, so a solution that hard-codes `(1, 1)` fails.
+
+@practice code
+prompt: Write `run_ucb(rewards, c, steps)`. `rewards[a][j]` is the reward of the $j$-th pull of arm `a` (counting from 0). At step `t` (counting from 1) choose the arm with the largest score `Q[a] + c * sqrt(log(t) / N[a])`; any arm with `N[a] == 0` is chosen first (lowest index among untried arms); other ties go to the lowest index. Estimates are sample averages starting from 0.0. Return the list of arms chosen over `steps` steps.
+starter:
+```python
+def run_ucb(rewards, c, steps):
+    pass
+```
+tests:
+```python
+R = [[1] * 10, [0, 2] * 5, [1.5] * 10]
+assert run_ucb(R, 1.0, 10) == [0, 1, 2, 2, 2, 0, 2, 2, 2, 2]
+assert run_ucb(R, 0.1, 10) == [0, 1, 2, 2, 2, 2, 2, 2, 2, 2]
+assert run_ucb(R, 3.0, 10) == [0, 1, 2, 2, 0, 2, 1, 0, 1, 2]
+assert run_ucb(R, 1.0, 0) == []
+assert run_ucb(R, 1.0, 3) == [0, 1, 2]
+```
+model:
+```python
+from math import log, sqrt
+
+def run_ucb(rewards, c, steps):
+    """UCB agent on a bandit with fixed reward tables."""
+    k = len(rewards)
+    q = [0.0] * k
+    n = [0] * k
+    chosen = []
+    for t in range(1, steps + 1):
+        untried = [a for a in range(k) if n[a] == 0]
+        if untried:
+            a = untried[0]
+        else:
+            a = 0
+            best = q[0] + c * sqrt(log(t) / n[0])
+            for b in range(1, k):
+                score = q[b] + c * sqrt(log(t) / n[b])
+                if score > best:
+                    a, best = b, score
+        r = rewards[a][n[a]]
+        n[a] += 1
+        q[a] += (r - q[a]) / n[a]
+        chosen.append(a)
+    return chosen
+```
+hint: Handle untried arms before computing any score, since the formula divides by `N[a]`; after each pull, update the sample average with `1 / n[a]`.
+solution: Each step first looks for an untried arm; otherwise it scores every arm and takes the first maximum. The tests with a small `c` and a large `c` differ: with `c = 0.1` the agent settles on the best arm, while `c = 3.0` keeps revisiting the poor arms, which catches a solution that ignores `c` or uses the wrong count in the bonus.
+
+@quiz code
+prompt: Write `run_thompson(rewards, zs)` for a Gaussian Thompson sampling agent with unit reward variance and a $N(0, 1)$ prior. `rewards[a][j]` is the reward of the $j$-th pull of arm `a`. `zs` is a list of lists: `zs[t][a]` is the standard normal draw for arm `a` at step `t`, and there is one step per row. At each step the sample for arm `a` is `S[a] / (1 + n[a]) + z / sqrt(1 + n[a])`, where `n[a]` is its pull count and `S[a]` the sum of its rewards so far. Play the arm with the largest sample (ties go to the lowest index). Return the list of arms played.
+starter:
+```python
+def run_thompson(rewards, zs):
+    pass
+```
+tests:
+```python
+R = [[1, 1, 1, 1, 1], [3, 0, 3, 0, 3], [0, 0, 0, 0, 0]]
+zs = [[0, 0, 0], [0, 0, 0], [0.5, -0.5, 0], [0, 1.0, 0.2], [-1, 0.3, 2.0]]
+assert run_thompson(R, zs) == [0, 0, 0, 1, 2]
+assert run_thompson(R, []) == []
+assert run_thompson(R, [[0, 0, 0]] * 4) == [0, 0, 0, 0]
+assert run_thompson(R, [[0, 5.0, 0], [0, 0, 0], [3, 0, 0]]) == [1, 1, 0]
+```
+model:
+```python
+from math import sqrt
+
+def run_thompson(rewards, zs):
+    """Gaussian Thompson sampling with supplied standard normal draws."""
+    k = len(rewards)
+    s = [0.0] * k
+    n = [0] * k
+    played = []
+    for z in zs:
+        a = 0
+        best = None
+        for b in range(k):
+            sample = s[b] / (1 + n[b]) + z[b] / sqrt(1 + n[b])
+            if best is None or sample > best:
+                a, best = b, sample
+        r = rewards[a][n[a]]
+        n[a] += 1
+        s[a] += r
+        played.append(a)
+    return played
+```
+hint: Compute one sample per arm from its posterior mean and standard deviation, take the first largest, then update that arm's count and reward total.
+solution: The posterior of an arm has mean `S / (1 + n)` and standard deviation `1 / sqrt(1 + n)`, so a draw `z` becomes the sample in the prompt. The last test gives arm 1 a large draw at the first step, so it is tried first even though its prior mean is 0, and a large draw for arm 0 later wins the third step; this shows how posterior uncertainty drives exploration.
+
+@quiz num
+prompt: Arm A has a $\text{Beta}(2, 1)$ posterior and arm B has a uniform $\text{Beta}(1, 1)$ posterior. Thompson sampling draws one value from each posterior and plays the arm with the larger draw. The density of $\text{Beta}(2, 1)$ is $2x$ on $[0, 1]$. What is the probability that it plays arm A?
+answer: 2/3
+tol: 0.001
+check: quad(lambda y: 1 - y ** 2, 0, 1)
+hint: Condition on arm B's draw $y$, which is uniform: arm A wins with probability $1 - y^2$, since $P(\theta_A \le y) = y^2$.
+solution: $P(\theta_A > \theta_B) = \int_0^1 (1 - y^2)\,dy = 1 - 1/3 = 2/3$. Equivalently, it equals $\mathbb{E}[\theta_A] = 2/3$ because $\theta_B$ is uniform.
+
+@quiz text
+prompt: What does this program print?
+```python
+from math import log, sqrt
+Q = [0.9, 0.5]
+N = [8, 2]
+t = 11
+scores = [Q[a] + sqrt(2 * log(t) / N[a]) for a in range(2)]
+print(scores.index(max(scores)))
+```
+answer: 1
+check: run("from math import log, sqrt\nQ = [0.9, 0.5]\nN = [8, 2]\nt = 11\nscores = [Q[a] + sqrt(2 * log(t) / N[a]) for a in range(2)]\nprint(scores.index(max(scores)))")
+hint: Compute both scores: $\ln 11 \approx 2.398$.
+solution: The bonuses are $\sqrt{4.796/8} = 0.774$ and $\sqrt{4.796/2} = 1.549$, so the scores are $1.674$ and $2.049$. The less-pulled arm has the larger score even though its estimate is lower, so the program prints `1`.

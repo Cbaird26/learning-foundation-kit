@@ -1,0 +1,251 @@
+@lesson
+title: Vision transformers and self-supervised learning
+summary: Split an image into patches, embed them as tokens, apply self-attention, and explain contrastive and masked self-supervised objectives.
+objective: Count patches and tokens for a vision transformer and compute a patch embedding by hand.
+objective: Compute single-head self-attention on a few tokens.
+objective: Explain contrastive and masked-image objectives and implement the contrastive loss for one anchor.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the deep learning chapter, the sections on transformers and on self-supervised learning.
+@article
+A convolutional network builds in the belief that nearby pixels matter together. A **vision transformer** (ViT; Dosovitskiy and colleagues, 2020) makes a different bet: cut the image into patches, treat each patch as a token, as a language model treats a word, and let **self-attention** learn which patches matter to each other.
+
+### Conventions used in this course
+
+An image is a list of rows (row-major). For a grayscale image of height $H$ and width $W$ and a patch size $p$ that divides both, patches are taken in row-major order of their top-left corners, and each patch is flattened row by row into a vector of $p^2$ numbers (for color, the channels of each pixel follow one another, so a patch has $3p^2$ numbers). A vector is a list of floats.
+
+### Patch embeddings
+
+A ViT proceeds as follows:
+
+1. **Patchify**: there are $N = (H/p)(W/p)$ patches, each of dimension $d_p = p^2 C$. A $224 \times 224$ RGB image with $p = 16$ has $N = 196$ patches of dimension $768$.
+2. **Embed**: a shared linear map $\mathbf{z}_i = \mathbf{W}\mathbf{x}_i + \mathbf{b}$ sends each patch to a vector of model dimension $D$. This is equivalent to a convolution with kernel size and stride both equal to $p$.
+3. **Add a class token and positions**: a learned vector $\mathbf{z}_{\text{cls}}$ is prepended, giving $N + 1$ tokens, and a learned **positional embedding** $\mathbf{e}_i$ is added to each token. Without positions the model would not know where a patch came from.
+4. **Transformer encoder**: layers of self-attention and MLPs, with residual connections and layer normalization.
+5. **Classify**: the output at the class token goes to a linear layer that produces class scores.
+
+### Self-attention
+
+Given tokens $\mathbf{x}_1, \dots, \mathbf{x}_n$, each token forms a query $\mathbf{q}_i$, a key $\mathbf{k}_i$ and a value $\mathbf{v}_i$ by linear maps. The output for token $i$ is
+
+$$\mathbf{o}_i = \sum_j \alpha_{ij}\,\mathbf{v}_j, \qquad \alpha_{ij} = \operatorname{softmax}_j\!\left(\frac{\mathbf{q}_i^\top \mathbf{k}_j}{\sqrt{d}}\right),$$
+
+where $d$ is the key dimension; dividing by $\sqrt{d}$ keeps the scores from growing with $d$. The weights $\alpha_{ij}$ are positive and sum to 1 over $j$. For a query $\mathbf{q} = (1, 0)$ and keys $(1, 0)$, $(0, 1)$, $(1, 1)$ with $d = 2$, the scores are $(1, 0, 1)/\sqrt{2} = (0.707, 0, 0.707)$, so the weight on the first key is $e^{0.707}/(2e^{0.707} + 1) \approx 0.401$. Self-attention is cost-quadratic in the number of tokens and, without position information, treats the tokens as a set: reordering the input patches reorders the outputs in the same way.
+
+Compared with a CNN, a ViT has fewer built-in assumptions (locality, weight sharing across positions beyond the patch embedding). The original paper found that with moderate-sized training sets it did not beat comparable convolutional networks, but with large-scale pretraining it matched or exceeded them; later work reduced the data requirements. Many details here (patch size, attention variants, hierarchical designs) change often, so treat them as design choices rather than fixed facts.
+
+### Self-supervised learning
+
+Labels are expensive, images are cheap. **Self-supervised learning** invents a task whose answer comes from the data itself, and the learned representation is then used for classification, detection or retrieval.
+
+**Contrastive learning** makes the embeddings of two augmented views of the same image similar and those of different images dissimilar. For an anchor with similarity scores $s_j$ to a set of candidates, one of which ($j = +$) is the positive, the **InfoNCE** loss (van den Oord and colleagues, 2018; used in SimCLR, Chen and colleagues, 2020) is
+
+$$\ell = -\log \frac{e^{s_+/\tau}}{\sum_j e^{s_j/\tau}},$$
+
+a cross-entropy over the candidates, with temperature $\tau > 0$. Contrastive language–image pretraining (CLIP; Radford and colleagues, 2021) applies the same loss to matching images with their captions. **Masked image modeling**, as in masked autoencoders (He and colleagues, 2021), hides a large fraction of the patches and trains the network to reconstruct the pixels of the hidden ones from the visible ones. Methods such as DINO (Caron and colleagues, 2021) train a student to match a slowly updated teacher on different views.
+
+### In code
+
+```python
+def patchify(img, p):
+    """Flattened p x p patches of a gray image, in row-major patch order."""
+    patches = []
+    for r in range(0, len(img), p):
+        for c in range(0, len(img[0]), p):
+            patches.append([img[r + i][c + j]
+                            for i in range(p) for j in range(p)])
+    return patches
+
+img = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]
+print(patchify(img, 2))
+```
+
+In PyTorch the patch embedding is `nn.Conv2d(3, D, kernel_size=p, stride=p)` followed by flattening the spatial grid into a sequence; attention is `nn.MultiheadAttention`.
+@example
+title: Patchify and embed one patch
+problem: Patchify the $4 \times 4$ image with rows $[1,2,3,4]$, $[5,6,7,8]$, $[9,10,11,12]$, $[13,14,15,16]$ with $p = 2$, then embed the first patch with $\mathbf{W} = \begin{bmatrix}0.1&0.1&0.1&0.1\\1&0&0&-1\end{bmatrix}$ and $\mathbf{b} = (0, 1)$, and add the position vector $\mathbf{e}_1 = (0.5, -0.5)$.
+step: There are $(4/2)(4/2) = 4$ patches in row-major order. The first covers rows 0–1 and columns 0–1: $[1, 2, 5, 6]$. The others are $[3,4,7,8]$, $[9,10,13,14]$ and $[11,12,15,16]$.
+step: The embedding of $[1,2,5,6]$: first component $0.1(1 + 2 + 5 + 6) = 1.4$; second $1 \cdot 1 + 0 + 0 - 1 \cdot 6 + 1 = -4$. So $\mathbf{z} = (1.4, -4)$.
+step: Add the position: $(1.4 + 0.5,\ -4 - 0.5) = (1.9, -4.5)$.
+answer: The first token is $(1.9, -4.5)$; there are 4 patches, and with a class token 5 tokens.
+@example
+title: Contrastive loss for one anchor
+problem: An anchor has similarities $s = (0.8, 0.2, 0.1)$ to three candidates; candidate 0 is the positive. With temperature $\tau = 0.5$, compute the InfoNCE loss.
+step: Divide the similarities by $\tau$: $(1.6, 0.4, 0.2)$.
+step: Exponentiate: $e^{1.6} \approx 4.953$, $e^{0.4} \approx 1.492$, $e^{0.2} \approx 1.221$; the sum is about $7.666$.
+step: The probability of the positive is $4.953/7.666 \approx 0.646$, so $\ell = -\log 0.646 \approx 0.437$.
+answer: $\ell \approx 0.437$.
+@mistakes
+- Forgetting the class token when counting tokens: a ViT with $N$ patches processes $N + 1$ tokens, and its attention matrix is $(N+1) \times (N+1)$.
+- Flattening patches in the wrong order: patches should follow row-major order and each patch row-major as well, or the positional embeddings no longer match the patches.
+- Using a very large or very small temperature without noticing: a large $\tau$ flattens the softmax over candidates, a small one makes the loss depend on the single hardest candidate.
+@practice num
+prompt: A $96 \times 128$ RGB image (height 96, width 128) is split into non-overlapping $16 \times 16$ patches and a class token is added. How many tokens does the transformer process?
+answer: 49
+unit: tokens
+check: (96 // 16) * (128 // 16) + 1
+hint: Count the patches along each axis, multiply, and add one for the class token.
+solution: There are $96/16 = 6$ patch rows and $128/16 = 8$ patch columns, so 48 patches, plus the class token gives 49 tokens. Each patch has $16 \cdot 16 \cdot 3 = 768$ numbers.
+@practice code
+prompt: Write `patchify_rgb(img, p)` for a color image `img`: a list of rows, each row a list of `(r, g, b)` tuples (row-major), with height and width divisible by `p`. Return the list of patches in row-major order of their top-left corners; each patch is a flat list of `3 * p * p` numbers: its pixels row by row, and for each pixel `r, g, b` in order. For example, a $2 \times 2$ image with `p = 2` gives one patch containing all 12 numbers.
+starter:
+```python
+def patchify_rgb(img, p):
+    pass
+```
+tests:
+```python
+im = [[(1, 2, 3), (4, 5, 6)], [(7, 8, 9), (10, 11, 12)]]
+assert patchify_rgb(im, 2) == [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]]
+wide = [[(k, k, k) for k in (1, 2, 3, 4)], [(k, k, k) for k in (5, 6, 7, 8)]]
+assert patchify_rgb(wide, 2) == [[1, 1, 1, 2, 2, 2, 5, 5, 5, 6, 6, 6],
+                                 [3, 3, 3, 4, 4, 4, 7, 7, 7, 8, 8, 8]]
+tall = [[(k, 0, 0)] for k in (1, 2, 3, 4)]
+assert patchify_rgb(tall, 1) == [[1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]]
+```
+model:
+```python
+def patchify_rgb(img, p):
+    """Flattened RGB patches: pixels row by row, channels innermost."""
+    patches = []
+    for r in range(0, len(img), p):
+        for c in range(0, len(img[0]), p):
+            patch = []
+            for i in range(p):
+                for j in range(p):
+                    patch.extend(img[r + i][c + j])
+            patches.append(patch)
+    return patches
+```
+hint: Use the same double loop over patch corners as for gray images, and extend the patch list with each pixel's three values.
+solution: The only change from the gray version is that each pixel contributes three numbers, kept together, so the channel index varies fastest. The second test checks both the patch order and the order inside a patch.
+@practice code
+prompt: Write `embed_tokens(patches, W, b, cls, pos)` that builds the transformer input. `patches` is a list of flat patch vectors, `W` is a list of $D$ rows (each of length equal to a patch), `b` a list of $D$ numbers, `cls` a list of $D$ numbers and `pos` a list of `len(patches) + 1` vectors of length $D$. Return a list of `len(patches) + 1` tokens: token 0 is `cls + pos[0]` (entry-wise); token `i + 1` is `W @ patches[i] + b + pos[i + 1]`.
+starter:
+```python
+def embed_tokens(patches, W, b, cls, pos):
+    pass
+```
+tests:
+```python
+P = [[1, 2, 5, 6], [3, 4, 7, 8]]
+W = [[0.1, 0.1, 0.1, 0.1], [1, 0, 0, -1]]
+tok = embed_tokens(P, W, [0, 1], [1, 1], [[0, 0], [0.5, -0.5], [0, 1]])
+want = [[1, 1], [1.9, -4.5], [2.2, -3.0]]
+assert len(tok) == 3
+assert all(abs(a - b) < 1e-9 for t, w in zip(tok, want) for a, b in zip(t, w))
+tok = embed_tokens([], W, [0, 0], [2, 3], [[1, 1]])
+assert tok == [[3, 4]]
+tok = embed_tokens([[1, 0, 0, 0]], [[1, 1, 1, 1], [0, 0, 0, 0]], [0, 0], [0, 0], [[0, 0], [0, 0]])
+assert tok[1] == [1, 0]
+```
+model:
+```python
+def embed_tokens(patches, W, b, cls, pos):
+    """Class token followed by linearly embedded patches, plus positions."""
+    tokens = [[c + e for c, e in zip(cls, pos[0])]]
+    for i, x in enumerate(patches):
+        z = [sum(w * v for w, v in zip(row, x)) + bias
+             for row, bias in zip(W, b)]
+        tokens.append([a + e for a, e in zip(z, pos[i + 1])])
+    return tokens
+```
+hint: Build token 0 from the class vector and `pos[0]`, then for each patch compute `W x + b` and add the next position vector.
+solution: Positions are indexed with the class token first, so patch `i` uses `pos[i + 1]`; a version that uses `pos[i]` shifts every position by one and fails the first test. The empty-patch test checks that the class token alone is returned.
+@practice num
+prompt: A query is $\mathbf{q} = (2, 0)$ and the keys are $\mathbf{k}_1 = (1, 0)$ and $\mathbf{k}_2 = (0, 1)$ with key dimension $d = 2$. What attention weight does the query put on $\mathbf{k}_1$, using $\operatorname{softmax}(\mathbf{q}^\top \mathbf{k}_j/\sqrt{d})$, to three decimal places?
+answer: 0.804
+tol: 0.001
+check: exp(2 / sqrt(2)) / (exp(2 / sqrt(2)) + exp(0))
+hint: The scores are $2/\sqrt{2} = \sqrt{2}$ for the first key and $0$ for the second.
+solution: The weight is $e^{\sqrt{2}}/(e^{\sqrt{2}} + e^0) = 4.1133/5.1133 \approx 0.804$.
+@practice code
+prompt: Write `attend(X)` for single-head self-attention with identity projections: the queries, keys and values are all the token vectors in `X` (a list of `n` vectors of length `d`). For each token `i`, compute scores `s[j] = dot(X[i], X[j]) / sqrt(d)`, the softmax weights over `j` (subtract the maximum score before `exp`), and return the list of output vectors `sum_j weight[j] * X[j]`. For example, `attend([[2, 0], [2, 0]])` returns `[[2.0, 0.0], [2.0, 0.0]]`.
+starter:
+```python
+def attend(X):
+    pass
+```
+tests:
+```python
+import math
+out = attend([[1, 0], [0, 1]])
+a = math.exp(1 / math.sqrt(2))
+w = a / (a + 1)
+want = [[w, 1 - w], [1 - w, w]]
+assert all(abs(x - y) < 1e-9 for ro, rw in zip(out, want) for x, y in zip(ro, rw))
+out = attend([[2, 0], [2, 0]])
+assert all(abs(x - y) < 1e-9 for ro, rw in zip(out, [[2, 0], [2, 0]]) for x, y in zip(ro, rw))
+X = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+fwd = attend(X)
+bwd = attend(X[::-1])[::-1]
+assert all(abs(x - y) < 1e-9 for rf, rb in zip(fwd, bwd) for x, y in zip(rf, rb))
+big = attend([[1000.0, 0.0], [0.0, 1000.0]])
+assert abs(big[0][0] - 1000.0) < 1e-6
+```
+model:
+```python
+import math
+
+def attend(X):
+    """Self-attention with Q = K = V = X."""
+    d = len(X[0])
+    out = []
+    for q in X:
+        scores = [sum(a * b for a, b in zip(q, k)) / math.sqrt(d) for k in X]
+        m = max(scores)
+        exps = [math.exp(s - m) for s in scores]
+        total = sum(exps)
+        weights = [e / total for e in exps]
+        out.append([sum(w * x[c] for w, x in zip(weights, X))
+                    for c in range(d)])
+    return out
+```
+hint: For each query compute all scores, subtract the largest, exponentiate and normalize, then take the weighted sum of the token vectors.
+solution: The permutation test shows that without positions, reordering the tokens just reorders the outputs. The last test has scores around $10^3/\sqrt{2}$ and overflows `exp` unless the maximum is subtracted first.
+@quiz text
+prompt: What does this program print?
+```python
+H, W, p = 8, 12, 4
+n = (H // p) * (W // p)
+print(n, n + 1, p * p * 3)
+```
+answer: 6 7 48
+check: run("H, W, p = 8, 12, 4\nn = (H // p) * (W // p)\nprint(n, n + 1, p * p * 3)")
+hint: Count patches along each axis first.
+solution: There are $8/4 = 2$ patch rows and $12/4 = 3$ patch columns, so 6 patches; with a class token there are 7 tokens, and each RGB patch has $4 \cdot 4 \cdot 3 = 48$ numbers.
+@quiz code
+prompt: Write `info_nce(sims, pos, tau)` that returns the InfoNCE loss $-\log\big(e^{s_{pos}/\tau} / \sum_j e^{s_j/\tau}\big)$ for a list `sims` of similarity scores, the index `pos` of the positive candidate and a temperature `tau > 0`. Use the natural logarithm and compute it in a numerically stable way (subtract the maximum of `sims / tau` before exponentiating). For example, `info_nce([0.5, 0.5], 1, 1.0)` returns `log(2)`.
+starter:
+```python
+def info_nce(sims, pos, tau):
+    pass
+```
+tests:
+```python
+import math
+assert abs(info_nce([0.5, 0.5], 1, 1.0) - math.log(2)) < 1e-9
+assert abs(info_nce([0.9, 0.1, 0.2], 0, 0.5) - 0.37052403834573305) < 1e-9
+assert abs(info_nce([1.0, 0.0], 0, 1.0) - 0.31326168751822286) < 1e-9
+assert abs(info_nce([5000.0, 0.0], 0, 1.0)) < 1e-6
+assert abs(info_nce([0.0, 5000.0], 0, 1.0) - 5000.0) < 1e-6
+```
+model:
+```python
+import math
+
+def info_nce(sims, pos, tau):
+    """InfoNCE loss for one anchor, computed with a stable log-sum-exp."""
+    z = [s / tau for s in sims]
+    m = max(z)
+    log_sum = m + math.log(sum(math.exp(v - m) for v in z))
+    return log_sum - z[pos]
+```
+hint: The loss equals the log of the sum of exponentials minus the positive's scaled score; subtract the maximum inside the exponentials and add it back outside.
+solution: Writing the loss as $\log\sum_j e^{z_j} - z_+$ and factoring out $\max_j z_j$ avoids overflow, which the last two tests (scores of thousands) check. With two equal similarities the positive gets probability $1/2$, so the loss is $\log 2$.
+@quiz ms
+prompt: Which statements about vision transformers are true? Select all that apply.
+choice*: Without positional embeddings, reordering the input patches only reorders the output tokens in the same way.
+choice*: A patch embedding with patch size $p$ is equivalent to a convolution with kernel size $p$ and stride $p$.
+choice*: Dividing the attention scores by $\sqrt{d}$ keeps their scale from growing with the key dimension.
+choice: The attention weights of one query over all tokens need not sum to 1, because the scores are unnormalized.
+hint: Recall what softmax does and what a shared linear map over non-overlapping patches computes.
+solution: Self-attention without position information is permutation-equivariant. A shared linear map over non-overlapping $p \times p$ patches is a convolution with stride $p$. The scale $\sqrt{d}$ counters the growth of dot products, and the softmax makes the weights sum to 1.

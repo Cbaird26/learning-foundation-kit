@@ -42,14 +42,14 @@ Decisions so far:
 | C12 | Optimization for machine learning | 13/13 | yes | yes |
 | C13 | Probability, statistics and information theory for machine learning | 13/13 | yes | yes |
 | C14 | Data science: wrangling, exploration and visualization | 13/13 | yes | yes |
-| C15 | Supervised learning in depth | 13/13 | yes |  |
+| C15 | Supervised learning in depth | 13/13 | yes | yes |
 | C16 | Unsupervised learning and probabilistic models | 13/13 | yes |  |
 | C17 | Deep learning foundations | 13/13 | yes |  |
 | C18 | Deep learning architectures: convolution, recurrence and attention | 13/13 | yes |  |
-| C19 | Natural language processing | 11/13 |  |  |
-| C20 | Computer vision | 7/13 |  |  |
-| C21 | Reinforcement learning | 0/13 |  |  |
-| C22 | Causal inference and experimentation | 0/13 |  |  |
+| C19 | Natural language processing | 13/13 | yes |  |
+| C20 | Computer vision | 11/13 |  |  |
+| C21 | Reinforcement learning | 4/13 |  |  |
+| C22 | Causal inference and experimentation | 3/13 |  |  |
 | C23 | AI ethics, safety and governance | 0/13 |  |  |
 | C24 | Machine learning engineering and MLOps | 0/13 |  |  |
 | P1 | Statistical learning theory | 0/13 |  |  |
@@ -91,3 +91,4 @@ Decisions so far:
 - 2026-11-07: C12 written (0 errors) and in review; C13 reviewed (5 fixes plus follow-ups); C19 started.
 - 2026-11-07: C11 and C12 reviewed; C15 written (0 errors) and in review; C20 started.
 - 2026-11-07: C17 written (0 errors) and in review; C21 started.
+- 2026-11-07: C15 reviewed; C16, C18 and C19 written (0 errors) and in review; C22 started.

@@ -81,20 +81,20 @@ answer: The units remain identical after every update; random initialization is 
 - Assuming initialization stops mattering once training starts: a network that starts with vanishing gradients may never leave the flat region at all.
 
 @practice num
-prompt: A ReLU layer has fan-in 50. What standard deviation does He initialization use for its weights?
-answer: 0.2
+prompt: A ReLU layer has fan-in 128. What standard deviation does He initialization use for its weights? Give your answer to three decimal places.
+answer: 0.125
 tol: 0.001
-check: sqrt(2 / 50)
+check: sqrt(2 / 128)
 hint: He initialization sets the variance to $2/n_{\text{in}}$; take the square root.
-solution: $\sigma^2 = 2/50 = 0.04$, so $\sigma = 0.2$.
+solution: $\sigma^2 = 2/128 = 0.015625$, so $\sigma = 0.125$.
 
 @practice num
-prompt: A layer has 30 inputs and 20 outputs and uses the Glorot (Xavier) uniform initialization $U[-a, a]$ with $\sigma^2 = 2/(n_{\text{in}} + n_{\text{out}})$. What is $a$? Give your answer to three decimal places.
-answer: 0.346
+prompt: A layer has 80 inputs and 20 outputs and uses the Glorot (Xavier) uniform initialization $U[-a, a]$ with $\sigma^2 = 2/(n_{\text{in}} + n_{\text{out}})$. What is $a$? Give your answer to three decimal places.
+answer: 0.245
 tol: 0.001
-check: sqrt(6 / (30 + 20))
-hint: A uniform variable on $[-a, a]$ has variance $a^2/3$; set it equal to $2/50$.
-solution: $a^2/3 = 2/50 = 0.04$, so $a^2 = 0.12$ and $a = \sqrt{0.12} \approx 0.3464$.
+check: sqrt(6 / (80 + 20))
+hint: A uniform variable on $[-a, a]$ has variance $a^2/3$; set it equal to $2/100$.
+solution: $a^2/3 = 2/100 = 0.02$, so $a^2 = 0.06$ and $a = \sqrt{0.06} \approx 0.2449$.
 
 @practice mc
 prompt: Every hidden-layer weight of a 3-4-1 tanh network is initialized to the same nonzero constant 0.5 (biases 0, output weights also all 0.5). Which statement is correct?
@@ -106,32 +106,34 @@ hint: Check what the units compute and what gradient reaches each of them from t
 solution: With identical incoming weights the hidden units compute the same values and receive the same upstream gradient (the output weights are equal too), so every update changes them identically and they remain copies of one another. The gradients are not zero, training does not diverge, and the units are never adjusted independently.
 
 @practice code
-prompt: Write `second_moment(q0, width, std, layers, relu=False)` that returns the expected second moment of the activations after `layers` layers, each with `width` inputs and independent zero-mean weights of standard deviation `std`. A linear layer multiplies the second moment by `width * std ** 2`; with `relu=True` each layer multiplies it by half that amount. For example, `second_moment(1.0, 100, 0.1, 10)` returns `1.0` (up to rounding).
+prompt: Write `second_moment_stack(q0, fan_ins, stds, relu=False)` that returns the expected second moment of the activations after a stack of layers whose widths differ. Layer $k$ has `fan_ins[k]` inputs and independent zero-mean weights of standard deviation `stds[k]`; the two lists have the same length. A linear layer multiplies the second moment by `fan_in * std ** 2`; with `relu=True` each layer multiplies it by half that amount. An empty stack returns `q0`. For example, `second_moment_stack(1.0, [100, 100], [0.1, 0.05])` returns `0.25` (up to rounding).
 starter:
 ```python
-def second_moment(q0, width, std, layers, relu=False):
+def second_moment_stack(q0, fan_ins, stds, relu=False):
     return q0
 ```
 tests:
 ```python
-assert abs(second_moment(1.0, 100, 0.1, 10) - 1.0) < 1e-9
-assert abs(second_moment(2.0, 100, 0.05, 3) - 2.0 * 0.25 ** 3) < 1e-12
-assert abs(second_moment(1.0, 100, 0.15, 10) - 2.25 ** 10) < 1e-6
-assert abs(second_moment(1.0, 200, 0.1, 5, relu=True) - 1.0) < 1e-9
-assert abs(second_moment(3.0, 10, 1.0, 0) - 3.0) < 1e-12
-assert abs(second_moment(1.0, 200, 0.05, 5, relu=True) - 0.25 ** 5) < 1e-12
+assert abs(second_moment_stack(1.0, [100, 100], [0.1, 0.05]) - 0.25) < 1e-9
+assert abs(second_moment_stack(2.0, [100, 50, 200], [0.1, 0.1, 0.05]) - 0.5) < 1e-9
+assert abs(second_moment_stack(1.0, [100, 50, 200], [0.1, 0.1, 0.05], relu=True) - 0.03125) < 1e-9
+assert abs(second_moment_stack(1.0, [256] * 3, [0.0625] * 3, relu=True) - 0.125) < 1e-9
+assert second_moment_stack(3.0, [], []) == 3.0
 ```
 model:
 ```python
-def second_moment(q0, width, std, layers, relu=False):
-    """Second moment of the activations after a stack of random layers."""
-    factor = width * std ** 2
-    if relu:
-        factor *= 0.5
-    return q0 * factor ** layers
+def second_moment_stack(q0, fan_ins, stds, relu=False):
+    """Second moment of the activations after layers of different widths."""
+    q = q0
+    for n, std in zip(fan_ins, stds):
+        factor = n * std ** 2
+        if relu:
+            factor *= 0.5
+        q *= factor
+    return q
 ```
-hint: The factor per layer is the same for every layer, so the answer is `q0` times that factor raised to the number of layers.
-solution: Each layer multiplies the second moment by $n\sigma^2$ (halved for ReLU), so $L$ layers multiply it by the $L$-th power. The tests show that the He scale gives a factor of exactly 1 for ReLU, while $\sigma = 0.05$ at width 200 gives $0.25$ per layer.
+hint: Each layer has its own factor `fan_in * std ** 2` (halved for ReLU); multiply the running second moment by each factor in turn.
+solution: The layers multiply the second moment independently, so loop over the pairs of fan-in and standard deviation and multiply by each layer's factor, squaring the standard deviation and halving once per layer when `relu` is true. Dropping the halving, or forgetting to square `std`, fails the tests, which also include an empty stack.
 
 @practice code
 prompt: Write `init_layer(n_out, n_in, scheme, rng)` that returns a weight matrix with `n_out` rows and `n_in` columns (a list of rows), with every entry drawn from `rng.gauss(0.0, std)`, where `rng` is a `random.Random` instance and `std` depends on `scheme`: `'lecun'` uses $\sqrt{1/n_{\text{in}}}$, `'xavier'` uses $\sqrt{2/(n_{\text{in}} + n_{\text{out}})}$ and `'he'` uses $\sqrt{2/n_{\text{in}}}$.

@@ -1,0 +1,234 @@
+@lesson
+title: Image generation in brief
+summary: Describe how autoencoders, GANs and diffusion models generate images, compute the forward noising process of a diffusion model, and weigh the documented risks of image generation against the safeguards that exist.
+objective: State the training idea of variational autoencoders, GANs and denoising diffusion models.
+objective: Compute a noise schedule, a noised sample and a denoised estimate for a diffusion model on a few numbers.
+objective: Explain the main documented risks of image generation and what safeguards can and cannot do.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the part of the deep learning chapter on generative models, and the discussion of image synthesis and computational photography.
+@article
+Recognition maps an image to a label. **Generation** runs the other way: it produces a new image that looks as though it came from the training data, possibly guided by a caption. In a lesson we can only sketch the area, so we keep to the ideas that every method shares and to the questions society has raised about them.
+
+### Three families of models
+
+An **autoencoder** compresses an image to a short code and reconstructs it; a **variational autoencoder** (VAE; Kingma and Welling, 2013) makes the codes follow a simple distribution, such as a standard normal, so new images can be produced by decoding random codes. A **generative adversarial network** (GAN; Goodfellow and colleagues, 2014) trains two networks against each other: a generator maps noise to images, and a discriminator tries to tell generated images from real ones; the generator improves by fooling it. GAN training can be unstable and models may fail to cover the full variety of the data (mode collapse).
+
+**Denoising diffusion models** (Ho, Jain and Abbeel, 2020) corrupt images with noise in many small steps and learn to reverse the corruption. With a noise schedule $\beta_1, \dots, \beta_T \in (0, 1)$, let $\alpha_t = 1 - \beta_t$ and $\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$. The forward process has the closed form
+
+$$\mathbf{x}_t = \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0 + \sqrt{1 - \bar{\alpha}_t}\,\boldsymbol{\epsilon}, \qquad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \mathbf{I}),$$
+
+so any noise level can be reached in one step. As $\bar{\alpha}_t$ falls from near 1 toward 0, the signal fades and the noise takes over; the ratio $\bar{\alpha}_t/(1 - \bar{\alpha}_t)$ is the signal-to-noise ratio. A network $\boldsymbol{\epsilon}_\theta(\mathbf{x}_t, t)$ is trained to predict the noise that was added, with the loss $\mathbb{E}\,\lVert \boldsymbol{\epsilon} - \boldsymbol{\epsilon}_\theta(\mathbf{x}_t, t) \rVert_2^2$. From a prediction $\hat{\boldsymbol{\epsilon}}$ we can estimate the clean image,
+
+$$\hat{\mathbf{x}}_0 = \frac{\mathbf{x}_t - \sqrt{1 - \bar{\alpha}_t}\,\hat{\boldsymbol{\epsilon}}}{\sqrt{\bar{\alpha}_t}}.$$
+
+To generate, start from pure noise and repeatedly remove a little predicted noise, step by step. Text conditioning feeds an embedding of the caption into the network, and a technique called guidance strengthens the pull toward the caption at the cost of variety. Running diffusion in the compressed latent space of an autoencoder (latent diffusion; Rombach and colleagues, 2022) cuts the cost. Image generators also use transformer architectures, so the patch tokens of last week appear again: images become sequences of patches, and a decoder must put patches back into an image.
+
+For a one-number example, take $x_0 = 0.8$, $\epsilon = -0.5$ and $\bar{\alpha} = 0.64$: then $x_t = 0.8 \cdot 0.8 + 0.6 \cdot (-0.5) = 0.34$.
+
+### Risks and safeguards
+
+Generation is not neutral, and these risks are documented. Generated images of real people can be used for impersonation, harassment and non-consensual intimate imagery; realistic fakes can be used in disinformation, and a flood of fakes can also make real evidence easier to dismiss. Models trained on scraped images can repeat stereotypes in who they depict in which roles. Researchers have shown that models can sometimes reproduce images close to ones in their training data, which raises privacy and licensing questions. Training also uses large amounts of energy.
+
+Safeguards exist at several levels. **Data**: filtering, documentation of what the training set contains and consent or licensing for the images. **Model and service**: refusing to generate certain content, filtering prompts and outputs, limiting generation of identifiable real people, and testing the system adversarially ("red teaming") before release. **Provenance**: attaching signed metadata that records how an image was made (the Content Credentials approach of the C2PA standard) and embedding invisible watermarks. **Law and policy**: the EU AI Act contains transparency obligations for AI-generated content, in Article 50, which apply from 2 August 2026, and some jurisdictions have specific laws on non-consensual synthetic imagery; check the current text, since rules change.
+
+Each safeguard has limits. Filters can be circumvented and can block legitimate uses. Metadata is lost when an image is re-encoded, cropped or photographed from a screen, and watermarks can be damaged, so a missing label does not show that an image is real. Detectors that guess whether an image is synthetic are unreliable on new generators and on edited images. Safeguards work best layered, with human oversight and a way for people harmed to get content removed.
+
+Informed people disagree on some questions. Whether training on copyrighted images without permission is lawful and fair is being decided by courts and legislatures in different countries: one side argues that learning statistical patterns from images is a transformative use or falls under data-mining exceptions, the other that creators' works are copied at scale without consent or payment and the outputs compete with them. Neither position is settled, and you should treat claims that it is as overreach.
+
+### In code
+
+```python
+import math
+
+def forward_noise(x0, abar, eps):
+    """Noised sample x_t = sqrt(abar) * x0 + sqrt(1 - abar) * eps."""
+    a, b = math.sqrt(abar), math.sqrt(1 - abar)
+    return [a * x + b * e for x, e in zip(x0, eps)]
+
+print(forward_noise([1.0, -1.0], 0.64, [0.5, 2.0]))
+```
+
+Libraries such as PyTorch draw `eps = torch.randn_like(x0)` at random and compute the same formula on whole batches of images.
+@example
+title: A three-step noise schedule
+problem: A schedule has $\beta = (0.1, 0.2, 0.3)$. Find $\bar{\alpha}_1, \bar{\alpha}_2, \bar{\alpha}_3$ and the signal-to-noise ratio at each step.
+step: The $\alpha_t = 1 - \beta_t$ are $0.9, 0.8, 0.7$.
+step: The cumulative products are $\bar{\alpha}_1 = 0.9$, $\bar{\alpha}_2 = 0.9 \cdot 0.8 = 0.72$ and $\bar{\alpha}_3 = 0.72 \cdot 0.7 = 0.504$.
+step: The signal-to-noise ratio $\bar{\alpha}/(1 - \bar{\alpha})$ is $9$, $0.72/0.28 \approx 2.571$ and $0.504/0.496 \approx 1.016$.
+step: At the last step signal and noise have nearly equal power; with more steps $\bar{\alpha}_T$ would approach 0 and the image would be nearly pure noise.
+answer: $\bar{\alpha} = 0.9, 0.72, 0.504$; signal-to-noise ratios $9$, $2.571$, $1.016$.
+@example
+title: Noising and recovering a pixel pair
+problem: With $\bar{\alpha} = 0.64$, noise the pixels $\mathbf{x}_0 = (1, -1)$ using $\boldsymbol{\epsilon} = (0.5, 2)$, then recover $\hat{\mathbf{x}}_0$ using the true noise.
+step: The coefficients are $\sqrt{0.64} = 0.8$ and $\sqrt{1 - 0.64} = 0.6$.
+step: $\mathbf{x}_t = (0.8 \cdot 1 + 0.6 \cdot 0.5,\ 0.8 \cdot (-1) + 0.6 \cdot 2) = (1.1, 0.4)$.
+step: Recover: $\hat{\mathbf{x}}_0 = (\mathbf{x}_t - 0.6\,\boldsymbol{\epsilon})/0.8 = ((1.1 - 0.3)/0.8,\ (0.4 - 1.2)/0.8) = (1, -1)$.
+answer: $\mathbf{x}_t = (1.1, 0.4)$, and the true noise recovers $\mathbf{x}_0 = (1, -1)$ exactly.
+@mistakes
+- Treating the forward process as one noise draw per step that must be simulated step by step: the closed form with $\bar{\alpha}_t$ reaches any step directly.
+- Using $\alpha_t$ where $\bar{\alpha}_t$ is needed: $\bar{\alpha}_t$ is the cumulative product up to step $t$, not the single-step factor.
+- Concluding that an image is real because it has no watermark or credential: labels are often stripped, and absence of a label is not evidence of authenticity.
+@practice num
+prompt: A noise schedule has $\beta = (0.2, 0.1, 0.05)$. What is $\bar{\alpha}_3$, to three decimal places?
+answer: 0.684
+tol: 0.001
+check: (1 - 0.2) * (1 - 0.1) * (1 - 0.05)
+hint: Multiply $1 - \beta_t$ over the three steps.
+solution: $\bar{\alpha}_3 = 0.8 \cdot 0.9 \cdot 0.95 = 0.684$.
+@practice code
+prompt: Write `alpha_bars(betas)` that takes a list of noise-schedule values `betas` (each between 0 and 1) and returns the list of cumulative products of `1 - beta`: entry `t` is the product of `1 - betas[s]` for `s` up to and including `t`. Return `[]` for an empty list. For example, `alpha_bars([0.5, 0.5])` returns `[0.5, 0.25]`.
+starter:
+```python
+def alpha_bars(betas):
+    pass
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(a - b) < 1e-9 for a, b in zip(u, v))
+
+assert close(alpha_bars([0.5, 0.5, 0.5, 0.5]), [0.5, 0.25, 0.125, 0.0625])
+assert close(alpha_bars([0.0, 0.1]), [1.0, 0.9])
+assert close(alpha_bars([0.2, 0.1, 0.05]), [0.8, 0.72, 0.684])
+assert alpha_bars([]) == []
+```
+model:
+```python
+def alpha_bars(betas):
+    """Cumulative products of (1 - beta_t) for a diffusion schedule."""
+    out = []
+    running = 1.0
+    for beta in betas:
+        running *= 1 - beta
+        out.append(running)
+    return out
+```
+hint: Keep a running product that starts at 1.0 and multiply it by `1 - beta` at each step, appending after each multiplication.
+solution: The running product after step `t` includes the factor of step `t` itself. With `beta = 0.0` the signal is untouched, so the first value is 1.0.
+@practice ms
+prompt: Which statements about generated images and their safeguards are accurate? Select all that apply.
+choice*: Research has documented cases in which an image model produced an image close to one of its training images.
+choice*: Provenance metadata and invisible watermarks can be lost when an image is re-encoded, cropped or photographed from a screen.
+choice*: Image generators can reproduce stereotypes present in their training data, so evaluating who is depicted in which roles is part of responsible use.
+choice: If an image carries no watermark or provenance label, that proves it is a genuine photograph.
+hint: Ask whether each statement is a documented finding or a guarantee that no safeguard can provide.
+solution: Memorization of training images, loss of metadata and watermarks, and reproduced stereotypes are all documented. A missing label shows nothing about authenticity, because labels are often absent, stripped or never added.
+@practice code
+prompt: Write `predict_x0(xt, eps_hat, abar)` that estimates the clean sample of a diffusion model. `xt` and `eps_hat` are lists of numbers of equal length and `0 < abar <= 1`. Return the list `(xt[i] - sqrt(1 - abar) * eps_hat[i]) / sqrt(abar)`. For example, `predict_x0([1.1, 0.4], [0.5, 2.0], 0.64)` returns `[1.0, -1.0]`.
+starter:
+```python
+def predict_x0(xt, eps_hat, abar):
+    pass
+```
+tests:
+```python
+import math
+got = predict_x0([1.1, 0.4], [0.5, 2.0], 0.64)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.0, -1.0]))
+got = predict_x0([1.1, 0.4], [0.0, 0.0], 0.64)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [1.375, 0.5]))
+got = predict_x0([0.3, -0.7], [5.0, 5.0], 1.0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.3, -0.7]))
+x0, eps, ab = [0.2, -0.4, 0.9], [1.0, -1.5, 0.1], 0.25
+xt = [math.sqrt(ab) * a + math.sqrt(1 - ab) * e for a, e in zip(x0, eps)]
+assert all(abs(a - b) < 1e-9 for a, b in zip(predict_x0(xt, eps, ab), x0))
+```
+model:
+```python
+import math
+
+def predict_x0(xt, eps_hat, abar):
+    """Estimate x_0 from x_t and a noise prediction."""
+    a, b = math.sqrt(abar), math.sqrt(1 - abar)
+    return [(x - b * e) / a for x, e in zip(xt, eps_hat)]
+```
+hint: Solve $x_t = \sqrt{\bar\alpha}\,x_0 + \sqrt{1 - \bar\alpha}\,\epsilon$ for $x_0$.
+solution: Subtracting the noise term and dividing by $\sqrt{\bar{\alpha}}$ inverts the forward formula. With `abar = 1` no noise has been added, so the prediction equals `xt` whatever the noise estimate, and the last test round-trips the forward formula.
+@practice code
+prompt: Write `unpatchify(patches, H, W, p)` that reassembles a grayscale image from patches, the inverse of splitting into non-overlapping patches. The image has `H` rows and `W` columns, both divisible by `p`. `patches` is a list of `(H // p) * (W // p)` flat lists of `p * p` numbers; patches are in row-major order of their top-left corners and each patch lists its pixels row by row. Return the image as a list of rows (row-major). For example, `unpatchify([[1, 2, 5, 6], [3, 4, 7, 8]], 2, 4, 2)` returns `[[1, 2, 3, 4], [5, 6, 7, 8]]`.
+starter:
+```python
+def unpatchify(patches, H, W, p):
+    pass
+```
+tests:
+```python
+P = [[1, 2, 5, 6], [3, 4, 7, 8], [9, 10, 13, 14], [11, 12, 15, 16]]
+want = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]
+assert unpatchify(P, 4, 4, 2) == want
+assert unpatchify([[1, 2, 5, 6], [3, 4, 7, 8]], 2, 4, 2) == [[1, 2, 3, 4], [5, 6, 7, 8]]
+assert unpatchify([[1], [2], [3]], 3, 1, 1) == [[1], [2], [3]]
+```
+model:
+```python
+def unpatchify(patches, H, W, p):
+    """Place flattened p x p patches back into an H x W image."""
+    img = [[0] * W for _ in range(H)]
+    per_row = W // p
+    for k, patch in enumerate(patches):
+        top = (k // per_row) * p
+        left = (k % per_row) * p
+        for i in range(p):
+            for j in range(p):
+                img[top + i][left + j] = patch[i * p + j]
+    return img
+```
+hint: Patch number `k` has its top-left corner at row `(k // (W // p)) * p` and column `(k % (W // p)) * p`; inside the patch, pixel `(i, j)` is entry `i * p + j`.
+solution: The index arithmetic is the inverse of the loops that cut the image into patches. The second test has a wide image with two patches side by side; using `H // p` instead of `W // p` for the number of patches per row would scramble it.
+@quiz text
+prompt: What does this program print?
+```python
+betas = [0.5, 0.5, 0.5]
+abar = 1.0
+for b in betas:
+    abar *= 1 - b
+print(abar)
+```
+answer: 0.125
+check: run("betas = [0.5, 0.5, 0.5]\nabar = 1.0\nfor b in betas:\n    abar *= 1 - b\nprint(abar)")
+hint: Each step multiplies the running value by one half.
+solution: Three multiplications by 0.5 give $0.5^3 = 0.125$.
+@quiz code
+prompt: Write `noise_loss(x0, eps, abar, model)` that forms the noised sample `xt[i] = sqrt(abar) * x0[i] + sqrt(1 - abar) * eps[i]`, calls `model(xt)` (a function that returns a list, its prediction of `eps`), and returns the mean squared error between `eps` and that prediction. `x0` and `eps` are lists of equal length. For example, a model that always returns zeros on `x0 = [1, -1]`, `eps = [0.5, 2]`, `abar = 0.64` gives the loss `2.125`.
+starter:
+```python
+def noise_loss(x0, eps, abar, model):
+    pass
+```
+tests:
+```python
+import math
+x0, eps = [1.0, -1.0], [0.5, 2.0]
+zero = lambda xt: [0.0 for _ in xt]
+assert abs(noise_loss(x0, eps, 0.64, zero) - 2.125) < 1e-9
+const = lambda xt: [0.5, 0.5]
+assert abs(noise_loss(x0, eps, 0.64, const) - 1.125) < 1e-9
+def oracle(xt):
+    return [(v - 0.8 * a) / 0.6 for v, a in zip(xt, x0)]
+assert abs(noise_loss(x0, eps, 0.64, oracle)) < 1e-9
+seen = []
+def spy(xt):
+    seen.append(list(xt))
+    return [0.0, 0.0]
+noise_loss(x0, eps, 0.64, spy)
+assert all(abs(a - b) < 1e-9 for a, b in zip(seen[0], [1.1, 0.4]))
+```
+model:
+```python
+import math
+
+def noise_loss(x0, eps, abar, model):
+    """Mean squared error of a noise-prediction model on one noised sample."""
+    a, b = math.sqrt(abar), math.sqrt(1 - abar)
+    xt = [a * x + b * e for x, e in zip(x0, eps)]
+    pred = model(xt)
+    return sum((e - p) ** 2 for e, p in zip(eps, pred)) / len(eps)
+```
+hint: Build `xt` first, pass it to `model`, and average the squared differences between the true noise and the prediction.
+solution: The model sees only the noised sample, and the loss compares its output with the noise that was added. The last test records what the model received and checks that it is the noised sample, not the clean one.
+@quiz self
+prompt: A team plans to release an image-generation tool that can depict people. List four safeguards at different stages (data, model or service, provenance, and policy or process), say what each one can and cannot achieve, and explain why the team should not rely on any single one.
+hint: Think of where in the pipeline something can go wrong, and what a determined person could do to defeat each safeguard.
+solution: Data stage: filter and document the training set and use images with consent or license; this reduces memorized personal images and some harmful content, but cannot remove every stereotype or guarantee every image is licensed. Service stage: refuse or filter requests and outputs for harmful content and for depicting identifiable real people without consent, and red-team before release; filters block many misuses but can be circumvented by rephrasing and can also block legitimate requests. Provenance: attach signed content credentials and an invisible watermark to outputs; these help honest platforms label content but are lost when images are re-encoded or photographed from a screen, so a missing label proves nothing. Policy and process: usage terms, reporting and takedown channels, logging and human review of flagged use, and compliance with laws such as the EU AI Act's transparency duties; these deter and let harm be remedied, but depend on enforcement. Because each layer has known failure modes, they should be layered, monitored with measurements of how often each fails, and revised as misuse patterns change.
+rubric: Names four distinct safeguards covering data, model or service, provenance, and policy or process.
+rubric: States a specific limitation of each safeguard (circumvention, stripped metadata, incomplete coverage, enforcement).
+rubric: Argues for layered defenses with monitoring rather than reliance on one safeguard.

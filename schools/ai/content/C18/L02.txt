@@ -141,25 +141,28 @@ hint: Keep two running variables, the field `r` and the jump, and update `r` bef
 solution: Each layer widens the field by $(k - 1)$ steps of the current jump, then strides multiply the jump. The last test (stride first, then a larger kernel) gives 6 and fails if the jump is updated before the field.
 
 @practice code
-prompt: Write `residual_block(x, W1, W2)` for a vector `x` (list of floats) and square matrices `W1`, `W2` (lists of rows). It returns `relu(x + W2 @ relu(W1 @ x))` as a list of floats, where `relu` is applied elementwise. For example, with `W1 = [[1, 0], [0, 1]]` and `W2` equal to zeros, `[1.0, -2.0]` gives `[1.0, 0.0]`.
+prompt: Write `residual_block(x, W1, W2, Ws=None)` for a vector `x` (list of floats) and matrices `W1`, `W2` (lists of rows) with compatible shapes. It returns `relu(s + W2 @ relu(W1 @ x))` as a list of floats, where `relu` is applied elementwise and the shortcut `s` is `x` itself when `Ws` is `None` and the projection `Ws @ x` otherwise (like a $1 \times 1$ convolution that matches shapes). For example, with `W1 = [[1, 0], [0, 1]]`, `W2` equal to zeros and no `Ws`, `[1.0, 2.0]` gives `[1.0, 2.0]`.
 starter:
 ```python
-def residual_block(x, W1, W2):
+def residual_block(x, W1, W2, Ws=None):
     return list(x)
 ```
 tests:
 ```python
 def close(u, v):
     return len(u) == len(v) and all(abs(a - b) < 1e-9 for a, b in zip(u, v))
-assert close(residual_block([1.0, -2.0], [[1, 0], [0, 1]], [[0, 0], [0, 0]]), [1.0, 0.0])
-assert close(residual_block([2.0, -1.0], [[1, 1], [0, 2]], [[1, 0], [1, -1]]), [3.0, 0.0])
-assert close(residual_block([1.0, -2.0], [[1, 0], [1, 1]], [[1, 0], [0, 1]]), [2.0, 0.0])
-assert close(residual_block([0.5, 0.5], [[-1, 0], [0, -1]], [[1, 1], [1, 1]]), [0.5, 0.5])
+I2 = [[1, 0], [0, 1]]
+assert close(residual_block([1.0, 2.0], I2, [[0, 0], [0, 0]]), [1.0, 2.0])
+assert close(residual_block([1.0, 2.0], I2, I2), [2.0, 4.0])
+assert close(residual_block([1.0, 2.0], I2, I2, [[0, 1], [1, 0]]), [3.0, 3.0])
+assert close(residual_block([-1.0, -1.0], [[1, 1], [1, 1]], I2), [0.0, 0.0])
+assert close(residual_block([1.0, -2.0, 3.0], [[1, 1, 0], [0, 1, 1]],
+                            [[2, 0], [1, -1]], [[1, 0, 0], [0, 0, -1]]), [1.0, 0.0])
 ```
 model:
 ```python
-def residual_block(x, W1, W2):
-    """Residual block: relu(x + W2 relu(W1 x))."""
+def residual_block(x, W1, W2, Ws=None):
+    """Residual block with an identity or projection shortcut."""
     def relu(v):
         return [max(0.0, a) for a in v]
 
@@ -167,10 +170,12 @@ def residual_block(x, W1, W2):
         return [sum(w * a for w, a in zip(row, v)) for row in W]
 
     f = matvec(W2, relu(matvec(W1, x)))
-    return relu([a + b for a, b in zip(x, f)])
+    shortcut = list(x) if Ws is None else matvec(Ws, x)
+    return relu([a + b for a, b in zip(shortcut, f)])
 ```
-hint: Compute the inner branch $F(\mathbf{x})$ first, add `x` elementwise, and only then apply the last ReLU.
-solution: The branch is two matrix-vector products with a ReLU between them; the shortcut adds `x` before the final ReLU. The last test has a branch that is zero after ReLU, so the block returns `x` itself.
+hint: Compute the branch $F(\mathbf{x})$ first, then choose the shortcut: `x` itself, or `Ws @ x` when `Ws` is given.
+hint: Add the shortcut and the branch elementwise, and only then apply the last ReLU.
+solution: The branch is two matrix-vector products with a ReLU between them; the shortcut is added before the final ReLU. The projection test changes the output length from 3 to 2, so code that always adds `x` fails it, and the test with an all-negative input fails if the final ReLU is forgotten.
 
 @quiz mc
 prompt: Which statement best explains why identity shortcuts help optimization of very deep networks?
@@ -201,9 +206,9 @@ tests:
 assert count_params([]) == 0
 assert count_params([('fc', 3, 2)]) == 8
 assert count_params([('conv', 1, 6, 5)]) == 156
-assert count_params([('conv', 6, 16, 5), ('fc', 400, 120)]) == 2416 + 48120
-assert count_params([('conv', 1, 6, 5), ('conv', 6, 16, 5), ('fc', 400, 120),
-                     ('fc', 120, 84), ('fc', 84, 10)]) == 61706
+assert count_params([('conv', 4, 8, 3), ('fc', 10, 5)]) == 296 + 55
+assert count_params([('conv', 3, 2, 1), ('conv', 2, 4, 3), ('fc', 36, 7),
+                     ('fc', 7, 2)]) == 8 + 76 + 259 + 16
 ```
 model:
 ```python
@@ -220,4 +225,4 @@ def count_params(layers):
     return total
 ```
 hint: A convolution has `c_out * (c_in * k * k + 1)` parameters; a fully connected layer has `n_out * (n_in + 1)`.
-solution: Branch on the layer kind and add the weights plus one bias per output unit or channel. The last test is a LeNet-style stack that totals 61,706 parameters.
+solution: Branch on the layer kind and add the weights plus one bias per output unit or channel. The last test mixes two convolutions and two fully connected layers, so a solution that forgets a bias term or treats a $1 \times 1$ kernel specially is caught.

@@ -1,0 +1,264 @@
+@lesson
+title: Segmentation: semantic and instance
+summary: Label every pixel with a class, separate objects into instances with connected components, and score segmentations with mask IoU, the Dice coefficient and mean IoU.
+objective: Distinguish semantic, instance and panoptic segmentation and say what each output looks like.
+objective: Compute mask IoU, Dice, per-class IoU and mean IoU from masks or counts.
+objective: Implement connected-component labeling, mean IoU and mask-based non-maximum suppression in plain Python.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the sections on semantic segmentation and on instance segmentation in the recognition chapter.
+@article
+A box around a pedestrian is a rough answer: it also contains sidewalk, a bicycle wheel and some sky. For a robot arm that must grasp a cup, or a radiologist measuring a tumor, the outline matters. **Segmentation** answers "which pixels belong to what?"
+
+### Conventions used in this course
+
+A **mask** is a grid of 0s and 1s with the same shape as the image, row-major (`mask[r][c]`), with 1 for pixels of the object. A **label map** is a grid of integers, one class id (or instance id) per pixel. Connectivity is **4-connectivity** (a pixel touches its up, down, left and right neighbors) unless a problem says 8-connectivity (it also touches the four diagonal neighbors). Component labels are numbered $1, 2, 3, \dots$ in the order in which the first pixel of each component is met when scanning row by row from the top-left.
+
+### Kinds of segmentation
+
+**Semantic segmentation** assigns a class to every pixel ("road", "car", "sky") but does not distinguish two cars: all car pixels share one label. **Instance segmentation** outputs one mask per object, each with a class and a score, so two touching cars get two masks, but background "stuff" such as sky is usually not labeled. **Panoptic segmentation** combines both: every pixel gets a class, and pixels of countable things also get an instance id.
+
+Fully convolutional networks (Long, Shelhamer and Darrell, 2015) made semantic segmentation a dense prediction problem by replacing the final fully connected layers with convolutions so the network outputs a class-score map. The encoder shrinks the spatial size, so the decoder must **upsample**, by nearest-neighbor or bilinear interpolation or by learned transposed convolutions. U-Net (Ronneberger, Fischer and Brox, 2015) adds skip connections that pass high-resolution encoder features to the decoder. Mask R-CNN (He and colleagues, 2017) extends a two-stage detector with a branch that predicts a mask inside each detected box, which gives instance segmentation.
+
+### Scoring masks
+
+For a predicted mask $P$ and a ground-truth mask $G$ (as sets of pixels), the mask IoU is $|P \cap G|/|P \cup G|$, and the **Dice coefficient** is $2|P \cap G|/(|P| + |G|)$. If $P$ has 3 pixels, $G$ has 4 and they share 3, then $\mathrm{IoU} = 3/4 = 0.75$ and $\mathrm{Dice} = 6/7 \approx 0.857$. The two are related by $\mathrm{Dice} = 2\,\mathrm{IoU}/(1 + \mathrm{IoU})$, so they rank results the same way.
+
+For semantic segmentation, build a confusion matrix with true classes as rows and predicted classes as columns. The IoU of class $k$ is $\mathrm{TP}_k/(\mathrm{TP}_k + \mathrm{FP}_k + \mathrm{FN}_k)$ and the **mean IoU** (mIoU) is the average over classes. **Pixel accuracy**, the fraction of correct pixels, can mislead: a model that labels every pixel "background" in an image that is 95% background scores 95% pixel accuracy but an IoU of 0 on the object class, an mIoU of about 0.475.
+
+### Instances from a semantic mask
+
+A simple way to split a binary mask into objects is **connected-component labeling**: scan the grid, and whenever you meet a foreground pixel with no label yet, start a new label and flood-fill all foreground pixels reachable from it. This finds separate blobs but merges touching objects, which is why learned instance methods are needed when objects overlap. The same comparison machinery as in detection carries over: instance masks can be matched with mask IoU, and duplicate masks can be removed by non-maximum suppression with mask IoU in place of box IoU.
+
+### In code
+
+```python
+def label_components(mask):
+    """4-connected components; returns (label grid, count)."""
+    h, w = len(mask), len(mask[0])
+    labels = [[0] * w for _ in range(h)]
+    count = 0
+    for r in range(h):
+        for c in range(w):
+            if mask[r][c] == 1 and labels[r][c] == 0:
+                count += 1
+                labels[r][c] = count
+                stack = [(r, c)]
+                while stack:
+                    y, x = stack.pop()
+                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        ny, nx = y + dy, x + dx
+                        if (0 <= ny < h and 0 <= nx < w
+                                and mask[ny][nx] == 1 and labels[ny][nx] == 0):
+                            labels[ny][nx] = count
+                            stack.append((ny, nx))
+    return labels, count
+
+mask = [[1, 1, 0, 0], [0, 1, 0, 1], [0, 0, 0, 1], [1, 0, 0, 1]]
+print(label_components(mask))
+```
+
+SciPy's `scipy.ndimage.label` and OpenCV's `connectedComponents` do the same; the point here is the flood fill.
+@example
+title: Components and mask IoU
+problem: Label the 4-connected components of the mask with rows $[1,1,0,0]$, $[0,1,0,1]$, $[0,0,0,1]$, $[1,0,0,1]$, and compute the IoU and Dice of the first component with the ground truth $G = \{(0,0), (0,1), (1,0), (1,1)\}$ (as (row, column) pairs).
+step: Scanning row by row, the first foreground pixel is $(0,0)$, which starts label 1 and reaches $(0,1)$ and then $(1,1)$: label 1 has 3 pixels.
+step: The next unlabeled foreground pixel is $(1,3)$, which starts label 2 and reaches $(2,3)$ and $(3,3)$: 3 pixels. The pixel $(3,0)$ is not adjacent to anything, so it is label 3 with 1 pixel.
+step: Component 1 is $P = \{(0,0), (0,1), (1,1)\}$: $|P \cap G| = 3$ and $|P \cup G| = 4$, so $\mathrm{IoU} = 0.75$ and $\mathrm{Dice} = 6/7 \approx 0.857$.
+answer: Three components of sizes 3, 3 and 1; the first has IoU 0.75 and Dice 0.857.
+@example
+title: Mean IoU from a confusion matrix
+problem: A two-class segmentation has a confusion matrix (rows true class, columns predicted) of $\begin{bmatrix} 80 & 20 \\ 10 & 40 \end{bmatrix}$. Find each class IoU, mIoU and pixel accuracy.
+step: Class 0: $\mathrm{TP} = 80$, $\mathrm{FN} = 20$ (true 0, predicted 1), $\mathrm{FP} = 10$ (true 1, predicted 0). $\mathrm{IoU}_0 = 80/110 \approx 0.727$.
+step: Class 1: $\mathrm{TP} = 40$, $\mathrm{FN} = 10$, $\mathrm{FP} = 20$. $\mathrm{IoU}_1 = 40/70 \approx 0.571$.
+step: $\mathrm{mIoU} = (0.727 + 0.571)/2 \approx 0.649$. Pixel accuracy is $(80 + 40)/150 = 0.8$.
+answer: IoUs 0.727 and 0.571, mIoU about 0.649, pixel accuracy 0.8.
+@mistakes
+- Reporting pixel accuracy on imbalanced images: a model that predicts only the common class can look excellent while missing every object.
+- Using 8-connectivity when the problem asks for 4-connectivity (or vice versa): diagonal pixels then merge into one component or stay separate.
+- Treating semantic segmentation as instance segmentation: two adjacent cars of the same class share one label, and connected components cannot split them if they touch.
+@practice num
+prompt: A predicted mask has 40 pixels, the ground-truth mask has 50, and 30 pixels are in both. What is the Dice coefficient, to three decimal places?
+answer: 0.667
+tol: 0.001
+check: 2 * 30 / (40 + 50)
+hint: Dice is twice the overlap divided by the sum of the two mask sizes.
+solution: $\mathrm{Dice} = 2 \cdot 30/(40 + 50) = 60/90 \approx 0.667$. The IoU of the same masks is $30/60 = 0.5$.
+@practice code
+prompt: Write `mask_scores(pred, gt)` for two masks of the same shape (grids of 0s and 1s, row-major). Return the tuple `(iou, dice)` as floats, where `iou = |P and G| / |P or G|` and `dice = 2 |P and G| / (|P| + |G|)` over pixels equal to 1. If both masks are empty, return `(1.0, 1.0)`. For example, `mask_scores([[1, 1], [1, 0]], [[1, 1], [1, 1]])` returns `(0.75, 6 / 7)`.
+starter:
+```python
+def mask_scores(pred, gt):
+    pass
+```
+tests:
+```python
+iou, dice = mask_scores([[1, 1], [1, 0]], [[1, 1], [1, 1]])
+assert abs(iou - 0.75) < 1e-9 and abs(dice - 6 / 7) < 1e-9
+iou, dice = mask_scores([[1, 0], [0, 0]], [[0, 0], [0, 1]])
+assert iou == 0.0 and dice == 0.0
+assert mask_scores([[0, 0]], [[0, 0]]) == (1.0, 1.0)
+iou, dice = mask_scores([[1, 1, 0]], [[0, 1, 1]])
+assert abs(iou - 1 / 3) < 1e-9 and abs(dice - 0.5) < 1e-9
+```
+model:
+```python
+def mask_scores(pred, gt):
+    """IoU and Dice of two binary masks."""
+    inter = union = size_p = size_g = 0
+    for rp, rg in zip(pred, gt):
+        for p, g in zip(rp, rg):
+            inter += 1 if (p and g) else 0
+            union += 1 if (p or g) else 0
+            size_p += 1 if p else 0
+            size_g += 1 if g else 0
+    if union == 0:
+        return 1.0, 1.0
+    return inter / union, 2 * inter / (size_p + size_g)
+```
+hint: Count the pixels in the intersection, the union and each mask, and handle the case where the union is empty first.
+solution: Dice divides by the sum of the two sizes, not by the union. For the last test the overlap is 1 pixel, the union 3 and the sizes 2 and 2, giving IoU $1/3$ and Dice $2/4 = 0.5$. Two empty masks agree perfectly by convention.
+@practice code
+prompt: Write `components8(mask)` that labels the **8-connected** components of a binary mask (grid of 0s and 1s, row-major): two foreground pixels are in the same component if they are neighbors horizontally, vertically or diagonally. Return `(labels, count)`, where `labels` is a grid of the same shape with 0 for background and component numbers 1, 2, 3, ... in the order the first pixel of each component is found scanning rows top to bottom, left to right. For example, `components8([[1, 0], [0, 1]])` returns `([[1, 0], [0, 1]], 1)`: the two diagonal pixels share label 1.
+starter:
+```python
+def components8(mask):
+    pass
+```
+tests:
+```python
+assert components8([[1, 0], [0, 1]]) == ([[1, 0], [0, 1]], 1)
+m = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 0, 0], [1, 0, 1, 1]]
+assert components8(m) == ([[1, 0, 0, 2], [0, 1, 0, 2], [0, 0, 0, 0], [3, 0, 4, 4]], 4)
+assert components8([[0, 0], [0, 0]]) == ([[0, 0], [0, 0]], 0)
+assert components8([[1, 1, 1]]) == ([[1, 1, 1]], 1)
+assert components8([[0, 1], [1, 0]]) == ([[0, 1], [1, 0]], 1)
+```
+model:
+```python
+def components8(mask):
+    """8-connected component labeling by flood fill."""
+    h, w = len(mask), len(mask[0])
+    labels = [[0] * w for _ in range(h)]
+    count = 0
+    steps = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+             if (dy, dx) != (0, 0)]
+    for r in range(h):
+        for c in range(w):
+            if mask[r][c] == 1 and labels[r][c] == 0:
+                count += 1
+                labels[r][c] = count
+                stack = [(r, c)]
+                while stack:
+                    y, x = stack.pop()
+                    for dy, dx in steps:
+                        ny, nx = y + dy, x + dx
+                        if (0 <= ny < h and 0 <= nx < w
+                                and mask[ny][nx] == 1 and labels[ny][nx] == 0):
+                            labels[ny][nx] = count
+                            stack.append((ny, nx))
+    return labels, count
+```
+hint: Reuse the flood fill idea from the article, but loop over all eight offsets instead of four.
+solution: With 8-connectivity the diagonal pixels of the first test join into one component, while 4-connectivity would give two. In the second test the pixel at the bottom left stays alone and the pixels at the bottom right join each other; the labels come from the scan order.
+@practice num
+prompt: A two-class segmentation has the confusion matrix (rows true class, columns predicted class) $\begin{bmatrix} 50 & 10 \\ 5 & 35 \end{bmatrix}$. Give the mean IoU over the two classes to three decimal places.
+answer: 0.735
+tol: 0.001
+check: (50 / (50 + 10 + 5) + 35 / (35 + 5 + 10)) / 2
+hint: For each class, IoU is $\mathrm{TP}/(\mathrm{TP} + \mathrm{FP} + \mathrm{FN})$; FN are the other entries of its row and FP the other entries of its column.
+solution: Class 0 has TP 50, FN 10 and FP 5, so IoU $= 50/65 \approx 0.769$. Class 1 has TP 35, FN 5, FP 10, so IoU $= 35/50 = 0.7$. The mean is $0.7346 \approx 0.735$.
+@practice code
+prompt: Write `mask_nms(masks, scores, tau)` for non-maximum suppression with mask IoU. `masks` is a list of binary masks (grids of 0s and 1s of one common shape, row-major) and `scores` the list of their scores. Sort by score descending (ties by smaller index). Keep the best remaining mask and suppress every remaining mask whose mask IoU with it is strictly greater than `tau`; repeat. A mask pair whose union is empty has IoU 0. Return the kept indices in the order they were kept. For example, three masks where the second overlaps the first with IoU 0.75 and `tau = 0.5` keep the first and third.
+starter:
+```python
+def mask_nms(masks, scores, tau):
+    pass
+```
+tests:
+```python
+m0 = [[1, 1, 0], [1, 1, 0], [0, 0, 0]]
+m1 = [[1, 1, 0], [1, 0, 0], [0, 0, 0]]
+m2 = [[0, 0, 0], [0, 0, 0], [0, 0, 1]]
+assert mask_nms([m0, m1, m2], [0.9, 0.8, 0.7], 0.5) == [0, 2]
+assert mask_nms([m0, m1, m2], [0.9, 0.8, 0.7], 0.75) == [0, 1, 2]
+assert mask_nms([m0, m1, m2], [0.5, 0.8, 0.7], 0.5) == [1, 2]
+empty = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+assert mask_nms([empty, empty], [0.6, 0.5], 0.1) == [0, 1]
+assert mask_nms([], [], 0.5) == []
+```
+model:
+```python
+def mask_nms(masks, scores, tau):
+    """Greedy NMS using mask IoU."""
+    def miou(a, b):
+        inter = union = 0
+        for ra, rb in zip(a, b):
+            for p, q in zip(ra, rb):
+                inter += 1 if (p and q) else 0
+                union += 1 if (p or q) else 0
+        return inter / union if union else 0.0
+
+    order = sorted(range(len(masks)), key=lambda i: (-scores[i], i))
+    keep = []
+    for i in order:
+        if all(miou(masks[k], masks[i]) <= tau for k in keep):
+            keep.append(i)
+    return keep
+```
+hint: Go through the masks in score order and keep one only if its mask IoU with every already kept mask is at most `tau`.
+solution: This is the same greedy procedure as box NMS, with mask IoU replacing box IoU. The second mask has IoU exactly 0.75 with the first, which is not strictly greater than a threshold of 0.75, so it survives there; in the third test the lower-scoring larger mask is processed after the smaller one, and the smaller one wins.
+@quiz code
+prompt: Write `semantic_miou(pred, gt, num_classes)` where `pred` and `gt` are label maps (grids of integers in `range(num_classes)`, row-major, same shape). For each class compute IoU = intersection / union over pixels; classes that do not appear in either map (empty union) are skipped. Return the mean IoU over the remaining classes as a float. For example, `semantic_miou([[0, 1]], [[0, 1]], 2)` returns `1.0`.
+starter:
+```python
+def semantic_miou(pred, gt, num_classes):
+    pass
+```
+tests:
+```python
+p = [[0, 0, 1], [0, 1, 1]]
+g = [[0, 0, 1], [0, 0, 1]]
+assert abs(semantic_miou(p, g, 2) - (0.75 + 2 / 3) / 2) < 1e-9
+assert abs(semantic_miou(p, g, 3) - (0.75 + 2 / 3) / 2) < 1e-9
+assert abs(semantic_miou(g, g, 2) - 1.0) < 1e-9
+assert abs(semantic_miou([[0, 0]], [[0, 1]], 2) - 0.25) < 1e-9
+```
+model:
+```python
+def semantic_miou(pred, gt, num_classes):
+    """Mean IoU over the classes present in the prediction or truth."""
+    ious = []
+    for k in range(num_classes):
+        inter = union = 0
+        for rp, rg in zip(pred, gt):
+            for p, g in zip(rp, rg):
+                inter += 1 if (p == k and g == k) else 0
+                union += 1 if (p == k or g == k) else 0
+        if union > 0:
+            ious.append(inter / union)
+    return sum(ious) / len(ious)
+```
+hint: For each class count pixels where both maps equal it and where at least one does, skip empty unions, and average.
+solution: A class present only in the ground truth still counts, with IoU 0, as the last test shows: class 0 has IoU $1/2$ and class 1 has IoU 0, so the mean is $0.25$. A class that appears nowhere (the third class in the second test) is skipped, not counted as 1 or 0.
+@quiz text
+prompt: What does this program print?
+```python
+small = [[1, 2], [3, 4]]
+big = []
+for row in small:
+    wide = [v for v in row for _ in range(2)]
+    big.append(wide)
+    big.append(wide)
+print(big[1], len(big))
+```
+answer: [1, 1, 2, 2] 4
+check: run("small = [[1, 2], [3, 4]]\nbig = []\nfor row in small:\n    wide = [v for v in row for _ in range(2)]\n    big.append(wide)\n    big.append(wide)\nprint(big[1], len(big))")
+hint: Each value is repeated twice along the row, and each widened row is appended twice.
+solution: This is nearest-neighbor upsampling by a factor of 2. The first row becomes `[1, 1, 2, 2]` and appears twice, so `big[1]` is `[1, 1, 2, 2]` and `big` has 4 rows.
+@quiz mc
+prompt: In a test image, 98% of the pixels are background and 2% belong to a tumor. A model labels every pixel as background. Which statement is correct?
+choice*: Its pixel accuracy is 98% but its IoU for the tumor class is 0.
+choice: Its pixel accuracy is 50% because it finds one of the two classes.
+choice: Its mean IoU is 0.98 because most pixels are correct.
+choice: Its tumor-class IoU is 0.98 because 98% of pixels are labeled correctly.
+hint: Compute the tumor class IoU: it has no true positives.
+solution: All background pixels are correct, so pixel accuracy is 98%. For the tumor class there are no true positives, so its IoU is 0, and the mean IoU is about $(0.98 + 0)/2 = 0.49$. This is why mean IoU or per-class scores are reported for imbalanced data.

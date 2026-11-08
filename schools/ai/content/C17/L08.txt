@@ -107,72 +107,63 @@ hint: Compute the expected value of $m_j h_j/(1-p)$ when $m_j$ is 1 with probabi
 solution: $\mathbb{E}[m_j h_j/(1 - p)] = (1-p) h_j/(1-p) = h_j$. The rescaling keeps the scale of activations consistent, so at test time the network is used unchanged. It does not change the parameter count or guarantee any loss ordering.
 
 @practice code
-prompt: Write `decay_step(w, g, lr, lam)` where `w` and `g` are lists of equal length (parameters and gradient). Return a new list after one SGD step with L2 weight decay: each parameter becomes `w_i - lr * (g_i + lam * w_i)`. Do not modify the inputs. For example, `decay_step([2.0, -1.0], [0.5, 0.3], 0.1, 0.1)` returns `[1.93, -1.02]` (up to rounding).
+prompt: Write `decay_step_masked(w, g, lr, lam, decay)` where `w` and `g` are lists of equal length (parameters and gradient) and `decay` is a list of booleans of the same length: true for a weight that should be decayed and false for a parameter (such as a bias) that should not. Return a new list after one SGD step: a decayed entry becomes `w_i - lr * (g_i + lam * w_i)` and any other entry becomes `w_i - lr * g_i`. Do not modify the inputs. For example, `decay_step_masked([2.0, 2.0], [0.5, 0.5], 0.1, 0.5, [True, False])` returns `[1.85, 1.95]` (up to rounding).
 starter:
 ```python
-def decay_step(w, g, lr, lam):
+def decay_step_masked(w, g, lr, lam, decay):
     return w
 ```
 tests:
 ```python
-w = decay_step([2.0, -1.0], [0.5, 0.3], 0.1, 0.1)
-assert abs(w[0] - 1.93) < 1e-9 and abs(w[1] + 1.02) < 1e-9
-w = decay_step([4.0], [0.0], 0.5, 0.2)
-assert abs(w[0] - 3.6) < 1e-9
+w = decay_step_masked([2.0, 2.0], [0.5, 0.5], 0.1, 0.5, [True, False])
+assert abs(w[0] - 1.85) < 1e-9 and abs(w[1] - 1.95) < 1e-9
+w = decay_step_masked([4.0, -4.0, 1.0], [0.0, 0.0, 0.0], 0.5, 0.2, [True, True, False])
+assert all(abs(a - b) < 1e-9 for a, b in zip(w, [3.6, -3.6, 1.0]))
 w0 = [1.0, 2.0]
-decay_step(w0, [1.0, 1.0], 0.1, 0.5)
+decay_step_masked(w0, [1.0, 1.0], 0.1, 0.5, [True, True])
 assert w0 == [1.0, 2.0]
-w = decay_step([3.0], [1.0], 0.1, 0.0)
-assert abs(w[0] - 2.9) < 1e-9
+w = decay_step_masked([3.0, -1.0], [1.0, 2.0], 0.1, 0.0, [True, True])
+assert abs(w[0] - 2.9) < 1e-9 and abs(w[1] + 1.2) < 1e-9
+w = decay_step_masked([3.0, -1.0], [1.0, 2.0], 0.1, 0.7, [False, False])
+assert abs(w[0] - 2.9) < 1e-9 and abs(w[1] + 1.2) < 1e-9
 ```
 model:
 ```python
-def decay_step(w, g, lr, lam):
-    """One SGD step with L2 weight decay; returns a new list."""
-    return [wi - lr * (gi + lam * wi) for wi, gi in zip(w, g)]
+def decay_step_masked(w, g, lr, lam, decay):
+    """One SGD step with L2 weight decay applied only where decay is true."""
+    return [wi - lr * (gi + (lam * wi if d else 0.0))
+            for wi, gi, d in zip(w, g, decay)]
 ```
-hint: The decay term is `lam * w_i`, added to the gradient before multiplying by `lr`.
-solution: The penalty contributes `lam * w_i` to each partial derivative, so the update is the plain SGD step on `g_i + lam * w_i`. With a zero gradient the weight just shrinks by the factor $1 - \eta\lambda$ (third value in the second test).
+hint: The decay term `lam * w_i` is added to the gradient only for entries whose flag is true.
+solution: The penalty contributes `lam * w_i` to the partial derivative of a decayed entry and nothing to the others, so the masked entries follow plain SGD. The second test has zero gradients, so decayed weights just shrink by the factor $1 - \eta\lambda = 0.9$ while the unmasked one stays put; the last test checks that nothing is decayed when every flag is false.
 
 @practice code
-prompt: Write `inverted_dropout(h, p, rng)` for a list of activations `h`, a drop probability `p` with $0 \le p < 1$ and a `random.Random` instance `rng`. For each entry draw `rng.random()`; keep the entry if the draw is at least `p` and drop it otherwise. Return `(out, mask)` where `mask[j]` is 1.0 if entry `j` was kept and 0.0 otherwise, and `out[j] = mask[j] * h[j] / (1 - p)`. For example, with `p = 0.0` the output equals `h`.
+prompt: Write `dropout_backward(upstream, mask, p)` for inverted dropout with drop probability `p` ($0 \le p < 1$). The forward pass computed `out[j] = mask[j] * h[j] / (1 - p)`, where `mask[j]` is 1.0 for a kept unit and 0.0 for a dropped one. Given `upstream[j]`, the gradient of the loss with respect to `out[j]`, return the list of gradients of the loss with respect to `h[j]`. For example, `dropout_backward([1.0, 2.0], [1.0, 0.0], 0.5)` returns `[2.0, 0.0]`.
 starter:
 ```python
-import random
-
-def inverted_dropout(h, p, rng):
-    return list(h), [1.0 for _ in h]
+def dropout_backward(upstream, mask, p):
+    return list(upstream)
 ```
 tests:
 ```python
-import random
-out, mask = inverted_dropout([1.0, 2.0, 3.0], 0.0, random.Random(0))
-assert out == [1.0, 2.0, 3.0] and mask == [1.0, 1.0, 1.0]
-h = [1.0] * 2000
-out, mask = inverted_dropout(h, 0.5, random.Random(1))
-assert len(out) == 2000 and set(mask) <= {0.0, 1.0}
-assert all(o == 2.0 for o, m in zip(out, mask) if m == 1.0)
-assert all(o == 0.0 for o, m in zip(out, mask) if m == 0.0)
-assert abs(sum(out) / 2000 - 1.0) < 0.15
-assert 0.4 < sum(mask) / 2000 < 0.6
-out2, _ = inverted_dropout([3.0, 6.0], 0.25, random.Random(3))
-assert all(o in (0.0, 4.0, 8.0) for o in out2)
-a = inverted_dropout(h, 0.3, random.Random(9))
-b = inverted_dropout(h, 0.3, random.Random(9))
-assert a == b
+g = dropout_backward([1.0, 2.0, 3.0, 4.0], [1.0, 0.0, 1.0, 0.0], 0.5)
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, [2.0, 0.0, 6.0, 0.0]))
+g = dropout_backward([0.3, 0.6, 0.9], [1.0, 1.0, 0.0], 0.25)
+assert all(abs(a - b) < 1e-9 for a, b in zip(g, [0.4, 0.8, 0.0]))
+assert dropout_backward([1.5, -2.0], [1.0, 1.0], 0.0) == [1.5, -2.0]
+assert dropout_backward([], [], 0.3) == []
+up = [1.0, 2.0]
+dropout_backward(up, [1.0, 0.0], 0.5)
+assert up == [1.0, 2.0]
 ```
 model:
 ```python
-import random
-
-def inverted_dropout(h, p, rng):
-    """Inverted dropout: drop with probability p, rescale survivors by 1/(1-p)."""
-    mask = [0.0 if rng.random() < p else 1.0 for _ in h]
-    out = [m * x / (1.0 - p) for m, x in zip(mask, h)]
-    return out, mask
+def dropout_backward(upstream, mask, p):
+    """Gradient through inverted dropout: only kept units, scaled by 1/(1-p)."""
+    return [u * m / (1.0 - p) for u, m in zip(upstream, mask)]
 ```
-hint: Build the mask first with one `rng.random()` draw per entry, then multiply each activation by its mask value and divide by `1 - p`.
-solution: One draw per entry decides whether it is dropped. Survivors are scaled by $1/(1-p)$, so the average output over many draws is close to the input average, which the large-sample test checks without depending on particular random values.
+hint: The forward map is linear in `h[j]` with slope `mask[j] / (1 - p)`, so the local derivative is that slope.
+solution: Each output depends on its own input through the factor `mask[j] / (1 - p)`, so the chain rule multiplies the upstream gradient by that same factor: dropped units receive zero gradient and kept units receive the scaled gradient. A solution that forgets the rescaling fails the first two tests, and one that passes gradients to dropped units fails because of the zeros.
 
 @quiz code
 prompt: Write `early_stopping_epoch(val_losses, patience)` that simulates early stopping on a list of validation losses, one per epoch (epochs numbered from 0). Track the best (lowest) loss so far, counting an epoch as an improvement only if its loss is strictly lower than the best so far. Stop as soon as `patience` consecutive epochs have passed without improvement, and return the index of the best epoch seen up to that point. If the run never stops early, return the index of the best epoch overall. For example, `early_stopping_epoch([1.0, 0.8, 0.9, 0.95, 0.5], 2)` returns `1`.

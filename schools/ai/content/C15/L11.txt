@@ -105,7 +105,7 @@ answer: $\mathrm{AUC} = 0.667$ and $\mathrm{AP} = 0.75$.
 @mistakes
 - Quoting accuracy on imbalanced data: always predicting the majority class can beat a useful model.
 - Choosing the threshold on the test set and then reporting test metrics at that threshold; choose it on validation data.
-- Comparing PR curves or average precision across data sets with different prevalence without the baseline: random scores have AP equal to the prevalence.
+- Comparing PR curves or average precision across data sets with different prevalence without the baseline: random scores have an AP close to the prevalence.
 - Reading ROC AUC as accuracy or calibration: it measures ranking only, so a badly calibrated model can have a perfect AUC.
 
 @practice num
@@ -165,76 +165,85 @@ hint: Count TP, FP and FN with one pass each, then guard each division against a
 solution: Three cases make a denominator zero: no predicted positives, no actual positives, and zero precision plus recall. Each returns `0.0`. The last test has recall 1 but precision 0.25, and $F_1 = 0.4$ is dragged toward the smaller of the two.
 
 @practice code
-prompt: Write `roc_auc(scores, y)` returning the area under the ROC curve as the fraction of positive-negative pairs in which the positive example has the higher score, counting a tie as $0.5$. `scores` is a list of floats and `y` a list of 0/1 labels. Raise `ValueError` if there are no positives or no negatives.
+prompt: Write `roc_curve(scores, y)` that returns the ROC curve as a list of `(fpr, tpr)` tuples. The list starts with `(0.0, 0.0)` and then has one point for each distinct score, in decreasing order of score, giving the rates obtained by predicting positive for every example whose score is at least that value (so tied examples enter together). `scores` is a list of floats and `y` a list of 0/1 labels. Raise `ValueError` if there are no positives or no negatives. The area under the curve by the trapezoid rule equals the fraction of positive-negative pairs the positive wins, counting ties as one half.
 starter:
 ```python
-def roc_auc(scores, y):
+def roc_curve(scores, y):
     pass
 ```
 tests:
 ```python
-assert abs(roc_auc([0.9, 0.4, 0.6, 0.3, 0.2], [1, 1, 0, 0, 0]) - 5 / 6) < 1e-9
-assert abs(roc_auc([0.5, 0.5], [1, 0]) - 0.5) < 1e-9
-assert abs(roc_auc([0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1]) - 1.0) < 1e-9
-assert abs(roc_auc([0.9, 0.8, 0.2, 0.1], [0, 0, 1, 1])) < 1e-9
-s = [0.3, 0.9, 0.5, 0.1, 0.7]
-yy = [0, 1, 1, 0, 0]
-assert abs(roc_auc(s, yy) - roc_auc([v ** 3 for v in s], yy)) < 1e-12
-assert raises(ValueError, roc_auc, [0.1, 0.2], [1, 1])
+def close(a, b):
+    return len(a) == len(b) and all(abs(u[0] - v[0]) < 1e-9 and abs(u[1] - v[1]) < 1e-9
+                                    for u, v in zip(a, b))
+pts = roc_curve([0.9, 0.4, 0.6, 0.3, 0.2], [1, 1, 0, 0, 0])
+assert close(pts, [(0, 0), (0, 0.5), (1 / 3, 0.5), (1 / 3, 1), (2 / 3, 1), (1, 1)])
+assert close(roc_curve([0.5, 0.5, 0.2], [1, 0, 0]), [(0, 0), (0.5, 1), (1, 1)])
+s = [0.3, 0.9, 0.5, 0.1, 0.7, 0.5]
+yy = [0, 1, 1, 0, 0, 1]
+pts = roc_curve(s, yy)
+area = sum((x2 - x1) * (y1 + y2) / 2 for (x1, y1), (x2, y2) in zip(pts, pts[1:]))
+ps = [v for v, t in zip(s, yy) if t == 1]
+ns = [v for v, t in zip(s, yy) if t == 0]
+pairs = sum(1.0 if p > q else 0.5 if p == q else 0.0 for p in ps for q in ns)
+assert abs(area - pairs / (len(ps) * len(ns))) < 1e-9
+assert pts[0] == (0.0, 0.0) and abs(pts[-1][0] - 1) < 1e-9 and abs(pts[-1][1] - 1) < 1e-9
+assert raises(ValueError, roc_curve, [0.1, 0.2], [1, 1])
+assert raises(ValueError, roc_curve, [0.1, 0.2], [0, 0])
 ```
 model:
 ```python
-def roc_auc(scores, y):
-    """ROC AUC as the probability a positive outranks a negative."""
-    pos = [s for s, t in zip(scores, y) if t == 1]
-    neg = [s for s, t in zip(scores, y) if t == 0]
-    if not pos or not neg:
+def roc_curve(scores, y):
+    """ROC points (fpr, tpr), one per distinct score threshold."""
+    positives = sum(y)
+    negatives = len(y) - positives
+    if positives == 0 or negatives == 0:
         raise ValueError("need both classes")
-    wins = 0.0
-    for p in pos:
-        for q in neg:
-            if p > q:
-                wins += 1.0
-            elif p == q:
-                wins += 0.5
-    return wins / (len(pos) * len(neg))
+    points = [(0.0, 0.0)]
+    for t in sorted(set(scores), reverse=True):
+        tp = sum(1 for s, label in zip(scores, y) if s >= t and label == 1)
+        fp = sum(1 for s, label in zip(scores, y) if s >= t and label == 0)
+        points.append((fp / negatives, tp / positives))
+    return points
 ```
-hint: Split the scores by label, then compare every positive score with every negative score; ties are worth half a win.
-solution: The AUC is the average, over all positive-negative pairs, of the indicator that the positive wins, with ties split. The test with cubed scores confirms that only the ranking matters, and the all-negative-first case gives zero.
+hint: For each distinct score, in decreasing order, count the positives and negatives whose score is at least that value, and divide by the totals of each class.
+solution: Grouping tied examples under one threshold makes a tied positive-negative pair add a diagonal segment, which the trapezoid rule scores as one half; going example by example would instead give an arbitrary order among ties. The third test compares the area under the curve with the pairwise definition of AUC on data containing a tie.
 
 @quiz code
-prompt: Write `average_precision(scores, y)` for 0/1 labels `y` and float `scores` (assume all scores are distinct). Rank the examples by decreasing score; at each rank holding a positive example, record the precision (positives so far divided by the rank); return the mean of these values over the positives. Raise `ValueError` if there are no positives.
+prompt: Write `recall_at_precision(scores, y, min_precision)` for float `scores` and 0/1 labels `y`. For each distinct score `t`, predict positive for every example with `score >= t` (tied examples enter together) and compute precision $TP/(TP + FP)$ and recall $TP/(TP + FN)$. Return the largest recall among the thresholds whose precision is at least `min_precision`, or `0.0` if no threshold qualifies. Raise `ValueError` if there are no positives.
 starter:
 ```python
-def average_precision(scores, y):
+def recall_at_precision(scores, y, min_precision):
     pass
 ```
 tests:
 ```python
-assert abs(average_precision([0.9, 0.8, 0.7, 0.6], [1, 0, 1, 0]) - 5 / 6) < 1e-9
-assert abs(average_precision([0.9, 0.8, 0.7, 0.6], [0, 1, 0, 1]) - 0.5) < 1e-9
-assert abs(average_precision([0.2, 0.9, 0.5], [0, 1, 1]) - 1.0) < 1e-9
-assert abs(average_precision([0.1, 0.8, 0.4, 0.6], [1, 0, 1, 0]) - 5 / 12) < 1e-9
-assert raises(ValueError, average_precision, [0.5, 0.4], [0, 0])
+s = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4]
+y = [1, 0, 1, 1, 0, 0]
+assert abs(recall_at_precision(s, y, 0.7) - 1.0) < 1e-9
+assert abs(recall_at_precision(s, y, 0.8) - 1 / 3) < 1e-9
+assert abs(recall_at_precision(s, y, 0.5) - 1.0) < 1e-9
+assert abs(recall_at_precision([0.8, 0.8, 0.3], [1, 0, 1], 0.6) - 1.0) < 1e-9
+assert recall_at_precision([0.8, 0.8, 0.3], [1, 0, 1], 0.9) == 0.0
+assert raises(ValueError, recall_at_precision, [0.5, 0.4], [0, 0], 0.5)
 ```
 model:
 ```python
-def average_precision(scores, y):
-    """Mean precision at the ranks of the positive examples."""
-    total = sum(y)
-    if total == 0:
+def recall_at_precision(scores, y, min_precision):
+    """Best recall over thresholds that reach the required precision."""
+    positives = sum(y)
+    if positives == 0:
         raise ValueError("no positives")
-    order = sorted(range(len(y)), key=lambda i: -scores[i])
-    hits = 0
-    ap = 0.0
-    for rank, i in enumerate(order, start=1):
-        if y[i] == 1:
-            hits += 1
-            ap += hits / rank
-    return ap / total
+    best = 0.0
+    for t in sorted(set(scores), reverse=True):
+        tp = sum(1 for s, label in zip(scores, y) if s >= t and label == 1)
+        fp = sum(1 for s, label in zip(scores, y) if s >= t and label == 0)
+        if tp / (tp + fp) >= min_precision:
+            best = max(best, tp / positives)
+    return best
 ```
-hint: Sort the indices by decreasing score; keep a running count of positives seen, and add `hits / rank` each time you meet a positive.
-solution: In the first test the positives are at ranks 1 and 3, with precisions $1$ and $2/3$, whose mean is $5/6$. The test with unsorted input checks the sorting, and the second test, with positives at ranks 2 and 4, gives $(1/2 + 2/4)/2 = 0.5$.
+hint: Scan the distinct scores; for each, count TP and FP among the examples with `score >= t`, and keep the recall `TP / positives` whenever the precision is at least `min_precision`.
+solution: Each distinct score is a threshold with its own precision and recall, and at least one example is flagged at every threshold, so the precision is always defined. In the fourth test the tied examples at $0.8$ enter together, giving precision $0.5$ and recall $0.5$; cutting between them would report a precision of 1 that no threshold achieves, which the fifth test would expose. This is how an operating point is read off a precision-recall curve when a minimum precision is required.
 
 @quiz text
 prompt: What does this program print?

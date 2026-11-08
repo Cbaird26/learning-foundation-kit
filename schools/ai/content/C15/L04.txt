@@ -149,37 +149,40 @@ hint: Write $e^{z_k + c} = e^{c}e^{z_k}$ in both numerator and denominator.
 solution: The factor $e^{c}$ multiplies every term, including the sum in the denominator, and cancels. Scores shift together, so ranking and probabilities are unchanged. This is why subtracting the maximum score is safe.
 
 @practice code
-prompt: Write `softmax(z)` that returns the list of softmax probabilities of the list of scores `z`. It must be numerically stable: `softmax([1000.0, 1000.0])` must not raise an error and returns `[0.5, 0.5]`.
+prompt: Write `softmax_temp(z, T)` that returns the list of probabilities $\operatorname{softmax}(\mathbf{z}/T)$ for a list of scores `z` and a temperature `T > 0` (temperature scaling divides the scores by one number before the softmax). It must be numerically stable: `softmax_temp([1000.0, 1001.0], 0.01)` must not raise an error and returns a list that is `[0.0, 1.0]` to within $10^{-9}$.
 starter:
 ```python
 import math
 
-def softmax(z):
+def softmax_temp(z, T):
     pass
 ```
 tests:
 ```python
-got = softmax([2.0, 1.0, 0.0])
-assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.66524096, 0.24472847, 0.09003057]))
-got = softmax([1000.0, 1000.0])
+got = softmax_temp([3.0, 1.0, 0.0], 2.0)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.62853172, 0.2312239, 0.14024438]))
+got = softmax_temp([1000.0, 1000.0], 1.0)
 assert all(abs(a - 0.5) < 1e-9 for a in got)
-got = softmax([-1000.0, 0.0, -1000.0])
-assert abs(got[1] - 1.0) < 1e-9 and abs(sum(got) - 1.0) < 1e-9
-assert abs(softmax([5.0])[0] - 1.0) < 1e-12
+got = softmax_temp([1000.0, 1001.0], 0.01)
+assert abs(got[0]) < 1e-9 and abs(got[1] - 1.0) < 1e-9
+got = softmax_temp([0.0, 10.0], 100.0)
+assert all(abs(a - b) < 1e-6 for a, b in zip(got, [0.47502081, 0.52497919]))
+assert abs(softmax_temp([5.0], 3.0)[0] - 1.0) < 1e-12
 ```
 model:
 ```python
 import math
 
-def softmax(z):
-    """Stable softmax: subtract the maximum before exponentiating."""
-    m = max(z)
-    e = [math.exp(v - m) for v in z]
+def softmax_temp(z, T):
+    """Stable softmax of the scores divided by the temperature T."""
+    scaled = [v / T for v in z]
+    m = max(scaled)
+    e = [math.exp(v - m) for v in scaled]
     total = sum(e)
     return [v / total for v in e]
 ```
-hint: Subtract `max(z)` from every score before applying `math.exp`; the result is unchanged but nothing overflows.
-solution: Shift invariance lets you subtract the largest score, so the largest exponent is $e^0 = 1$ and no term overflows. Dividing by the sum normalizes the list. The test with scores of 1000 fails for a direct implementation.
+hint: Divide every score by `T` first, then subtract the maximum of the scaled scores before applying `math.exp`.
+solution: Dividing by the temperature changes the scores, so the maximum to subtract is the maximum of the scaled scores. A large temperature flattens the probabilities toward uniform, as the test with `T = 100` shows, and a small one sharpens them toward the largest score; the test with scores near 1000 and `T = 0.01` has scaled scores near $10^5$ and fails for an implementation that does not subtract the maximum.
 
 @practice code
 prompt: Write `train_softmax(X, y, K, lr, steps)` that trains softmax regression by batch gradient descent from an all-zero weight matrix, for exactly `steps` steps with step size `lr`, and returns the weights `W` as a list of rows: `W[j][k]` is the weight of feature `j` for class `k`. `X` is a list of rows (constant column included), `y` a list of class indices in `range(K)`. The score of class `k` is `sum(row[j] * W[j][k])`, the gradient is $\frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$.
@@ -232,33 +235,35 @@ hint: For each example compute the softmax of its scores, subtract the one-hot l
 solution: Accumulate the gradient over all examples before changing `W`. The first test pins down the sign and the factor $1/n$; the row-sum test holds because each gradient row sums to zero; and the two-class run shows that softmax regression with two classes is logistic regression, with the logistic weights equal to twice the second column here.
 
 @quiz code
-prompt: Write `softmax_grad(X, y, W)` returning the gradient of the mean cross-entropy loss of softmax regression with respect to `W`, as a list of rows with the same shape as `W`: `W[j][k]` is the weight of feature `j` for class `k`. `X` is a list of rows with the constant column included, `y` a list of class indices.
+prompt: Write `softmax_grad_l2(X, y, W, lam)` returning the gradient, with respect to `W`, of the mean cross-entropy loss plus the penalty $\lambda\sum_{j \ge 1}\sum_k W_{jk}^2$, as a list of rows with the same shape as `W`: `W[j][k]` is the weight of feature `j` for class `k`, and row `0` belongs to the constant feature (the bias row), which is not penalized. `X` is a list of rows with the constant column included, `y` a list of class indices.
 starter:
 ```python
 import math
 
-def softmax_grad(X, y, W):
+def softmax_grad_l2(X, y, W, lam):
     pass
 ```
 tests:
 ```python
-G = softmax_grad([[1, 2], [1, 0]], [2, 0], [[0.0] * 3, [0.0] * 3])
+G = softmax_grad_l2([[1, 2], [1, 0]], [2, 0], [[0.0] * 3, [0.0] * 3], 7.0)
 want = [[-1 / 6, 1 / 3, -1 / 6], [1 / 3, 1 / 3, -2 / 3]]
 assert all(abs(a - b) < 1e-9 for r, s in zip(G, want) for a, b in zip(r, s))
 W = [[0.1, -0.2, 0.3], [0.0, 0.4, -0.1]]
-G = softmax_grad([[1, 2], [1, 0], [1, -1]], [2, 0, 1], W)
+X = [[1, 2], [1, 0], [1, -1]]
+G = softmax_grad_l2(X, [2, 0, 1], W, 0.5)
 want = [[-0.01234377, -0.04119678, 0.05354055],
-        [0.06560724, 0.57642247, -0.6420297]]
+        [0.06560724, 0.97642247, -0.7420297]]
 assert all(abs(a - b) < 1e-6 for r, s in zip(G, want) for a, b in zip(r, s))
-assert abs(sum(G[0])) < 1e-9 and abs(sum(G[1])) < 1e-9
+G0 = softmax_grad_l2(X, [2, 0, 1], W, 0.0)
+assert abs(G[0][1] - G0[0][1]) < 1e-12 and abs(sum(G[0])) < 1e-9
 assert W == [[0.1, -0.2, 0.3], [0.0, 0.4, -0.1]]
 ```
 model:
 ```python
 import math
 
-def softmax_grad(X, y, W):
-    """Gradient of the mean cross-entropy with respect to W."""
+def softmax_grad_l2(X, y, W, lam):
+    """Gradient of mean cross-entropy plus an L2 penalty off the bias row."""
     n = len(X)
     d = len(W)
     K = len(W[0])
@@ -272,10 +277,13 @@ def softmax_grad(X, y, W):
             err = e[k] / s - (1 if k == t else 0)
             for j in range(d):
                 G[j][k] += row[j] * err / n
+    for j in range(1, d):
+        for k in range(K):
+            G[j][k] += 2 * lam * W[j][k]
     return G
 ```
-hint: For each example the error vector is the probability vector minus the one-hot label; row $j$ of the gradient accumulates feature $j$ times that error.
-solution: The gradient is $\frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$. At zero weights every probability is $1/3$, which the first test uses so that the answer can be checked by hand. The row-sum assertion is a free check: every row of a correct gradient sums to zero.
+hint: Compute the data gradient $\frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$ as usual, then add $2\lambda W_{jk}$ to every entry in rows $j \ge 1$.
+solution: The penalty adds $2\lambda W_{jk}$ to the data gradient, except in the bias row. The first test uses zero weights, where the penalty vanishes whatever `lam` is, so it checks the data term by hand; the second adds $2(0.5)(0.4) = 0.4$ and $2(0.5)(-0.1) = -0.1$ to the last two entries of the feature row. The bias row still sums to zero, and with the penalty the feature row no longer does.
 
 @quiz text
 prompt: What does this program print?

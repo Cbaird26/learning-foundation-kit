@@ -34,7 +34,7 @@ The plain stack's gradient vanishes; the residual stack's does not, because of t
 
 ### Where residual connections appear
 
-Convolutional residual networks (C18) place two convolutions inside $F$, with batch normalization. Transformers (C19) wrap both the attention sub-layer and the feed-forward sub-layer in residual connections together with layer normalization: the model's "residual stream" is the running sum of all blocks' outputs. A residual connection is also what makes it reasonable to initialize a deep model so that it starts as nearly the identity.
+Convolutional residual networks place two convolutions inside $F$, with batch normalization. Transformers wrap both the attention sub-layer and the feed-forward sub-layer in residual connections together with layer normalization: the model's "residual stream" is the running sum of all blocks' outputs. A residual connection is also what makes it reasonable to initialize a deep model so that it starts as nearly the identity.
 
 ### In code
 
@@ -103,34 +103,37 @@ hint: Differentiate $\mathbf{x} + F(\mathbf{x})$ with respect to $\mathbf{x}$.
 solution: The derivative of the added $\mathbf{x}$ is the identity, so the backward pass multiplies by $\mathbf{I} + \partial F/\partial\mathbf{x}$, not by $\partial F/\partial\mathbf{x}$ alone. The shortcut does not make $F$ linear, does not reduce parameters and is not removed at test time.
 
 @practice code
-prompt: Write `residual_block(x, W, b)` where `x` is a list of `d` floats, `W` is a `d` by `d` matrix (list of rows) and `b` a list of `d` floats. Return the list `y` with `y = x + ReLU(W x + b)` computed entrywise. For example, `residual_block([2.0, -1.0], [[1.0, -1.0], [-1.0, 0.5]], [-1.0, 1.0])` returns `[4.0, -1.0]`.
+prompt: Write `residual_block2(x, W1, b1, W2, b2)` for a residual block whose branch $F$ has two layers of different widths. `x` is a list of `d` floats, `W1` is an `h` by `d` matrix (list of rows) with `b1` a list of `h` floats, and `W2` is a `d` by `h` matrix with `b2` a list of `d` floats. Return the list `y = x + W2 h + b2`, where `h = ReLU(W1 x + b1)` entrywise. There is no activation after the second layer. For example, `residual_block2([2.0], [[-1.0]], [0.0], [[5.0]], [0.25])` returns `[2.25]`.
 starter:
 ```python
-def residual_block(x, W, b):
+def residual_block2(x, W1, b1, W2, b2):
     return list(x)
 ```
 tests:
 ```python
-y = residual_block([2.0, -1.0], [[1.0, -1.0], [-1.0, 0.5]], [-1.0, 1.0])
-assert abs(y[0] - 4.0) < 1e-9 and abs(y[1] + 1.0) < 1e-9
-y = residual_block([1.0, 2.0], [[-1.0, 0.0], [0.0, -1.0]], [0.5, 0.0])
-assert y == [1.0, 2.0]
-y = residual_block([1.0, 2.0], [[0.0, 0.0], [0.0, 0.0]], [1.0, 2.0])
-assert abs(y[0] - 2.0) < 1e-9 and abs(y[1] - 4.0) < 1e-9
-y = residual_block([1.0, -2.0], [[1.0, 1.0], [2.0, 0.0]], [0.0, 0.0])
-assert abs(y[0] - 1.0) < 1e-9 and abs(y[1] - 0.0) < 1e-9
-assert len(residual_block([0.5], [[2.0]], [0.0])) == 1
+y = residual_block2([2.0], [[-1.0]], [0.0], [[5.0]], [0.25])
+assert abs(y[0] - 2.25) < 1e-9
+W1 = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+W2 = [[1.0, 0.0, 1.0], [0.0, 2.0, -1.0]]
+y = residual_block2([1.0, 2.0], W1, [0.0, -3.0, 0.0], W2, [0.5, 0.0])
+assert abs(y[0] - 5.5) < 1e-9 and abs(y[1] + 1.0) < 1e-9
+y = residual_block2([1.0, -1.0], [[1.0, 1.0]], [1.0], [[3.0], [4.0]], [0.0, 0.0])
+assert abs(y[0] - 4.0) < 1e-9 and abs(y[1] - 3.0) < 1e-9
+y = residual_block2([3.0, -1.0], [[0.0, 0.0]], [-2.0], [[1.0], [1.0]], [-0.5, 0.5])
+assert abs(y[0] - 2.5) < 1e-9 and abs(y[1] + 0.5) < 1e-9
+assert len(residual_block2([0.5, 1.0], W1, [0.0, 0.0, 0.0], W2, [0.0, 0.0])) == 2
 ```
 model:
 ```python
-def residual_block(x, W, b):
-    """Residual block y = x + ReLU(Wx + b)."""
-    f = [max(0.0, sum(w * v for w, v in zip(row, x)) + c)
-         for row, c in zip(W, b)]
+def residual_block2(x, W1, b1, W2, b2):
+    """Residual block y = x + W2 ReLU(W1 x + b1) + b2."""
+    h = [max(0.0, sum(w * v for w, v in zip(row, x)) + c)
+         for row, c in zip(W1, b1)]
+    f = [sum(w * v for w, v in zip(row, h)) + c for row, c in zip(W2, b2)]
     return [xi + fi for xi, fi in zip(x, f)]
 ```
-hint: Compute the list `f` of ReLU outputs for each row of `W`, then add it to `x` entry by entry.
-solution: The ReLU is applied to the pre-activations only, and the original `x` is added afterwards (not passed through the ReLU). The second test has all pre-activations negative, so the block is exactly the identity.
+hint: Compute the hidden list `h` with the ReLU first, then the branch output `f` from `h` with the second layer (and its bias, but no ReLU), and add `f` to `x` entry by entry.
+solution: The ReLU is applied only to the hidden layer, the second layer is linear with its own bias, and the original `x` is added at the end. The first test has an inactive hidden unit but a nonzero output bias, which a solution that drops `b2` gets wrong; the second has a negative branch output, which a solution that applies a ReLU after the second layer gets wrong.
 
 @practice code
 prompt: Write `chain_grad(fprimes, residual)` that returns the derivative of the output of a chain of scalar layers with respect to the input, given the list `fprimes` of each layer's derivative. If `residual` is `False` each layer multiplies the gradient by `f'`, and if it is `True` each layer is $y \leftarrow y + f(y)$ and multiplies it by `1 + f'`. An empty list returns `1.0`. For example, `chain_grad([0.2, -0.5], True)` returns `0.6`.
@@ -143,8 +146,8 @@ tests:
 ```python
 assert abs(chain_grad([0.2, -0.5], True) - 0.6) < 1e-9
 assert abs(chain_grad([0.2, -0.5], False) + 0.1) < 1e-9
-assert abs(chain_grad([0.1] * 10, True) - 2.5937424601) < 1e-6
-assert abs(chain_grad([0.1] * 10, False) - 1e-10) < 1e-15
+assert abs(chain_grad([0.3] * 4, True) - 2.8561) < 1e-9
+assert abs(chain_grad([0.3] * 4, False) - 0.0081) < 1e-12
 assert chain_grad([], True) == 1.0 and chain_grad([], False) == 1.0
 assert abs(chain_grad([-1.0, 5.0], True)) < 1e-12
 ```

@@ -1,0 +1,214 @@
+@lesson
+title: Cameras, geometry and 3-D vision basics
+summary: Project 3-D points into an image with the pinhole camera model, recover depth from stereo disparity, and match stereo patches along a row.
+objective: Apply the pinhole camera model with intrinsic and extrinsic parameters to project points into pixels.
+objective: Compute depth from disparity, relate depth error to baseline and focal length, and back-project a pixel to 3-D.
+objective: Implement projection, stereo triangulation and block-matching disparity search in plain Python.
+reading: Computer Vision: Algorithms and Applications (Szeliski), 2nd edition: the image formation chapter, the sections on geometric primitives and transformations and on the pinhole camera model, and the chapter on depth estimation, the section on stereo matching.
+@article
+A photograph throws away one dimension: every point along a ray from the camera lands on the same pixel. Yet two eyes, or two cameras, recover depth. The geometry of how 3-D points become pixels, and how two views undo that loss, is the subject of **3-D vision**.
+
+### Conventions used in this course
+
+In **camera coordinates** the origin is the camera center, $X$ points right, $Y$ points down, and $Z$ points forward along the optical axis, so visible points have $Z > 0$. A pixel is $(u, v)$ with $u$ the column and $v$ the row, measured from the top-left corner of the image. The **principal point** $(c_x, c_y)$ is where the optical axis meets the image. Units: the focal length $f$ is in pixels, 3-D positions in meters.
+
+### The pinhole model
+
+In the **pinhole camera**, a point $(X, Y, Z)$ in camera coordinates projects to
+
+$$u = f\,\frac{X}{Z} + c_x, \qquad v = f\,\frac{Y}{Z} + c_y.$$
+
+Farther points (larger $Z$) land closer to the principal point, which is perspective: a person twice as far away appears half as large. Doubling all of $X, Y, Z$ leaves the pixel unchanged, so one image cannot tell a small near object from a large far one: this is **scale ambiguity**. The field of view across the image width $W$ is $2\arctan\!\big(W/(2f)\big)$; for $W = 640$ and $f = 500$ it is about $65.2^\circ$.
+
+In homogeneous coordinates the projection becomes a matrix product: $\lambda\,(u, v, 1)^\top = \mathbf{K}\,(X, Y, Z)^\top$ with the **intrinsic matrix** $\mathbf{K} = \begin{bmatrix} f & 0 & c_x \\ 0 & f & c_y \\ 0 & 0 & 1 \end{bmatrix}$ and $\lambda = Z$. For $f = 500$, $(c_x, c_y) = (320, 240)$ and the point $(1, 0.5, 5)$, $\mathbf{K}\mathbf{X} = (500 + 1600,\ 250 + 1200,\ 5) = (2100, 1450, 5)$, and dividing by 5 gives the pixel $(420, 290)$.
+
+A point known in **world coordinates** is first moved into camera coordinates by the **extrinsic parameters**, a rotation matrix $\mathbf{R}$ and a translation $\mathbf{t}$: $\mathbf{P}_c = \mathbf{R}\mathbf{P}_w + \mathbf{t}$. The full model is $\lambda \tilde{\mathbf{u}} = \mathbf{K}[\mathbf{R} \mid \mathbf{t}]\tilde{\mathbf{P}}_w$. Real lenses also bend straight lines, so calibration estimates distortion coefficients as well, from images of a known pattern such as a checkerboard.
+
+### Stereo and depth
+
+Two cameras with parallel axes, separated sideways by a **baseline** $B$, see the same point at different columns. The difference $d = u_{\text{left}} - u_{\text{right}}$ is the **disparity**, and by similar triangles
+
+$$Z = \frac{f\,B}{d}.$$
+
+Large disparity means a near point and disparity 0 means a point at infinity. With $f = 500$ pixels, $B = 0.1$ m and $d = 10$ pixels, $Z = 5$ m. Once $Z$ is known the point is recovered by **back-projection**: $X = (u - c_x)Z/f$ and $Y = (v - c_y)Z/f$. Differentiating $Z = fB/d$ shows that a disparity error $\Delta d$ gives a depth error of about $Z^2\,\Delta d/(fB)$: at $Z = 5$ it is $25/50 = 0.5$ m per pixel. Depth gets less precise quadratically with distance, and a longer baseline or longer focal length helps.
+
+To find $d$ we need to know which pixel in the right image matches a given pixel in the left image. After **rectification** the match lies on the same row, so the search is one-dimensional. **Block matching** compares the window around the left pixel with windows in the right image at columns $c, c - 1, \dots, c - d_{\max}$ and picks the disparity with the smallest sum of squared differences (SSD). It fails in textureless regions (all windows look alike), at repeated patterns and near occlusions, where a point is visible in only one camera.
+
+### Beyond two views
+
+With many photos of a scene, **structure from motion** estimates camera poses and 3-D points together, and SLAM does so from a moving camera in real time. Neural radiance fields (NeRF; Mildenhall and colleagues, 2020) represent a scene as a network that gives color and density at each 3-D point and render new viewpoints by integrating along rays. A single image can also be used to guess depth: a network trained on many scenes learns cues such as size and perspective, but the scale ambiguity means the result is a guess unless the network has learned typical sizes.
+
+### In code
+
+```python
+def project(P, f, cx, cy):
+    """Project camera-coordinate point (X, Y, Z) with Z > 0 to a pixel."""
+    X, Y, Z = P
+    return (f * X / Z + cx, f * Y / Z + cy)
+
+print(project((1.0, 0.5, 5.0), 500, 320, 240))
+print(500 * 0.1 / 10)
+```
+
+OpenCV provides `cv2.projectPoints`, `cv2.calibrateCamera` and stereo matchers; these use the same model with more parameters.
+@example
+title: Projecting a world point
+problem: A camera has $f = 500$, $(c_x, c_y) = (320, 240)$. A world point is $\mathbf{P}_w = (1, 0, 2)$, and the camera pose is $\mathbf{R} = \begin{bmatrix}0&0&1\\0&1&0\\-1&0&0\end{bmatrix}$, $\mathbf{t} = (0, 0, 5)$. Find the pixel.
+step: Rotate: $\mathbf{R}\mathbf{P}_w = (0\cdot1 + 0\cdot0 + 1\cdot2,\ 0,\ -1\cdot 1 + 0 + 0) = (2, 0, -1)$.
+step: Translate: $\mathbf{P}_c = (2, 0, -1) + (0, 0, 5) = (2, 0, 4)$. The depth is $4 > 0$, so the point is in front of the camera.
+step: Project: $u = 500 \cdot 2/4 + 320 = 570$ and $v = 500 \cdot 0/4 + 240 = 240$.
+answer: The pixel is $(570, 240)$.
+@example
+title: Depth from disparity and its error
+problem: Cameras have $f = 700$ pixels and $B = 0.12$ m. A point has disparity $21$ pixels. Find its depth, and the depth change if the disparity is off by one pixel.
+step: $Z = fB/d = 700 \cdot 0.12/21 = 84/21 = 4$ m.
+step: With $d = 22$, $Z = 84/22 \approx 3.818$ m; with $d = 20$, $Z = 4.2$ m.
+step: The first-order estimate is $Z^2\,\Delta d/(fB) = 16/84 \approx 0.19$ m per pixel, close to the actual changes of $0.18$ and $0.2$ m.
+answer: $Z = 4$ m; a one-pixel disparity error changes it by about $0.19$ m.
+@mistakes
+- Projecting a point with $Z \le 0$: points behind the camera give meaningless pixels, so check the depth first.
+- Mixing up the order of the extrinsic transform: first rotate and translate the world point into camera coordinates, then apply $\mathbf{K}$.
+- Treating disparity as proportional to depth: disparity is inversely proportional ($Z = fB/d$), so equal disparity steps give very unequal depth steps.
+@practice tuple
+prompt: A camera has focal length $f = 800$ pixels and principal point $(c_x, c_y) = (320, 240)$. A point in camera coordinates is $(0.5, -0.2, 4.0)$ meters. Give its pixel $(u, v)$.
+answer: (420, 200)
+check: (800 * 0.5 / 4.0 + 320, 800 * (-0.2) / 4.0 + 240)
+hint: Apply $u = fX/Z + c_x$ and $v = fY/Z + c_y$.
+solution: $u = 800 \cdot 0.5/4 + 320 = 100 + 320 = 420$ and $v = 800 \cdot (-0.2)/4 + 240 = -40 + 240 = 200$.
+@practice code
+prompt: Write `project_points(points, f, cx, cy)` that projects a list of camera-coordinate points `(X, Y, Z)` (meters, $X$ right, $Y$ down, $Z$ forward) with the pinhole model $u = fX/Z + c_x$, $v = fY/Z + c_y$. Return a list of the same length: the pixel `(u, v)` for each point with `Z > 0`, and `None` for a point with `Z <= 0` (at or behind the camera). For example, `project_points([(0, 0, 2)], 500, 320, 240)` returns `[(320.0, 240.0)]`.
+starter:
+```python
+def project_points(points, f, cx, cy):
+    pass
+```
+tests:
+```python
+got = project_points([(1.0, 0.5, 5.0), (0, 0, 2)], 500, 320, 240)
+assert abs(got[0][0] - 420) < 1e-9 and abs(got[0][1] - 290) < 1e-9
+assert abs(got[1][0] - 320) < 1e-9 and abs(got[1][1] - 240) < 1e-9
+got = project_points([(1, 1, -2), (1, 1, 0), (2, 0, 1)], 100, 0, 0)
+assert got[0] is None and got[1] is None
+assert abs(got[2][0] - 200) < 1e-9 and abs(got[2][1]) < 1e-9
+assert project_points([], 500, 320, 240) == []
+```
+model:
+```python
+def project_points(points, f, cx, cy):
+    """Pinhole projection; points at or behind the camera give None."""
+    pixels = []
+    for X, Y, Z in points:
+        if Z <= 0:
+            pixels.append(None)
+        else:
+            pixels.append((f * X / Z + cx, f * Y / Z + cy))
+    return pixels
+```
+hint: Test the depth first; only divide by `Z` when it is positive.
+solution: Points with `Z = 0` would divide by zero and points with negative `Z` project to a mirrored position, so both map to `None`. The output list keeps one entry per input point, in order.
+@practice num
+prompt: A stereo pair has focal length $f = 700$ pixels and baseline $B = 0.12$ m. A point has disparity $d = 14$ pixels. What is its depth in meters?
+answer: 6
+unit: m
+check: 700 * 0.12 / 14
+hint: Use $Z = fB/d$.
+solution: $Z = 700 \cdot 0.12/14 = 84/14 = 6$ m.
+@practice code
+prompt: Write `world_to_pixel(Pw, R, t, f, cx, cy)` where `Pw` is a world point `(X, Y, Z)`, `R` a 3 by 3 rotation matrix (list of rows) and `t` a translation `(tx, ty, tz)`. Compute the camera-coordinate point `Pc = R @ Pw + t`; if `Pc[2] <= 0` return `None`, otherwise return the pixel `(f * Pc[0] / Pc[2] + cx, f * Pc[1] / Pc[2] + cy)`. For example, with the identity matrix, `t = (0, 0, 0)`, `f = 500` and `(cx, cy) = (320, 240)`, the point `(1, 0.5, 5)` maps to `(420.0, 290.0)`.
+starter:
+```python
+def world_to_pixel(Pw, R, t, f, cx, cy):
+    pass
+```
+tests:
+```python
+I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+u, v = world_to_pixel((1, 0.5, 5), I, (0, 0, 0), 500, 320, 240)
+assert abs(u - 420) < 1e-9 and abs(v - 290) < 1e-9
+R = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
+u, v = world_to_pixel((1, 0, 2), R, (0, 0, 5), 500, 320, 240)
+assert abs(u - 570) < 1e-9 and abs(v - 240) < 1e-9
+assert world_to_pixel((0, 0, 1), I, (0, 0, -3), 500, 320, 240) is None
+u, v = world_to_pixel((0, 0, 0), I, (1, 2, 4), 100, 10, 20)
+assert abs(u - 35) < 1e-9 and abs(v - 70) < 1e-9
+```
+model:
+```python
+def world_to_pixel(Pw, R, t, f, cx, cy):
+    """Extrinsic transform followed by pinhole projection."""
+    Pc = [sum(R[i][j] * Pw[j] for j in range(3)) + t[i] for i in range(3)]
+    if Pc[2] <= 0:
+        return None
+    return (f * Pc[0] / Pc[2] + cx, f * Pc[1] / Pc[2] + cy)
+```
+hint: Compute each coordinate of `R @ Pw + t` with a sum over the three columns, then check the depth before projecting.
+solution: The rotation is applied before the translation, and the depth check uses the transformed point, not the original world point; the third test has a world point with positive `Z` that ends up behind the camera after the translation.
+@practice code
+prompt: Write `match_disparity(left, right, r, c, half, max_d)` for block matching on rectified grayscale images `left` and `right` (lists of rows, row-major, same size). The window around the left pixel `(r, c)` is rows `r - half .. r + half` and columns `c - half .. c + half`. For each disparity `d` from 0 to `max_d`, compare it with the same window shifted left by `d` columns in the right image (centered at column `c - d`) using the sum of squared differences. Skip any `d` for which the shifted window would leave the image. Return the `d` with the smallest SSD, with ties going to the smaller `d`. Assume the left window itself lies inside the image.
+starter:
+```python
+def match_disparity(left, right, r, c, half, max_d):
+    pass
+```
+tests:
+```python
+L = [[0, 0, 5, 9, 5, 0, 0, 0]] * 5
+R = [[5, 9, 5, 0, 0, 0, 0, 0]] * 5
+assert match_disparity(L, R, 2, 3, 1, 3) == 2
+assert match_disparity(L, L, 2, 3, 1, 3) == 0
+flat = [[1] * 8] * 5
+assert match_disparity(flat, flat, 2, 4, 1, 3) == 0
+R1 = [[0, 5, 9, 5, 0, 0, 0, 0]] * 5
+assert match_disparity(L, R1, 2, 3, 1, 3) == 1
+assert match_disparity(L, R, 2, 3, 1, 0) == 0
+```
+model:
+```python
+def match_disparity(left, right, r, c, half, max_d):
+    """Disparity with the smallest SSD over a (2*half+1)^2 window."""
+    width = len(right[0])
+    best_d, best_ssd = None, None
+    for d in range(max_d + 1):
+        cc = c - d
+        if cc - half < 0 or cc + half >= width:
+            continue
+        ssd = 0
+        for i in range(-half, half + 1):
+            for j in range(-half, half + 1):
+                diff = left[r + i][c + j] - right[r + i][cc + j]
+                ssd += diff * diff
+        if best_ssd is None or ssd < best_ssd:
+            best_d, best_ssd = d, ssd
+    return best_d
+```
+hint: Loop over `d`, skip the shifts that fall outside the image, compute the SSD of the two windows, and keep the smallest with a strict comparison so ties keep the smaller `d`.
+solution: Scanning disparities in increasing order and updating only on a strictly smaller SSD gives the tie rule. In the textureless test every shift matches equally well, so the smallest disparity wins, which shows why block matching cannot determine depth in flat regions.
+@quiz text
+prompt: What does this program print?
+```python
+f, cx, cy = 400, 200, 100
+X, Y, Z = 1.0, -0.5, 2.0
+u = f * X / Z + cx
+v = f * Y / Z + cy
+print(u, v)
+```
+answer: 400.0 0.0
+check: run("f, cx, cy = 400, 200, 100\nX, Y, Z = 1.0, -0.5, 2.0\nu = f * X / Z + cx\nv = f * Y / Z + cy\nprint(u, v)")
+hint: Compute $fX/Z = 400 \cdot 1.0/2.0$ and $fY/Z$ separately before adding the principal point.
+solution: $u = 400 \cdot 1.0/2.0 + 200 = 400.0$ and $v = 400 \cdot (-0.5)/2.0 + 100 = 0.0$, so the program prints `400.0 0.0`.
+@quiz mc
+prompt: Two points are seen by a rectified stereo pair. Point $A$ has disparity 40 pixels and point $B$ has disparity 10 pixels. Which statement is correct?
+choice*: Point $A$ is four times closer than point $B$.
+choice: Point $A$ is four times farther than point $B$.
+choice: Point $A$ is two times closer than point $B$.
+choice: The two points have the same depth, because disparity does not depend on depth.
+hint: Use $Z = fB/d$, so depth is inversely proportional to disparity.
+solution: With the same $f$ and $B$, $Z_A/Z_B = d_B/d_A = 10/40 = 1/4$, so $A$ is four times closer. The relationship is inverse, not linear, and not a square root.
+@quiz ms
+prompt: Which statements about the pinhole camera and stereo are true? Select all that apply.
+choice*: Scaling all three coordinates $(X, Y, Z)$ of a point by the same positive factor leaves its pixel unchanged.
+choice*: For a fixed disparity error, the depth error grows with the square of the depth.
+choice*: Block matching is unreliable in textureless regions because many windows look alike.
+choice: Doubling the focal length (in pixels) halves the depth computed from a given disparity.
+hint: Check the projection formula for scaling, differentiate $Z = fB/d$ with respect to $d$, and recompute $Z$ for a doubled $f$.
+solution: The ratios $X/Z$ and $Y/Z$ do not change when all coordinates are scaled, which is scale ambiguity. $\Delta Z \approx Z^2\,\Delta d/(fB)$. Flat windows give equal SSD at many disparities. Doubling $f$ at a fixed disparity doubles $Z = fB/d$, not halves it.
