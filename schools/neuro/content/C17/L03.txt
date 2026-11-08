@@ -1,0 +1,234 @@
+@lesson
+title: Reinforcement learning: values and temporal-difference errors
+summary: Define state values and the discounted return, compute temporal-difference errors, and implement TD(0) and one-step Q-learning from scratch.
+objective: Write the discounted return and the state value, and state the temporal-difference (TD) error and the TD(0) update with a discount factor.
+objective: Trace how a reward's value propagates backward along a chain of states over episodes.
+objective: Compare Rescorla–Wagner with TD learning, and compute a Q-learning update by hand and in code.
+reading: Neuroscience Online (McGovern Medical School): look up the topic of reward-based learning and reinforcement learning; for the algorithm itself, consult the reinforcement-learning treatment of temporal-difference learning in Sutton's work (1988).
+@article
+A rat in a maze reaches food after a corridor of five steps. Rescorla–Wagner can say how strongly a cue predicts a US, but it treats each trial as one lump with no steps inside it. How does the last step before the food become valuable, then the one before it, and then the whole corridor? **Reinforcement learning** (RL) answers by letting each state borrow value from the state that follows it. The TD method of Sutton (1988) is the standard version.
+
+### Return and value
+
+At each time step the agent is in a **state** $s_t$, receives a reward $r_{t+1}$, and moves to $s_{t+1}$. Because rewards soon matter more than rewards far away, the **return** discounts the future with a **discount factor** $0 \le \gamma \le 1$:
+
+$$G_t = r_{t+1} + \gamma\, r_{t+2} + \gamma^2 r_{t+3} + \cdots .$$
+
+The **value** of a state is the expected return from it, $V(s) = \mathbb{E}[G_t \mid s_t = s]$. Splitting off the first reward gives the recursive (Bellman) relation $V(s) = \mathbb{E}[\,r + \gamma V(s')\,]$. For rewards 0, 2, 0, 4 and $\gamma = 0.5$, the return is $0 + 0.5\cdot 2 + 0.25\cdot 0 + 0.125 \cdot 4 = 1.5$.
+
+### The temporal-difference error
+
+If the value estimates were correct, $r + \gamma V(s')$ would equal $V(s)$ on average. The mismatch on one step is the **TD error**
+
+$$\delta_t = r_{t+1} + \gamma\, V(s_{t+1}) - V(s_t),$$
+
+with $V = 0$ for a terminal state (nothing follows it). The **TD(0) update** moves the estimate toward the target with learning rate $\alpha$:
+
+$$V(s_t) \leftarrow V(s_t) + \alpha\, \delta_t .$$
+
+A positive $\delta$ means things went better than predicted, a negative one worse. For a single reinforced state with $\gamma = 0$, TD(0) reduces to the Rescorla–Wagner rule with $\lambda = r$. What TD adds is that the target contains $\gamma V(s')$: a state is credited for leading to a valuable state, not only for being followed by reward. This **bootstrapping** lets value spread backward through time.
+
+### A chain of states
+
+Take a corridor of three states 0, 1, 2. The reward is $r = 1$ when the agent leaves state 2 (to a terminal state), and 0 on every other step. Use $\alpha = 0.5$, $\gamma = 0.9$, all $V = 0$ at the start, and update the states in order 0, 1, 2 within each episode:
+
+| episodes done | $V(0)$ | $V(1)$ | $V(2)$ |
+|---|---|---|---|
+| 1 | 0.0000 | 0.0000 | 0.5000 |
+| 2 | 0.0000 | 0.2250 | 0.7500 |
+| 3 | 0.1013 | 0.4500 | 0.8750 |
+| 4 | 0.2531 | 0.6188 | 0.9375 |
+| many | 0.81 | 0.90 | 1.00 |
+
+In episode 1 only the last state learns, because it is the only one with a nonzero error. In episode 2 state 1 sees that its successor has become valuable, and so on: reward information moves back one state per episode. The final values are $\gamma^{2-s}$, the discounted reward still ahead. With the update order 0, 1, 2 the spread is slow; updating backward, from the last state to the first, would spread it faster, but real agents experience states in the order they happen.
+
+```python
+def td_chain(n_states, episodes, alpha, gamma):
+    """TD(0) on a chain; reward 1 on leaving the last state."""
+    V = [0.0] * n_states
+    for _ in range(episodes):
+        for s in range(n_states):
+            last = s == n_states - 1
+            r = 1.0 if last else 0.0
+            v_next = 0.0 if last else V[s + 1]
+            V[s] += alpha * (r + gamma * v_next - V[s])
+    return V
+
+print([round(v, 4) for v in td_chain(3, 4, 0.5, 0.9)])
+```
+
+This prints `[0.2531, 0.6188, 0.9375]`.
+
+### Actions: Q-learning
+
+To choose actions the agent keeps **action values** $Q(s,a)$. **Q-learning** updates the value of the action taken toward the best available next action:
+
+$$Q(s,a) \leftarrow Q(s,a) + \alpha\big[r + \gamma \max_{a'} Q(s',a') - Q(s,a)\big].$$
+
+**SARSA** instead uses the action $a'$ actually taken next. Both are TD learning for action values; they differ when the agent explores. Choices come from a softmax over $Q$, as in week 2.
+
+@example
+title: One TD(0) step
+problem: An animal has estimates $V(\text{cue}) = 0.2$ and $V(\text{delay}) = 0.5$. The cue is followed by the delay with no reward. With $\gamma = 0.9$ and $\alpha = 0.4$, find the TD error and the updated $V(\text{cue})$.
+step: The reward is 0, so $\delta = 0 + 0.9 \times 0.5 - 0.2 = 0.25$.
+step: The update is $V(\text{cue}) \leftarrow 0.2 + 0.4 \times 0.25 = 0.3$.
+step: The cue gained value although no reward followed it, because it led to a state with value.
+answer: $\delta = 0.25$ and $V(\text{cue}) = 0.3$.
+
+@example
+title: Q-learning and SARSA on the same step
+problem: In state $s$ the agent takes action L, gets $r = 0.5$ and lands in state $t$, where $Q(t,\text{L}) = 1.0$ and $Q(t,\text{R}) = 0.6$. Currently $Q(s,\text{L}) = 0.2$. Use $\alpha = 0.5$ and $\gamma = 0.9$. Find the new $Q(s,\text{L})$ under Q-learning, and under SARSA if the next action is R.
+step: Q-learning target: $r + \gamma \max_{a'} Q(t,a') = 0.5 + 0.9 \times 1.0 = 1.4$. Error: $1.4 - 0.2 = 1.2$. New value: $0.2 + 0.5 \times 1.2 = 0.8$.
+step: SARSA target: $0.5 + 0.9 \times Q(t,\text{R}) = 0.5 + 0.54 = 1.04$. Error: $0.84$. New value: $0.2 + 0.5 \times 0.84 = 0.62$.
+step: Q-learning is optimistic: it assumes the best next action, while SARSA reflects what the agent actually did.
+answer: Q-learning gives $0.8$; SARSA gives $0.62$.
+
+@mistakes
+- Forgetting that a terminal state has value 0, so the last update uses $\delta = r - V(s)$ with no $\gamma V(s')$ term.
+- Confusing the TD error with the value: $\delta$ compares two consecutive predictions plus the reward; it is zero when predictions are consistent, whatever their size.
+- Updating the next state before using its old value, or modifying a dictionary of values in place while still reading from it.
+- Setting $\gamma = 1$ in a task that never ends, which makes returns diverge; discounting keeps them finite.
+
+@practice num
+prompt: A trial gives rewards of 1, 0, 3 on three consecutive steps after a state. With discount factor $\gamma = 0.8$, what is the return $G = r_1 + \gamma r_2 + \gamma^2 r_3$ from that state?
+answer: 2.92
+tol: 0.01
+check: 1 + 0.8 * 0 + 0.8 ** 2 * 3
+hint: The reward $k$ steps ahead is multiplied by $\gamma^{k}$, starting with $\gamma^0$ for the first.
+solution: $G = 1 + 0.8 \times 0 + 0.64 \times 3 = 1 + 1.92 = 2.92$.
+
+@practice num
+prompt: An agent moves from state $s$ with $V(s) = 0.5$ to state $s'$ with $V(s') = 0.7$ and receives $r = 1$. With $\gamma = 0.9$, what is the TD error $\delta$?
+answer: 1.13
+tol: 0.001
+check: 1 + 0.9 * 0.7 - 0.5
+hint: Use $\delta = r + \gamma V(s') - V(s)$.
+solution: $\delta = 1 + 0.9 \times 0.7 - 0.5 = 1 + 0.63 - 0.5 = 1.13$.
+
+@practice mc
+prompt: Which feature of TD(0) lets a cue acquire value even on trials where no reward immediately follows it, something the basic Rescorla–Wagner rule on a single trial cannot do?
+choice*: The target includes the discounted value of the next state, so a state is credited for leading to a valuable state.
+choice: The learning rate is set to a different value for every state.
+choice: The reward is replaced by the average reward of all previous trials.
+choice: The error is computed from the largest value among all states.
+hint: Write the TD target and see what it contains besides the reward.
+solution: The target $r + \gamma V(s')$ contains the successor's value, so a state followed by a valuable state gets a positive error with no reward at all. The learning rate and the reward average play no role in this, and the target uses the next state's value, not the maximum over all states.
+
+@practice code
+prompt: Write `td_errors(transitions, V, gamma)` where `transitions` is a list of `(s, r, s_next)` tuples (`s_next` is `None` when the step ends the episode) and `V` is a dictionary of state values. Return the list of TD errors $\delta = r + \gamma V(s_{\text{next}}) - V(s)$, using $V = 0$ after a terminal step. Do not change `V`. For example, with `V = {0: 0.2, 1: 0.5, 2: 0.8}`, `gamma = 0.9` and transitions `[(0, 0, 1), (1, 0, 2), (2, 1, None)]`, the errors are `[0.25, 0.22, 0.2]`.
+starter:
+```python
+def td_errors(transitions, V, gamma):
+    pass
+```
+tests:
+```python
+V = {0: 0.2, 1: 0.5, 2: 0.8}
+got = td_errors([(0, 0, 1), (1, 0, 2), (2, 1, None)], V, 0.9)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.25, 0.22, 0.2]))
+assert len(got) == 3
+assert V == {0: 0.2, 1: 0.5, 2: 0.8}
+assert td_errors([], V, 0.9) == []
+got = td_errors([(1, 2.0, None)], V, 0.5)
+assert abs(got[0] - 1.5) < 1e-9
+got = td_errors([(0, 0, 1)], V, 0.0)
+assert abs(got[0] + 0.2) < 1e-9
+```
+model:
+```python
+def td_errors(transitions, V, gamma):
+    """TD error of each (state, reward, next_state) step, without learning."""
+    errors = []
+    for s, r, s_next in transitions:
+        v_next = 0.0 if s_next is None else V[s_next]
+        errors.append(r + gamma * v_next - V[s])
+    return errors
+```
+hint: For each step, look up the value of the next state, or use 0 if it is `None`, then apply $r + \gamma V(s') - V(s)$ and append the result.
+solution: The terminal step has no next state, so its target is just the reward; the test with `(1, 2.0, None)` checks this edge case. With $\gamma = 0$ the target is only the reward, so the error is $0 - V(0) = -0.2$.
+
+@practice code
+prompt: Write `td0_episodes(episodes, n_states, alpha, gamma)` that runs TD(0) on a list of episodes. Each episode is a list of `(s, r, s_next)` steps (`s_next` is `None` at the end of the episode), states are integers from 0 to `n_states - 1`, all values start at 0, and steps are applied in the order given, each using the current values. Return the list of values. For example, an episode `[(0, 0, 1), (1, 0, 2), (2, 1, None)]` repeated twice with `alpha = 0.5` and `gamma = 0.9` gives `[0.0, 0.225, 0.75]`.
+starter:
+```python
+def td0_episodes(episodes, n_states, alpha, gamma):
+    return [0.0] * n_states
+```
+tests:
+```python
+ep1 = [(0, 0, 1), (1, 0, 2), (2, 1, None)]
+got = td0_episodes([ep1, ep1], 3, 0.5, 0.9)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.225, 0.75]))
+ep2 = [(0, 0, 2), (2, 0.5, None)]
+got = td0_episodes([ep1, ep2], 3, 0.5, 0.9)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.225, 0.0, 0.5]))
+got = td0_episodes([[(0, 2.0, None)]], 2, 0.25, 0.9)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.5, 0.0]))
+assert td0_episodes([], 2, 0.5, 0.9) == [0.0, 0.0]
+```
+model:
+```python
+def td0_episodes(episodes, n_states, alpha, gamma):
+    """TD(0) value estimates after a list of episodes."""
+    V = [0.0] * n_states
+    for episode in episodes:
+        for s, r, s_next in episode:
+            v_next = 0.0 if s_next is None else V[s_next]
+            V[s] += alpha * (r + gamma * v_next - V[s])
+    return V
+```
+hint: Loop over episodes and then over steps. Compute the target from the current value of the next state, and update the current state immediately.
+solution: This generalizes the article's chain to arbitrary episodes: rewards can come at any step and a step may skip states. In the second test the episode jumps from state 0 to state 2, so state 0 inherits state 2's value ($0.9 \times 0.5 \times 0.5 = 0.225$), and the reward of 0.5 on leaving state 2 exactly matches its current value, leaving it at 0.5.
+
+@quiz text
+prompt: What does this program print?
+```python
+V = {"a": 0.0, "b": 0.5}
+delta = 0 + 0.8 * V["b"] - V["a"]
+V["a"] += 0.5 * delta
+print(delta, V["a"])
+```
+answer: 0.4 0.2
+check: run("V = {'a': 0.0, 'b': 0.5}\ndelta = 0 + 0.8 * V['b'] - V['a']\nV['a'] += 0.5 * delta\nprint(delta, V['a'])")
+hint: The reward is 0, so the target is $0.8 \times 0.5$.
+solution: The target is $0.8 \times 0.5 = 0.4$ and $V(a) = 0$, so $\delta = 0.4$; the update adds $0.5 \times 0.4 = 0.2$ to $V(a)$.
+
+@quiz code
+prompt: Write `q_learning_update(Q, s, a, r, s_next, alpha, gamma)` where `Q` is a dictionary of dictionaries, `Q[state][action]`. Return a new dictionary (a copy; do not change the argument) in which `Q[s][a]` has been updated by the Q-learning rule $Q(s,a) \leftarrow Q(s,a) + \alpha[r + \gamma \max_{a'} Q(s',a') - Q(s,a)]$. If `s_next` is `None` (terminal), the next-state term is 0. For example, with `Q = {"s": {"L": 0.4}, "t": {"L": 1.0, "R": 2.0}}`, `q_learning_update(Q, "s", "L", 1.0, "t", 0.5, 0.5)` sets `Q["s"]["L"]` to `1.2`.
+starter:
+```python
+def q_learning_update(Q, s, a, r, s_next, alpha, gamma):
+    return Q
+```
+tests:
+```python
+Q = {"s": {"L": 0.4}, "t": {"L": 1.0, "R": 2.0}}
+new = q_learning_update(Q, "s", "L", 1.0, "t", 0.5, 0.5)
+assert abs(new["s"]["L"] - 1.2) < 1e-9
+assert Q["s"]["L"] == 0.4
+assert new["t"] == {"L": 1.0, "R": 2.0}
+new = q_learning_update(Q, "t", "R", 1.0, None, 0.5, 0.9)
+assert abs(new["t"]["R"] - 1.5) < 1e-9
+assert new["t"]["L"] == 1.0 and Q["t"]["R"] == 2.0
+new = q_learning_update(Q, "s", "L", 0.0, "t", 1.0, 0.1)
+assert abs(new["s"]["L"] - 0.2) < 1e-9
+```
+model:
+```python
+def q_learning_update(Q, s, a, r, s_next, alpha, gamma):
+    """Return a copy of Q after one Q-learning update."""
+    new = {state: dict(actions) for state, actions in Q.items()}
+    best_next = 0.0 if s_next is None else max(Q[s_next].values())
+    new[s][a] += alpha * (r + gamma * best_next - Q[s][a])
+    return new
+```
+hint: Copy the nested dictionary first (each inner dictionary too), take the maximum over the next state's action values, and apply the update to the copy.
+solution: The target is $1.0 + 0.5 \times 2.0 = 2.0$ (the best next action is R, not L), so the error is $1.6$ and the new value is $0.4 + 0.8 = 1.2$. A shallow copy would still share the inner dictionaries, so the original `Q` would change; the tests check that it does not.
+
+@quiz self
+prompt: A student claims that TD learning is just Rescorla–Wagner with extra bookkeeping. Show how TD(0) reduces to Rescorla–Wagner in one limiting case, and explain what TD can do that the Rescorla–Wagner rule on a whole trial cannot. Then explain, in your own words, what the discount factor controls.
+hint: Set $\gamma = 0$ and think about what the target contains; then consider a cue followed by a delay.
+solution: With $\gamma = 0$ the TD target is just the reward, so $V \leftarrow V + \alpha(r - V)$: this is the Rescorla–Wagner rule for a single cue with asymptote $\lambda = r$. With $\gamma > 0$ the target includes $\gamma V(s')$, so a state or time point inside a trial can gain value because it leads to a valuable state, which lets value propagate backward from the reward to the earliest predictor, and the model can say when the prediction error occurs within a trial. The discount factor sets how much future rewards count relative to immediate ones: with $\gamma$ near 0 the agent is short-sighted, near 1 it values distant rewards almost fully, and the value of a reward $k$ steps ahead is scaled by $\gamma^k$. Whether animals discount exponentially, as here, is debated; hyperbolic forms often fit behavior better.
+rubric: Shows that $\gamma = 0$ gives the Rescorla–Wagner form with $\lambda = r$.
+rubric: Explains that bootstrapping propagates value backward and gives within-trial timing of errors.
+rubric: States that the discount factor weights delayed rewards, with $\gamma^k$ for a reward $k$ steps ahead.
