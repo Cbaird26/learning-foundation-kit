@@ -3,6 +3,9 @@
 Read this first if you are an AI agent (or a person) picking up this project. It explains what exists, the rules,
 how a school is built, and how to keep this handoff current. **STATUS.md** says exactly where the work stopped.
 
+Several agents (Claude, Codex and Grok) now work in this kit at the same time. Read **AGENTS.md** for how that
+works, and take your work from **TEAM.md**.
+
 ## What this project is
 
 A family of free, Khan Academy-style self-study schools. Each school is a complete path of courses from the basics to

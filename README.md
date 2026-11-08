@@ -7,6 +7,8 @@ from the basics to the frontier of a field, published as single-page sites.
 
 - **HANDOFF.md** explains the project, the rules, setup and how a school is built, step by step.
 - **STATUS.md** says where the work stands and what comes next.
+- **AGENTS.md** and **TEAM.md**: several AI agents (Claude, Codex and Grok) work here at the same time; AGENTS.md
+  says how, and TEAM.md says who is doing what.
 - `schools/` holds every school's lessons, app, validator and build scripts; `hub/` holds the hub page.
 
 Quick start:
