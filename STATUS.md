@@ -55,9 +55,9 @@ Decisions so far:
 | P1 | Statistical learning theory | 13/13 | yes | yes |
 | P2 | Probabilistic machine learning and generative models | 13/13 | yes | yes |
 | P3 | Large language models | 13/13 | yes | yes |
-| P4 | Interpretability and AI alignment | 8/13 |  |  |
-| P5 | Research methods in machine learning | 10/13 |  |  |
-| P6 | Research apprenticeship and qualifying exams | 6/13 |  |  |
+| P4 | Interpretability and AI alignment | 11/13 |  |  |
+| P5 | Research methods in machine learning | 13/13 | yes |  |
+| P6 | Research apprenticeship and qualifying exams | 9/13 |  |  |
 <!-- /ai-table -->
 
 ## Queue of future schools (one at a time, in this order)
@@ -101,3 +101,4 @@ Decisions so far:
 - 2026-11-07: C11, C13, C14 and C16 re-typing fixes done; C21 and C24 reviewed with follow-ups; P1, P2 and P3 written and in review; P4, P5 and P6 being written
 - 2026-11-07: P2 and P3 reviewed with follow-ups; trial site build passes; P1 in review; P4, P5 and P6 being written
 - 2026-11-07: P1 reviewed with follow-ups; 63 of 66 courses written and reviewed; P4, P5 and P6 being written
+- 2026-11-07: P5 written and in review; P4 and P6 being written

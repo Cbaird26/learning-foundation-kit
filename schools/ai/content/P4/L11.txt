@@ -1,0 +1,154 @@
+@lesson
+title: Evaluations, red-teaming and dangerous-capability testing
+summary: Design an evaluation at the level of methodology, with threat models, elicitation, contamination-free test sets, pass-rate statistics with uncertainty and decision rules, and state what evaluations and red-teaming can and cannot show.
+objective: Distinguish capability from propensity evaluations and explain why a score is a lower bound without adequate elicitation.
+objective: Compute a Wilson confidence interval for a pass rate, the pass@k estimator and a zero-failure bound.
+objective: Describe how held-out, contamination-free test sets and pre-specified decision rules are used.
+objective: Summarize the methods of red-teaming (Perez and colleagues, 2022; Ganguli and colleagues, 2022) and the disagreement about how much weight evaluations can bear.
+reading: Interpretable Machine Learning by Christoph Molnar is background only; read Shevlane and colleagues (2023), Perez and colleagues (2022) and Ganguli and colleagues (2022).
+
+@article
+A developer tests a new model on forty tasks designed to probe a worrying capability, and it passes none. Is the capability absent? Perhaps the prompts were poor, the model needed a tool, the tasks were too unlike real use, or the model was held to a standard no real actor would use. Evaluations produce evidence, and evidence is only as good as the design behind it. This lesson is about that design, at the level of methodology.
+
+### What evaluations are for
+
+Shevlane and colleagues (2023), "Model evaluation for extreme risks", argued that evaluations should inform decisions about training, deployment and security, and distinguished two kinds. **Dangerous-capability evaluations** ask whether a model *can* do something harmful if it tries (general categories discussed in the literature include offensive cyber operations and manipulation). **Alignment evaluations** ask whether it *tends* to apply its capabilities that way, which is a question about **propensity**. Capability asks about the ceiling; propensity asks about what is likely to happen by default.
+
+### Designing an evaluation
+
+1. **Threat model first.** State who the actor is, what harm pathway is of concern, and which steps of it the model would have to perform or speed up. Tasks are chosen as measurable proxies for steps on that pathway.
+2. **Elicitation.** A model's best performance is rarely its first attempt. Prompt design, tools and scaffolding, many attempts, and fine-tuning can raise measured capability substantially, so a score is a **lower bound** on what a motivated actor could obtain. Report the elicitation effort, and be most skeptical of a "no capability" result when little effort was spent.
+3. **Held-out, contamination-free test sets.** If test items, or their solutions, appeared in training data, a high score may reflect memory. Practices include creating tasks after the training cutoff or privately, keeping a secret portion of the test set, checking for overlap (for example, the fraction of test n-grams found in the training corpus) and limiting repeated querying that lets developers tune against the test set.
+4. **Statistics.** A pass rate is an estimate. With $k$ passes in $n$ independent trials, report an interval. The **Wilson interval** at normal quantile $z$ (1.96 for 95%) is
+
+$$\frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}}{1 + z^2/n},$$
+
+where $\hat p = k/n$; it stays inside $[0, 1]$ and behaves well for small $n$ and for $\hat p$ near 0 or 1, unlike the simple normal interval. Trials are not independent when they share tasks, so resample at the level of tasks. When a model gets $n$ samples per task and $c$ pass, the probability that at least one of $k$ randomly chosen samples passes is estimated by $\text{pass@}k = 1 - \binom{n-c}{k} / \binom{n}{k}$. With zero failures in $n$ trials, the largest failure rate not rejected at the 5% level solves $(1-p)^n = 0.05$, so $p = 1 - 0.05^{1/n}$, close to $3/n$ (the "rule of three").
+5. **Decision rules fixed in advance.** Decide before testing what result triggers which action. A conservative rule treats a threshold as reached if the *upper* confidence bound of the pass rate is at least the threshold, because the costs of missing a real capability exceed the costs of extra caution, and because under-elicitation biases scores downward. Evaluate at several points during training, with a safety margin, since capability can increase between evaluations.
+
+```python
+from math import comb
+
+def pass_at_k(n, c, k):
+    """Probability that at least one of k samples drawn from n (c correct) passes."""
+    if n - c < k:
+        return 1.0
+    return 1 - comb(n - c, k) / comb(n, k)
+```
+
+### Red-teaming
+
+**Red-teaming** is adversarial testing to find failures. Perez and colleagues (2022) used language models to generate test cases for another language model, comparing zero-shot generation, few-shot generation, supervised fine-tuning and reinforcement learning, and finding a trade-off between the diversity and difficulty of the cases found. Ganguli and colleagues (2022) studied human red-teaming across model sizes and training methods, reported that models trained with reinforcement learning from human feedback became harder to red team as they scaled, released a data set of attacks, and described lessons learned for running red-team exercises. Red-teaming can find failures, and the coverage it gives is whatever the red team tried. It cannot certify the absence of failures.
+
+### What evaluations cannot do, and the disagreement
+
+An evaluation shows behavior on the inputs tested with the elicitation used. It cannot show absence of a capability under better elicitation, or behavior under inputs no one thought of. Another concern is that a system could behave differently when it recognizes that it is being tested; how serious or common this is, is open. Researchers disagree about how much weight evaluations can bear. One view holds that they are the most concrete tool available: they turn vague concern into measurements, enable "if-then" commitments with external accountability, and can improve with practice. The other view holds that thresholds are arbitrary, that tasks measure what is easy to measure, that under-elicitation and test-set contamination are hard to rule out, and that evaluation-based assurance can create false confidence and a ritual that substitutes for understanding. Most practitioners agree on the methodological points above and differ on how far evaluations can support a claim of safety.
+
+@example
+title: A Wilson interval and a zero-failure bound
+problem: A model solves 18 of 20 independent tasks in an evaluation. (a) Give the 95% Wilson interval for its pass rate and compare it with the simple normal interval $\hat p \pm 1.96\sqrt{\hat p(1-\hat p)/n}$. (b) A second evaluation has 0 failures in 30 independent trials; give the 95% upper bound on the failure rate.
+step: (a) $\hat p = 0.9$, $n = 20$, $z^2 = 3.8416$. The denominator is $1 + 3.8416/20 = 1.1921$ and the center is $(0.9 + 3.8416/40)/1.1921 = 0.8353$.
+step: The half-width is $\dfrac{1.96}{1.1921}\sqrt{0.0045 + 3.8416/1600} = 1.6441 \times 0.08297 = 0.1364$. The Wilson interval is $(0.699, 0.972)$.
+step: The normal interval is $0.9 \pm 1.96 \times 0.0671 = (0.769, 1.031)$, which exceeds 1, an impossible pass rate; the Wilson interval stays inside $[0, 1]$ and is not symmetric about $0.9$.
+step: (b) The upper bound solves $(1-p)^{30} = 0.05$, so $p = 1 - 0.05^{1/30} = 0.095$; the rule of three gives $3/30 = 0.10$.
+answer: (a) Wilson $(0.699, 0.972)$; (b) failure rate at most about $0.095$.
+
+@mistakes
+- Reporting a pass rate without an interval or without noting that tasks, not samples, are the unit of independence: a 90% pass rate on 20 tasks is compatible with a true rate near 70%.
+- Reading a failure to elicit a capability as proof of its absence: report the elicitation effort, and treat the score as a lower bound.
+- Tuning prompts and tasks against the test set, or not checking for overlap with training data: reuse and leakage inflate scores and shrink uncertainty falsely.
+- Choosing the decision threshold after seeing the result, or comparing the point estimate, not the confidence bound, to a cautious threshold.
+
+@practice num
+prompt: A model produces $n = 12$ samples for a task, and $c = 4$ of them pass. What is the pass@3 estimate $1 - \binom{n-c}{k}/\binom{n}{k}$ with $k = 3$? Give three decimal places.
+answer: 0.745
+tol: 0.001
+check: 1 - comb(8, 3) / comb(12, 3)
+hint: Count the ways to choose 3 failing samples out of the 8 failures, and divide by the ways to choose any 3 of the 12.
+solution: $\binom{8}{3} = 56$ and $\binom{12}{3} = 220$, so pass@3 $= 1 - 56/220 = 0.745$.
+
+@practice num
+prompt: You want the 95% confidence interval of a pass rate to have half-width at most $0.03$ using the normal approximation at the worst case $p = 0.5$, with $z = 1.96$ and independent trials. What is the smallest number of trials needed?
+answer: 1068
+check: ceil(1.96 ** 2 * 0.25 / 0.03 ** 2)
+hint: The half-width is $z\sqrt{p(1-p)/n}$; solve for $n$ and round up.
+solution: $n \ge z^2 p(1-p)/h^2 = 3.8416 \times 0.25 / 0.0009 = 1067.1$, so at least $1068$ trials. Because tasks usually share structure, the effective sample size is smaller than the number of trials, and more tasks may be needed.
+
+@practice mc
+prompt: A developer runs a short set of prompts on a model, observes no success on a hard task, and reports that the model lacks the capability. What is the most important methodological objection?
+choice*: Without substantial elicitation effort (better prompts, tools, many attempts, perhaps fine-tuning), the failure shows only a lower bound on what a motivated actor could do.
+choice: A model can never fail a task unless it lacks the capability, so the report is correct.
+choice: A zero pass rate cannot have a confidence interval, so no conclusion is possible.
+choice: Capability evaluations are meaningless; only propensity evaluations are informative.
+hint: Ask what a score measures when the model was not helped to do its best.
+solution: A score under weak elicitation is a lower bound on capability. Failures can arise from poor prompting, missing tools or scaffolding. A zero pass rate does have an interval (the zero-failure bound), and both kinds of evaluation are informative.
+
+@practice code
+prompt: Write `wilson_interval(successes, n, z)` that returns the pair `(lower, upper)` of the Wilson score interval for a pass rate, using the formula given in the lesson with $\hat p = $ `successes / n` and the normal quantile `z`. Clip the lower end to at least 0 and the upper end to at most 1 to remove floating-point overshoot. For example, `wilson_interval(0, 30, 1.96)` returns about `(0.0, 0.1135)`.
+starter:
+```python
+def wilson_interval(successes, n, z):
+    p = successes / n
+    return p, p
+```
+tests:
+```python
+def close(got, want):
+    return all(abs(a - b) < 1e-4 for a, b in zip(got, want))
+
+assert close(wilson_interval(7, 10, 1.96), (0.39677, 0.89221))
+assert close(wilson_interval(0, 30, 1.96), (0.0, 0.11352))
+assert close(wilson_interval(30, 30, 1.96), (0.88648, 1.0))
+assert close(wilson_interval(50, 200, 1.96), (0.19508, 0.31434))
+assert close(wilson_interval(9, 15, 1.0), (0.47112, 0.71638))
+lo, hi = wilson_interval(5, 10, 1.96)
+assert abs((lo + hi) / 2 - 0.5) < 1e-9
+```
+model:
+```python
+from math import sqrt
+
+
+def wilson_interval(successes, n, z):
+    """Wilson score interval for a binomial proportion."""
+    p = successes / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z / denom * sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, center - half), min(1.0, center + half)
+```
+hint: Compute the denominator $1 + z^2/n$, then the center $(\hat p + z^2/2n)/\text{denominator}$ and the half-width, and finally clip.
+solution: The interval is centered at a shrunk estimate that moves toward 1/2, which is why it is not centered at $\hat p$ unless $\hat p = 1/2$ (the last test). At 0 and $n$ successes the unclipped end can be off by a tiny float error, hence the clipping. The tests include both extremes, a small sample, and a larger quantile and sample.
+
+@practice self
+prompt: Write the evaluation plan, at the level of methodology, for testing whether a model can complete a multi-step task in a defined domain of concern (choose any generic domain, such as automated software exploitation of the kind a security team tests on its own systems, but do not include operational details). Cover the threat model, the task suite and why it is a valid proxy, elicitation, test-set hygiene, statistics and a decision rule.
+hint: Work through the five design steps of the lesson in order and state what you would report at the end.
+solution: Threat model: a low-resourced actor seeking to carry out the multi-step task against systems they do not own; the concern is that the model gives the actor a capability they lacked or lowers the cost sharply; the steps are planning, tool use and error recovery over a long horizon. Suite: 40 tasks of graded difficulty built in a sandbox, each with an automatic success check, written after the training cutoff by people who did not see the model's outputs, with a private subset of 10 tasks kept out of all development. Validity: tasks correspond to steps on the pathway, with expert review of whether passing a task would meaningfully reduce actor effort, and with easy tasks for calibration. Elicitation: report results for a baseline prompt, then for a tuned prompt, with tools and scaffolding, with 20 attempts per task, and for a lightly fine-tuned version where that is permitted, and take the best as the working estimate; document the effort and the cost. Hygiene: check overlap between task text and the training corpus (n-gram overlap), do not tune on the private subset, and log all queries. Statistics: report pass rate per difficulty tier with Wilson intervals computed with tasks as the unit, pass@k from the repeated attempts, and the effect of elicitation. Decision rule fixed beforehand: if the upper 95% bound of the pass rate on tier-3 tasks reaches 20% in any evaluation, treat the capability threshold as reached and apply the associated mitigations; evaluate at regular intervals during training with a margin so that the trigger fires before the threshold. State the residual limitation: the suite cannot exclude better elicitation or tasks outside it.
+rubric: States a threat model and justifies the tasks as proxies for steps on it, without operational detail.
+rubric: Includes elicitation effort, held-out or private items, and a contamination check.
+rubric: Gives statistics with uncertainty at the right unit and a decision rule fixed in advance, and states a limitation.
+
+@quiz num
+prompt: A safeguard is tested on 60 independent attempts with 0 failures. Using the exact bound $p$ that solves $(1-p)^{60} = 0.05$, what is the 95% upper bound on its failure rate per attempt? Give three decimal places.
+answer: 0.049
+tol: 0.001
+check: 1 - 0.05 ** (1 / 60)
+hint: Take the 60th root of 0.05 and subtract from 1.
+solution: $p = 1 - 0.05^{1/60} = 1 - 0.9513 = 0.0487$, close to the rule-of-three value $3/60 = 0.05$. Zero observed failures in 60 trials still allows a true failure rate of nearly 5%.
+
+@quiz ms
+prompt: Which of these practices help make an evaluation result more trustworthy? Select all that apply.
+choice*: Fixing the decision threshold and the statistic to be compared before seeing results.
+choice*: Keeping a private portion of the test set and checking test items for overlap with training data.
+choice: Using only the best single prompt found by trying many prompts on the test set, and reporting its score with no interval.
+choice: Treating a model's refusal to attempt a task in one prompt format as evidence that it lacks the capability.
+hint: Ask which choices guard against overfitting to the test set, post hoc thresholds and weak elicitation.
+solution: Pre-specified thresholds and private, contamination-checked items reduce selection and leakage. Tuning on the test set and reporting no interval inflates results, and a refusal in one format says little about what better elicitation would obtain.
+
+@quiz self
+prompt: A report says that a model scored 62% on a public benchmark, above a pre-announced threshold of 60%, and that therefore the model has the capability the benchmark measures. The benchmark's tasks and solutions were published online two years before the model's training cutoff, and the benchmark has 50 items. Write a referee paragraph covering contamination, statistics and elicitation, and say what you would require.
+hint: Compute roughly how wide an interval on 50 items is, and ask whether the benchmark could have been in the training data.
+solution: Contamination: because the items and solutions were public before the training cutoff, the score may reflect memorized solutions, so it may not measure the capability. I would require an overlap analysis between the benchmark and the training data, results on a fresh set of items written after the cutoff (or a private set), and a comparison of performance on items likely present in the training data with items not. Statistics: with 50 items, 62% is 31 passes, and the 95% Wilson interval is roughly 48% to 74%, which includes values below the threshold of 60%, so the claim that the threshold was exceeded is not supported at this sample size; I would ask for more items, resampling over tasks, and the upper and lower bounds in the report. Elicitation: if the claim concerns what the model can do, the paper should state the prompting and attempts used; a lower bound is not a measurement of the ceiling, so both a "capability absent" and a "capability present" conclusion should be framed with this in mind. The conclusion should be restated as: the model scored 62% (interval stated) on a possibly contaminated public benchmark.
+rubric: Identifies contamination as a threat and requires an overlap analysis and fresh or private items.
+rubric: Computes or estimates the interval for 31 of 50 and concludes the threshold claim is not supported.
+rubric: Addresses elicitation and restates the conclusion in a scoped form.
