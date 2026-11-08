@@ -113,8 +113,8 @@ tasks with volunteers who agree, and no project involves animals.
 | P2 | Circuits and systems neuroscience: methods and causal evidence | 13/13 | yes | yes |
 | P3 | Consciousness and the science of the mind | 13/13 | yes | yes |
 | P4 | Brains and machines: neural networks as models of the brain | 13/13 | yes | yes |
-| P5 | Research methods and reproducibility in the brain and behavioral sciences | 13/13 | yes |  |
-| P6 | Research apprenticeship and qualifying exams | 13/13 | yes |  |
+| P5 | Research methods and reproducibility in the brain and behavioral sciences | 13/13 | yes | yes |
+| P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 <!-- /course-table -->
 
 ## Queue of future schools (one at a time, in this order)
@@ -184,3 +184,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: C27 reviewed (9 fixes); 17 of 21 new courses written and reviewed; review of P1 running; writers P4, P5, P6 running
 - 2026-11-08: Neuro: P4 written (review running); reviews of P1 and P4 running; writers P5 and P6 running; trial build running
 - 2026-11-08: Neuro: P5 and P6 written, so all 21 new courses are written; P1 reviewed (24 fixes); reviews of P4, P5, P6 running; trial build fine (one Try-it float fixed in C15)
+- 2026-11-08: Neuro: all 21 new courses written and independently reviewed (P4 6 fixes, P5 6, P6 8, with follow-ups); spelling audit clean; final validation and build next, then the owner is asked before publishing
