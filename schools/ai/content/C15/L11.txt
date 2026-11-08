@@ -1,0 +1,259 @@
+@lesson
+title: Evaluation on imbalanced data: precision, recall, ROC and PR curves
+summary: Evaluate a classifier on rare-positive data with the confusion matrix, precision, recall, F1, ROC AUC and average precision, and explain why accuracy misleads when classes are imbalanced.
+objective: Compute a confusion matrix and the precision, recall, F1 and false positive rate for a decision threshold.
+objective: Build ROC and precision-recall summaries from scores, and compute ROC AUC as a ranking probability and average precision from a ranked list.
+objective: Explain when accuracy and ROC AUC mislead under class imbalance and why precision-recall analysis is preferred there.
+reading: The Elements of Statistical Learning, the chapter on model assessment and selection, and the part of the classification chapters on error rates and ROC curves; look up precision-recall curves and average precision in a survey of evaluation metrics.
+@article
+A screening test is applied to 1000 people, 20 of whom are ill. A "test" that tells everyone they are healthy is right 980 times: 98 percent accuracy, and it finds nobody. When one class is rare, accuracy mostly measures how rare it is. We need measures that look at each class's errors separately and that do not depend on one arbitrary threshold.
+
+### The confusion matrix
+
+For a threshold, each prediction falls into one cell of a 2-by-2 table: true positives (TP), false positives (FP), false negatives (FN) and true negatives (TN). From it:
+
+- **Accuracy** $= (TP + TN)/n$.
+- **Precision** $= TP/(TP + FP)$: of the examples called positive, the fraction that are.
+- **Recall** (sensitivity, true positive rate, TPR) $= TP/(TP + FN)$: of the actual positives, the fraction found.
+- **False positive rate** (FPR) $= FP/(FP + TN)$: of the actual negatives, the fraction wrongly flagged.
+- **F1** $= 2PR/(P + R)$, the harmonic mean of precision $P$ and recall $R$. It is low when either is low. More generally $F_\beta = (1 + \beta^2)PR/(\beta^2P + R)$ weights recall $\beta$ times as much as precision.
+
+In the screening setting, suppose a test finds 16 of the 20 sick people and wrongly flags 49 of the 980 healthy ones. Then $TP = 16$, $FN = 4$, $FP = 49$, $TN = 931$: accuracy $0.947$ (worse than the useless $0.98$), recall $0.8$, FPR $0.05$, precision $16/65 = 0.246$. Three of every four people flagged are healthy, despite a "5 percent false positive rate".
+
+### Thresholds, ROC and AUC
+
+A model that outputs scores gives a different confusion matrix at each threshold. The **ROC curve** plots TPR against FPR as the threshold sweeps from high to low; it runs from $(0, 0)$ to $(1, 1)$. The **area under it** (ROC AUC) has a ranking interpretation: it equals the probability that a randomly chosen positive example gets a higher score than a randomly chosen negative one, counting ties as $\tfrac{1}{2}$. AUC is $1$ for a perfect ranking and $0.5$ for random scores, and it ignores calibration: any increasing transformation of the scores leaves it unchanged.
+
+Take twenty examples with four positives, with positive scores $0.9, 0.8, 0.55, 0.4$ and sixteen negative scores from $0.7$ down to $0.02$. Sweeping the threshold:
+
+| threshold | TPR | FPR | precision |
+|---|---|---|---|
+| 0.85 | 0.25 | 0.000 | 1.000 |
+| 0.75 | 0.50 | 0.000 | 1.000 |
+| 0.50 | 0.75 | 0.188 | 0.500 |
+| 0.35 | 1.00 | 0.313 | 0.444 |
+| 0.10 | 1.00 | 0.813 | 0.235 |
+
+Of the $4 \times 16 = 64$ positive-negative pairs, the positive scores higher in 58, so the ROC AUC is $58/64 = 0.906$.
+
+### Precision-recall curves
+
+The **precision-recall (PR) curve** plots precision against recall over the same thresholds. It ignores true negatives, so it is not diluted by a huge negative class. FPR divides by the number of negatives: with 16 negatives, three false positives is an FPR of $0.19$. Now take 160,000 negatives and 4,000 positives, and a detector that finds 3,000 positives (TPR $0.75$) while flagging 3,000 negatives. Its FPR is only $0.019$, a point near the top-left corner of the ROC plot, yet half of what it flags is wrong: precision is $0.5$. The PR curve for random scores is a horizontal line at the **prevalence** (the fraction of positives), here $4/20 = 0.2$, so a PR curve must be read against that baseline, whereas ROC's baseline is always the diagonal. A summary is the **average precision**: walk down the ranked list, and every time a positive appears record the precision at that rank, then average these values over the positives. For the example, the positives sit at ranks $1, 2, 5, 8$, with precisions $1, 1, 3/5, 4/8$, so $\mathrm{AP} = 0.775$. (This is the usual step-wise definition; some libraries interpolate.)
+
+### Choosing a threshold
+
+The threshold depends on the costs of the two errors and is a decision, not a property of the model. Missing a cancer is costlier than a false alarm, so it calls for high recall; blocking a legitimate payment may be costlier than missing some fraud, which calls for high precision. Report the whole curve, and choose the operating point on validation data (never on the test set). Class weights or resampling change the training objective and may help, but they also change calibration, so recalibrate if probabilities are needed.
+
+### In code
+
+```python
+pos = [0.9, 0.8, 0.55, 0.4]
+neg = [0.7, 0.6, 0.5, 0.45, 0.35, 0.3, 0.3, 0.25, 0.2, 0.2, 0.15, 0.1,
+       0.1, 0.05, 0.05, 0.02]
+scores = pos + neg
+y = [1] * len(pos) + [0] * len(neg)
+
+def confusion(y, pred):
+    tp = sum(1 for t, q in zip(y, pred) if t == 1 and q == 1)
+    fp = sum(1 for t, q in zip(y, pred) if t == 0 and q == 1)
+    fn = sum(1 for t, q in zip(y, pred) if t == 1 and q == 0)
+    tn = len(y) - tp - fp - fn
+    return tp, fp, fn, tn
+
+def auc(scores, y):
+    ps = [s for s, t in zip(scores, y) if t == 1]
+    ns = [s for s, t in zip(scores, y) if t == 0]
+    wins = sum(1.0 if p > q else 0.5 if p == q else 0.0
+               for p in ps for q in ns)
+    return wins / (len(ps) * len(ns))
+
+def average_precision(scores, y):
+    order = sorted(range(len(y)), key=lambda i: -scores[i])
+    tp = 0
+    ap = 0.0
+    for rank, i in enumerate(order, start=1):
+        if y[i] == 1:
+            tp += 1
+            ap += tp / rank
+    return ap / sum(y)
+
+pred = [1 if s >= 0.5 else 0 for s in scores]
+print(confusion(y, pred))
+print(auc(scores, y), average_precision(scores, y))
+```
+
+The pairwise AUC costs $O(n_+ n_-)$; libraries sort once and get the same value in $O(n\log n)$. With NumPy and scikit-learn the same quantities come from `roc_auc_score` and `average_precision_score`.
+
+@example
+title: Metrics for a rare-event screen
+problem: A fraud detector is applied to 1000 transactions, of which 20 are fraudulent. It flags 65 transactions, 16 of them fraudulent. Compute the confusion matrix, accuracy, precision, recall, FPR and F1, and compare the accuracy with a detector that flags nothing.
+step: $TP = 16$ and $FP = 65 - 16 = 49$. The fraudulent transactions not flagged are $FN = 20 - 16 = 4$, and $TN = 1000 - 65 - 4 = 931$.
+step: Accuracy $= (16 + 931)/1000 = 0.947$. Flagging nothing gives $980/1000 = 0.98$, higher.
+step: Precision $= 16/65 = 0.246$ and recall $= 16/20 = 0.8$. FPR $= 49/980 = 0.05$.
+step: $F_1 = 2(0.246)(0.8)/(0.246 + 0.8) = 0.376$.
+answer: Accuracy $0.947$ (below the trivial $0.98$), precision $0.246$, recall $0.8$, FPR $0.05$, $F_1 = 0.376$.
+
+@example
+title: AUC and average precision from a ranked list
+problem: Positives have scores $0.8$ and $0.5$; negatives have scores $0.6$, $0.55$ and $0.1$. Compute the ROC AUC and the average precision.
+step: List the six positive-negative pairs. The positive $0.8$ beats all three negatives. The positive $0.5$ beats only $0.1$ and loses to $0.6$ and $0.55$.
+step: The positive scores higher in $3 + 1 = 4$ of $6$ pairs, so $\mathrm{AUC} = 4/6 = 0.667$.
+step: Rank by score: $0.8$ (positive, rank 1), $0.6$, $0.55$, $0.5$ (positive, rank 4), $0.1$. The precision at the first positive is $1/1$; at the second it is $2/4$.
+step: $\mathrm{AP} = (1 + 0.5)/2 = 0.75$.
+answer: $\mathrm{AUC} = 0.667$ and $\mathrm{AP} = 0.75$.
+
+@mistakes
+- Quoting accuracy on imbalanced data: always predicting the majority class can beat a useful model.
+- Choosing the threshold on the test set and then reporting test metrics at that threshold; choose it on validation data.
+- Comparing PR curves or average precision across data sets with different prevalence without the baseline: random scores have AP equal to the prevalence.
+- Reading ROC AUC as accuracy or calibration: it measures ranking only, so a badly calibrated model can have a perfect AUC.
+
+@practice num
+prompt: A classifier has $TP = 30$, $FP = 10$ and $FN = 20$. What is its $F_1$ score? Give three decimal places.
+answer: 0.667
+tol: 0.001
+check: 2 * (30 / 40) * (30 / 50) / (30 / 40 + 30 / 50)
+hint: Precision is $TP/(TP + FP) = 0.75$ and recall is $TP/(TP + FN) = 0.6$.
+solution: $F_1 = 2(0.75)(0.6)/(0.75 + 0.6) = 0.9/1.35 = 0.667$. Equivalently $F_1 = 2TP/(2TP + FP + FN) = 60/90$.
+
+@practice num
+prompt: Positive examples have scores $0.9$ and $0.4$; negative examples have scores $0.6$, $0.3$ and $0.2$. What is the ROC AUC? Give three decimal places.
+answer: 0.833
+tol: 0.001
+check: sum(1.0 if p > q else 0.5 if p == q else 0.0 for p in [0.9, 0.4] for q in [0.6, 0.3, 0.2]) / 6
+hint: Count, over the six positive-negative pairs, how often the positive has the higher score.
+solution: The score $0.9$ beats all three negatives. The score $0.4$ beats $0.3$ and $0.2$ but not $0.6$. That is $5$ wins in $6$ pairs, so $\mathrm{AUC} = 5/6 \approx 0.833$.
+
+@practice mc
+prompt: On a data set where 0.1 percent of the examples are positive, a model's ROC curve looks excellent, but most of the examples it flags as positive are negative. What explains this?
+choice*: The false positive rate divides by the huge number of negatives, so a small FPR can still mean many more false positives than true positives, which makes precision low.
+choice: ROC curves cannot be computed when classes are imbalanced.
+choice: Precision depends only on the threshold, not on how rare the positives are.
+choice: A high AUC guarantees that the top-ranked predictions are all positive.
+hint: Write precision in terms of TPR, FPR and the numbers of positives and negatives.
+solution: Precision is $TP/(TP + FP)$ with $FP = \mathrm{FPR}\times N_{-}$. When $N_{-}$ is enormous, a tiny FPR still yields a large $FP$, which can exceed $TP = \mathrm{TPR}\times N_{+}$. ROC is computable under imbalance, precision depends strongly on prevalence, and AUC is an average over all pairs, not a guarantee about the top of the list.
+
+@practice code
+prompt: Write `prf(y_true, y_pred)` returning `(precision, recall, f1)` as floats for 0/1 labels. Precision is $TP/(TP + FP)$, recall $TP/(TP + FN)$ and $F_1 = 2PR/(P + R)$. Whenever a denominator is zero, the corresponding value is `0.0`.
+starter:
+```python
+def prf(y_true, y_pred):
+    pass
+```
+tests:
+```python
+p, r, f = prf([1, 1, 0, 0, 1], [1, 0, 1, 0, 1])
+assert abs(p - 2 / 3) < 1e-9 and abs(r - 2 / 3) < 1e-9 and abs(f - 2 / 3) < 1e-9
+assert prf([1, 1, 0], [0, 0, 0]) == (0.0, 0.0, 0.0)
+assert prf([0, 0], [0, 0]) == (0.0, 0.0, 0.0)
+p, r, f = prf([1, 0, 0, 0], [1, 1, 1, 1])
+assert abs(p - 0.25) < 1e-9 and abs(r - 1.0) < 1e-9 and abs(f - 0.4) < 1e-9
+```
+model:
+```python
+def prf(y_true, y_pred):
+    """Precision, recall and F1 with zero for undefined ratios."""
+    tp = sum(1 for t, q in zip(y_true, y_pred) if t == 1 and q == 1)
+    fp = sum(1 for t, q in zip(y_true, y_pred) if t == 0 and q == 1)
+    fn = sum(1 for t, q in zip(y_true, y_pred) if t == 1 and q == 0)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return precision, recall, f1
+```
+hint: Count TP, FP and FN with one pass each, then guard each division against a zero denominator.
+solution: Three cases make a denominator zero: no predicted positives, no actual positives, and zero precision plus recall. Each returns `0.0`. The last test has recall 1 but precision 0.25, and $F_1 = 0.4$ is dragged toward the smaller of the two.
+
+@practice code
+prompt: Write `roc_auc(scores, y)` returning the area under the ROC curve as the fraction of positive-negative pairs in which the positive example has the higher score, counting a tie as $0.5$. `scores` is a list of floats and `y` a list of 0/1 labels. Raise `ValueError` if there are no positives or no negatives.
+starter:
+```python
+def roc_auc(scores, y):
+    pass
+```
+tests:
+```python
+assert abs(roc_auc([0.9, 0.4, 0.6, 0.3, 0.2], [1, 1, 0, 0, 0]) - 5 / 6) < 1e-9
+assert abs(roc_auc([0.5, 0.5], [1, 0]) - 0.5) < 1e-9
+assert abs(roc_auc([0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1]) - 1.0) < 1e-9
+assert abs(roc_auc([0.9, 0.8, 0.2, 0.1], [0, 0, 1, 1])) < 1e-9
+s = [0.3, 0.9, 0.5, 0.1, 0.7]
+yy = [0, 1, 1, 0, 0]
+assert abs(roc_auc(s, yy) - roc_auc([v ** 3 for v in s], yy)) < 1e-12
+assert raises(ValueError, roc_auc, [0.1, 0.2], [1, 1])
+```
+model:
+```python
+def roc_auc(scores, y):
+    """ROC AUC as the probability a positive outranks a negative."""
+    pos = [s for s, t in zip(scores, y) if t == 1]
+    neg = [s for s, t in zip(scores, y) if t == 0]
+    if not pos or not neg:
+        raise ValueError("need both classes")
+    wins = 0.0
+    for p in pos:
+        for q in neg:
+            if p > q:
+                wins += 1.0
+            elif p == q:
+                wins += 0.5
+    return wins / (len(pos) * len(neg))
+```
+hint: Split the scores by label, then compare every positive score with every negative score; ties are worth half a win.
+solution: The AUC is the average, over all positive-negative pairs, of the indicator that the positive wins, with ties split. The test with cubed scores confirms that only the ranking matters, and the all-negative-first case gives zero.
+
+@quiz code
+prompt: Write `average_precision(scores, y)` for 0/1 labels `y` and float `scores` (assume all scores are distinct). Rank the examples by decreasing score; at each rank holding a positive example, record the precision (positives so far divided by the rank); return the mean of these values over the positives. Raise `ValueError` if there are no positives.
+starter:
+```python
+def average_precision(scores, y):
+    pass
+```
+tests:
+```python
+assert abs(average_precision([0.9, 0.8, 0.7, 0.6], [1, 0, 1, 0]) - 5 / 6) < 1e-9
+assert abs(average_precision([0.9, 0.8, 0.7, 0.6], [0, 1, 0, 1]) - 0.5) < 1e-9
+assert abs(average_precision([0.2, 0.9, 0.5], [0, 1, 1]) - 1.0) < 1e-9
+assert abs(average_precision([0.1, 0.8, 0.4, 0.6], [1, 0, 1, 0]) - 5 / 12) < 1e-9
+assert raises(ValueError, average_precision, [0.5, 0.4], [0, 0])
+```
+model:
+```python
+def average_precision(scores, y):
+    """Mean precision at the ranks of the positive examples."""
+    total = sum(y)
+    if total == 0:
+        raise ValueError("no positives")
+    order = sorted(range(len(y)), key=lambda i: -scores[i])
+    hits = 0
+    ap = 0.0
+    for rank, i in enumerate(order, start=1):
+        if y[i] == 1:
+            hits += 1
+            ap += hits / rank
+    return ap / total
+```
+hint: Sort the indices by decreasing score; keep a running count of positives seen, and add `hits / rank` each time you meet a positive.
+solution: In the first test the positives are at ranks 1 and 3, with precisions $1$ and $2/3$, whose mean is $5/6$. The test with unsorted input checks the sorting, and the second test, with positives at ranks 2 and 4, gives $(1/2 + 2/4)/2 = 0.5$.
+
+@quiz text
+prompt: What does this program print?
+```python
+y = [1, 0, 1, 0, 0, 1]
+pred = [1, 1, 0, 0, 0, 1]
+tp = sum(1 for t, q in zip(y, pred) if t == q == 1)
+fp = sum(1 for t, q in zip(y, pred) if t == 0 and q == 1)
+print(tp, fp, tp / (tp + fp))
+```
+answer: 2 1 0.6666666666666666
+check: run("y = [1, 0, 1, 0, 0, 1]\npred = [1, 1, 0, 0, 0, 1]\ntp = sum(1 for t, q in zip(y, pred) if t == q == 1)\nfp = sum(1 for t, q in zip(y, pred) if t == 0 and q == 1)\nprint(tp, fp, tp / (tp + fp))")
+hint: The examples at positions 0 and 5 are correct positives; position 1 is a negative flagged as positive.
+solution: There are 2 true positives (positions 0 and 5) and 1 false positive (position 1), so precision is $2/3$, which Python prints as `0.6666666666666666`.
+
+@quiz num
+prompt: A data set has 25 positive examples among 1000. A classifier ranks the examples completely at random. What precision does it achieve at any recall level on average, that is, the expected height of its precision-recall curve? Give three decimal places.
+answer: 0.025
+tol: 0.001
+check: 25 / 1000
+hint: A random subset of the examples contains positives in proportion to their share of the data.
+solution: Whatever number of examples a random ranking flags, the expected fraction of positives among them is the prevalence $25/1000 = 0.025$. This is why a PR curve is read against the prevalence baseline.

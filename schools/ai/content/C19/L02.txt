@@ -1,0 +1,277 @@
+@lesson
+title: Byte-pair encoding and subword tokenization
+summary: Learn a subword vocabulary by repeatedly merging the most frequent adjacent pair, and use the learned merges to segment new words.
+objective: Run byte-pair encoding by hand on a small word-frequency table, breaking ties by a fixed rule.
+objective: Implement training and encoding for byte-pair encoding in plain Python.
+objective: Explain why subword units handle unseen words and how the number of merges sets the vocabulary size.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the section on byte-pair encoding in the chapter on tokenization; look up the topic subword tokenization.
+@article
+A word-level vocabulary has two problems. Any word not seen in training ("unfriendliest") becomes an unknown token, and a vocabulary that covers a large corpus has hundreds of thousands of types, most of them rare. Characters have the opposite problem: no unknown words, but long sequences in which a single letter carries almost no meaning. **Subword tokenization** sits between them: frequent words are single tokens, and rare words are spelled out from pieces such as "un", "friend", "li", "est". **Byte-pair encoding** (BPE), adapted to subword units for neural machine translation by Sennrich, Haddow and Birch (2016), learns such a vocabulary from data with one simple loop.
+
+### The algorithm
+
+BPE starts from words written as sequences of characters, plus an end-of-word symbol `_` so that a piece at the end of a word differs from the same letters inside a word. Each distinct word comes with its frequency in the corpus. Then repeat:
+
+1. Count every pair of adjacent symbols, weighting each pair by the frequency of the word it appears in.
+2. Pick the pair with the highest count. **Tie-breaking rule used in this course:** among tied pairs, take the one that is smallest when the two symbols are compared as a Python tuple of strings (first symbol, then second; the character `_` sorts before lowercase letters).
+3. Merge it: replace every occurrence of the pair, scanning each word from left to right, by one new symbol that joins the two. Record the merge.
+
+After $k$ merges, the vocabulary is the starting alphabet plus $k$ new symbols, so **the number of merges sets the vocabulary size**.
+
+### A small run
+
+Corpus: `hug` 4 times, `hugs` 2, `bug` 3, `mug` 2. The starting symbols are `h u g s b m _` (7). The pair counts at the start include $(u, g) = 4 + 2 + 3 + 2 = 11$ and $(g, \_) = 4 + 3 + 2 = 9$, so the first merge is $(u, g)$. The table shows the first merges (each count is computed after the earlier merges):
+
+| merge | pair | count | resulting words |
+|---|---|---|---|
+| 1 | $(u, g)$ | 11 | `h ug _`, `h ug s _`, `b ug _`, `m ug _` |
+| 2 | $(ug, \_)$ | 9 | `h ug_`, `h ug s _`, `b ug_`, `m ug_` |
+| 3 | $(h, ug\_)$ | 4 | `hug_`, `h ug s _`, `b ug_`, `m ug_` |
+
+To segment a new word, **replay the merges in the order they were learned**. For `mugs`, start from `m u g s _`; merge 1 gives `m ug s _`, and no later merge applies, so the encoding is `m`, `ug`, `s`, `_`. A word never seen in training is covered by pieces learned from other words. If a character itself was never seen, a character-level BPE needs an unknown symbol; **byte-level** variants start from the 256 possible byte values, so every string can be encoded.
+
+### In code
+
+```python
+from collections import Counter
+
+def pair_counts(vocab):
+    """vocab maps a tuple of symbols to a frequency."""
+    counts = Counter()
+    for symbols, freq in vocab.items():
+        for pair in zip(symbols, symbols[1:]):
+            counts[pair] += freq
+    return counts
+
+def merge_pair(vocab, pair):
+    new_vocab = {}
+    for symbols, freq in vocab.items():
+        out, i = [], 0
+        while i < len(symbols):
+            if i + 1 < len(symbols) and (symbols[i], symbols[i + 1]) == pair:
+                out.append(symbols[i] + symbols[i + 1])
+                i += 2
+            else:
+                out.append(symbols[i])
+                i += 1
+        key = tuple(out)
+        new_vocab[key] = new_vocab.get(key, 0) + freq
+    return new_vocab
+
+def train_bpe(words, num_merges):
+    vocab = {tuple(w) + ("_",): f for w, f in words.items()}
+    merges = []
+    for _ in range(num_merges):
+        counts = pair_counts(vocab)
+        if not counts:
+            break
+        top = max(counts.values())
+        best = min(p for p, c in counts.items() if c == top)
+        merges.append(best)
+        vocab = merge_pair(vocab, best)
+    return merges
+
+def encode(word, merges):
+    vocab = {tuple(word) + ("_",): 1}
+    for pair in merges:
+        vocab = merge_pair(vocab, pair)
+    return list(next(iter(vocab)))
+
+merges = train_bpe({"hug": 4, "hugs": 2, "bug": 3, "mug": 2}, 6)
+print(merges[:3])
+print(encode("mugs", merges))
+```
+
+The program prints `[('u', 'g'), ('ug', '_'), ('h', 'ug_')]` and `['m', 'ug', 's', '_']`. `encode` wraps the word in a one-entry vocabulary so that it can reuse `merge_pair`. Production tokenizers add speed (priority queues, caches) and work on bytes, but they compute the same merges.
+
+### Limits
+
+BPE is greedy and frequency-driven. It does not know morphology: it may produce a piece like `ug` that is not a meaningful unit. Related methods choose pieces differently: WordPiece, used in BERT, picks merges that increase the likelihood of the training data, and the unigram language model method prunes a large starting vocabulary. All of them give frequent strings short codes and rare strings long ones.
+
+@example
+title: Three merges with a tie
+problem: Run BPE for three merges on the corpus `low` 5, `lower` 2, `lowest` 3, `new` 4, using the end symbol `_` and the course tie-breaking rule.
+step: Start: `l o w _` (5), `l o w e r _` (2), `l o w e s t _` (3), `n e w _` (4). Count pairs: $(l, o) = 5 + 2 + 3 = 10$, $(o, w) = 10$, $(w, \_) = 5 + 4 = 9$, $(w, e) = 5$, $(e, w) = 4$, and smaller ones. The top count 10 is shared by $(l, o)$ and $(o, w)$.
+step: Break the tie: compare the tuples; `l` comes before `o`, so merge 1 is $(l, o)$. Words: `lo w _`, `lo w e r _`, `lo w e s t _`, `n e w _`.
+step: Now $(lo, w) = 10$ is the unique maximum. Merge 2 is $(lo, w)$, giving `low _` (5), `low e r _` (2), `low e s t _` (3).
+step: Counts: $(low, \_) = 5$, $(low, e) = 5$, and $(w, \_)$ is no longer a pair except in `n e w _`, where $(w, \_) = 4$. The tie between $(low, \_)$ and $(low, e)$ goes to $(low, \_)$ because `_` sorts before `e`. Merge 3 is $(low, \_)$.
+answer: Merges: $(l, o)$, $(lo, w)$, $(low, \_)$.
+
+@example
+title: Segmenting an unseen word
+problem: The learned merges, in order, are $(l,o)$, $(lo,w)$, $(low,\_)$, $(low,e)$, $(e,w)$, $(ew,\_)$. Segment the word `newest`.
+step: Start from the characters and the end symbol: `n e w e s t _`.
+step: Replay the merges in order. $(l,o)$, $(lo,w)$, $(low,\_)$ and $(low,e)$ find nothing.
+step: $(e,w)$ matches the `e w` at positions 2 and 3: `n ew e s t _`. The next merge $(ew,\_)$ needs `ew` followed by `_`, but `ew` is followed by `e`, so nothing changes.
+answer: `n`, `ew`, `e`, `s`, `t`, `_` (6 symbols).
+
+@mistakes
+- Counting a pair once per word instead of once per occurrence times the word's frequency.
+- Segmenting a new word by the longest piece that fits instead of replaying the merges in learned order; the two procedures can give different results.
+- Forgetting the end-of-word symbol, which makes the piece `s` at the end of "hugs" the same symbol as the `s` inside "bus" and loses the cue for plurals.
+- Merging overlapping pairs: in `a a a`, the pair $(a, a)$ is merged left to right and gives `aa a`, not `a aa` and not `aaa`.
+
+@practice num
+prompt: The corpus has the words `cat` 4 times, `cats` 3, `hat` 2 and `hats` 1, each written as characters followed by the end symbol `_`. What is the count of the adjacent pair $(t, \_)$ at the start of BPE training?
+answer: 6
+check: sum(f for w, f in {"cat": 4, "cats": 3, "hat": 2, "hats": 1}.items() if w.endswith("t"))
+hint: The pair $(t, \_)$ occurs only in words that end in `t`.
+solution: `cat` (4) and `hat` (2) end in `t`, so the pair occurs $4 + 2 = 6$ times. In `cats` and `hats`, the `t` is followed by `s`.
+
+@practice num
+prompt: BPE is trained on the words `cat`, `cats`, `hat` and `hats` (with the end symbol `_`) starting from single characters. The vocabulary is the starting symbols plus one new symbol per merge. How many symbols does the vocabulary have after 5 merges?
+answer: 11
+check: len(set("cat" + "cats" + "hat" + "hats")) + 1 + 5
+hint: Count the distinct letters, add one for the end symbol, then add one symbol per merge.
+solution: The distinct letters are `c a t s h` (5), and with `_` there are 6 starting symbols. Each of the 5 merges adds one new symbol, so $6 + 5 = 11$.
+
+@practice mc
+prompt: A character-level BPE tokenizer was trained only on English text without the letter `z`. It must now encode the word `zoo`. Which statement is correct?
+choice*: The symbol `z` is not in its vocabulary, so it needs an unknown symbol, whereas a byte-level BPE can encode `zoo` from bytes.
+choice: BPE always finds a merge that contains `z`, because merges are learned from the pair counts of the test word.
+choice: The word is encoded as one piece, because rare words become single tokens.
+choice: BPE retrains itself on `zoo` before encoding.
+hint: Merges are learned only during training. Which symbols exist at the start?
+solution: Training starts from the characters seen in the corpus, and merges only combine existing symbols, so an unseen character has no symbol. Byte-level variants start from all 256 byte values, so any string is representable.
+
+@practice code
+prompt: Write `train_bpe_min_count(words, min_count)` that learns BPE merges from `words`, a dict from word to frequency. Write each word as its characters followed by the end symbol `"_"`. Repeat: count adjacent pairs weighted by word frequency; stop when there are no pairs or the highest pair count is below `min_count`; otherwise merge the pair with the highest count, breaking ties by the smallest pair as a Python tuple of strings. Merging scans each word left to right without overlaps. Return the list of merged pairs, in order, as tuples. For example, `train_bpe_min_count({"aaa": 2, "ba": 1}, 2)` returns `[('a', 'a'), ('a', '_'), ('aa', 'a_')]`.
+starter:
+```python
+def train_bpe_min_count(words, min_count):
+    return []
+```
+tests:
+```python
+w = {"cat": 4, "cats": 3, "hat": 2, "hats": 1}
+assert train_bpe_min_count(w, 4) == [("a", "t"), ("c", "at"), ("cat", "_"), ("s", "_")]
+assert train_bpe_min_count(w, 3) == [("a", "t"), ("c", "at"), ("cat", "_"), ("s", "_"), ("cat", "s_"), ("h", "at")]
+assert train_bpe_min_count(w, 11) == []
+assert train_bpe_min_count({}, 1) == []
+assert train_bpe_min_count({"aaa": 2, "ba": 1}, 2) == [("a", "a"), ("a", "_"), ("aa", "a_")]
+```
+model:
+```python
+from collections import Counter
+
+
+def train_bpe_min_count(words, min_count):
+    """Learn BPE merges until the best pair is rarer than min_count."""
+    vocab = {tuple(w) + ("_",): f for w, f in words.items()}
+    merges = []
+    while True:
+        counts = Counter()
+        for symbols, freq in vocab.items():
+            for pair in zip(symbols, symbols[1:]):
+                counts[pair] += freq
+        if not counts:
+            break
+        top = max(counts.values())
+        if top < min_count:
+            break
+        best = min(p for p, c in counts.items() if c == top)
+        merges.append(best)
+        new_vocab = {}
+        for symbols, freq in vocab.items():
+            out, i = [], 0
+            while i < len(symbols):
+                if i + 1 < len(symbols) and (symbols[i], symbols[i + 1]) == best:
+                    out.append(symbols[i] + symbols[i + 1])
+                    i += 2
+                else:
+                    out.append(symbols[i])
+                    i += 1
+            key = tuple(out)
+            new_vocab[key] = new_vocab.get(key, 0) + freq
+        vocab = new_vocab
+    return merges
+```
+hint: Turn the fixed number of merges into a loop that ends when there are no pairs left or the top count falls below `min_count`.
+solution: The loop is the one from the article with a different stopping rule. Because the loop must also end when every word is a single symbol, test for an empty pair counter before looking at the maximum. The `{"aaa": 2, "ba": 1}` test checks the left-to-right, non-overlapping merge of `a a a`.
+
+@practice code
+prompt: Write `encode_longest(word, vocab)` for a vocabulary `vocab`, a set of strings. Starting at position 0, repeatedly take the longest string in `vocab` that matches the text at the current position, append it to the output list and move past it. If no string matches, append `"<unk>"` and move forward by one character. Return the list. For example, with `vocab = {"un", "happ", "y"}`, `encode_longest("unhappy", vocab)` returns `['un', 'happ', 'y']`.
+starter:
+```python
+def encode_longest(word, vocab):
+    return []
+```
+tests:
+```python
+v = {"un", "happ", "y", "a"}
+assert encode_longest("unhappy", v) == ["un", "happ", "y"]
+assert encode_longest("unhappier", v) == ["un", "happ", "<unk>", "<unk>", "<unk>"]
+assert encode_longest("yay", v) == ["y", "a", "y"]
+assert encode_longest("", v) == []
+w = {"ab", "bcd", "a", "b", "c", "d"}
+assert encode_longest("abcd", w) == ["ab", "c", "d"]
+```
+model:
+```python
+def encode_longest(word, vocab):
+    """Greedy longest-match segmentation with an unknown fallback."""
+    out = []
+    i = 0
+    while i < len(word):
+        for j in range(len(word), i, -1):
+            if word[i:j] in vocab:
+                out.append(word[i:j])
+                i = j
+                break
+        else:
+            out.append("<unk>")
+            i += 1
+    return out
+```
+hint: At each position try the longest slice first, shrinking the end index until a slice is in the vocabulary; a `for ... else` handles the no-match case.
+solution: Longest-match segmentation is greedy: it never looks ahead. The last test shows it: the longest match `ab` leaves `c` and `d`, three pieces, while `a` followed by `bcd` would need only two. That is one reason subword methods define their segmentation rule carefully.
+
+@quiz num
+prompt: BPE has learned the merges $(b, c)$, then $(bc, \_)$ from the words `ab` (frequency 3), `abc` (frequency 2) and `bc` (frequency 4), each written with the end symbol `_`. After those two merges, how many symbols does the whole corpus contain when each word is counted once per occurrence (that is, weighted by its frequency)?
+answer: 17
+check: 3 * 3 + 2 * 2 + 4 * 1
+hint: Write each word after the two merges, count its symbols, and multiply by its frequency.
+solution: `ab` is `a b _` (3 symbols) and occurs 3 times: 9. `abc` is `a bc_` (2 symbols) and occurs 2 times: 4. `bc` is `bc_` (1 symbol) and occurs 4 times: 4. The total is $9 + 4 + 4 = 17$.
+
+@quiz code
+prompt: Write `merge_symbols(symbols, pair)` that takes a list of strings and a pair `(left, right)` and returns a new list in which each adjacent occurrence of `left` followed by `right` is replaced by `left + right`. Scan from left to right, and after a merge continue after the merged pair (no overlaps). Do not modify the input list. For example, `merge_symbols(["a", "a", "a"], ("a", "a"))` returns `["aa", "a"]`.
+starter:
+```python
+def merge_symbols(symbols, pair):
+    return symbols
+```
+tests:
+```python
+assert merge_symbols(["a", "a", "a"], ("a", "a")) == ["aa", "a"]
+assert merge_symbols(["a", "a", "a", "a"], ("a", "a")) == ["aa", "aa"]
+assert merge_symbols(["b", "a", "n", "a", "n", "a", "_"], ("a", "n")) == ["b", "an", "an", "a", "_"]
+assert merge_symbols([], ("a", "b")) == []
+s = ["x", "y"]
+assert merge_symbols(s, ("y", "x")) == ["x", "y"] and s == ["x", "y"]
+```
+model:
+```python
+def merge_symbols(symbols, pair):
+    """Replace non-overlapping adjacent occurrences of pair, left to right."""
+    out = []
+    i = 0
+    while i < len(symbols):
+        if i + 1 < len(symbols) and (symbols[i], symbols[i + 1]) == pair:
+            out.append(symbols[i] + symbols[i + 1])
+            i += 2
+        else:
+            out.append(symbols[i])
+            i += 1
+    return out
+```
+hint: Use an index that moves by 2 after a merge and by 1 otherwise, and build a fresh output list.
+solution: The index jump of 2 after a merge is what prevents overlapping merges, so `a a a` becomes `aa a`. Building a new list leaves the input unchanged.
+
+@quiz mc
+prompt: A BPE tokenizer has been trained, and its merges are stored as an ordered list. To encode a new word, what must be done?
+choice*: Start from the word's characters and apply the stored merges in the order in which they were learned.
+choice: Count the pairs in the new word and merge the most frequent one repeatedly.
+choice: Repeatedly take the longest piece of the word that appears anywhere in the vocabulary.
+choice: Look the word up in the corpus and use its stored segmentation.
+hint: The order of the merges is part of the trained tokenizer.
+solution: BPE encoding replays the merges in learned order, so that the same word is always segmented the same way, whatever text surrounds it. Counting pairs in the new word would make the segmentation depend on the word instead of on training data, and the longest-match rule defines a different tokenizer.

@@ -1,0 +1,242 @@
+@lesson
+title: Recurrent networks and backpropagation through time
+summary: Run a recurrent cell over a short sequence by hand, derive and code backpropagation through time for a scalar RNN, and explain vanishing and exploding gradients.
+objective: Compute the hidden states of a recurrent network over a short sequence by hand.
+objective: Derive the gradient of a loss with respect to a recurrent weight by backpropagation through time.
+objective: Explain why long products of Jacobians make gradients vanish or explode, and how gradient clipping helps.
+objective: Implement a vector recurrent cell and a BPTT gradient in plain Python.
+reading: Dive into Deep Learning, the chapters on recurrent neural networks: recurrent neural networks, and backpropagation through time.
+@article
+A convolutional layer looks at a fixed window. A sentence, a sensor stream or a melody has no fixed length, and what comes next depends on what came before. A **recurrent neural network** (RNN) reads a sequence one element at a time while carrying a **hidden state** $\mathbf{h}_t$ that summarizes the past.
+
+### The recurrent cell
+Given inputs $\mathbf{x}_1, \dots, \mathbf{x}_T$ and an initial state $\mathbf{h}_0 = \mathbf{0}$, a simple (Elman-style) RNN computes
+
+$$\mathbf{h}_t = \tanh(\mathbf{W}_{xh}\mathbf{x}_t + \mathbf{W}_{hh}\mathbf{h}_{t-1} + \mathbf{b}).$$
+
+The same $\mathbf{W}_{xh}$, $\mathbf{W}_{hh}$ and $\mathbf{b}$ are used at every step, which is **parameter sharing across time**, the recurrent counterpart of the shared kernel in a convolution. An output layer such as $\hat{\mathbf{y}}_t = \mathbf{W}_{hy}\mathbf{h}_t + \mathbf{b}_y$ reads each state. With input size 10, hidden size 20 and output size 5, the parameters are $200 + 400 + 20 + 100 + 5 = 725$, whatever the sequence length.
+
+Take the scalar case $h_t = \tanh(w x_t + u h_{t-1})$ with $w = 0.5$, $u = 0.8$, inputs $(1, 2, -1)$ and $h_0 = 0$:
+
+| $t$ | $x_t$ | $w x_t + u h_{t-1}$ | $h_t$ |
+|---|---|---|---|
+| 1 | 1 | 0.5 | 0.4621 |
+| 2 | 2 | $1 + 0.8 \cdot 0.4621 = 1.3697$ | 0.8786 |
+| 3 | $-1$ | $-0.5 + 0.8 \cdot 0.8786 = 0.2029$ | 0.2002 |
+
+The last state depends on all three inputs: the sequence has been compressed into one number.
+
+### Backpropagation through time
+To train, we **unroll** the network: a copy of the cell for every step, all sharing weights. Applying backpropagation to the unrolled graph is **backpropagation through time** (BPTT). Suppose the loss depends on the last state, $L = (h_T - y)^2$. Write $z_t = w x_t + u h_{t-1}$ and $\delta_t = \partial L / \partial z_t$. Since $h_t = \tanh(z_t)$ and $\tanh'(z) = 1 - \tanh^2(z)$,
+
+$$\frac{\partial L}{\partial h_T} = 2(h_T - y), \quad \delta_t = \frac{\partial L}{\partial h_t}\,(1 - h_t^2), \quad \frac{\partial L}{\partial h_{t-1}} = \delta_t\, u.$$
+
+Each step contributes to the shared weight: $\partial L/\partial u = \sum_{t} \delta_t\, h_{t-1}$ and $\partial L/\partial w = \sum_t \delta_t\, x_t$. The sum over $t$ is what makes the gradient of a shared weight differ from an ordinary layer's.
+
+### Vanishing and exploding gradients
+Going back $k$ steps multiplies the gradient by $\prod u (1 - h_t^2)$. Because $0 < 1 - h_t^2 \le 1$, if $|u| < 1$ this product shrinks geometrically: with $|u| = 0.5$, ten steps multiply the gradient by at most $0.5^{10} \approx 0.001$. The error signal from a distant step is lost: the **vanishing gradient** problem. For matrices, the factor is the Jacobian $\mathbf{W}_{hh}^\top \operatorname{diag}(1 - \mathbf{h}_t^2)$, and when its largest singular value stays above 1 the product can grow instead: **exploding gradients**. Exploding gradients are handled by **gradient clipping**: if $\lVert \mathbf{g} \rVert_2$ exceeds a threshold $c$, replace $\mathbf{g}$ with $c\, \mathbf{g} / \lVert \mathbf{g} \rVert_2$, keeping the direction but limiting the step. Vanishing gradients need architectural changes, the subject of the next lesson.
+
+### In code
+```python
+from math import tanh
+
+def rnn_forward(xs, w, u):
+    """Hidden states of a scalar RNN started from h = 0."""
+    h, hs = 0.0, []
+    for x in xs:
+        h = tanh(w * x + u * h)
+        hs.append(h)
+    return hs
+
+print([round(h, 4) for h in rnn_forward([1, 2, -1], 0.5, 0.8)])
+```
+
+Frameworks such as PyTorch provide `nn.RNN`, and automatic differentiation performs BPTT for you, but writing the loop once makes the structure visible.
+
+@example
+title: A vector RNN step by step
+problem: A recurrent cell has $\mathbf{W}_{xh} = \mathbf{I}$, $\mathbf{W}_{hh} = 0.5\,\mathbf{I}$, $\mathbf{b} = \mathbf{0}$ and $\mathbf{h}_0 = \mathbf{0}$. Run it on the inputs $(1, 0)$ and then $(0, 1)$.
+step: Step 1: the pre-activation is $\mathbf{x}_1 + 0.5\,\mathbf{h}_0 = (1, 0)$, so $\mathbf{h}_1 = (\tanh 1, \tanh 0) = (0.7616, 0)$.
+step: Step 2: the pre-activation is $(0, 1) + 0.5\,(0.7616, 0) = (0.3808, 1)$.
+step: Apply $\tanh$ to each component: $\tanh(0.3808) = 0.3634$ and $\tanh(1) = 0.7616$.
+answer: $\mathbf{h}_1 = (0.7616, 0)$ and $\mathbf{h}_2 = (0.3634, 0.7616)$.
+
+@example
+title: BPTT for a two-step scalar RNN
+problem: Let $h_t = \tanh(w x_t + u h_{t-1})$ with $w = 1$, $u = 1$, $h_0 = 0$, inputs $(1, 0)$ and loss $L = (h_2 - 0)^2$. Find $\partial L / \partial u$.
+step: Forward pass: $h_1 = \tanh(1) = 0.7616$ and $h_2 = \tanh(0 + 0.7616) = 0.6420$.
+step: Backward from the loss: $\partial L/\partial h_2 = 2 h_2 = 1.2840$, so $\delta_2 = 1.2840\,(1 - 0.6420^2) = 1.2840 \cdot 0.5878 = 0.7548$.
+step: Pass back to step 1: $\partial L / \partial h_1 = \delta_2 u = 0.7548$, so $\delta_1 = 0.7548\,(1 - 0.7616^2) = 0.7548 \cdot 0.4200 = 0.3170$.
+step: Sum the contributions $\delta_t h_{t-1}$: step 2 gives $0.7548 \cdot 0.7616 = 0.5748$ and step 1 gives $0.3170 \cdot h_0 = 0$.
+answer: $\partial L / \partial u \approx 0.5748$, coming entirely from step 2 because $h_0 = 0$.
+
+@mistakes
+- Treating the weights at different steps as different parameters. They are shared, so their gradients are summed over time.
+- Forgetting the $1 - h_t^2$ factor from $\tanh$ when passing the gradient from $h_t$ back to the pre-activation.
+- Clipping each gradient component separately and calling it norm clipping. Norm clipping rescales the whole vector, so its direction is preserved.
+- Blaming a long-range failure on too little data when the cause may be a gradient that shrinks geometrically with distance.
+
+@practice num
+prompt: A scalar recurrent cell $h_t = \tanh(w x_t + u h_{t-1} + b)$ has $w = 1$, $u = 2$, $b = -1$. At a step with $x_t = 1$ and $h_{t-1} = 0.5$, what is $h_t$? Give your answer to three decimal places.
+answer: 0.762
+tol: 0.001
+check: tanh(1 * 1 + 2 * 0.5 - 1)
+hint: Compute the pre-activation $1 + 1 - 1$ first, then apply $\tanh$.
+solution: The pre-activation is $1\cdot 1 + 2 \cdot 0.5 - 1 = 1$, and $\tanh(1) \approx 0.762$.
+
+@practice num
+prompt: An RNN has input size 6, hidden size 8 and output size 3. It uses $\mathbf{W}_{xh}$, $\mathbf{W}_{hh}$, a hidden bias, $\mathbf{W}_{hy}$ and an output bias. How many parameters does it have?
+answer: 147
+unit: parameters
+check: 6 * 8 + 8 * 8 + 8 + 8 * 3 + 3
+hint: Count each matrix as rows times columns, then add the two biases.
+solution: $\mathbf{W}_{xh}$ has $8 \cdot 6 = 48$ weights, $\mathbf{W}_{hh}$ has $8 \cdot 8 = 64$, the hidden bias has 8, $\mathbf{W}_{hy}$ has $3 \cdot 8 = 24$ and the output bias has 3, for a total of $48 + 64 + 8 + 24 + 3 = 147$.
+
+@practice text
+prompt: What does this program print?
+```python
+from math import tanh
+h = 0.0
+out = []
+for x in [1, 0, -1]:
+    h = tanh(x + 0.5 * h)
+    out.append(round(h, 3))
+print(out)
+```
+answer: [0.762, 0.363, -0.674]
+check: run("from math import tanh\nh = 0.0\nout = []\nfor x in [1, 0, -1]:\n    h = tanh(x + 0.5 * h)\n    out.append(round(h, 3))\nprint(out)")
+hint: The states are $\tanh(1)$, then $\tanh(0.5 \cdot 0.7616)$, then $\tanh(-1 + 0.5 \cdot 0.3634)$.
+solution: $h_1 = \tanh 1 = 0.762$, $h_2 = \tanh(0.3808) = 0.363$ and $h_3 = \tanh(-1 + 0.1817) = \tanh(-0.8183) = -0.674$.
+
+@practice code
+prompt: Write `rnn_states(xs, Wx, Wh, b)` for a vector RNN with hidden size 2. `xs` is a list of input vectors, `Wx` and `Wh` are lists of rows, and `b` is a list. Start from the zero state and return the list of hidden states (each a list of floats), where `h_t = tanh(Wx @ x_t + Wh @ h_{t-1} + b)` elementwise. An empty `xs` gives an empty list.
+starter:
+```python
+def rnn_states(xs, Wx, Wh, b):
+    return []
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(a - c) < 1e-6 for a, c in zip(u, v))
+Wx, Wh, b = [[1, 1], [0, 1]], [[0, 1], [1, 0]], [0.1, -0.1]
+hs = rnn_states([[1, -1], [2, 0], [0, 1]], Wx, Wh, b)
+assert len(hs) == 3
+assert close(hs[0], [0.0996680, -0.8004990])
+assert close(hs[1], [0.8615946, -0.0003320])
+assert close(hs[2], [0.8003797, 0.9426808])
+assert rnn_states([], Wx, Wh, b) == []
+```
+model:
+```python
+from math import tanh
+
+
+def rnn_states(xs, Wx, Wh, b):
+    """Hidden states of a simple tanh RNN started from zero."""
+    h = [0.0] * len(b)
+    states = []
+    for x in xs:
+        h = [
+            tanh(sum(Wx[i][j] * x[j] for j in range(len(x)))
+                 + sum(Wh[i][j] * h[j] for j in range(len(h)))
+                 + b[i])
+            for i in range(len(b))
+        ]
+        states.append(h)
+    return states
+```
+hint: Compute the new state from the old one with a list comprehension, and make sure the whole new state is built before the old one is replaced.
+solution: Each component of the new state needs all components of the old state, so build the new list from the old `h` and only then rebind `h`. The second state tests that the recurrent matrix mixes components (it swaps them).
+
+@practice code
+prompt: Write `grad_u(xs, w, u, y)` for the scalar RNN $h_t = \tanh(w x_t + u h_{t-1})$ with $h_0 = 0$ and loss $L = (h_T - y)^2$. Return $\partial L/\partial u$ computed by backpropagation through time. For example, for `xs = [1]` the gradient is exactly 0 because $h_0 = 0$.
+starter:
+```python
+def grad_u(xs, w, u, y):
+    return 0.0
+```
+tests:
+```python
+from math import tanh
+
+def loss(xs, w, u, y):
+    h = 0.0
+    for x in xs:
+        h = tanh(w * x + u * h)
+    return (h - y) ** 2
+
+assert abs(grad_u([1], 1.0, 0.3, 0.0)) < 1e-12
+assert abs(grad_u([1, 0], 1.0, 1.0, 0.0) - 0.5748317) < 1e-6
+assert abs(grad_u([1, 2, -1], 0.5, 0.8, 0.5) - (-0.5543123)) < 1e-6
+e = 1e-6
+xs = [0.5, -1, 1, 2]
+num = (loss(xs, 0.7, -0.4 + e, 1.0) - loss(xs, 0.7, -0.4 - e, 1.0)) / (2 * e)
+assert abs(grad_u(xs, 0.7, -0.4, 1.0) - num) < 1e-6
+```
+model:
+```python
+from math import tanh
+
+
+def grad_u(xs, w, u, y):
+    """dL/du for h_t = tanh(w x_t + u h_{t-1}), L = (h_T - y)^2, by BPTT."""
+    hs = [0.0]
+    for x in xs:
+        hs.append(tanh(w * x + u * hs[-1]))
+    grad_h = 2 * (hs[-1] - y)
+    total = 0.0
+    for t in range(len(xs), 0, -1):
+        delta = grad_h * (1 - hs[t] ** 2)
+        total += delta * hs[t - 1]
+        grad_h = delta * u
+    return total
+```
+hint: Run the forward pass storing every state, then loop backward: compute $\delta_t$, add $\delta_t h_{t-1}$ to the total, and set the gradient for the previous state to $\delta_t u$.
+solution: The backward loop carries $\partial L/\partial h_t$ from the last step to the first. The last test compares with a finite-difference estimate, which catches a missing $1 - h_t^2$ factor or a gradient that is not accumulated over all steps.
+
+@quiz mc
+prompt: In a simple tanh RNN with scalar recurrent weight $u$ and $|u| < 1$, what happens to the gradient of the loss with respect to a hidden state $k$ steps in the past as $k$ grows?
+choice*: It tends to shrink geometrically, because each step multiplies it by $u(1 - h^2)$, whose size is below 1.
+choice: It grows geometrically, because shared weights are reused at every step.
+choice: It stays constant, because the weights are shared across time.
+choice: It becomes exactly zero after one step, because $\tanh$ saturates.
+hint: Write the factor $\partial h_t / \partial h_{t-1}$ and bound its absolute value.
+solution: The factor per step is $u(1 - h_t^2)$, and $|u| < 1$ and $0 < 1 - h_t^2 \le 1$ make its size less than 1, so the product over $k$ steps shrinks geometrically. Sharing weights does not make it constant, and saturation makes the factor small but not exactly zero.
+
+@quiz num
+prompt: In a scalar tanh RNN with $u = 0.5$, the gradient is passed back through 10 steps. Assuming the $\tanh$ derivative factor is at its maximum value of 1 at every step, by what factor is the gradient multiplied? Give your answer to six decimal places.
+answer: 0.000977
+tol: 0.000001
+check: 0.5 ** 10
+hint: Each step multiplies the gradient by $u \cdot 1$.
+solution: Ten steps give $0.5^{10} = 1/1024 \approx 0.000977$, and the true factor is smaller because $1 - h^2 < 1$.
+
+@quiz code
+prompt: Write `clip_by_norm(g, c)` that takes a gradient `g` (a list of floats) and a threshold `c > 0`. If the Euclidean norm of `g` is greater than `c`, return `g` rescaled to have norm exactly `c`; otherwise return a copy of `g`. For example, `clip_by_norm([3.0, 4.0], 1.0)` returns `[0.6, 0.8]`.
+starter:
+```python
+def clip_by_norm(g, c):
+    return list(g)
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(a - b) < 1e-9 for a, b in zip(u, v))
+assert close(clip_by_norm([3.0, 4.0], 1.0), [0.6, 0.8])
+assert close(clip_by_norm([0.3, 0.4], 1.0), [0.3, 0.4])
+assert close(clip_by_norm([3.0, 4.0], 10.0), [3.0, 4.0])
+assert close(clip_by_norm([0.0, 0.0], 1.0), [0.0, 0.0])
+assert close(clip_by_norm([-6.0, 8.0], 5.0), [-3.0, 4.0])
+```
+model:
+```python
+def clip_by_norm(g, c):
+    """Rescale g to norm c if its Euclidean norm exceeds c."""
+    norm = sum(a * a for a in g) ** 0.5
+    if norm > c:
+        return [a * c / norm for a in g]
+    return list(g)
+```
+hint: Compute the norm, and only rescale when it exceeds `c`; clipping each component to `c` is a different operation.
+solution: Multiply every component by `c / norm` when the norm is too large; this keeps the direction. The test with `[-6.0, 8.0]` has norm 10 and is halved, so both components shrink by the same factor.

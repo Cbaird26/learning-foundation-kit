@@ -113,48 +113,50 @@ hint: Compute $m_1$ from $m_0 = 0$ for a gradient $g$: how does it compare with 
 solution: With $\mathbf{m}_0 = \mathbf{0}$, a constant gradient $g$ gives $m_k = (1 - \beta_1^k)g$, which underestimates $g$ early on, and the same holds for $\mathbf{v}$ with $\beta_2$. Dividing by the factor removes the bias. It does not guarantee convergence, does not remove $\eta$ from the update, and does not reduce gradient variance.
 
 @practice code
-prompt: Write `adagrad(grad, x0, lr, steps, eps=1e-8)` that runs AdaGrad: keep a per-coordinate accumulator of squared gradients, starting at zero, and at each step first add the new squared gradient to the accumulator, then update `x[j] -= lr * g[j] / (sqrt(acc[j]) + eps)`. Return the final point as a list, and do not modify `x0`. For example, with `grad = lambda v: [3.0, 4.0]` and `lr = 0.5`, the first step from `[0.0, 0.0]` moves each coordinate by about `-0.5`.
+prompt: Write `rmsprop(grad, x0, lr, steps, rho=0.9, eps=1e-8)` that runs RMSProp: keep a per-coordinate moving average `v` of squared gradients, starting at zero, and at each step first set `v[j] = rho * v[j] + (1 - rho) * g[j] ** 2`, then update `x[j] -= lr * g[j] / (sqrt(v[j]) + eps)`. There is no bias correction. Return the final point as a list, and do not modify `x0`. For example, with `grad = lambda v: [3.0, 4.0]`, `lr = 0.1` and the default `rho`, the first step from `[0.0, 0.0]` moves each coordinate by about `-0.316`.
 starter:
 ```python
 import math
 
-def adagrad(grad, x0, lr, steps, eps=1e-8):
+def rmsprop(grad, x0, lr, steps, rho=0.9, eps=1e-8):
     return list(x0)
 ```
 tests:
 ```python
 import math
 g = lambda v: [3.0, 4.0]
-r = adagrad(g, [0.0, 0.0], 0.5, 1)
-assert all(abs(a + 0.5) < 1e-6 for a in r)
-r = adagrad(g, [0.0, 0.0], 0.5, 2)
-want = -0.5 * (1 + 3 / math.sqrt(18))
+r = rmsprop(g, [0.0, 0.0], 0.1, 1)
+assert all(abs(a + 0.1 / math.sqrt(0.1)) < 1e-6 for a in r)
+r = rmsprop(g, [0.0, 0.0], 0.1, 2)
+want = -0.1 * (1 / math.sqrt(0.1) + 1 / math.sqrt(0.19))
 assert all(abs(a - want) < 1e-6 for a in r)
+r = rmsprop(lambda v: [-2.0, 4.0], [0.0, 0.0], 0.1, 1, rho=0.0)
+assert abs(r[0] - 0.1) < 1e-6 and abs(r[1] + 0.1) < 1e-6
 q = lambda v: [2 * (v[0] - 1), 2 * (v[1] + 2)]
-r = adagrad(q, [0.0, 0.0], 1.0, 3)
-assert abs(r[0] - 1.0) < 1e-6 and abs(r[1] + 1.6872025) < 1e-5
+r = rmsprop(q, [0.0, 0.0], 0.1, 3)
+assert abs(r[0] - 0.63082) < 1e-4 and abs(r[1] + 0.69128) < 1e-4
 start = [0.0, 0.0]
-adagrad(q, start, 1.0, 3)
+rmsprop(q, start, 0.1, 3)
 assert start == [0.0, 0.0]
-assert adagrad(q, [5.0, 5.0], 1.0, 0) == [5.0, 5.0]
+assert rmsprop(q, [5.0, 5.0], 0.1, 0) == [5.0, 5.0]
 ```
 model:
 ```python
 import math
 
-def adagrad(grad, x0, lr, steps, eps=1e-8):
-    """AdaGrad with a per-coordinate accumulator of squared gradients."""
+def rmsprop(grad, x0, lr, steps, rho=0.9, eps=1e-8):
+    """RMSProp with a moving average of squared gradients."""
     x = list(x0)
-    acc = [0.0] * len(x)
+    v = [0.0] * len(x)
     for _ in range(steps):
         g = grad(x)
-        acc = [a + gi * gi for a, gi in zip(acc, g)]
-        x = [xi - lr * gi / (math.sqrt(a) + eps)
-             for xi, gi, a in zip(x, g, acc)]
+        v = [rho * vi + (1 - rho) * gi * gi for vi, gi in zip(v, g)]
+        x = [xi - lr * gi / (math.sqrt(vi) + eps)
+             for xi, gi, vi in zip(x, g, v)]
     return x
 ```
-hint: Update the accumulator with the current gradient before computing the step, so the first step has size about `lr`.
-solution: The accumulator must include the current gradient, otherwise the first step divides by zero. With the gradient fixed at $(3, 4)$, the second step is $0.5 \cdot 3/\sqrt{18}$ for the first coordinate and $0.5\cdot 4/\sqrt{32}$ for the second, which are equal. In the quadratic test, the first coordinate reaches its minimizer at once and then has zero gradient.
+hint: Update `v` with the current gradient before computing the step; with `rho = 0` the average is just the current squared gradient, so every coordinate moves by `lr` in the direction opposite to its gradient.
+solution: The average must include the current gradient, otherwise the first step divides by zero. With a constant gradient $(3, 4)$ and $\rho = 0.9$, the first step is $0.1/\sqrt{0.1}$ in each coordinate and the second is $0.1/\sqrt{0.19}$: the factor $1 - \rho$ makes the early steps larger than $\eta$, because RMSProp has no bias correction. Forgetting the factor $1 - \rho$, or using the old average in the step, fails the first tests.
 
 @practice code
 prompt: Write `adam(grad, x0, lr, steps, beta1=0.9, beta2=0.999, eps=1e-8)` that implements Adam with bias correction. Keep first and second moment vectors `m` and `v` starting at zero; at step `t = 1, 2, ...` update them with the current gradient, compute `m_hat = m / (1 - beta1**t)` and `v_hat = v / (1 - beta2**t)`, then `x[j] -= lr * m_hat[j] / (sqrt(v_hat[j]) + eps)`. Return the final point as a list and do not modify `x0`.

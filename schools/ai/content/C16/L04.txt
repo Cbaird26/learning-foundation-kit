@@ -1,0 +1,299 @@
+@lesson
+title: The EM algorithm
+summary: Fit a Gaussian mixture by alternating the E-step and M-step, run the iterations by hand and in code, and explain why the likelihood never decreases.
+objective: State the E-step and M-step updates for a one-dimensional Gaussian mixture.
+objective: Run two iterations of EM by hand on a small data set and check that the log-likelihood increases.
+objective: Explain why EM never decreases the likelihood and why it can end in a local maximum.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on the EM algorithm, in the chapter on latent-variable models and mixtures.
+
+@article
+If we knew which component produced each point, fitting a mixture would be easy: average the points of each component. If we knew the parameters, finding the components would be easy: compute responsibilities. We know neither, so the **expectation-maximization (EM) algorithm** (Dempster, Laird and Rubin, 1977) alternates between the two guesses.
+
+### The algorithm for a Gaussian mixture
+
+Start from initial parameters $\{\pi_k, \mu_k, \sigma_k^2\}$ and repeat:
+
+**E-step (expectation).** Compute the responsibility of each component for each point with the current parameters,
+$$r_{ik} = \frac{\pi_k\, \mathcal{N}(x_i \mid \mu_k, \sigma_k^2)}{\sum_j \pi_j\, \mathcal{N}(x_i \mid \mu_j, \sigma_j^2)} .$$
+
+**M-step (maximization).** Treat the responsibilities as fractional counts and re-estimate the parameters. With $N_k = \sum_{i=1}^{n} r_{ik}$, the **effective number of points** of component $k$,
+$$\pi_k = \frac{N_k}{n}, \qquad \mu_k = \frac{1}{N_k} \sum_i r_{ik}\, x_i, \qquad \sigma_k^2 = \frac{1}{N_k} \sum_i r_{ik}\,(x_i - \mu_k)^2 ,$$
+where the variance uses the **new** mean. These are the weighted versions of the ordinary formulas for the proportion, the mean and the variance of a single Gaussian. In $d$ dimensions the last formula becomes $\boldsymbol{\Sigma}_k = \frac{1}{N_k}\sum_i r_{ik} (\mathbf{x}_i - \boldsymbol{\mu}_k)(\mathbf{x}_i - \boldsymbol{\mu}_k)^\top$.
+
+### One iteration on four numbers
+
+Take the data $1, 2, 6, 7$ with initial parameters $\pi = (0.5, 0.5)$, means $(0, 5)$ and variances $(1, 1)$. The E-step gives responsibilities for the first component of $0.9994$, $0.9241$, $0.0000$ and $0.0000$ for the four points; the second component takes the rest. Then $N_1 = 1.9235$ and $N_2 = 2.0764$, so $\pi = (0.4809, 0.5191)$. The new means are $\mu_1 = 1.4804$ and $\mu_2 = 6.3341$, and the new variances are $\sigma_1^2 = 0.2496$ and $\sigma_2^2 = 0.9611$. The log-likelihood rises from $-11.369$ to $-6.316$ nats. After a few more iterations the parameters settle at $\pi = (0.5, 0.5)$, means $(1.5, 6.5)$ and variances $(0.25, 0.25)$, with log-likelihood $-5.676$.
+
+### Why the likelihood never decreases
+
+Let $q_i(k)$ be any distribution over the hidden label of point $i$. By Jensen's inequality, since $\log$ is concave,
+$$\ell(\boldsymbol{\theta}) = \sum_i \log \sum_k q_i(k)\, \frac{\pi_k\, \mathcal{N}(x_i \mid \mu_k, \sigma_k^2)}{q_i(k)} \;\ge\; \sum_i \sum_k q_i(k) \log \frac{\pi_k\, \mathcal{N}(x_i \mid \mu_k, \sigma_k^2)}{q_i(k)} =: F(q, \boldsymbol{\theta}).$$
+The right side $F$ is a lower bound on the log-likelihood (often called the evidence lower bound, ELBO). Equality holds exactly when $q_i(k)$ equals the posterior $P(z_i = k \mid x_i, \boldsymbol{\theta})$. The two steps are coordinate ascent on $F$:
+
+- The **E-step** sets $q$ to the posterior (the responsibilities) for the current $\boldsymbol{\theta}$, which makes the bound touch the likelihood: $F = \ell(\boldsymbol{\theta}_{\text{old}})$.
+- The **M-step** maximizes $F$ over $\boldsymbol{\theta}$ with $q$ fixed, so $F(q, \boldsymbol{\theta}_{\text{new}}) \ge F(q, \boldsymbol{\theta}_{\text{old}})$.
+
+Chaining these, $\ell(\boldsymbol{\theta}_{\text{new}}) \ge F(q, \boldsymbol{\theta}_{\text{new}}) \ge F(q, \boldsymbol{\theta}_{\text{old}}) = \ell(\boldsymbol{\theta}_{\text{old}})$. **The EM algorithm never decreases the likelihood.** The likelihood is bounded above when variances are kept away from zero, so it converges, to a stationary point that is usually a local maximum, not necessarily the global one.
+
+### Practical matters
+
+- **Initialization matters.** Different starting parameters can reach different local maxima. A common recipe is to initialize the means with k-means (or k-means++) and run EM from several starts, keeping the highest likelihood.
+- **Singularities.** If a component collapses onto a single point, its variance goes to 0 and the likelihood to infinity. Add a small floor to each variance, such as $10^{-6}$, or use a prior.
+- **Stopping.** Stop when the log-likelihood improves by less than a small tolerance, say $10^{-6}$, or after a maximum number of iterations.
+- **Hard EM.** Replacing the responsibilities by 0/1 indicators of the most probable component gives the k-means algorithm, for equal spherical components.
+- EM is general: it fits any model with latent variables whose complete-data problem is easy, such as mixtures of other distributions and hidden Markov models (Lesson 9).
+
+### In code
+
+```python
+from math import exp, log, pi, sqrt
+
+def normal(x, m, v):
+    return exp(-(x - m) ** 2 / (2 * v)) / sqrt(2 * pi * v)
+
+def em_step(data, w, m, v):
+    K, n = len(w), len(data)
+    resp = []
+    for x in data:                                  # E-step
+        p = [w[k] * normal(x, m[k], v[k]) for k in range(K)]
+        resp.append([pk / sum(p) for pk in p])
+    nk = [sum(r[k] for r in resp) for k in range(K)]            # M-step
+    m = [sum(r[k] * x for r, x in zip(resp, data)) / nk[k] for k in range(K)]
+    v = [sum(r[k] * (x - m[k]) ** 2 for r, x in zip(resp, data)) / nk[k]
+         for k in range(K)]
+    return [c / n for c in nk], m, v
+
+params = ([0.5, 0.5], [0.0, 5.0], [1.0, 1.0])
+for _ in range(3):
+    params = em_step([1, 2, 6, 7], *params)
+    print([round(a, 4) for a in params[1]])
+```
+
+@example
+title: Two EM iterations by hand
+problem: Run two iterations of EM on the data $0, 1, 4, 6$ for a two-component mixture, starting from $\pi = (0.5, 0.5)$, means $(1, 5)$ and variances $(1, 1)$. After each iteration report the parameters and the log-likelihood, and check that it increased.
+step: Initial log-likelihood. The densities of the points under component 1 (mean 1) are $0.2420, 0.3989, 0.0044, 0.0000$ and under component 2 (mean 5) are $0.0000, 0.0001, 0.2420, 0.2420$. Mixing with weight 0.5, $p(x) = 0.1210, 0.1995, 0.1232, 0.1210$, so $\ell_0 = \sum \log p(x_i) = -7.930$.
+step: E-step 1. Each responsibility is the share of that point's mixture density. For component 1 they are $1.0000, 0.9997, 0.0180, 0.0000$, and component 2 takes the rest, so the points 0 and 1 belong to component 1, the point 6 to component 2, and the point 4 mostly to component 2 (0.982).
+step: M-step 1. $N_1 = 2.0177$ and $N_2 = 1.9823$, so $\pi = (0.5044, 0.4956)$. Means: $\mu_1 = (0 + 0.9997 + 0.0180 \times 4)/2.0177 = 0.5311$ and $\mu_2 = 5.0084$. Variances: $\sigma_1^2 = 0.3561$ and $\sigma_2^2 = 1.0025$.
+step: Iteration 2. The new responsibilities are almost hard: the points 0, 1 go to component 1 (0.999997, 0.9997) and 4, 6 go to component 2 (almost exactly 1). The M-step gives $\pi = (0.4999, 0.5001)$, means $(0.4999, 4.9995)$ and variances $(0.2500, 1.0020)$.
+step: Log-likelihoods: $\ell_0 = -7.930$, after iteration 1 $\ell_1 = -7.121$, after iteration 2 $\ell_2 = -7.062$. Each is larger than the one before, as the theory promises. The fitted components are close to the groups $\{0, 1\}$ and $\{4, 6\}$.
+answer: After iteration 2: $\pi \approx (0.500, 0.500)$, means $\approx (0.500, 5.000)$, variances $\approx (0.250, 1.002)$; log-likelihoods $-7.930 \to -7.121 \to -7.062$.
+
+@mistakes
+- Using the old mean in the variance update: the M-step variance is the weighted spread around the new mean $\mu_k$.
+- Dividing the M-step sums by $n$ instead of $N_k$: the weighted mean and variance divide by the component's effective count.
+- Expecting EM to find the global optimum: it climbs the likelihood from its starting point and can stop at a local maximum.
+- Ignoring a collapsing component: when a variance shrinks toward 0 the likelihood explodes and the fit is meaningless; floor the variances.
+
+@practice num
+prompt: In an M-step the points are $x = (1, 4, 7)$ and the responsibilities of component 1 for them are $(0.9, 0.5, 0.1)$. What is the new mean $\mu_1$ of component 1?
+answer: 2.4
+tol: 0.001
+check: sum(r * x for r, x in zip([0.9, 0.5, 0.1], [1, 4, 7])) / sum([0.9, 0.5, 0.1])
+hint: The new mean is the responsibility-weighted average: divide the sum of $r_i x_i$ by the sum of the $r_i$.
+solution: The sum of responsibilities is $N_1 = 1.5$, and $\sum r_i x_i = 0.9 + 2.0 + 0.7 = 3.6$, so $\mu_1 = 3.6 / 1.5 = 2.4$.
+
+@practice mc
+prompt: Which statement about the EM algorithm for a Gaussian mixture is correct?
+choice*: Each iteration leaves the log-likelihood the same or higher, but the final parameters can depend on the starting values.
+choice: Each iteration raises the log-likelihood, and the algorithm always reaches the global maximum.
+choice: The M-step computes the responsibilities and the E-step updates the means.
+choice: EM needs the true component label of each training point to run.
+hint: Recall the chain of inequalities with the lower bound $F$, and which step computes which quantity.
+solution: The E-step makes the bound tight and the M-step raises it, so the likelihood cannot decrease; but the guarantee is only for climbing from the start, so different starts can reach different local maxima. The E-step computes the responsibilities and the M-step updates the parameters. The labels are hidden, which is the point of EM.
+
+@practice code
+prompt: Write `e_step(data, weights, means, variances)` that returns the responsibilities of a one-dimensional Gaussian mixture as a list with one row per data point and one entry per component, each row summing to 1. The `variances` are variances (not standard deviations). For example, `e_step([0.0], [0.5, 0.5], [0.0, 0.0], [1.0, 1.0])` returns `[[0.5, 0.5]]`.
+starter:
+```python
+def e_step(data, weights, means, variances):
+    return [[1.0 / len(weights) for _ in weights] for _ in data]
+```
+tests:
+```python
+got = e_step([0.0, 3.0], [0.5, 0.5], [0.0, 3.0], [1.0, 1.0])
+want = [[0.9890130573694068, 0.01098694263059318], [0.01098694263059318, 0.9890130573694068]]
+assert all(abs(a - b) < 1e-9 for g, w in zip(got, want) for a, b in zip(g, w))
+got = e_step([1.0], [0.3, 0.7], [0.0, 3.0], [1.0, 1.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got[0], [0.6576191250558008, 0.34238087494419933]))
+got = e_step([0.0, 2.0, 5.0], [0.6, 0.4], [0.0, 5.0], [2.0, 1.0])
+want = [[0.9999964864900394, 3.5135099606806317e-06],
+        [0.9723177574575969, 0.02768224254240309],
+        [0.00204337189773142, 0.9979566281022686]]
+assert all(abs(a - b) < 1e-9 for g, w in zip(got, want) for a, b in zip(g, w))
+assert e_step([], [1.0], [0.0], [1.0]) == []
+```
+model:
+```python
+from math import exp, pi, sqrt
+
+
+def e_step(data, weights, means, variances):
+    """Responsibilities r[i][k] for a 1-D Gaussian mixture."""
+    rows = []
+    for x in data:
+        parts = [w * exp(-(x - m) ** 2 / (2 * v)) / sqrt(2 * pi * v)
+                 for w, m, v in zip(weights, means, variances)]
+        total = sum(parts)
+        rows.append([p / total for p in parts])
+    return rows
+```
+hint: For each point, compute weight times normal density (with variance $v$, so divide by $\sqrt{2\pi v}$) for each component, then normalize the row.
+solution: Each row is the Bayes-rule posterior over components for one point. The third test uses unequal variances (2 and 1), which a function that treats them as standard deviations gets wrong.
+
+@practice code
+prompt: Write `m_step(data, resp)` that returns the tuple `(weights, means, variances)` of the M-step for a one-dimensional Gaussian mixture. `data` is a list of numbers and `resp[i][k]` is the responsibility of component `k` for point `i`. With $N_k = \sum_i r_{ik}$: the weight is $N_k / n$, the mean is $\sum_i r_{ik} x_i / N_k$, and the variance is $\sum_i r_{ik} (x_i - \mu_k)^2 / N_k$ using the new mean. For example, `m_step([0.0, 2.0], [[1.0], [1.0]])` returns `([1.0], [1.0], [1.0])`.
+starter:
+```python
+def m_step(data, resp):
+    K = len(resp[0])
+    return [1.0 / K] * K, [0.0] * K, [1.0] * K
+```
+tests:
+```python
+w, m, v = m_step([1.0, 4.0, 7.0], [[0.9, 0.1], [0.5, 0.5], [0.1, 0.9]])
+assert all(abs(a - b) < 1e-9 for a, b in zip(w, [0.5, 0.5]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(m, [2.4, 5.6]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(v, [3.44, 3.44]))
+w, m, v = m_step([0.0, 2.0, 4.0], [[0.5, 0.5], [1.0, 0.0], [0.5, 0.5]])
+assert all(abs(a - b) < 1e-9 for a, b in zip(w, [2 / 3, 1 / 3]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(m, [2.0, 2.0]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(v, [2.0, 4.0]))
+w, m, v = m_step([0.0, 2.0], [[1.0], [1.0]])
+assert abs(w[0] - 1.0) < 1e-9 and abs(m[0] - 1.0) < 1e-9 and abs(v[0] - 1.0) < 1e-9
+```
+model:
+```python
+def m_step(data, resp):
+    """Weights, means and variances that maximize the expected log-likelihood."""
+    n = len(data)
+    K = len(resp[0])
+    weights, means, variances = [], [], []
+    for k in range(K):
+        nk = sum(r[k] for r in resp)
+        mu = sum(r[k] * x for r, x in zip(resp, data)) / nk
+        var = sum(r[k] * (x - mu) ** 2 for r, x in zip(resp, data)) / nk
+        weights.append(nk / n)
+        means.append(mu)
+        variances.append(var)
+    return weights, means, variances
+```
+hint: For each component, first compute $N_k$ and the new mean, then use that new mean in the variance.
+solution: The M-step is a weighted proportion, weighted mean and weighted variance. In the first test the variance of component 1 is $(0.9 \cdot 1.96 + 0.5 \cdot 2.56 + 0.1 \cdot 21.16)/1.5 = 3.44$ around the new mean 2.4, which a function that used some other mean would not reproduce.
+
+@practice num
+prompt: The data are $0, 1, 5$ and EM for two components starts from $\pi = (0.5, 0.5)$, means $(0, 5)$ and variances $(1, 1)$. After one E-step and one M-step, what is the new weight $\pi_1$? Give your answer to three decimal places.
+answer: 0.666
+tol: 0.001
+check: (lambda D: sum(exp(-(x - 0) ** 2 / 2) / (exp(-(x - 0) ** 2 / 2) + exp(-(x - 5) ** 2 / 2)) for x in D) / len(D))([0, 1, 5])
+hint: With equal weights and variances, the responsibility of component 1 for $x$ is $e^{-x^2/2} / (e^{-x^2/2} + e^{-(x-5)^2/2})$. Average these over the three points.
+solution: The responsibilities of component 1 are $0.999996$ for the point 0, $0.999447$ for the point 1 and $0.0000037$ for the point 5. Their sum is $N_1 = 1.99945$ and $\pi_1 = N_1 / 3 \approx 0.666$.
+
+@practice code
+prompt: Write `em_fit(data, weights, means, variances, iters)` that runs exactly `iters` iterations of EM (an E-step followed by an M-step) for a one-dimensional Gaussian mixture and returns the tuple `(weights, means, variances)`; with `iters = 0` it returns the starting parameters unchanged. The `variances` are variances. For example, `em_fit([1.0, 2.0, 3.0], [1.0], [0.0], [1.0], 1)` returns `([1.0], [2.0], [0.6666...])`.
+starter:
+```python
+def em_fit(data, weights, means, variances, iters):
+    return weights, means, variances
+```
+tests:
+```python
+D = [0.0, 1.0, 2.0, 8.0, 9.0, 10.0]
+w, m, v = em_fit(D, [0.5, 0.5], [1.0, 9.0], [1.0, 1.0], 5)
+assert all(abs(a - b) < 1e-6 for a, b in zip(w, [0.5, 0.5]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(m, [1.0, 9.0]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(v, [2 / 3, 2 / 3]))
+w, m, v = em_fit([1.0, 2.0, 3.0], [1.0], [0.0], [1.0], 3)
+assert abs(w[0] - 1.0) < 1e-9 and abs(m[0] - 2.0) < 1e-9 and abs(v[0] - 2 / 3) < 1e-9
+w, m, v = em_fit([0.0, 1.0, 4.0, 6.0], [0.5, 0.5], [1.0, 5.0], [1.0, 1.0], 1)
+assert all(abs(a - b) < 1e-6 for a, b in zip(w, [0.5044127149579063, 0.49558728504209376]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(m, [0.5311356766923208, 5.008377910861454]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(v, [0.35609510150601376, 1.0025417178879543]))
+w, m, v = em_fit(D, [0.5, 0.5], [0.0, 2.0], [1.0, 1.0], 0)
+assert (w, m, v) == ([0.5, 0.5], [0.0, 2.0], [1.0, 1.0])
+```
+model:
+```python
+from math import exp, pi, sqrt
+
+
+def em_fit(data, weights, means, variances, iters):
+    """Run `iters` EM iterations for a 1-D Gaussian mixture."""
+    n, K = len(data), len(weights)
+    for _ in range(iters):
+        resp = []
+        for x in data:
+            parts = [weights[k] * exp(-(x - means[k]) ** 2 / (2 * variances[k]))
+                     / sqrt(2 * pi * variances[k]) for k in range(K)]
+            total = sum(parts)
+            resp.append([p / total for p in parts])
+        nk = [sum(r[k] for r in resp) for k in range(K)]
+        means = [sum(r[k] * x for r, x in zip(resp, data)) / nk[k]
+                 for k in range(K)]
+        variances = [sum(r[k] * (x - means[k]) ** 2
+                         for r, x in zip(resp, data)) / nk[k] for k in range(K)]
+        weights = [c / n for c in nk]
+    return weights, means, variances
+```
+hint: In each iteration compute the responsibilities from the current parameters, then replace all three parameter lists at once from the weighted sums.
+solution: One iteration is an E-step followed by an M-step, and the parameters are replaced only after the responsibilities are known. The single-component test shows that one Gaussian is fitted in one step (the sample mean 2 and variance 2/3), and the third test checks one iteration from a mixed start.
+
+@quiz text
+prompt: What does this program print?
+```python
+x = [0, 2, 4]
+r = [1.0, 0.5, 0.0]
+n = sum(r)
+mu = sum(ri * xi for ri, xi in zip(r, x)) / n
+print(n, round(mu, 3))
+```
+answer: 1.5 0.667
+check: run("x = [0, 2, 4]\nr = [1.0, 0.5, 0.0]\nn = sum(r)\nmu = sum(ri * xi for ri, xi in zip(r, x)) / n\nprint(n, round(mu, 3))")
+hint: The effective count is the sum of the responsibilities; the weighted sum is $0 \cdot 1 + 2 \cdot 0.5 + 4 \cdot 0$.
+solution: The effective number of points is $N = 1.0 + 0.5 + 0.0 = 1.5$, and the weighted sum of the data is $1.0$, so the weighted mean is $1/1.5 = 0.667$ and the program prints `1.5 0.667`.
+
+@quiz code
+prompt: Write `mixture_loglik(data, weights, means, variances)` that returns the natural-log likelihood of one-dimensional data under a Gaussian mixture: the sum over points of the logarithm of $\sum_k \pi_k \mathcal{N}(x \mid \mu_k, \sigma_k^2)$. The `variances` are variances. For example, `mixture_loglik([0.0], [1.0], [0.0], [1.0])` returns `-0.9189385...`. EM is monitored with this quantity: it should not decrease from one iteration to the next.
+starter:
+```python
+def mixture_loglik(data, weights, means, variances):
+    return 0.0
+```
+tests:
+```python
+assert abs(mixture_loglik([0.0], [1.0], [0.0], [1.0]) - (-0.9189385332046727)) < 1e-9
+D = [0.0, 1.0, 4.0, 6.0]
+a = mixture_loglik(D, [0.5, 0.5], [1.0, 5.0], [1.0, 1.0])
+b = mixture_loglik(D, [0.5044127149579063, 0.49558728504209376],
+                   [0.5311356766923208, 5.008377910861454],
+                   [0.35609510150601376, 1.0025417178879543])
+assert abs(a - (-7.929845232380812)) < 1e-6
+assert abs(b - (-7.120529191316647)) < 1e-6
+assert b > a
+assert abs(mixture_loglik([1.0, 2.0, 6.0, 7.0], [0.5, 0.5], [1.5, 6.5], [0.25, 0.25]) - (-5.675754132818691)) < 1e-6
+```
+model:
+```python
+from math import exp, log, pi, sqrt
+
+
+def mixture_loglik(data, weights, means, variances):
+    """Log-likelihood of 1-D data under a Gaussian mixture."""
+    total = 0.0
+    for x in data:
+        density = sum(w * exp(-(x - m) ** 2 / (2 * v)) / sqrt(2 * pi * v)
+                      for w, m, v in zip(weights, means, variances))
+        total += log(density)
+    return total
+```
+hint: For each point, add the weighted component densities, take the logarithm of that sum, and add the results.
+solution: The logarithm is applied to the mixture density of each point, not to each component. The tests include the log-likelihoods before and after the first EM iteration of the worked example, and check that it increased.
+
+@quiz ms
+prompt: Which of these statements about the EM algorithm are true? Select all that apply.
+choice*: After the E-step, the lower bound $F$ equals the log-likelihood at the current parameters.
+choice*: The M-step for a Gaussian mixture re-estimates each weight, mean and variance from responsibility-weighted counts and sums.
+choice*: Running EM from several initializations and keeping the best likelihood is a standard way to reduce the risk of a poor local maximum.
+choice: The log-likelihood can be shown to decrease for a few iterations before it increases, so one must run EM to convergence.
+hint: Recall the chain $\ell(\boldsymbol{\theta}_{\text{new}}) \ge F(q, \boldsymbol{\theta}_{\text{new}}) \ge F(q, \boldsymbol{\theta}_{\text{old}}) = \ell(\boldsymbol{\theta}_{\text{old}})$.
+solution: The E-step sets $q$ to the posterior, which makes Jensen's inequality an equality, so $F = \ell$. The M-step uses weighted counts and sums. Multiple restarts address local maxima. The likelihood never decreases at any iteration, so the last statement is false.

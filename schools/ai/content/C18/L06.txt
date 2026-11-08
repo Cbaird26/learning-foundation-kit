@@ -1,0 +1,243 @@
+@lesson
+title: Attention
+summary: Compute attention weights and outputs for small sets of queries, keys and values, with dot-product and additive scores, by hand and in code.
+objective: Compute softmax attention weights and the weighted-sum output for a query over keys and values.
+objective: Explain the scaling by the square root of the key dimension and the role of masking.
+objective: Compare additive and scaled dot-product scoring.
+objective: Implement attention for one query and for a sequence with a causal mask.
+reading: Dive into Deep Learning, the chapters on attention mechanisms: queries, keys and values; attention pooling; Bahdanau attention; and attention scoring functions.
+@article
+In the last lesson a decoder had to translate a sentence from one fixed-size context vector. A human translator instead looks back at the source words, focusing on different ones for different output words. **Attention** lets a network do this: at each step it computes a weighted average of the source representations, with weights that depend on what it needs right now. Bahdanau, Cho and Bengio (2014) introduced this for translation.
+
+### Queries, keys and values
+Think of a soft dictionary lookup. There is a **query** $\mathbf{q}$ (what we are looking for), a set of **keys** $\mathbf{k}_1, \dots, \mathbf{k}_n$ (labels for the stored items) and **values** $\mathbf{v}_1, \dots, \mathbf{v}_n$ (the stored content). A hard lookup returns the value whose key matches. Attention returns a blend:
+
+$$s_i = \operatorname{score}(\mathbf{q}, \mathbf{k}_i), \qquad \alpha_i = \frac{e^{s_i}}{\sum_j e^{s_j}}, \qquad \mathbf{o} = \sum_{i=1}^{n} \alpha_i \mathbf{v}_i.$$
+
+The weights $\alpha_i$ are non-negative and sum to 1, so $\mathbf{o}$ is a convex combination of the values. Keys and values play different roles: keys decide *how much* to take from each item, values decide *what* is taken. A common error is to mix them up.
+
+### Scoring functions
+The simplest score is the dot product $\mathbf{q}^\top \mathbf{k}_i$: large when query and key point the same way. The **scaled dot-product** score divides by $\sqrt{d}$, where $d$ is the key dimension:
+
+$$s_i = \frac{\mathbf{q}^\top \mathbf{k}_i}{\sqrt{d}}.$$
+
+Why? If the components of $\mathbf{q}$ and $\mathbf{k}$ are independent with mean 0 and variance 1, the dot product has mean 0 and variance $d$, so its size grows like $\sqrt{d}$. Large scores push the softmax toward a one-hot vector with tiny gradients. Dividing by $\sqrt{d}$ brings the variance back to 1. This is the form used in the transformer (Vaswani and colleagues, 2017).
+
+The original **additive attention** of Bahdanau and colleagues scores with a small network: $s_i = \mathbf{w}^\top \tanh(\mathbf{W}_q \mathbf{q} + \mathbf{W}_k \mathbf{k}_i)$. It works when query and key have different sizes but is slower than dot products, which are one matrix multiplication.
+
+### A worked case
+Let $\mathbf{q} = (1, 0)$, keys $(1, 0), (0, 1), (1, 1)$ and values $(1, 0), (0, 2), (3, 3)$. The unscaled dot products are $1, 0, 1$. The softmax of $(1, 0, 1)$ is $\big(\tfrac{e}{2e+1}, \tfrac{1}{2e+1}, \tfrac{e}{2e+1}\big) = (0.4223, 0.1554, 0.4223)$. The output is $0.4223\,(1,0) + 0.1554\,(0,2) + 0.4223\,(3,3) = (1.689, 1.578)$. With scaling by $\sqrt 2$ the scores are $(0.707, 0, 0.707)$ and the weights flatten to $(0.401, 0.198, 0.401)$.
+
+### Masking and matrix form
+Stacking all queries in a matrix $\mathbf{Q}$ ($n_q \times d$), keys in $\mathbf{K}$ ($n \times d$) and values in $\mathbf{V}$ ($n \times d_v$), all outputs are computed at once:
+
+$$\operatorname{Attention}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \operatorname{softmax}\!\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d}}\right)\mathbf{V},$$
+
+with the softmax applied to each row. The result has shape $n_q \times d_v$. To forbid a query from looking at some positions (padding, or future tokens when generating text) we **mask**: add $-\infty$ to those scores, which gives them weight exactly 0 after the softmax. A **causal mask** lets position $i$ attend only to positions $j \le i$.
+
+### In code
+```python
+from math import exp, sqrt
+
+def softmax(scores):
+    m = max(scores)
+    exps = [exp(s - m) for s in scores]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def attend(q, keys, values):
+    """Scaled dot-product attention for one query; returns (weights, output)."""
+    d = len(q)
+    scores = [sum(a * b for a, b in zip(q, k)) / sqrt(d) for k in keys]
+    w = softmax(scores)
+    out = [sum(w[i] * values[i][j] for i in range(len(values)))
+           for j in range(len(values[0]))]
+    return w, out
+
+print(attend([1, 0], [[1, 0], [0, 1], [1, 1]], [[1, 0], [0, 2], [3, 3]]))
+```
+
+Subtracting the maximum score before exponentiating does not change the softmax but avoids overflow. In NumPy or PyTorch the same computation is one line: `softmax(Q @ K.T / d ** 0.5) @ V`.
+
+@example
+title: Attention weights and output
+problem: A query $\mathbf{q} = (1, 1)$ attends over two keys $(1, 0)$ and $(0, 2)$ with values $(10, 0)$ and $(0, 10)$, using scaled dot-product scores. Compute the weights and the output.
+step: Dot products: $\mathbf{q}^\top\mathbf{k}_1 = 1$ and $\mathbf{q}^\top\mathbf{k}_2 = 2$. With $d = 2$, divide by $\sqrt 2 = 1.4142$: the scores are $0.7071$ and $1.4142$.
+step: The softmax depends only on the difference $1.4142 - 0.7071 = 0.7071$. So $\alpha_2 = 1/(1 + e^{-0.7071}) = 1/(1 + 0.4931) = 0.6698$ and $\alpha_1 = 0.3302$.
+step: The output is $0.3302\,(10, 0) + 0.6698\,(0, 10) = (3.302, 6.698)$.
+answer: Weights $(0.3302, 0.6698)$ and output $(3.302, 6.698)$.
+
+@example
+title: Shapes of attention
+problem: There are 3 queries and 5 key-value pairs, with keys of dimension 4 and values of dimension 6. Give the shape of each intermediate result of $\operatorname{softmax}(\mathbf{Q}\mathbf{K}^\top/\sqrt d)\mathbf{V}$.
+step: $\mathbf{Q}$ is $3 \times 4$, $\mathbf{K}$ is $5 \times 4$, $\mathbf{V}$ is $5 \times 6$.
+step: $\mathbf{Q}\mathbf{K}^\top$ is $(3 \times 4)(4 \times 5) = 3 \times 5$: one score per query-key pair. The softmax over each row keeps this shape, and each row sums to 1.
+step: Multiplying by $\mathbf{V}$: $(3 \times 5)(5 \times 6) = 3 \times 6$, one output vector of size 6 per query.
+answer: Scores and weights are $3 \times 5$; the output is $3 \times 6$.
+
+@mistakes
+- Applying the softmax over the wrong axis. For each query, the weights over the keys must sum to 1; summing over queries is meaningless.
+- Using the keys where the values belong in the final weighted sum, or the reverse.
+- Forgetting the $\sqrt d$ scaling, then wondering why training with large key dimensions is unstable.
+- Masking by multiplying the weights by 0 after the softmax. The remaining weights then no longer sum to 1; mask the scores with $-\infty$ before the softmax.
+
+@practice num
+prompt: Attention scores for one query over three keys are $1$, $2$ and $3$. What weight does the softmax give to the first key? Give your answer to three decimal places.
+answer: 0.09
+tol: 0.001
+check: exp(1) / (exp(1) + exp(2) + exp(3))
+hint: The weight is $e^{1}/(e^{1} + e^{2} + e^{3})$.
+solution: $e^1 = 2.718$, $e^2 = 7.389$ and $e^3 = 20.086$, so the weight is $2.718 / 30.193 = 0.090$.
+
+@practice num
+prompt: A query $(2, 1)$ is scored against the key $(1, 3)$ with scaled dot-product attention ($d = 2$). What is the score? Give your answer to three decimal places.
+answer: 3.536
+tol: 0.001
+check: (2 * 1 + 1 * 3) / sqrt(2)
+hint: Compute the dot product first, then divide by $\sqrt 2$.
+solution: The dot product is $2 \cdot 1 + 1 \cdot 3 = 5$, and $5/\sqrt 2 = 3.536$.
+
+@practice text
+prompt: What does this program print?
+```python
+from math import exp
+scores = [0, 1, 0]
+total = sum(exp(s) for s in scores)
+print([round(exp(s) / total, 3) for s in scores])
+```
+answer: [0.212, 0.576, 0.212]
+check: run("from math import exp\nscores = [0, 1, 0]\ntotal = sum(exp(s) for s in scores)\nprint([round(exp(s) / total, 3) for s in scores])")
+hint: The denominator is $1 + e + 1 = 4.718$; the middle score has the extra factor $e$.
+solution: The weights are $1/4.718 = 0.212$, $e/4.718 = 0.576$ and $0.212$, and they sum to 1.
+
+@practice code
+prompt: Write `additive_attention(q, keys, values, Wq, Wk, v)` for 2-dimensional vectors. The score of key `k` is `v . tanh(Wq q + Wk k)` where `Wq` and `Wk` are $2 \times 2$ lists of rows, `v` is a list of 2 numbers and `tanh` is applied elementwise. Return the pair `(weights, output)`: the softmax of the scores and the weighted sum of the `values` (lists of numbers).
+starter:
+```python
+def additive_attention(q, keys, values, Wq, Wk, v):
+    return [], []
+```
+tests:
+```python
+Wq, Wk, v = [[1, 0], [0, 1]], [[1, 0], [0, -1]], [1, 1]
+keys = [[1, 0], [0, 1], [-1, 2]]
+values = [[1, 0], [0, 1], [2, 2]]
+w, out = additive_attention([0.5, 1], keys, values, Wq, Wk, v)
+assert len(w) == 3 and abs(sum(w) - 1) < 1e-9
+assert all(abs(a - b) < 1e-6 for a, b in zip(w, [0.7378139, 0.2211998, 0.0409863]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(out, [0.8197865, 0.3031724]))
+w1, o1 = additive_attention([0, 0], [[1, 1]], [[4, 5]], Wq, Wk, v)
+assert abs(w1[0] - 1) < 1e-9 and o1 == [4.0, 5.0]
+```
+model:
+```python
+from math import exp, tanh
+
+
+def additive_attention(q, keys, values, Wq, Wk, v):
+    """Additive (Bahdanau-style) attention for 2D vectors."""
+    def mat(W, x):
+        return [sum(W[i][j] * x[j] for j in range(2)) for i in range(2)]
+
+    scores = []
+    for k in keys:
+        a, b = mat(Wq, q), mat(Wk, k)
+        scores.append(sum(v[i] * tanh(a[i] + b[i]) for i in range(2)))
+    m = max(scores)
+    e = [exp(s - m) for s in scores]
+    w = [x / sum(e) for x in e]
+    out = [sum(w[i] * values[i][j] for i in range(len(values)))
+           for j in range(len(values[0]))]
+    return w, out
+```
+hint: For each key compute `Wq q + Wk k`, apply `tanh`, and take the dot product with `v`; then the usual softmax and weighted sum.
+solution: Additive attention only changes how a score is computed; the softmax and weighted sum are as before. With a single key the weight is 1 whatever the score is, so the output is that key's value.
+
+@practice code
+prompt: Write `causal_attention(X, V)` where `X` is a list of $n$ query/key vectors (each of length $d$) and `V` the list of $n$ value vectors. Position `i` uses the query `X[i]`, attends only to positions `0..i` using scaled dot-product scores (dividing by `sqrt(d)`) with keys `X[0..i]`, and outputs the weighted sum of `V[0..i]`. Return the list of $n$ output vectors.
+starter:
+```python
+def causal_attention(X, V):
+    return [list(v) for v in V]
+```
+tests:
+```python
+X = [[1, 2], [0, 1], [2, -1]]
+V = [[1, 0], [2, 2], [0, 3]]
+out = causal_attention(X, V)
+assert out[0] == [1.0, 0.0]
+assert all(abs(a - b) < 1e-6 for a, b in zip(out[1], [1.3302385, 0.6604769]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(out[2], [0.0554688, 2.9024457]))
+assert len(causal_attention([[1.0]], [[7.0]])) == 1
+assert causal_attention([[1.0]], [[7.0]])[0] == [7.0]
+```
+model:
+```python
+from math import exp, sqrt
+
+
+def causal_attention(X, V):
+    """Scaled dot-product self-attention with a causal mask."""
+    d = len(X[0])
+    out = []
+    for i, q in enumerate(X):
+        scores = [sum(a * b for a, b in zip(q, X[j])) / sqrt(d)
+                  for j in range(i + 1)]
+        m = max(scores)
+        e = [exp(s - m) for s in scores]
+        w = [x / sum(e) for x in e]
+        out.append([sum(w[j] * V[j][c] for j in range(i + 1))
+                    for c in range(len(V[0]))])
+    return out
+```
+hint: For position `i`, only compute scores against `X[0]` to `X[i]`; there is no need to compute and then mask the future scores.
+solution: Restricting the keys and values to the first $i + 1$ positions is equivalent to giving future positions weight 0. The first position can only attend to itself, so its output is exactly its own value.
+
+@quiz mc
+prompt: Why is the dot-product score divided by $\sqrt{d}$ in scaled dot-product attention?
+choice*: For random vectors with unit-variance components the dot product has variance $d$, and scaling keeps the softmax from saturating as $d$ grows.
+choice: It makes the attention weights sum to 1.
+choice: It ensures that each key receives the same weight.
+choice: It reduces the number of parameters by a factor of $\sqrt{d}$.
+hint: Compute the variance of a sum of $d$ independent products of unit-variance variables.
+solution: A sum of $d$ independent terms each with variance 1 has variance $d$, so scores grow like $\sqrt d$; dividing by $\sqrt d$ restores unit variance and keeps the softmax away from near one-hot outputs. The softmax alone makes the weights sum to 1, scaling does not equalize the weights, and it adds no parameters and removes none.
+
+@quiz num
+prompt: A query has attention scores $\ln 3$ and $0$ over two items whose (scalar) values are 4 and 8. What is the attention output?
+answer: 5
+tol: 0.001
+check: (3 * 4 + 1 * 8) / 4
+hint: The softmax of $(\ln 3, 0)$ has weights proportional to $3$ and $1$.
+solution: $e^{\ln 3} = 3$ and $e^0 = 1$, so the weights are $0.75$ and $0.25$, and the output is $0.75 \cdot 4 + 0.25 \cdot 8 = 5$.
+
+@quiz code
+prompt: Write `attention_entropy(q, keys)` that computes the scaled dot-product attention weights of query `q` over `keys` (scores divided by the square root of `len(q)`) and returns their entropy $-\sum_i \alpha_i \ln \alpha_i$ in nats, skipping any weight equal to 0. A query that makes all weights equal over $n$ keys gives $\ln n$.
+starter:
+```python
+def attention_entropy(q, keys):
+    return 0.0
+```
+tests:
+```python
+from math import log
+assert abs(attention_entropy([0, 0], [[1, 2], [3, 4], [5, 6]]) - log(3)) < 1e-9
+assert abs(attention_entropy([1, 0], [[1, 0], [0, 0], [0, 0]]) - 1.0372774) < 1e-6
+assert abs(attention_entropy([8, 0], [[1, 0], [0, 0], [0, 0], [0, 0]]) - 0.0690975) < 1e-6
+assert abs(attention_entropy([1, 0], [[5, 5]])) < 1e-12
+```
+model:
+```python
+from math import exp, log, sqrt
+
+
+def attention_entropy(q, keys):
+    """Entropy in nats of the scaled dot-product attention weights."""
+    d = len(q)
+    scores = [sum(a * b for a, b in zip(q, k)) / sqrt(d) for k in keys]
+    m = max(scores)
+    e = [exp(s - m) for s in scores]
+    w = [x / sum(e) for x in e]
+    return -sum(a * log(a) for a in w if a > 0)
+```
+hint: Get the weights with a softmax of the scaled scores, then sum $-\alpha\ln\alpha$ over the nonzero weights.
+solution: Equal weights give the maximum entropy $\ln n$, a single dominant key gives entropy near 0, and one key gives exactly 0. The second test uses the scaling by $\sqrt 2$: forgetting it gives a different entropy.

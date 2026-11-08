@@ -1,0 +1,223 @@
+@lesson
+title: Convolutional networks: from LeNet to ResNet
+summary: Trace shapes, receptive fields and parameter counts through a convolutional network, and compute a residual block by hand and in code.
+objective: Trace the output shape and parameter count of each layer in a LeNet-style network.
+objective: Compute the receptive field of a stack of convolution and pooling layers.
+objective: Explain why stacking small kernels is efficient and why identity shortcuts make very deep networks trainable.
+objective: Implement a residual block with fixed weights from scratch.
+reading: Dive into Deep Learning, the chapters on modern convolutional networks (AlexNet, VGG, batch normalization, residual networks) and on LeNet.
+@article
+A single convolution sees only a small window of its input. How can a stack of layers recognize a whole digit or an object? By letting each layer look at the previous layer's output, so that the window it effectively sees grows with depth.
+
+### LeNet and the shape trace
+The convolutional network for digit recognition of LeCun and colleagues (1989, 1998), known as LeNet-5, takes a $32 \times 32$ grayscale image and alternates convolution and pooling. In the variant we trace:
+
+| layer | output shape | parameters |
+|---|---|---|
+| input | $1 \times 32 \times 32$ | 0 |
+| conv $5 \times 5$, 6 channels | $6 \times 28 \times 28$ | $6 (25 + 1) = 156$ |
+| pool $2 \times 2$ | $6 \times 14 \times 14$ | 0 |
+| conv $5 \times 5$, 16 channels | $16 \times 10 \times 10$ | $16 (150 + 1) = 2416$ |
+| pool $2 \times 2$ | $16 \times 5 \times 5$ | 0 |
+| flatten | 400 | 0 |
+| fully connected 400 to 120 | 120 | $400 \cdot 120 + 120 = 48120$ |
+| fully connected 120 to 84 | 84 | 10164 |
+| fully connected 84 to 10 | 10 | 850 |
+
+The total is 61,706 parameters. Notice that most of them are in the first fully connected layer: convolutions are cheap, flattened dense layers are not.
+
+### Growing the field of view
+The **receptive field** of a unit is the set of input pixels that can affect it. For a stack of layers with kernel sizes $k_\ell$ and strides $s_\ell$, start with receptive field $r = 1$ and jump $j = 1$ (the spacing between neighboring units, measured in input pixels). For each layer in order:
+
+$$r \leftarrow r + (k_\ell - 1)\, j, \qquad j \leftarrow j\, s_\ell.$$
+
+Two $3 \times 3$ convolutions with stride 1 give $r = 3$ and then $r = 3 + 2 = 5$, the same field as one $5 \times 5$ kernel. With $c$ channels in and out and no biases, two $3\times 3$ layers use $2 \cdot 9 c^2 = 18c^2$ weights against $25 c^2$ for one $5 \times 5$ layer, and they add an extra nonlinearity. This is the idea behind VGG-style networks, which build deep stacks of $3 \times 3$ convolutions.
+
+### Deeper and deeper
+AlexNet (Krizhevsky, Sutskever and Hinton, 2012) showed that a large convolutional network trained on GPUs could win the ImageNet challenge by a wide margin, using ReLU units and dropout. Adding even more layers then ran into trouble: very deep plain networks trained worse than shallower ones, even on the training set. Batch normalization (Ioffe and Szegedy, 2015) made optimization easier, but depth still hurt.
+
+**Residual networks** (He and colleagues, 2015) change what a block computes. Instead of learning $\mathbf{y} = H(\mathbf{x})$ directly, a residual block learns a correction $F$ and adds the input back:
+
+$$\mathbf{y} = \operatorname{ReLU}\big(\mathbf{x} + F(\mathbf{x})\big), \qquad F(\mathbf{x}) = \mathbf{W}_2 \operatorname{ReLU}(\mathbf{W}_1 \mathbf{x}).$$
+
+The **shortcut** (skip connection) passes $\mathbf{x}$ unchanged, so the block can represent the identity by driving $F$ toward 0, and the gradient has a direct path: $\partial \mathbf{y}/\partial \mathbf{x} = \mathbf{I} + \partial F/\partial \mathbf{x}$ (before the final ReLU). When the shapes of $\mathbf{x}$ and $F(\mathbf{x})$ differ, a $1 \times 1$ convolution on the shortcut matches them. A $1 \times 1$ convolution mixes channels at each position and is also used to shrink the channel count before an expensive $3 \times 3$ layer, the "bottleneck" design.
+
+### In code
+```python
+def relu(v):
+    return [max(0.0, a) for a in v]
+
+def matvec(W, x):
+    return [sum(w * a for w, a in zip(row, x)) for row in W]
+
+def residual(x, W1, W2):
+    f = matvec(W2, relu(matvec(W1, x)))
+    return relu([a + b for a, b in zip(x, f)])
+
+print(residual([1.0, 2.0], [[1, 0], [0, 1]], [[0.5, 0], [0, 0.5]]))
+```
+
+In PyTorch the same block is a few lines in an `nn.Module`, with convolutions in place of the matrices.
+
+@example
+title: Shape trace of a ResNet-style stem
+problem: An image of height 64 passes through a convolution with kernel 7, stride 2 and padding 3, then a max pool with kernel 3, stride 2 and padding 1, then a convolution with kernel 3, stride 1, padding 1. Give the height after each layer and the receptive field of the last layer.
+step: First layer: $\lfloor (64 + 6 - 7)/2 \rfloor + 1 = \lfloor 31.5 \rfloor + 1 = 32$.
+step: Pool: $\lfloor (32 + 2 - 3)/2 \rfloor + 1 = 15 + 1 = 16$. Last convolution: $\lfloor (16 + 2 - 3)/1 \rfloor + 1 = 16$.
+step: Receptive field. Start with $r = 1$, $j = 1$. Layer 1 ($k = 7$, $s = 2$): $r = 1 + 6 = 7$, $j = 2$. Pool ($k = 3$, $s = 2$): $r = 7 + 2 \cdot 2 = 11$, $j = 4$. Last conv ($k = 3$, $s = 1$): $r = 11 + 2 \cdot 4 = 19$.
+answer: The heights are 32, 16 and 16, and the receptive field is 19 pixels.
+
+@example
+title: One residual block by hand
+problem: Let $\mathbf{x} = (2, -1)$, $\mathbf{W}_1$ have rows $(1, 1)$ and $(0, 2)$, and $\mathbf{W}_2$ have rows $(1, 0)$ and $(1, -1)$. Compute $\mathbf{y} = \operatorname{ReLU}(\mathbf{x} + \mathbf{W}_2 \operatorname{ReLU}(\mathbf{W}_1 \mathbf{x}))$.
+step: $\mathbf{W}_1 \mathbf{x} = (2 - 1,\ 0 - 2) = (1, -2)$.
+step: Apply ReLU: $(1, 0)$.
+step: $\mathbf{W}_2 (1, 0) = (1,\ 1 - 0) = (1, 1)$, so $F(\mathbf{x}) = (1, 1)$.
+step: Add the shortcut: $(2, -1) + (1, 1) = (3, 0)$. The final ReLU leaves $(3, 0)$ unchanged.
+answer: $\mathbf{y} = (3, 0)$.
+
+@mistakes
+- Adding the shortcut after the final ReLU when the design puts it before, or the reverse: write down the order of operations before computing.
+- Updating the receptive field with the wrong jump: the jump is multiplied by the stride after the layer's contribution is added.
+- Believing that a deeper plain network must fit the training set at least as well as a shallower one; in practice optimization can fail, which is what shortcuts fix.
+- Forgetting that fully connected layers after flattening usually hold most of the parameters of a small classic network.
+
+@practice num
+prompt: A $28 \times 28$ image goes through a $5 \times 5$ convolution (no padding, stride 1), a $2 \times 2$ max pool (stride 2), a $3 \times 3$ convolution with padding 1 and stride 1, and another $2 \times 2$ max pool with stride 2. The last convolution layer has 16 channels. How many values are there after flattening the final output?
+answer: 576
+check: 16 * ((((28 - 5 + 1) // 2) + 2 - 3 + 1) // 2) ** 2
+hint: Track the height: $28 \to 24 \to 12 \to 12 \to 6$. Then multiply by 16 channels and the square of 6.
+solution: The heights are 24, 12 (pool), 12 (padded conv keeps the size) and 6 (pool). Flattening $16 \times 6 \times 6$ gives $16 \cdot 36 = 576$ values.
+
+@practice num
+prompt: A network has three convolution layers in this order: kernel 3 with stride 1, kernel 3 with stride 2, kernel 3 with stride 1. What is the receptive field, in input pixels, of one unit in the last layer?
+answer: 9
+check: 1 + (3 - 1) * 1 + (3 - 1) * 1 + (3 - 1) * 2
+hint: Use $r \leftarrow r + (k - 1) j$ and then $j \leftarrow j s$ for each layer in order.
+solution: Layer 1: $r = 3$, $j = 1$. Layer 2: $r = 3 + 2 \cdot 1 = 5$, $j = 2$. Layer 3: $r = 5 + 2 \cdot 2 = 9$.
+
+@practice text
+prompt: What does this program print?
+```python
+n = 28
+sizes = []
+for k, s in [(3, 1), (2, 2), (3, 1), (2, 2)]:
+    n = (n - k) // s + 1
+    sizes.append(n)
+print(sizes)
+```
+answer: [26, 13, 11, 5]
+check: run("n = 28\nsizes = []\nfor k, s in [(3, 1), (2, 2), (3, 1), (2, 2)]:\n    n = (n - k) // s + 1\n    sizes.append(n)\nprint(sizes)")
+hint: Apply $\lfloor (n - k)/s \rfloor + 1$ four times; the last step is $(11 - 2)//2 + 1$.
+solution: $28 \to 26$ (kernel 3), $26 \to 13$ (pool 2), $13 \to 11$ (kernel 3), $11 \to 5$ (pool 2, with the odd leftover row dropped), so it prints `[26, 13, 11, 5]`.
+
+@practice code
+prompt: Write `receptive_field(layers)` where `layers` is a list of `(kernel, stride)` pairs in order from input to output. Return the receptive field, in input pixels, of one unit in the last layer, using $r \leftarrow r + (k-1)j$ then $j \leftarrow j s$, starting from $r = j = 1$. An empty list gives 1.
+starter:
+```python
+def receptive_field(layers):
+    return 0
+```
+tests:
+```python
+assert receptive_field([]) == 1
+assert receptive_field([(3, 1)] * 3) == 7
+assert receptive_field([(3, 1), (3, 2), (3, 1)]) == 9
+assert receptive_field([(2, 2), (2, 2)]) == 4
+assert receptive_field([(5, 1), (2, 2)]) == 6
+assert receptive_field([(2, 2), (3, 1)]) == 6
+```
+model:
+```python
+def receptive_field(layers):
+    """Receptive field of the last layer of a stack of (kernel, stride) layers."""
+    r, jump = 1, 1
+    for k, s in layers:
+        r += (k - 1) * jump
+        jump *= s
+    return r
+```
+hint: Keep two running variables, the field `r` and the jump, and update `r` before the jump inside the loop.
+solution: Each layer widens the field by $(k - 1)$ steps of the current jump, then strides multiply the jump. The last test (stride first, then a larger kernel) gives 6 and fails if the jump is updated before the field.
+
+@practice code
+prompt: Write `residual_block(x, W1, W2)` for a vector `x` (list of floats) and square matrices `W1`, `W2` (lists of rows). It returns `relu(x + W2 @ relu(W1 @ x))` as a list of floats, where `relu` is applied elementwise. For example, with `W1 = [[1, 0], [0, 1]]` and `W2` equal to zeros, `[1.0, -2.0]` gives `[1.0, 0.0]`.
+starter:
+```python
+def residual_block(x, W1, W2):
+    return list(x)
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(a - b) < 1e-9 for a, b in zip(u, v))
+assert close(residual_block([1.0, -2.0], [[1, 0], [0, 1]], [[0, 0], [0, 0]]), [1.0, 0.0])
+assert close(residual_block([2.0, -1.0], [[1, 1], [0, 2]], [[1, 0], [1, -1]]), [3.0, 0.0])
+assert close(residual_block([1.0, -2.0], [[1, 0], [1, 1]], [[1, 0], [0, 1]]), [2.0, 0.0])
+assert close(residual_block([0.5, 0.5], [[-1, 0], [0, -1]], [[1, 1], [1, 1]]), [0.5, 0.5])
+```
+model:
+```python
+def residual_block(x, W1, W2):
+    """Residual block: relu(x + W2 relu(W1 x))."""
+    def relu(v):
+        return [max(0.0, a) for a in v]
+
+    def matvec(W, v):
+        return [sum(w * a for w, a in zip(row, v)) for row in W]
+
+    f = matvec(W2, relu(matvec(W1, x)))
+    return relu([a + b for a, b in zip(x, f)])
+```
+hint: Compute the inner branch $F(\mathbf{x})$ first, add `x` elementwise, and only then apply the last ReLU.
+solution: The branch is two matrix-vector products with a ReLU between them; the shortcut adds `x` before the final ReLU. The last test has a branch that is zero after ReLU, so the block returns `x` itself.
+
+@quiz mc
+prompt: Which statement best explains why identity shortcuts help optimization of very deep networks?
+choice*: The derivative of a block's output with respect to its input contains the identity matrix, so gradients have a direct path through the shortcut.
+choice: The shortcut removes the nonlinearity, so the network becomes a linear model.
+choice: The shortcut adds parameters, so the network can always fit the data set.
+choice: The shortcut makes every layer's receptive field larger than the layer before it.
+hint: Differentiate $\mathbf{x} + F(\mathbf{x})$ with respect to $\mathbf{x}$.
+solution: Since $\partial(\mathbf{x} + F(\mathbf{x}))/\partial \mathbf{x} = \mathbf{I} + \partial F/\partial \mathbf{x}$, the identity term carries the gradient backward even when the branch's gradient is small. The branch still has nonlinearities, the shortcut adds no parameters when shapes match, and it does not change receptive fields in that way.
+
+@quiz num
+prompt: Two stacked $3 \times 3$ convolution layers each map 16 channels to 16 channels, with no biases. How many weights do the two layers have in total?
+answer: 4608
+unit: parameters
+check: 2 * 3 * 3 * 16 * 16
+hint: One layer has $3 \cdot 3 \cdot 16 \cdot 16$ weights.
+solution: One layer has $9 \cdot 256 = 2304$ weights, and two layers have 4608. A single $5 \times 5$ layer with the same receptive field would need $25 \cdot 256 = 6400$.
+
+@quiz code
+prompt: Write `count_params(layers)` where each layer is a tuple: `('conv', c_in, c_out, k)` for a $k \times k$ convolution with one bias per output channel, or `('fc', n_in, n_out)` for a fully connected layer with one bias per output. Return the total number of parameters. For example, `count_params([('fc', 3, 2)])` returns 8.
+starter:
+```python
+def count_params(layers):
+    return 0
+```
+tests:
+```python
+assert count_params([]) == 0
+assert count_params([('fc', 3, 2)]) == 8
+assert count_params([('conv', 1, 6, 5)]) == 156
+assert count_params([('conv', 6, 16, 5), ('fc', 400, 120)]) == 2416 + 48120
+assert count_params([('conv', 1, 6, 5), ('conv', 6, 16, 5), ('fc', 400, 120),
+                     ('fc', 120, 84), ('fc', 84, 10)]) == 61706
+```
+model:
+```python
+def count_params(layers):
+    """Total parameters of conv and fully connected layers, with biases."""
+    total = 0
+    for layer in layers:
+        if layer[0] == 'conv':
+            _, c_in, c_out, k = layer
+            total += c_out * (c_in * k * k + 1)
+        else:
+            _, n_in, n_out = layer
+            total += n_out * (n_in + 1)
+    return total
+```
+hint: A convolution has `c_out * (c_in * k * k + 1)` parameters; a fully connected layer has `n_out * (n_in + 1)`.
+solution: Branch on the layer kind and add the weights plus one bias per output unit or channel. The last test is a LeNet-style stack that totals 61,706 parameters.

@@ -1,0 +1,167 @@
+@project
+title: Model comparison study on a customer churn data set
+overview: You will implement logistic regression, a decision tree, a random forest and gradient-boosted stumps from scratch in plain Python, compare them with cross-validation on a small supplied tabular data set with rare positives, and decide which model you would deploy. The decision must rest on ranking quality, threshold-dependent errors and calibration, not on accuracy alone.
+goal: Build four supervised models from scratch and understand each one's assumptions and failure modes.
+goal: Evaluate them honestly with cross-validation, with all preprocessing fitted inside the training folds.
+goal: Report accuracy, precision, recall, ROC AUC and calibration, and justify a deployment choice in writing.
+step: Load the data below (36 customers, 3 features, 10 churners). Split it into 4 stratified folds with a fixed seed: each fold must hold 9 customers and 2 or 3 churners. Write a function that standardizes the features using only the training folds' mean and standard deviation.
+step: Implement logistic regression with gradient descent (weeks 1 to 3), with an optional L2 penalty (week 2). Check your gradient against finite differences, and confirm that the loss at zero weights is $\log 2$.
+step: Implement a decision tree with Gini splits and a maximum depth (week 7). Implement a random forest from it: bootstrap samples, $\lfloor\sqrt{p}\rfloor$ candidate features at each split, majority or averaged-probability voting, and the out-of-bag error (week 8). Use a seeded `random.Random`.
+step: Implement gradient boosting with regression stumps on the logistic-loss pseudo-residuals $y - \sigma(F)$ and a learning rate (week 9). Choose the number of rounds and learning rate with an inner cross-validation, never on the validation fold you report.
+step: For each model, produce out-of-fold predicted probabilities for all 36 customers. From them compute accuracy, precision and recall at threshold 0.5, ROC AUC, average precision, the Brier score and a reliability table with 3 bins (weeks 10 and 11). Compare against the baseline that predicts the base rate 10/36 for everyone.
+step: Repeat the whole comparison with three different fold seeds and report the mean and the spread of each metric. With only 36 rows, differences smaller than that spread should not be treated as real.
+step: Apply Platt scaling to the out-of-fold probabilities of the best-ranked model using a nested split (fit the map on some folds, evaluate it on others), and report whether calibration improved.
+step: Write a recommendation of at most one page: which model you would deploy, at which threshold, with which costs of false positives and false negatives in mind, and what additional data or checks you would require first.
+material: The data. Columns: months of tenure, support tickets in the last quarter, monthly spend in dollars, and whether the customer churned (1) or stayed (0). The data are invented for this exercise.
+
+| id | tenure_months | tickets | spend_usd | churned |
+|---|---|---|---|---|
+| 1 | 22 | 1 | 42 | 0 |
+| 2 | 8 | 2 | 57 | 0 |
+| 3 | 34 | 1 | 13 | 0 |
+| 4 | 7 | 4 | 44 | 1 |
+| 5 | 38 | 0 | 86 | 0 |
+| 6 | 5 | 4 | 57 | 1 |
+| 7 | 5 | 1 | 14 | 0 |
+| 8 | 11 | 4 | 19 | 1 |
+| 9 | 21 | 4 | 75 | 1 |
+| 10 | 42 | 1 | 40 | 0 |
+| 11 | 37 | 5 | 15 | 1 |
+| 12 | 45 | 4 | 44 | 0 |
+| 13 | 22 | 3 | 57 | 0 |
+| 14 | 13 | 5 | 72 | 1 |
+| 15 | 7 | 4 | 34 | 1 |
+| 16 | 30 | 2 | 59 | 0 |
+| 17 | 6 | 0 | 51 | 0 |
+| 18 | 33 | 3 | 13 | 0 |
+| 19 | 44 | 0 | 71 | 0 |
+| 20 | 22 | 2 | 66 | 0 |
+| 21 | 40 | 3 | 56 | 0 |
+| 22 | 19 | 3 | 66 | 0 |
+| 23 | 6 | 0 | 68 | 0 |
+| 24 | 45 | 6 | 46 | 1 |
+| 25 | 47 | 3 | 81 | 0 |
+| 26 | 24 | 1 | 59 | 0 |
+| 27 | 33 | 0 | 27 | 0 |
+| 28 | 27 | 3 | 83 | 0 |
+| 29 | 33 | 0 | 23 | 0 |
+| 30 | 10 | 6 | 44 | 1 |
+| 31 | 37 | 2 | 67 | 0 |
+| 32 | 26 | 1 | 22 | 0 |
+| 33 | 13 | 1 | 29 | 0 |
+| 34 | 39 | 1 | 31 | 0 |
+| 35 | 2 | 1 | 44 | 0 |
+| 36 | 10 | 5 | 79 | 1 |
+material: The same data as Python, one tuple per customer `(tenure_months, tickets, spend_usd, churned)`, and the metric definitions to use. Precision is $TP/(TP + FP)$, recall $TP/(TP + FN)$; the Brier score is the mean of $(\hat{p}_i - y_i)^2$; ROC AUC is the probability that a random churner scores above a random non-churner, ties counting one half.
+
+```python
+data = [
+    (22, 1, 42, 0), (8, 2, 57, 0), (34, 1, 13, 0), (7, 4, 44, 1),
+    (38, 0, 86, 0), (5, 4, 57, 1), (5, 1, 14, 0), (11, 4, 19, 1),
+    (21, 4, 75, 1), (42, 1, 40, 0), (37, 5, 15, 1), (45, 4, 44, 0),
+    (22, 3, 57, 0), (13, 5, 72, 1), (7, 4, 34, 1), (30, 2, 59, 0),
+    (6, 0, 51, 0), (33, 3, 13, 0), (44, 0, 71, 0), (22, 2, 66, 0),
+    (40, 3, 56, 0), (19, 3, 66, 0), (6, 0, 68, 0), (45, 6, 46, 1),
+    (47, 3, 81, 0), (24, 1, 59, 0), (33, 0, 27, 0), (27, 3, 83, 0),
+    (33, 0, 23, 0), (10, 6, 44, 1), (37, 2, 67, 0), (26, 1, 22, 0),
+    (13, 1, 29, 0), (39, 1, 31, 0), (2, 1, 44, 0), (10, 5, 79, 1),
+]
+```
+deliverable: Your code, with each model in its own function and a single script that reproduces every number in your report.
+deliverable: A results table of the five metrics for each model and the baseline, averaged over three fold seeds with their spread, plus one reliability table.
+deliverable: The one-page deployment recommendation.
+rubric: Correctness of the from-scratch models: gradient check passes, tree and forest behave as specified, boosting reduces the logistic loss round by round, and no scikit-learn or NumPy is used for the models themselves.
+rubric: Evaluation is honest: stratified folds, preprocessing and hyperparameter choices made inside the training folds, results averaged over seeds, and the spread reported.
+rubric: Metrics are correct and interpreted: accuracy is compared with the base-rate baseline, precision and recall are tied to a threshold, and AUC and calibration are explained separately.
+rubric: The recommendation follows from the evidence, states its uncertainty given 36 rows, and addresses threshold choice and calibration; a model is not chosen merely because it has the single highest number.
+safety: The data are invented. Do not use a model trained on 36 rows to make decisions about real customers, and note in your report what data quality, fairness and privacy checks a real deployment would need.
+tutor: My random forest and my single tree have nearly the same cross-validated AUC on 36 rows. How can I tell whether the difference is real, and what would I need to change in the experiment to find out?
+tutor: My boosted stumps have a good ROC AUC but a poor Brier score. What does that say about the model, and how would I check whether Platt scaling fixes it without leaking information?
+tutor: How should I pick a decision threshold for this problem if a missed churner costs five times as much as a wrongly flagged customer, and how does that choice depend on calibration?
+
+@review
+## Review guide
+
+**Week 1: linear regression.** Model $\hat{y} = \mathbf{w}^\top\mathbf{x}$; loss $\frac{1}{n}\lVert\mathbf{X}\mathbf{w} - \mathbf{y}\rVert^2$; gradient $\frac{2}{n}\mathbf{X}^\top(\mathbf{X}\mathbf{w} - \mathbf{y})$; normal equations $\mathbf{X}^\top\mathbf{X}\mathbf{w} = \mathbf{X}^\top\mathbf{y}$. Gradient descent converges for $\eta < 2/\lambda_{\max}$ and slowly when the condition number is large, so standardize. $R^2 = 1 - \mathrm{SS_{res}}/\mathrm{SS_{tot}}$.
+
+**Week 2: regularization.** Ridge: $(\mathbf{X}^\top\mathbf{X} + \lambda\mathbf{I})^{-1}\mathbf{X}^\top\mathbf{y}$, shrinks by $d^2/(d^2 + \lambda)$ and never gives exact zeros. Lasso: soft thresholding $S(z, \lambda)/a$ in coordinate descent, exact zeros.
+
+**Week 3 and 4: logistic and softmax regression.** Negative log-likelihood, gradient $\frac{1}{n}\mathbf{X}^\top(\mathbf{P} - \mathbf{Y})$ in both cases; loss $\log K$ at zero weights; stable softmax and log-sum-exp; separable data give no finite maximum likelihood estimate; weights are log-odds.
+
+**Week 5 and 6: SVM and kernels.** Margin $2/\lVert\mathbf{w}\rVert$; soft margin $\frac{1}{2}\lVert\mathbf{w}\rVert^2 + C\sum\max(0, 1 - yf)$; support vectors have $\alpha_i > 0$. A kernel is an inner product in a feature space; Gram matrices are positive semidefinite; $\gamma$ and $C$ control flexibility.
+
+**Week 7 and 8: trees, bagging, forests.** Gini $1 - \sum p_k^2$, entropy, weighted impurity of a split, cost-complexity pruning $\alpha_{\text{eff}} = (R(t) - R(T_t))/(|T_t| - 1)$. Averaging $B$ trees with correlation $\rho$ has variance $\rho\sigma^2 + (1 - \rho)\sigma^2/B$; random feature subsets lower $\rho$; OOB error needs no test set.
+
+**Week 9: boosting.** Fit each stump to the negative gradient (residuals for squared loss, $y - \sigma(F)$ for logistic loss) and add it with a learning rate; it reduces bias and needs early stopping.
+
+**Week 10 and 11: probabilities and imbalance.** Calibration, ECE, Brier score, log loss, Platt scaling on held-out data. Confusion matrix, precision, recall, $F_1$, ROC AUC as a ranking probability, average precision, prevalence baseline.
+
+**Week 12: model selection.** K-fold CV, standard error, one-standard-error rule, grid and random search, nested CV, no leakage, one use of the test set.
+
+### Self-check
+
+- Can you derive the logistic regression gradient and check it numerically?
+- Can you explain why lasso gives zeros and ridge does not?
+- Can you compute a split's weighted Gini by hand and a pruning $\alpha_{\text{eff}}$?
+- Can you say why accuracy is misleading at 2 percent prevalence?
+- Can you list three ways cross-validation estimates become optimistic?
+
+### Common errors
+
+Forgetting the intercept column; penalizing the intercept; computing softmax or the sigmoid without stabilization; labels $0/1$ in a hinge loss; fitting boosting trees to targets instead of residuals; voting with trees that trained on the example; choosing a threshold or hyperparameter on the test set; standardizing before the split.
+
+@exam code
+prompt: Write `best_f1_threshold(scores, y)` for float `scores` and 0/1 labels `y`. For each distinct score value $t$, predict positive when `score >= t`, and compute $F_1 = 2TP/(2TP + FP + FN)$ (taken as `0.0` when `TP = 0`). Scan the thresholds from the highest to the lowest and replace the best only when the new $F_1$ is larger by more than $10^{-12}$, so that a tie keeps the larger threshold. Return `(threshold, f1)`.
+starter:
+```python
+def best_f1_threshold(scores, y):
+    pass
+```
+tests:
+```python
+t, f = best_f1_threshold([0.9, 0.8, 0.6, 0.5, 0.4, 0.3], [1, 1, 0, 1, 0, 0])
+assert abs(t - 0.5) < 1e-12 and abs(f - 6 / 7) < 1e-9
+t, f = best_f1_threshold([0.9, 0.5], [1, 1])
+assert abs(t - 0.5) < 1e-12 and abs(f - 1.0) < 1e-9
+t, f = best_f1_threshold([0.1, 0.5, 0.4, 0.3, 0.7, 0.2], [1, 0, 1, 0, 1, 0])
+assert abs(t - 0.4) < 1e-12 and abs(f - 2 / 3) < 1e-9
+t, f = best_f1_threshold([0.4, 0.4], [1, 0])
+assert abs(t - 0.4) < 1e-12 and abs(f - 2 / 3) < 1e-9
+t, f = best_f1_threshold([0.8, 0.3], [0, 0])
+assert f == 0.0
+```
+model:
+```python
+def best_f1_threshold(scores, y):
+    """Threshold on the scores that maximizes F1, preferring larger ones."""
+    best_t = None
+    best_f = -1.0
+    for t in sorted(set(scores), reverse=True):
+        pred = [1 if s >= t else 0 for s in scores]
+        tp = sum(1 for a, b in zip(y, pred) if a == 1 and b == 1)
+        fp = sum(1 for a, b in zip(y, pred) if a == 0 and b == 1)
+        fn = sum(1 for a, b in zip(y, pred) if a == 1 and b == 0)
+        f1 = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
+        if f1 > best_f + 1e-12:
+            best_t, best_f = t, f1
+    return best_t, best_f
+```
+hint: Loop over the distinct scores from high to low, build the predictions, count TP, FP and FN, and keep the best $F_1$ seen so far.
+solution: Each threshold gives a confusion matrix and an $F_1$; the search keeps the first maximum met when scanning downward, which is the largest threshold. In the third test thresholds $0.4$ and $0.1$ tie at $2/3$ and the larger one wins. Choosing a threshold this way on the data used to evaluate the model would be optimistic, so in practice use validation data.
+
+@exam num
+prompt: A logistic regression model $\sigma(w_0 + w_1 x)$ is trained by gradient descent on the mean negative log-likelihood, starting from $\mathbf{w} = (0, 0)$, on the three examples $(x, y) = (0, 0), (2, 0), (4, 1)$. After one step with step size 1, what is the Brier score of the new predicted probabilities on the same three examples? Give three decimal places.
+answer: 0.218
+tol: 0.001
+check: (lambda w: sum((1 / (1 + math.exp(-(w[0] + w[1] * x))) - t) ** 2 for x, t in [(0, 0), (2, 0), (4, 1)]) / 3)([0 - 1 * (0.5 + 0.5 - 0.5) / 3, 0 - 1 * (0 * 0.5 + 2 * 0.5 + 4 * (0.5 - 1)) / 3])
+hint: At zero weights every probability is $0.5$. The gradient is $\frac{1}{3}\sum(p_i - y_i)\,(1, x_i)$; subtract it, then evaluate the three new probabilities.
+solution: The errors $p - y$ are $0.5, 0.5, -0.5$. The intercept gradient is $0.5/3 = 0.1667$ and the slope gradient is $(0 + 1 - 2)/3 = -0.3333$, so $\mathbf{w} = (-0.1667, 0.3333)$. The scores at $x = 0, 2, 4$ are $-0.1667$, $0.5$ and $1.1667$, giving probabilities $0.458$, $0.622$ and $0.763$. The squared errors are $0.210$, $0.387$ and $0.056$, and their mean is $0.218$.
+
+@exam self
+prompt: A team trains 200 hyperparameter configurations of a gradient-boosted model on a data set with 3 percent positives, using 5-fold cross-validation, and reports "ROC AUC $0.93$ in cross-validation" for the best configuration. Explain why this number is probably optimistic as an estimate of performance on new data, and design the evaluation procedure you would use instead. Cover how to split the data, how to select hyperparameters, how to handle the class imbalance in the metrics, and how you would check the probabilities if they will be used to make decisions.
+hint: Ask what the best of 200 noisy scores is an estimate of, and which data should be touched only once.
+solution: The reported figure is the best of 200 noisy estimates, so it benefits from selection bias: the winner is partly the configuration that happened to suit these folds, and the fold scores that picked it are also the scores being reported. Any preprocessing or feature selection done before the folds were cut adds leakage. A better procedure holds out a test set at the start (stratified, kept untouched), then performs the hyperparameter search by cross-validation on the remaining data only, with stratified folds so that each holds the same 3 percent of positives and with scaling and any feature selection fitted inside each training fold. To measure the whole procedure, including the search, use nested cross-validation or the single held-out test set, scoring the refit winner once. Because positives are rare, report precision, recall and average precision (read against the 3 percent prevalence baseline) besides ROC AUC, and choose the threshold on validation data according to the costs of the two kinds of error. If the probabilities will drive decisions, fit a recalibration map such as Platt scaling on held-out predictions, then evaluate calibration with a reliability table, expected calibration error and the Brier score on data not used to fit the map. Report the spread across folds, since with few positives the estimates are noisy.
+rubric: Identifies selection bias from reporting the best of many configurations (and leakage from preprocessing outside the folds) as the reason for the optimism.
+rubric: Proposes a clean procedure: untouched test set or nested cross-validation, stratified folds, hyperparameters chosen only on training data.
+rubric: Handles imbalance with precision, recall or average precision against the prevalence baseline, and chooses the threshold on validation data.
+rubric: Checks calibration on separate held-out data (reliability table, ECE or Brier score) and notes the noise from few positives.

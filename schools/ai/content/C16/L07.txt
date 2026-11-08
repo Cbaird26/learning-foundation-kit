@@ -1,0 +1,242 @@
+@lesson
+title: Matrix factorization and recommender systems
+summary: Factorize a sparse ratings matrix into user and item vectors with stochastic gradient descent and with alternating least squares, and use the factors to predict missing ratings.
+objective: Write the regularized matrix factorization objective over the observed ratings only.
+objective: Derive and compute the stochastic gradient step and the alternating least squares update.
+objective: Explain why the objective decreases monotonically under ALS, and what cold start and missing-not-at-random data do to a recommender.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on matrix factorization for recommender systems (the chapter on recommender systems or matrix factorization); look up alternating least squares.
+
+@article
+A streaming service has ratings from three users for two films, but most users have seen only some of them. The table is full of holes, and the business question is what each user would rate the films they have not seen. If tastes are driven by a few hidden factors (how much someone likes action, say, and how much a film contains), the ratings matrix should be well approximated by a low-rank matrix. **Matrix factorization** finds that matrix from the observed entries only.
+
+### The model
+
+Let $\Omega$ be the set of observed pairs $(u, i)$ with rating $r_{ui}$. Give each user a vector $\mathbf{p}_u \in \mathbb{R}^k$ and each item a vector $\mathbf{q}_i \in \mathbb{R}^k$, and predict
+$$\hat{r}_{ui} = \mathbf{p}_u^\top \mathbf{q}_i .$$
+The factors are learned by minimizing the regularized squared error **over the observed entries only**:
+$$J = \sum_{(u,i) \in \Omega} \big(r_{ui} - \mathbf{p}_u^\top \mathbf{q}_i\big)^2 + \lambda \Big(\sum_u \lVert \mathbf{p}_u \rVert_2^2 + \sum_i \lVert \mathbf{q}_i \rVert_2^2\Big).$$
+Treating missing ratings as zeros would teach the model that unseen films are disliked. The rank $k$ and the penalty $\lambda$ are hyperparameters chosen on held-out ratings; without $\lambda$ the model overfits the few observed entries. Practical systems add bias terms (a user's average and an item's average) so that the factors model only the deviations. The method became prominent through the Netflix Prize competition.
+
+### Stochastic gradient descent
+
+Visit one observed rating at a time. With the error $e = r_{ui} - \mathbf{p}_u^\top \mathbf{q}_i$, the gradient of the per-rating loss gives (absorbing a factor 2 into the learning rate $\eta$) the updates
+$$\mathbf{p}_u \leftarrow \mathbf{p}_u + \eta\,(e\, \mathbf{q}_i - \lambda\, \mathbf{p}_u), \qquad \mathbf{q}_i \leftarrow \mathbf{q}_i + \eta\,(e\, \mathbf{p}_u - \lambda\, \mathbf{q}_i),$$
+where both right-hand sides use the **old** values. If the prediction is too low ($e > 0$), each vector moves toward the other; the $-\lambda$ term shrinks the vectors a little.
+
+### Alternating least squares
+
+$J$ is not convex in $(\mathbf{P}, \mathbf{Q})$ jointly, but for **fixed $\mathbf{Q}$ it is a separate ridge regression for each user**. Let $\Omega_u$ be the items user $u$ rated; setting the gradient with respect to $\mathbf{p}_u$ to zero gives
+$$\mathbf{p}_u = \Big(\sum_{i \in \Omega_u} \mathbf{q}_i \mathbf{q}_i^\top + \lambda \mathbf{I}\Big)^{-1} \sum_{i \in \Omega_u} r_{ui}\, \mathbf{q}_i,$$
+and symmetrically for each item with $\mathbf{P}$ fixed. **Alternating least squares** (ALS) updates all users, then all items, and repeats. Each update minimizes $J$ exactly over its block, so **$J$ never increases**; the iteration converges to a stationary point, not necessarily the global minimum, so the start matters. For rank $k = 1$ the matrices are scalars: $p_u = \sum_{i \in \Omega_u} r_{ui} q_i \big/ \big(\sum_{i \in \Omega_u} q_i^2 + \lambda\big)$. ALS parallelizes well, because every user (and then every item) can be solved independently.
+
+### A worked run
+
+Take $\Omega$ with ratings $r_{00} = 4$, $r_{01} = 2$, $r_{10} = 2$, $r_{11} = 1$, $r_{21} = 3$ (user, item), rank 1, $\lambda = 1$ and the start $\mathbf{q} = (1, 1)$. The first user update gives $\mathbf{p} = (2, 1, 1.5)$; the first item update gives $\mathbf{q} = (1.667, 1.152)$. The objective falls from $36$ at the start (with $\mathbf{p} = \mathbf{0}$) to $13.64$ after one round, $13.10$ after two and $13.02$ after three. The prediction for user 2 on item 0, a pair never observed, is $p_2 q_0$, which is about $1.5 \times 1.808 = 2.7$ after two rounds.
+
+### Limits
+
+- **Cold start.** A new user or item has no ratings, so its vector is just $\mathbf{0}$ (with $\lambda > 0$); systems fall back on content features or popularity.
+- **Missing not at random.** People rate what they chose to watch, so the observed ratings are a biased sample; accuracy on observed entries can overstate accuracy on all pairs.
+- **Implicit feedback.** Clicks and plays are not ratings: a missing click does not mean dislike, and weighted variants treat observed and unobserved pairs differently.
+- **Evaluation.** Hold out some observed ratings and report the root mean squared error there, never on the ratings used for training.
+
+### In code
+
+```python
+def als_round(R, n_users, n_items, q, lam):
+    p = [0.0] * n_users
+    for u in range(n_users):
+        num = sum(q[i] * r for (uu, i), r in R.items() if uu == u)
+        den = sum(q[i] ** 2 for (uu, i), r in R.items() if uu == u)
+        p[u] = num / (den + lam)
+    q = [0.0] * n_items
+    for i in range(n_items):
+        num = sum(p[u] * r for (u, ii), r in R.items() if ii == i)
+        den = sum(p[u] ** 2 for (u, ii), r in R.items() if ii == i)
+        q[i] = num / (den + lam)
+    return p, q
+
+R = {(0, 0): 4, (0, 1): 2, (1, 0): 2, (1, 1): 1, (2, 1): 3}
+print(als_round(R, 3, 2, [1.0, 1.0], 1.0))
+```
+
+@example
+title: One round of rank-1 ALS
+problem: Ratings (user, item): $r_{00} = 5$, $r_{10} = 3$, $r_{11} = 2$. With rank 1, $\lambda = 0.5$ and the start $\mathbf{q} = (1, 1)$, do one user update and one item update.
+step: User update, $p_u = \sum r_{ui} q_i / (\sum q_i^2 + \lambda)$. User 0 rated only item 0: $p_0 = 5 \cdot 1 / (1 + 0.5) = 3.333$. User 1 rated items 0 and 1: $p_1 = (3 + 2)/(1 + 1 + 0.5) = 2$.
+step: Item update with the new $\mathbf{p} = (3.333, 2)$, $q_i = \sum r_{ui} p_u / (\sum p_u^2 + \lambda)$. Item 0 was rated by both users: $q_0 = (5 \cdot 3.333 + 3 \cdot 2)/(3.333^2 + 2^2 + 0.5) = 22.667/15.611 = 1.452$.
+step: Item 1 was rated only by user 1: $q_1 = 2 \cdot 2/(2^2 + 0.5) = 0.889$.
+step: Predict the unobserved rating of user 0 on item 1: $p_0 q_1 = 3.333 \times 0.889 = 2.96$.
+answer: $\mathbf{p} = (3.333, 2)$, $\mathbf{q} = (1.452, 0.889)$; predicted $r_{01} \approx 2.96$.
+
+@example
+title: One stochastic gradient step
+problem: A user vector $\mathbf{p} = (1, 0.5)$ and an item vector $\mathbf{q} = (2, 1)$ are updated on the rating $r = 4$ with $\eta = 0.1$ and $\lambda = 0.1$. Give the new vectors.
+step: The prediction is $\mathbf{p}^\top \mathbf{q} = 2 + 0.5 = 2.5$, so the error is $e = 4 - 2.5 = 1.5$.
+step: Update $\mathbf{p}$: $p_1 = 1 + 0.1(1.5 \cdot 2 - 0.1 \cdot 1) = 1.29$ and $p_2 = 0.5 + 0.1(1.5 \cdot 1 - 0.1 \cdot 0.5) = 0.645$.
+step: Update $\mathbf{q}$ using the **old** $\mathbf{p}$: $q_1 = 2 + 0.1(1.5 \cdot 1 - 0.1 \cdot 2) = 2.13$ and $q_2 = 1 + 0.1(1.5 \cdot 0.5 - 0.1 \cdot 1) = 1.065$.
+step: Check: the new prediction is $1.29 \cdot 2.13 + 0.645 \cdot 1.065 = 3.435$, closer to 4 than 2.5.
+answer: $\mathbf{p} = (1.29, 0.645)$, $\mathbf{q} = (2.13, 1.065)$.
+
+@mistakes
+- Filling missing ratings with 0 and factorizing the whole matrix: this treats "not seen" as "strongly dislike".
+- Updating $\mathbf{q}_i$ with the already-updated $\mathbf{p}_u$ in an SGD step; both updates use the values from before the step.
+- Forgetting $\lambda$ in the ALS denominator: without it a user with a single rating gets a vector that fits that rating exactly, an overfit.
+- Reporting error on the training ratings as if it were the quality of the recommendations.
+
+@practice num
+prompt: In a rank-1 ALS user update the item factors are $q = (2, 1, 3)$ and user $u$ rated items 0 and 2 with the ratings 4 and 5. With $\lambda = 2$, what is the new $p_u$? Give your answer to three decimal places.
+answer: 1.533
+tol: 0.001
+check: (2 * 4 + 3 * 5) / (2 ** 2 + 3 ** 2 + 2)
+hint: Use $p_u = \sum r_{ui} q_i / (\sum q_i^2 + \lambda)$ over only the two rated items.
+solution: The numerator is $2 \cdot 4 + 3 \cdot 5 = 23$ and the denominator is $4 + 9 + 2 = 15$, so $p_u = 23/15 \approx 1.533$. The unrated item 1 plays no part.
+
+@practice mc
+prompt: Which statement about alternating least squares for matrix factorization is correct?
+choice*: With one factor matrix fixed, each user (or item) update is an exact ridge regression, so the objective never increases, but the final result can depend on the starting point.
+choice: The objective is jointly convex in the user and item factors, so ALS always finds the global minimum.
+choice: Missing ratings are filled with zeros so that the matrix is complete.
+choice: ALS needs a learning rate that must be tuned, like stochastic gradient descent.
+hint: Think about what each half-step solves and whether the objective is convex jointly or only in each block.
+solution: Each block update solves a convex ridge regression exactly, which cannot raise $J$; $J$ is not jointly convex, so the limit depends on the start. ALS sums only over observed ratings and has no learning rate.
+
+@practice code
+prompt: Write `observed_rmse(R, P, Q)` that returns the root mean squared error of a factorization over the observed ratings. `R` is a dictionary mapping `(user, item)` to a rating, `P[u]` is the list of floats for user `u` and `Q[i]` the list for item `i`; the prediction is their dot product. For example, with `P = [[1.0]]`, `Q = [[2.0]]` and `R = {(0, 0): 3.0}`, the result is `1.0`.
+starter:
+```python
+def observed_rmse(R, P, Q):
+    return 0.0
+```
+tests:
+```python
+assert abs(observed_rmse({(0, 0): 3.0}, [[1.0]], [[2.0]]) - 1.0) < 1e-9
+P, Q = [[1, 0], [0, 1]], [[2, 0], [0, 3]]
+assert abs(observed_rmse({(0, 0): 2, (1, 1): 3}, P, Q)) < 1e-9
+assert abs(observed_rmse({(0, 0): 3, (1, 1): 1}, P, Q) - 1.5811388300841898) < 1e-9
+assert abs(observed_rmse({(0, 0): 3, (1, 1): 1, (0, 1): 2}, P, Q) - 1.7320508075688772) < 1e-9
+P2 = [[1.0, 2.0], [0.5, 1.0], [2.0, 0.0]]
+Q2 = [[1.0, 1.0], [2.0, 0.5], [0.0, 3.0]]
+R2 = {(0, 0): 3, (0, 2): 5, (1, 1): 2, (2, 0): 1, (2, 1): 4}
+assert abs(observed_rmse(R2, P2, Q2) - 0.6708203932499369) < 1e-9
+```
+model:
+```python
+from math import sqrt
+
+
+def observed_rmse(R, P, Q):
+    """RMSE of the dot-product predictions over the observed ratings."""
+    total = 0.0
+    for (u, i), r in R.items():
+        pred = sum(a * b for a, b in zip(P[u], Q[i]))
+        total += (r - pred) ** 2
+    return sqrt(total / len(R))
+```
+hint: Loop over the observed pairs only, compute each dot product, accumulate the squared errors, divide by the number of observed ratings and take the square root.
+solution: Only the pairs present in `R` count, and the mean divides by `len(R)`, not by the number of users times items. The fourth test has an observed pair whose prediction is 0, which checks that the dot product is over the whole vector.
+
+@practice code
+prompt: Write `sgd_step(p, q, r, lr, lam)` that performs one stochastic gradient step on a single rating and returns the tuple `(new_p, new_q)` of lists of floats. With $e = r - \mathbf{p}\cdot\mathbf{q}$, set `new_p = p + lr * (e * q - lam * p)` and `new_q = q + lr * (e * p - lam * q)`, both computed from the old `p` and `q` (elementwise). The inputs must not be modified. For example, `sgd_step([1.0], [1.0], 3.0, 0.1, 0.0)` returns `([1.2], [1.2])`.
+starter:
+```python
+def sgd_step(p, q, r, lr, lam):
+    return list(p), list(q)
+```
+tests:
+```python
+new_p, new_q = sgd_step([1.0], [1.0], 3.0, 0.1, 0.0)
+assert abs(new_p[0] - 1.2) < 1e-9 and abs(new_q[0] - 1.2) < 1e-9
+new_p, new_q = sgd_step([1.0, 0.5], [2.0, 1.0], 4.0, 0.1, 0.1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(new_p, [1.29, 0.645]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(new_q, [2.13, 1.065]))
+new_p, new_q = sgd_step([1.0, 2.0], [3.0, 1.0], 5.0, 0.01, 0.2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(new_p, [0.998, 1.996]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(new_q, [2.994, 0.998]))
+p, q = [1.0, 0.0], [0.0, 1.0]
+sgd_step(p, q, 1.0, 0.5, 0.0)
+assert p == [1.0, 0.0] and q == [0.0, 1.0]
+```
+model:
+```python
+def sgd_step(p, q, r, lr, lam):
+    """One SGD step on the regularized squared error of a single rating."""
+    e = r - sum(a * b for a, b in zip(p, q))
+    new_p = [a + lr * (e * b - lam * a) for a, b in zip(p, q)]
+    new_q = [b + lr * (e * a - lam * b) for a, b in zip(p, q)]
+    return new_p, new_q
+```
+hint: Compute the error once from the old vectors, then build both new lists from the old `p` and `q`.
+solution: Both new vectors are built from the old ones, so the order of the two lines does not matter. In the third test the error is exactly 0 and only the regularization term acts, shrinking both vectors by the factor $1 - \eta\lambda$.
+
+@practice num
+prompt: A user vector $\mathbf{p} = (1, 2)$ and an item vector $\mathbf{q} = (3, 1)$ are updated by one SGD step on the rating $r = 5$ with $\eta = 0.01$ and $\lambda = 0.2$. What is the first component of the new user vector? Give your answer to four decimal places.
+answer: 0.998
+tol: 0.0001
+check: (lambda p, q, r: p[0] + 0.01 * ((r - p[0] * q[0] - p[1] * q[1]) * q[0] - 0.2 * p[0]))([1, 2], [3, 1], 5)
+hint: First compute the prediction $\mathbf{p}\cdot\mathbf{q}$ and the error $e$.
+solution: The prediction is $1 \cdot 3 + 2 \cdot 1 = 5$, so the error is $e = 0$. Then $p_1 \leftarrow 1 + 0.01(0 \cdot 3 - 0.2 \cdot 1) = 0.998$: with no error, only the regularization shrinks the vector.
+
+@quiz text
+prompt: What does this program print?
+```python
+p, q = 2.0, 3.0
+r = 8.0
+e = r - p * q
+p, q = p + 0.1 * e * q, q + 0.1 * e * p
+print(round(p, 2), round(q, 2))
+```
+answer: 2.6 3.4
+check: run("p, q = 2.0, 3.0\nr = 8.0\ne = r - p * q\np, q = p + 0.1 * e * q, q + 0.1 * e * p\nprint(round(p, 2), round(q, 2))")
+hint: The error is $8 - 6 = 2$. The right side of the tuple assignment is evaluated completely before either variable changes.
+solution: With $e = 2$, the new $p$ is $2 + 0.1 \cdot 2 \cdot 3 = 2.6$ and the new $q$ is $3 + 0.1 \cdot 2 \cdot 2 = 3.4$, using the old $p$ in the second formula. The program prints `2.6 3.4`.
+
+@quiz code
+prompt: Write `als_rank1(R, n_users, n_items, q0, lam, iters)` for rank-1 alternating least squares. `R` maps `(user, item)` to a rating; `q0` is the starting list of item factors; `lam` is positive. Each iteration first updates every user factor $p_u = \sum_{i \in \Omega_u} r_{ui} q_i / (\sum_{i \in \Omega_u} q_i^2 + \lambda)$ using the current `q`, then updates every item factor $q_i = \sum_{u} r_{ui} p_u / (\sum_{u} p_u^2 + \lambda)$ using the new `p`, where sums run over observed ratings only. Return `(p, q)` as lists of floats; with `iters = 0` return `([0.0] * n_users, list(q0))`.
+starter:
+```python
+def als_rank1(R, n_users, n_items, q0, lam, iters):
+    return [0.0] * n_users, list(q0)
+```
+tests:
+```python
+R = {(0, 0): 4, (0, 1): 2, (1, 0): 2, (1, 1): 1, (2, 1): 3}
+p, q = als_rank1(R, 3, 2, [1.0, 1.0], 1.0, 1)
+assert all(abs(a - b) < 1e-9 for a, b in zip(p, [2.0, 1.0, 1.5]))
+assert all(abs(a - b) < 1e-9 for a, b in zip(q, [1.6666666666666667, 1.1515151515151516]))
+p, q = als_rank1(R, 3, 2, [1.0, 1.0], 1.0, 2)
+assert all(abs(a - b) < 1e-6 for a, b in zip(p, [1.7574667146455558, 0.8787333573227779, 1.4851954204500593]))
+assert all(abs(a - b) < 1e-6 for a, b in zip(q, [1.8077728512252682, 1.2522527301556559]))
+p, q = als_rank1({(0, 0): 5, (1, 0): 3, (1, 1): 2}, 2, 3, [1.0, 1.0, 1.0], 0.5, 3)
+assert abs(q[2]) < 1e-12
+assert all(abs(a - b) < 1e-6 for a, b in zip(p, [2.5280194284834265, 1.6396342267529929]))
+assert als_rank1(R, 3, 2, [1.0, 1.0], 1.0, 0) == ([0.0, 0.0, 0.0], [1.0, 1.0])
+```
+model:
+```python
+def als_rank1(R, n_users, n_items, q0, lam, iters):
+    """Rank-1 ALS on the observed ratings in R."""
+    p = [0.0] * n_users
+    q = list(q0)
+    for _ in range(iters):
+        for u in range(n_users):
+            num = sum(q[i] * r for (uu, i), r in R.items() if uu == u)
+            den = sum(q[i] ** 2 for (uu, i), r in R.items() if uu == u)
+            p[u] = num / (den + lam)
+        for i in range(n_items):
+            num = sum(p[u] * r for (u, ii), r in R.items() if ii == i)
+            den = sum(p[u] ** 2 for (u, ii), r in R.items() if ii == i)
+            q[i] = num / (den + lam)
+    return p, q
+```
+hint: For each user, add up $q_i r_{ui}$ and $q_i^2$ over the items that user rated; divide by the sum of squares plus $\lambda$. Then do the same for each item with the new $p$.
+solution: The user step uses the old item factors and the item step uses the new user factors. Items with no ratings get $0/(0+\lambda) = 0$, which the fifth test checks; the second and fourth tests need two full rounds, so a function that updates only users or only items fails.
+
+@quiz ms
+prompt: Which statements about recommender systems based on matrix factorization are true? Select all that apply.
+choice*: Predictions for a user who has rated nothing rely on something other than that user's ratings, because the user's factor vector has no data to learn from.
+choice*: The error on the observed training ratings can be much lower than the error on held-out ratings if the rank is large and $\lambda$ is small.
+choice*: Users tend to rate items they chose to watch, so the observed ratings are not a random sample of all user-item pairs.
+choice: Replacing every missing rating by 0 before factorizing is the standard way to handle unobserved entries.
+hint: Think about overfitting, cold start and how the observed entries were selected.
+solution: A new user has no ratings to fit, so a content-based or popularity fallback is needed. A flexible model can fit the observed ratings closely and still generalize badly. Self-selection makes the missing entries not random. Filling with zeros treats unseen items as disliked, which is why the objective sums over observed entries only.

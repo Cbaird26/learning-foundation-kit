@@ -1,0 +1,237 @@
+@lesson
+title: Principal component analysis and the SVD
+summary: Compute principal components from the covariance matrix and from the singular value decomposition, project data onto them and read off the fraction of variance each explains.
+objective: Center data, form the covariance matrix and find its leading eigenvector by hand and by power iteration.
+objective: Relate principal components to the singular value decomposition and compute explained variance from singular values.
+objective: Project data onto the first components and explain what PCA can and cannot tell you.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the chapter on dimensionality reduction: the section on principal components analysis, and the section on the singular value decomposition in the linear algebra chapter.
+
+@article
+Four sensors measure two quantities that move almost together: the readings are $(13, 21)$, $(11, 23)$, $(7, 19)$ and $(9, 17)$. Plotted, the points lie along a diagonal band. Almost everything we need to know is *where along the band* a point lies; the position across the band is small. **Principal component analysis** (PCA) finds such directions automatically and lets us describe the data with fewer numbers.
+
+### What PCA finds
+
+Let $\mathbf{X}$ be the $n \times d$ data matrix (one example per row) and $\mathbf{X}_c$ the same matrix after subtracting the mean of each column. The **sample covariance matrix** is
+$$\mathbf{S} = \frac{1}{n-1}\, \mathbf{X}_c^\top \mathbf{X}_c .$$
+PCA looks for a unit vector $\mathbf{v}$ such that the projections $\mathbf{X}_c \mathbf{v}$ have the largest possible variance. The variance of the projections is $\mathbf{v}^\top \mathbf{S} \mathbf{v}$, and maximizing it over unit vectors gives the **eigenvector of $\mathbf{S}$ with the largest eigenvalue**; the next direction, orthogonal to the first, is the eigenvector with the second-largest eigenvalue, and so on. The eigenvectors are the **principal components** (PCs), the projections $\mathbf{X}_c \mathbf{v}_j$ are the **scores**, and the eigenvalue $\lambda_j$ is the variance of the scores along PC $j$. The total variance is $\operatorname{tr}\mathbf{S} = \sum_j \lambda_j$, so PC $j$ explains the fraction $\lambda_j / \sum_i \lambda_i$.
+
+### The sensor data
+
+The column means are $10$ and $20$, so the centered points are $(3, 1)$, $(1, 3)$, $(-3, -1)$ and $(-1, -3)$. Then $\mathbf{X}_c^\top \mathbf{X}_c = \begin{pmatrix} 20 & 12 \\ 12 & 20 \end{pmatrix}$ and, dividing by $n - 1 = 3$,
+$$\mathbf{S} = \begin{pmatrix} 20/3 & 4 \\ 4 & 20/3 \end{pmatrix}.$$
+Its eigenvalues are $20/3 \pm 4$, that is $32/3 \approx 10.67$ and $8/3 \approx 2.67$, with eigenvectors $\mathbf{v}_1 = (1, 1)/\sqrt{2}$ and $\mathbf{v}_2 = (1, -1)/\sqrt{2}$. The first PC explains $\frac{32/3}{40/3} = 80\%$ of the variance. The scores on PC 1 are $\pm 4/\sqrt{2} = \pm 2.83$, so replacing each 2-D reading by one number loses only the across-band detail.
+
+### PCA through the SVD
+
+Forming $\mathbf{X}_c^\top \mathbf{X}_c$ can lose precision and is wasteful when $d$ is large. The **singular value decomposition** factors the centered data as
+$$\mathbf{X}_c = \mathbf{U} \boldsymbol{\Sigma} \mathbf{V}^\top,$$
+where $\mathbf{U}$ and $\mathbf{V}$ have orthonormal columns and $\boldsymbol{\Sigma}$ is diagonal with singular values $\sigma_1 \ge \sigma_2 \ge \dots \ge 0$. Then $\mathbf{X}_c^\top \mathbf{X}_c = \mathbf{V} \boldsymbol{\Sigma}^2 \mathbf{V}^\top$, so:
+
+- the columns of $\mathbf{V}$ are the principal components,
+- the eigenvalues are $\lambda_j = \sigma_j^2 / (n - 1)$,
+- the scores are $\mathbf{X}_c \mathbf{V} = \mathbf{U} \boldsymbol{\Sigma}$.
+
+For the sensor data the singular values are $\sqrt{32} = 5.657$ and $\sqrt{8} = 2.828$, and indeed $32/3$ and $8/3$ are their squares divided by 3. Keeping the top $k$ components gives the **rank-$k$ approximation** $\mathbf{X}_c \approx \mathbf{U}_k \boldsymbol{\Sigma}_k \mathbf{V}_k^\top$, which by the Eckart–Young theorem is the best rank-$k$ approximation in the Frobenius norm. The squared error equals the sum of the discarded $\sigma_j^2$.
+
+### Power iteration
+
+To find the top eigenvector without a library, start from any vector $\mathbf{v}_0$ not orthogonal to it and repeat $\mathbf{v} \leftarrow \mathbf{S}\mathbf{v} / \lVert \mathbf{S}\mathbf{v} \rVert_2$. Each step multiplies the component along PC $j$ by $\lambda_j$, so the direction with the largest eigenvalue takes over; the error shrinks like $(\lambda_2/\lambda_1)^t$. The eigenvalue is then $\mathbf{v}^\top \mathbf{S} \mathbf{v}$. A PC is defined only up to sign, so $-\mathbf{v}_1$ is equally valid.
+
+### What PCA does not do
+
+PCA is linear and unsupervised. The directions of largest variance need not be the directions that separate classes, and a feature measured in large units dominates the variance unless you standardize first. Centering is essential: without it the first "component" mostly points at the mean. PCA also says nothing about *why* the data vary in those directions.
+
+### In code
+
+```python
+def covariance(X):
+    n, d = len(X), len(X[0])
+    mean = [sum(row[j] for row in X) / n for j in range(d)]
+    return [[sum((r[i] - mean[i]) * (r[j] - mean[j]) for r in X) / (n - 1)
+             for j in range(d)] for i in range(d)]
+
+S = covariance([[13, 21], [11, 23], [7, 19], [9, 17]])
+print(S)                         # [[6.67, 4.0], [4.0, 6.67]]
+v = [1.0, 1.0]
+for _ in range(20):
+    w = [sum(S[i][j] * v[j] for j in range(2)) for i in range(2)]
+    norm = sum(a * a for a in w) ** 0.5
+    v = [a / norm for a in w]
+print(v)                         # about [0.7071, 0.7071]
+```
+
+With NumPy, `np.linalg.svd(Xc, full_matrices=False)` returns $\mathbf{U}$, the singular values and $\mathbf{V}^\top$ in one call.
+
+@example
+title: PCA of four points
+problem: Find the first principal component of the points $(1, 3)$, $(2, 2)$, $(3, 4)$ and $(2, 5)$, the variance it explains and the scores of the points on it.
+step: Column means are $2$ and $3.5$. Centered points: $(-1, -0.5)$, $(0, -1.5)$, $(1, 0.5)$, $(0, 1.5)$.
+step: $\mathbf{X}_c^\top \mathbf{X}_c$ has entries $\sum x^2 = 2$, $\sum y^2 = 0.25 + 2.25 + 0.25 + 2.25 = 5$ and $\sum xy = 0.5 + 0 + 0.5 + 0 = 1$. Dividing by $n - 1 = 3$ gives $\mathbf{S} = \begin{pmatrix} 2/3 & 1/3 \\ 1/3 & 5/3 \end{pmatrix}$.
+step: Characteristic equation: $\lambda^2 - \operatorname{tr}(\mathbf{S})\lambda + \det \mathbf{S} = \lambda^2 - \tfrac{7}{3}\lambda + 1 = 0$, since $\det \mathbf{S} = \tfrac{10}{9} - \tfrac{1}{9} = 1$. So $\lambda = (7 \pm \sqrt{13})/6$, that is $\lambda_1 \approx 1.7676$ and $\lambda_2 \approx 0.5657$.
+step: Eigenvector for $\lambda_1$: from $(2/3 - \lambda_1) v_1 + \tfrac13 v_2 = 0$ we get $v_2 \approx 3.293\, v_1$, and normalizing gives $\mathbf{v}_1 \approx (0.2898, 0.9571)$.
+step: Scores $\mathbf{X}_c \mathbf{v}_1$: $-0.768$, $-1.436$, $0.768$, $1.436$. Their variance is $(0.590 + 2.062 + 0.590 + 2.062)/3 \approx 1.7676 = \lambda_1$, as it should be. The first PC explains $1.7676 / (7/3) \approx 75.8\%$ of the variance.
+answer: $\mathbf{v}_1 \approx (0.290, 0.957)$ (up to sign), $\lambda_1 \approx 1.768$, $75.8\%$ of the variance.
+
+@example
+title: Explained variance from singular values
+problem: Centered data with $n = 5$ examples has singular values $\sigma_1 = 6$ and $\sigma_2 = 3$. Find the variances along the two principal components and the fraction explained by the first.
+step: Each variance is $\sigma_j^2 / (n - 1)$ with $n - 1 = 4$.
+step: $\lambda_1 = 36/4 = 9$ and $\lambda_2 = 9/4 = 2.25$.
+step: The fraction explained by PC 1 is $9 / (9 + 2.25) = 0.8$, which is also $36 / (36 + 9)$: the factor $n-1$ cancels in the ratio.
+answer: $\lambda = (9, 2.25)$ and PC 1 explains $80\%$.
+
+@mistakes
+- Forgetting to center: the covariance formula assumes zero-mean columns, and uncentered data makes the first component point toward the mean.
+- Mixing up $\sigma_j$ and $\lambda_j$: the variance along a PC is $\sigma_j^2/(n-1)$, not $\sigma_j$.
+- Running PCA on raw features in different units: the feature with the largest scale dominates the first PC, so standardize first when units differ.
+- Assuming the top PC is the most useful direction for a task: it maximizes variance, which need not separate classes.
+
+@practice num
+prompt: Two features have the values $x = (1, 2, 3, 6)$ and $y = (2, 1, 4, 5)$ over four examples. What is their sample covariance (dividing by $n - 1$)? Give your answer to three decimal places.
+answer: 3.333
+tol: 0.001
+check: sum((a - sum([1, 2, 3, 6]) / 4) * (b - sum([2, 1, 4, 5]) / 4) for a, b in zip([1, 2, 3, 6], [2, 1, 4, 5])) / 3
+hint: Subtract each mean (3 for both features), multiply the deviations pairwise, add and divide by 3.
+solution: The deviations of $x$ are $-2, -1, 0, 3$ and of $y$ are $-1, -2, 1, 2$. The products are $2, 2, 0, 6$, whose sum is 10, and $10/3 \approx 3.333$.
+
+@practice mc
+prompt: Which statement about principal component analysis on a centered data matrix is correct?
+choice*: The first principal component is the unit vector along which the projected data has the largest variance, and it is an eigenvector of the covariance matrix.
+choice: The first principal component is the direction that best separates the class labels.
+choice: The principal components are the eigenvectors with the smallest eigenvalues, because they have the least noise.
+choice: Principal components are not affected by rescaling a feature, because eigenvectors are scale-free.
+hint: Recall that PCA maximizes $\mathbf{v}^\top \mathbf{S} \mathbf{v}$ over unit vectors and uses no labels.
+solution: Maximizing $\mathbf{v}^\top \mathbf{S} \mathbf{v}$ over unit vectors gives the eigenvector with the largest eigenvalue. PCA is unsupervised, so it does not use labels; it keeps the largest, not the smallest, eigenvalues; and rescaling a feature changes the covariance matrix and therefore its eigenvectors.
+
+@practice code
+prompt: Write `covariance(X)` that returns the sample covariance matrix (dividing by $n - 1$) of the data matrix `X`, a list of $n \ge 2$ rows with $d$ numbers each, as a list of $d$ lists of $d$ floats. Subtract the column means inside the function. For example, `covariance([[1.0], [3.0]])` returns `[[2.0]]`.
+starter:
+```python
+def covariance(X):
+    d = len(X[0])
+    return [[0.0] * d for _ in range(d)]
+```
+tests:
+```python
+assert abs(covariance([[1.0], [3.0]])[0][0] - 2.0) < 1e-9
+C = covariance([[1, 2], [2, 1], [3, 4], [6, 5]])
+want = [[14 / 3, 10 / 3], [10 / 3, 10 / 3]]
+assert all(abs(a - b) < 1e-9 for r, w in zip(C, want) for a, b in zip(r, w))
+C = covariance([[1, 2, 0], [3, 2, 1], [5, 8, 2]])
+want = [[4, 6, 2], [6, 12, 3], [2, 3, 1]]
+assert all(abs(a - b) < 1e-9 for r, w in zip(C, want) for a, b in zip(r, w))
+assert abs(covariance([[102.0], [104.0], [109.0]])[0][0] - 13.0) < 1e-9
+```
+model:
+```python
+def covariance(X):
+    """Sample covariance matrix (divisor n - 1) of the rows of X."""
+    n, d = len(X), len(X[0])
+    mean = [sum(row[j] for row in X) / n for j in range(d)]
+    return [[sum((row[i] - mean[i]) * (row[j] - mean[j]) for row in X) / (n - 1)
+             for j in range(d)] for i in range(d)]
+```
+hint: First compute the mean of each column; then entry $(i, j)$ is the sum over rows of the product of centered values in columns $i$ and $j$, divided by $n - 1$.
+solution: Centering inside the function makes the answer independent of the offset of the data, which the fourth test checks (values near 100 give the same variance as values near 0). Dividing by $n$ instead of $n - 1$ fails every test.
+
+@practice code
+prompt: Write `power_iteration(S, iters)` that estimates the leading eigenpair of a symmetric positive semidefinite matrix `S` (a list of rows of floats). Start from the vector of all ones scaled to length 1, apply `iters` steps of $\mathbf{v} \leftarrow \mathbf{S}\mathbf{v}/\lVert\mathbf{S}\mathbf{v}\rVert_2$, then flip the sign of `v` if needed so that its component of largest absolute value is positive. Return `(eigenvalue, v)` where the eigenvalue is $\mathbf{v}^\top \mathbf{S} \mathbf{v}$ and `v` is a list of floats. For example, `power_iteration([[2.0, 1.0], [1.0, 2.0]], 20)` returns about `(3.0, [0.7071, 0.7071])`.
+starter:
+```python
+def power_iteration(S, iters):
+    d = len(S)
+    v = [1.0 / d ** 0.5] * d
+    return 0.0, v
+```
+tests:
+```python
+lam, v = power_iteration([[2.0, 1.0], [1.0, 2.0]], 50)
+assert abs(lam - 3.0) < 1e-6 and all(abs(a - 0.7071067811865476) < 1e-6 for a in v)
+lam, v = power_iteration([[4.0, 0.0], [0.0, 1.0]], 60)
+assert abs(lam - 4.0) < 1e-6 and abs(v[0] - 1.0) < 1e-6 and abs(v[1]) < 1e-6
+lam, v = power_iteration([[5.0, 2.0], [2.0, 2.0]], 100)
+assert abs(lam - 6.0) < 1e-6
+assert abs(v[0] - 0.8944271909999159) < 1e-6 and abs(v[1] - 0.4472135954999579) < 1e-6
+lam, v = power_iteration([[3.0, 1.0, 0.0], [1.0, 3.0, 0.0], [0.0, 0.0, 1.0]], 100)
+assert abs(lam - 4.0) < 1e-6 and abs(v[2]) < 1e-6
+assert abs(sum(a * a for a in v) - 1.0) < 1e-9
+```
+model:
+```python
+def power_iteration(S, iters):
+    """Leading eigenvalue and unit eigenvector of a symmetric PSD matrix."""
+    d = len(S)
+    v = [1.0 / d ** 0.5] * d
+    for _ in range(iters):
+        w = [sum(S[i][j] * v[j] for j in range(d)) for i in range(d)]
+        norm = sum(a * a for a in w) ** 0.5
+        v = [a / norm for a in w]
+    big = max(range(d), key=lambda i: abs(v[i]))
+    if v[big] < 0:
+        v = [-a for a in v]
+    lam = sum(v[i] * S[i][j] * v[j] for i in range(d) for j in range(d))
+    return lam, v
+```
+hint: In each step multiply the matrix by the vector and divide by the length of the result; at the end compute $\mathbf{v}^\top \mathbf{S} \mathbf{v}$ for the eigenvalue.
+solution: Each multiplication stretches the component along the top eigenvector most, so the direction converges to it at the rate $(\lambda_2/\lambda_1)^t$. The eigenvalue is read off with the Rayleigh quotient $\mathbf{v}^\top \mathbf{S} \mathbf{v}$, which equals $\lambda_1$ for a unit eigenvector; the third test has an eigenvector that is not along an axis.
+
+@practice num
+prompt: Centered data has three singular values $6$, $3$ and $2$. What fraction of the total variance is explained by the first two principal components together? Give your answer to three decimal places.
+answer: 0.918
+tol: 0.001
+check: (6 ** 2 + 3 ** 2) / (6 ** 2 + 3 ** 2 + 2 ** 2)
+hint: The variance along component $j$ is proportional to $\sigma_j^2$.
+solution: The squared singular values are $36, 9, 4$, with total 49. The first two give $45/49 \approx 0.918$.
+
+@quiz text
+prompt: What does this program print?
+```python
+X = [[2, 1], [4, 3], [6, 5]]
+n = len(X)
+mx = sum(r[0] for r in X) / n
+my = sum(r[1] for r in X) / n
+c = sum((r[0] - mx) * (r[1] - my) for r in X) / (n - 1)
+print(mx, my, c)
+```
+answer: 4.0 3.0 4.0
+check: run("X = [[2, 1], [4, 3], [6, 5]]\nn = len(X)\nmx = sum(r[0] for r in X) / n\nmy = sum(r[1] for r in X) / n\nc = sum((r[0] - mx) * (r[1] - my) for r in X) / (n - 1)\nprint(mx, my, c)")
+hint: The column means are 4 and 3; then the deviations in the two columns are $(-2, 0, 2)$ in both.
+solution: The means are $4.0$ and $3.0$. The deviations are $(-2, -2)$, $(0, 0)$, $(2, 2)$, so the products are $4, 0, 4$ with sum 8, and $8 / 2 = 4.0$. The program prints `4.0 3.0 4.0`.
+
+@quiz code
+prompt: Write `pca_scores(X, v)` that returns the scores of the rows of `X` on the direction `v`: subtract the column means from `X`, then take the dot product of each centered row with `v`. `X` is a list of rows and `v` is a list of floats (a unit vector, not to be normalized by your function). Return a list of floats. For example, `pca_scores([[1.0, 0.0], [3.0, 0.0]], [1.0, 0.0])` returns `[-1.0, 1.0]`.
+starter:
+```python
+def pca_scores(X, v):
+    return [0.0 for _ in X]
+```
+tests:
+```python
+got = pca_scores([[1.0, 0.0], [3.0, 0.0]], [1.0, 0.0])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-1.0, 1.0]))
+got = pca_scores([[1, 2], [3, 4], [5, 9]], [0.6, 0.8])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [-3.6, -0.8, 4.4]))
+r = 0.5 ** 0.5
+got = pca_scores([[13, 21], [11, 23], [7, 19], [9, 17]], [r, r])
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [4 * r, 4 * r, -4 * r, -4 * r]))
+assert abs(sum(pca_scores([[7, 1], [2, 8], [5, 5]], [0.6, 0.8]))) < 1e-9
+```
+model:
+```python
+def pca_scores(X, v):
+    """Projections of the centered rows of X onto the direction v."""
+    n, d = len(X), len(X[0])
+    mean = [sum(row[j] for row in X) / n for j in range(d)]
+    return [sum((row[j] - mean[j]) * v[j] for j in range(d)) for row in X]
+```
+hint: Compute the column means first, then for each row take $\sum_j (x_j - \bar{x}_j) v_j$.
+solution: The scores are $\mathbf{X}_c \mathbf{v}$. Because the data are centered, the scores always sum to zero, which the last test checks; a function that forgets to center fails the second test.
+
+@quiz ms
+prompt: Centered data with $n$ rows has the SVD $\mathbf{X}_c = \mathbf{U}\boldsymbol{\Sigma}\mathbf{V}^\top$. Which statements are true? Select all that apply.
+choice*: The columns of $\mathbf{V}$ are the principal components, and the variance along component $j$ is $\sigma_j^2/(n-1)$.
+choice*: The scores of the data on all components are given by $\mathbf{X}_c \mathbf{V} = \mathbf{U}\boldsymbol{\Sigma}$.
+choice*: Keeping only the top $k$ singular values gives the best rank-$k$ approximation of $\mathbf{X}_c$ in the Frobenius norm.
+choice: The singular values $\sigma_j$ themselves are the variances along the components.
+hint: Use $\mathbf{X}_c^\top \mathbf{X}_c = \mathbf{V}\boldsymbol{\Sigma}^2\mathbf{V}^\top$ and the Eckart–Young theorem.
+solution: Since $\mathbf{X}_c^\top \mathbf{X}_c = \mathbf{V}\boldsymbol{\Sigma}^2\mathbf{V}^\top$, the columns of $\mathbf{V}$ are the eigenvectors and $\sigma_j^2/(n-1)$ the eigenvalues. Multiplying $\mathbf{X}_c\mathbf{V}$ and using $\mathbf{V}^\top\mathbf{V} = \mathbf{I}$ gives $\mathbf{U}\boldsymbol{\Sigma}$. The truncated SVD is optimal by the Eckart–Young theorem. The variances are the squared singular values over $n-1$, not the singular values.

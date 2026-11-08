@@ -1,0 +1,252 @@
+@lesson
+title: Computational graphs and the chain rule
+summary: Draw a computation as a graph, evaluate it forward, apply the chain rule backward through it by hand, and check the result with finite differences.
+objective: Represent a function as a computational graph of elementary operations and evaluate it node by node.
+objective: Apply the chain rule backward through a graph, summing the contributions of every path at a node that is used more than once.
+objective: Check a hand-computed gradient with a central finite difference.
+reading: Understanding Deep Learning (Prince), the chapter on backpropagation, the sections on the chain rule and the toy example.
+@article
+A network's loss can be a function of millions of numbers, yet we need its derivative with respect to every one of them, quickly and without algebra errors. The trick is that every function we build is a long chain of tiny operations (add, multiply, exponentiate), and each tiny operation has a derivative we know. The **chain rule** glues those small derivatives together. A **computational graph** is the bookkeeping that makes the gluing mechanical.
+
+### Computations as graphs
+
+Take the loss of a one-weight linear model on one example: $L = (w x + b - t)^2$. Break it into steps, each one operation:
+
+$$a = w x, \qquad z = a + b, \qquad e = z - t, \qquad L = e^2 .$$
+
+The graph has a node for every quantity (the inputs $w, x, b, t$ and the intermediate values $a, z, e, L$) and an edge from each operation's inputs to its output. With $w = 2$, $x = 3$, $b = 1$, $t = 5$ the **forward pass** evaluates the nodes in order: $a = 6$, $z = 7$, $e = 2$, $L = 4$.
+
+### The chain rule, backward
+
+If $L$ depends on $u$ only through $v = g(u)$, the chain rule says
+$$\frac{\partial L}{\partial u} = \frac{\partial L}{\partial v}\,\frac{\partial v}{\partial u}.$$
+The **backward pass** walks the graph from the output to the inputs. At each node it already knows $\partial L/\partial(\text{node})$, the **upstream gradient**, and multiplies by the node's **local derivative** to get the gradient for each of its inputs. For the graph above:
+
+| node | local rule | $\partial L/\partial \text{node}$ |
+|---|---|---|
+| $L = e^2$ | start | $1$ |
+| $e$ | $\times\, 2e = 4$ | $4$ |
+| $z$ (from $e = z - t$) | $\times\, 1$ | $4$ |
+| $b$ and $a$ | $z = a + b$, local derivative 1 each | $4$ and $4$ |
+| $w$ | $a = wx$, local derivative $x = 3$ | $12$ |
+| $x$ | local derivative $w = 2$ | $8$ |
+
+So $\partial L/\partial w = 12$. The rules for the common operations are: for a sum, the gradient is copied to both inputs; for a product $c = uv$, the gradient to $u$ is $v$ times the upstream gradient and to $v$ it is $u$ times it; for $c = f(u)$, multiply by $f'(u)$.
+
+### Nodes used more than once
+
+When a value feeds several operations, $L$ depends on it along several paths, and the **multivariable chain rule** says to add the contributions. For $y = x \cdot x + 3x$ at $x = 2$, the node $x$ is used three times (twice in the product, once in $3x$): the product gives $x + x = 4$ and the other term gives 3, so $dy/dx = 7$, which matches $2x + 3$. In code this is why gradients are *accumulated* with `+=`, never assigned with `=`.
+
+### Finite differences as a check
+
+The **central finite difference** estimates a derivative by evaluating the function on both sides of the point:
+
+$$\frac{\partial f}{\partial x_i} \approx \frac{f(\mathbf{x} + \epsilon\,\mathbf{e}_i) - f(\mathbf{x} - \epsilon\,\mathbf{e}_i)}{2\epsilon},$$
+
+where $\mathbf{e}_i$ is the unit vector along coordinate $i$. Its error shrinks like $\epsilon^2$ (the one-sided version's error shrinks only like $\epsilon$), but too small an $\epsilon$ loses digits to rounding. A typical choice is $\epsilon = 10^{-5}$ in double precision. Finite differences are too slow for training (two function evaluations per parameter) but are the standard **gradient check** for a hand-written backward pass.
+
+### In code
+
+```python
+import math
+
+def sigmoid(z):
+    return 1 / (1 + math.exp(-z))
+
+def forward_backward(w, b, x, t):
+    z = w * x + b
+    a = sigmoid(z)
+    loss = (a - t) ** 2
+    dz = 2 * (a - t) * a * (1 - a)
+    return loss, dz * x, dz
+
+loss, dw, db = forward_backward(0.5, -0.25, 2.0, 1.0)
+eps = 1e-5
+num = (forward_backward(0.5 + eps, -0.25, 2.0, 1.0)[0]
+       - forward_backward(0.5 - eps, -0.25, 2.0, 1.0)[0]) / (2 * eps)
+print(round(loss, 4), round(dw, 4), round(num, 4))
+```
+
+This prints `0.1029 -0.2796 -0.2796`. PyTorch does exactly this bookkeeping for you with `loss.backward()`; next week we build that machinery ourselves.
+
+@example
+title: Backward through a sigmoid neuron
+problem: A neuron computes $z = wx + b$, $a = \sigma(z)$ and the loss $L = (a - t)^2$. For $w = 0.5$, $x = 2$, $b = -0.25$, $t = 1$, compute $\partial L/\partial w$ and $\partial L/\partial b$.
+step: Forward: $z = 0.5 \cdot 2 - 0.25 = 0.75$, $a = \sigma(0.75) \approx 0.6792$, $L = (0.6792 - 1)^2 \approx 0.1029$.
+step: Backward through the loss: $\partial L/\partial a = 2(a - t) = 2(-0.3208) = -0.6416$.
+step: Through the sigmoid, whose derivative is $a(1 - a) \approx 0.6792 \cdot 0.3208 = 0.2179$: $\partial L/\partial z = -0.6416 \cdot 0.2179 \approx -0.1398$.
+step: Through the affine step: $\partial L/\partial b = \partial L/\partial z \cdot 1 = -0.1398$ and $\partial L/\partial w = \partial L/\partial z \cdot x = -0.1398 \cdot 2 \approx -0.2796$.
+answer: $\partial L/\partial w \approx -0.2796$ and $\partial L/\partial b \approx -0.1398$.
+
+@example
+title: A graph with a shared input, checked numerically
+problem: Let $f(x, y) = xy + x^2$. Compute $\partial f/\partial x$ and $\partial f/\partial y$ at $(3, 2)$ with the chain rule, then check $\partial f/\partial x$ with a central difference using $\epsilon = 0.1$.
+step: Graph: $p = xy$, $q = x \cdot x$, $f = p + q$. Forward: $p = 6$, $q = 9$, $f = 15$.
+step: Backward: $f$ is a sum, so $\partial f/\partial p = \partial f/\partial q = 1$.
+step: Input $y$ is used once: $\partial f/\partial y = x \cdot 1 = 3$. Input $x$ is used in $p$ (contributing $y \cdot 1 = 2$) and twice in $q$ (contributing $x + x = 6$), so $\partial f/\partial x = 2 + 6 = 8$.
+step: Check: $f(3.1, 2) = 6.2 + 9.61 = 15.81$ and $f(2.9, 2) = 5.8 + 8.41 = 14.21$, so the difference is $(15.81 - 14.21)/0.2 = 8.0$, which matches (a quadratic's central difference is exact).
+answer: $\partial f/\partial x = 8$ and $\partial f/\partial y = 3$.
+
+@mistakes
+- Assigning a gradient (`grad = ...`) instead of accumulating it (`grad += ...`): a value used on two paths then keeps only one path's contribution.
+- Multiplying the gradients of two paths instead of adding them at a node used twice.
+- Using the wrong local derivative for a product: $\partial(uv)/\partial u$ is $v$, the other factor, not $u$.
+- Choosing $\epsilon$ extremely small (such as $10^{-12}$) for a gradient check: rounding error then dominates and the check fails for a correct gradient.
+
+@practice num
+prompt: Consider the graph $a = xy$, $b = a + x$, $c = b \cdot b$. At $x = 1$, $y = 2$, what is $\partial c/\partial x$?
+answer: 18
+check: nderiv(lambda x: ((x * 2) + x) ** 2, 1)
+hint: Here $b = 3$, and $x$ reaches $b$ along two paths: through $a = xy$ (local derivative $y$) and directly (local derivative 1). Also $\partial c/\partial b = 2b$.
+solution: Forward: $a = 2$, $b = 3$, $c = 9$. Backward: $\partial c/\partial b = 2b = 6$. The input $x$ contributes through $a$ ($6 \cdot y = 12$) and directly ($6 \cdot 1 = 6$), so $\partial c/\partial x = 18$.
+
+@practice mc
+prompt: In a computational graph, one node $u$ feeds two different operations whose results both flow into the loss. During the backward pass, how is $\partial L/\partial u$ obtained?
+choice*: By adding the gradient contributions that arrive along the two paths.
+choice: By multiplying the two contributions together.
+choice: By averaging the two contributions.
+choice: By keeping only the contribution from the operation computed last in the forward pass.
+hint: Think of the multivariable chain rule for $L(v_1(u), v_2(u))$.
+solution: The multivariable chain rule gives $\partial L/\partial u = \partial L/\partial v_1 \cdot \partial v_1/\partial u + \partial L/\partial v_2 \cdot \partial v_2/\partial u$: a sum over paths. Products and averages have no basis in the rule, and dropping a path loses part of the derivative.
+
+@practice expr
+prompt: For a single example, a model computes $a = e^{wx}$ and the loss $\ell = (a - t)^2$. Enter $\partial \ell/\partial w$ in terms of $w$, $x$ and $t$.
+answer: 2*(e^(w*x) - t)*e^(w*x)*x
+vars: w, x, t
+check: lambda w, x, t: 2 * (exp(w * x) - t) * exp(w * x) * x
+domain: w: -1..1
+hint: Chain three local derivatives: $\partial \ell/\partial a = 2(a - t)$, then $\partial a/\partial (wx) = e^{wx}$, then $\partial(wx)/\partial w = x$.
+solution: $\partial \ell/\partial a = 2(a - t)$, the exponential's local derivative is $a = e^{wx}$, and $\partial (wx)/\partial w = x$. Multiplying gives $2(e^{wx} - t)\,e^{wx}\,x$.
+
+@practice code
+prompt: Write `numerical_grad(f, xs, eps=1e-5)` that returns the list of partial derivatives of `f` at the point `xs` (a list of floats), estimated with central differences: for each coordinate $i$, $(f(\mathbf{x} + \epsilon \mathbf{e}_i) - f(\mathbf{x} - \epsilon \mathbf{e}_i))/(2\epsilon)$. `f` takes a list and returns a float. Do not modify `xs`. For example, for `f = lambda v: v[0] * v[1]` at `[2.0, 3.0]` the result is close to `[3.0, 2.0]`.
+starter:
+```python
+def numerical_grad(f, xs, eps=1e-5):
+    pass
+```
+tests:
+```python
+f = lambda v: v[0] * v[1] + v[1] ** 2
+g = numerical_grad(f, [2.0, 3.0])
+assert len(g) == 2 and abs(g[0] - 3.0) < 1e-6 and abs(g[1] - 8.0) < 1e-6
+g = numerical_grad(lambda v: v[0] ** 3, [2.0])
+assert abs(g[0] - 12.0) < 1e-6
+xs = [1.0, -2.0, 0.5]
+numerical_grad(lambda v: sum(t * t for t in v), xs)
+assert xs == [1.0, -2.0, 0.5]
+g = numerical_grad(lambda v: sum(t * t for t in v), xs)
+assert all(abs(a - 2 * b) < 1e-6 for a, b in zip(g, xs))
+```
+model:
+```python
+def numerical_grad(f, xs, eps=1e-5):
+    """Central finite-difference gradient of f at xs."""
+    grad = []
+    for i in range(len(xs)):
+        up = list(xs)
+        down = list(xs)
+        up[i] += eps
+        down[i] -= eps
+        grad.append((f(up) - f(down)) / (2 * eps))
+    return grad
+```
+hint: For each index, copy the list, add `eps` to one copy and subtract it from the other, and divide the difference of the two function values by `2 * eps`.
+solution: Perturb one coordinate at a time on copies of the point so the original list is untouched. The cubic test separates the central difference from a one-sided difference: the one-sided error $\epsilon f''/2 = 6 \times 10^{-5}$ exceeds the tolerance, while the central error is about $10^{-10}$.
+
+@practice code
+prompt: Write `neuron_loss_grads(w, b, x, t)` for the scalar model $z = wx + b$, $a = \sigma(z)$, loss $L = (a - t)^2$. Return the triple `(L, dL_dw, dL_db)`, computing the gradients by the backward pass of the chain rule (do not use finite differences). For example, `neuron_loss_grads(0.0, 0.0, 3.0, 1.0)` returns `(0.25, -0.75, -0.25)`.
+starter:
+```python
+import math
+
+def neuron_loss_grads(w, b, x, t):
+    return 0.0, 0.0, 0.0
+```
+tests:
+```python
+L, dw, db = neuron_loss_grads(0.0, 0.0, 3.0, 1.0)
+assert abs(L - 0.25) < 1e-9 and abs(dw + 0.75) < 1e-9 and abs(db + 0.25) < 1e-9
+L, dw, db = neuron_loss_grads(-1.0, 0.5, 1.5, 0.0)
+assert abs(L - 0.0723294881) < 1e-6
+assert abs(dw - 0.1586312784) < 1e-6 and abs(db - 0.1057541856) < 1e-6
+f = lambda w, b: neuron_loss_grads(w, b, 2.0, 1.0)[0]
+L, dw, db = neuron_loss_grads(0.3, -0.2, 2.0, 1.0)
+assert abs(dw - (f(0.3 + 1e-6, -0.2) - f(0.3 - 1e-6, -0.2)) / 2e-6) < 1e-6
+assert abs(db - (f(0.3, -0.2 + 1e-6) - f(0.3, -0.2 - 1e-6)) / 2e-6) < 1e-6
+```
+model:
+```python
+import math
+
+def neuron_loss_grads(w, b, x, t):
+    """Loss of a sigmoid neuron and its gradients, by the chain rule."""
+    z = w * x + b
+    a = 1 / (1 + math.exp(-z))
+    loss = (a - t) ** 2
+    dz = 2 * (a - t) * a * (1 - a)
+    return loss, dz * x, dz
+```
+hint: Go backward: $\partial L/\partial a = 2(a - t)$, then multiply by $a(1-a)$ to get $\partial L/\partial z$, then by $x$ for $w$ and by 1 for $b$.
+solution: The backward pass multiplies local derivatives: the square gives $2(a - t)$, the sigmoid gives $a(1 - a)$, and the affine step gives $x$ for $w$ and 1 for $b$. The last two tests compare against central finite differences, which is exactly the gradient check from the article.
+
+@quiz text
+prompt: What does this program print?
+```python
+a, b = 2.0, 3.0
+p = a * b
+q = p + a
+r = q * q
+grad_q = 2 * q
+grad_p = grad_q
+grad_a = grad_q
+grad_a += b * grad_p
+grad_b = a * grad_p
+print(grad_a, grad_b)
+```
+answer: 64.0 32.0
+check: run("a, b = 2.0, 3.0\np = a * b\nq = p + a\nr = q * q\ngrad_q = 2 * q\ngrad_p = grad_q\ngrad_a = grad_q\ngrad_a += b * grad_p\ngrad_b = a * grad_p\nprint(grad_a, grad_b)")
+hint: Compute $p = 6$, $q = 8$, so `grad_q` is 16. The input `a` receives a contribution through `q` and another through `p`.
+solution: `grad_q = 2 * 8 = 16`, which is copied to `grad_p` and to `grad_a` (the direct path from $q = p + a$). The path through $p = ab$ adds $b \cdot 16 = 48$, so `grad_a` is 64.0, and `grad_b = a * 16 = 32.0`.
+
+@quiz code
+prompt: Write `chain_derivative(fs, dfs, x)` that returns the derivative at `x` of the composition $f_n(\cdots f_2(f_1(x)))$ of scalar functions. `fs` is the list of functions $[f_1, \dots, f_n]$ and `dfs` the list of their derivative functions $[f_1', \dots, f_n']$. Do the forward pass first, storing every intermediate value, then multiply the local derivatives in a backward pass. For example, with `fs = [lambda v: v * v, lambda v: v + 1]` and `dfs = [lambda v: 2 * v, lambda v: 1.0]`, `chain_derivative(fs, dfs, 3.0)` returns `6.0`.
+starter:
+```python
+def chain_derivative(fs, dfs, x):
+    return 0.0
+```
+tests:
+```python
+fs = [lambda v: v * v, lambda v: v + 1, lambda v: 3 * v]
+dfs = [lambda v: 2 * v, lambda v: 1.0, lambda v: 3.0]
+assert abs(chain_derivative(fs, dfs, 2.0) - 12.0) < 1e-9
+assert abs(chain_derivative(fs[:2], dfs[:2], 3.0) - 6.0) < 1e-9
+assert chain_derivative([], [], 5.0) == 1.0
+fs2 = [lambda v: v ** 3, lambda v: 2 * v]
+dfs2 = [lambda v: 3 * v * v, lambda v: 2.0]
+assert abs(chain_derivative(fs2, dfs2, -1.0) - 6.0) < 1e-9
+```
+model:
+```python
+def chain_derivative(fs, dfs, x):
+    """Derivative of a composition by a forward pass and a backward pass."""
+    values = [x]
+    for f in fs:
+        values.append(f(values[-1]))
+    grad = 1.0
+    for i in range(len(fs) - 1, -1, -1):
+        grad *= dfs[i](values[i])
+
+    return grad
+```
+hint: Store the inputs to each function in a list during the forward pass; each derivative `dfs[i]` must be evaluated at the input of `fs[i]`, not at its output.
+solution: The derivative of the composition is the product of each $f_i'$ evaluated at the input that $f_i$ saw in the forward pass. The empty composition is the identity with derivative 1, and the test with $v^3$ followed by doubling would fail if derivatives were evaluated at the outputs.
+
+@quiz self
+prompt: A student's hand-derived gradient for a three-parameter model gives $(0.40, -1.20, 0.75)$, but a central finite difference with $\epsilon = 10^{-5}$ gives $(0.40, -1.20, 0.50)$. Explain how you would find the bug, and why the finite difference is still not used to train the model.
+hint: The two disagree in only one coordinate; think about which graph path that parameter lies on, and count function evaluations.
+solution: Because the first two components agree, the shared part of the backward pass is probably right and the bug is on the path that is specific to the third parameter: a missing contribution at a node used twice (a `=` where `+=` belongs), a wrong local derivative for a product, or a forgotten factor. I would write out the graph for that parameter alone, list every path from the loss to it, check each local derivative, and re-run the finite difference with a couple of different $\epsilon$ values to be sure the numerical value is stable. The finite difference costs two forward evaluations per parameter, so a million parameters would need two million forward passes per step, whereas the backward pass computes all gradients for a small multiple of one forward pass.
+rubric: Localizes the bug to the path or operation specific to the third parameter.
+rubric: Names a plausible cause such as a missing path, `=` instead of `+=`, or a wrong local derivative.
+rubric: Explains the cost: two evaluations per parameter versus one backward pass.

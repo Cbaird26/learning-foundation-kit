@@ -1,0 +1,231 @@
+@lesson
+title: LSTMs and GRUs
+summary: Compute LSTM and GRU steps by hand and in code, and explain how additive, gated memory eases the vanishing gradient problem.
+objective: Write the gate equations of an LSTM and a GRU and compute one step of each with fixed weights.
+objective: Explain why the additive cell-state update lets gradients survive across many steps.
+objective: Count the parameters of an LSTM and a GRU layer.
+objective: Implement gated recurrent cells from scratch.
+reading: Dive into Deep Learning, the chapters on modern recurrent neural networks: long short-term memory and gated recurrent units.
+@article
+The last lesson ended with a problem: in a simple RNN the state is rewritten completely at every step, so a signal from far back is multiplied by many small factors. What if the network could choose to leave part of its memory untouched? That is the idea of **gating**.
+
+### The LSTM
+The long short-term memory network (Hochreiter and Schmidhuber, 1997) keeps a separate **cell state** $c_t$ alongside the hidden state $h_t$. We write scalar equations; for vectors the products with $c$ and $g$ are elementwise and each gate has weight matrices. With $\sigma$ the logistic sigmoid and each gate reading the input and the previous hidden state:
+
+$$i_t = \sigma(w_i x_t + u_i h_{t-1} + b_i), \quad f_t = \sigma(w_f x_t + u_f h_{t-1} + b_f), \quad o_t = \sigma(w_o x_t + u_o h_{t-1} + b_o),$$
+
+$$g_t = \tanh(w_g x_t + u_g h_{t-1} + b_g), \qquad c_t = f_t\, c_{t-1} + i_t\, g_t, \qquad h_t = o_t \tanh(c_t).$$
+
+The **input gate** $i$ decides how much of the candidate $g$ to write, the **forget gate** $f$ how much old memory to keep, and the **output gate** $o$ how much of the memory to expose. Gates lie in $(0, 1)$, so they act like soft switches. The forget gate was added to the original design in later work and is part of the standard LSTM.
+
+### Why gradients survive
+The key line is $c_t = f_t c_{t-1} + i_t g_t$: the new memory is an *additive* update of the old one. Holding the gates fixed, $\partial c_t / \partial c_{t-1} = f_t$, so the gradient along the cell path through $T$ steps is $\prod_t f_t$. If the network learns $f_t \approx 1$, this product stays near 1, while the simple RNN multiplies by $u(1 - h^2)$ at every step. This is not a guarantee: gates also depend on $h_{t-1}$, and the product can still shrink if $f_t < 1$. But the network can now learn to remember.
+
+### The GRU
+The gated recurrent unit (Cho and colleagues, 2014) merges the cell and hidden state and uses two gates, an **update gate** $z_t$ and a **reset gate** $r_t$:
+
+$$z_t = \sigma(w_z x_t + u_z h_{t-1} + b_z), \quad r_t = \sigma(w_r x_t + u_r h_{t-1} + b_r),$$
+
+$$\tilde h_t = \tanh\big(w_h x_t + u_h (r_t h_{t-1}) + b_h\big), \qquad h_t = (1 - z_t)\, h_{t-1} + z_t\, \tilde h_t.$$
+
+Here the final line is again a gated interpolation between old state and candidate. Conventions differ between papers and libraries about whether $z$ or $1 - z$ multiplies the old state, so always check which one is used. When $z_t = 0$ the state is copied forward unchanged.
+
+### Counting parameters
+An LSTM layer with input size $n_{in}$ and hidden size $n_h$ has four blocks (three gates and the candidate), each with an $n_h \times n_{in}$ input matrix, an $n_h \times n_h$ recurrent matrix and an $n_h$ bias: $4\, n_h (n_{in} + n_h + 1)$ parameters. With $n_{in} = 3$ and $n_h = 4$ that is $4 \cdot 4 \cdot 8 = 128$. A GRU has three blocks, so $3\, n_h (n_{in} + n_h + 1)$, about three quarters as many.
+
+### In code
+```python
+from math import exp, tanh
+
+def sigmoid(a):
+    return 1 / (1 + exp(-a))
+
+def lstm_step(x, h, c, p):
+    """p maps 'i', 'f', 'o', 'g' to (w, u, b) triples."""
+    def pre(k):
+        w, u, b = p[k]
+        return w * x + u * h + b
+    i, f, o = sigmoid(pre('i')), sigmoid(pre('f')), sigmoid(pre('o'))
+    g = tanh(pre('g'))
+    c_new = f * c + i * g
+    return o * tanh(c_new), c_new
+
+p = {'i': (1, 0, 0), 'f': (0, 0, 1), 'o': (1, 0, 0), 'g': (2, 0, 0)}
+print(lstm_step(1.0, 0.0, 0.5, p))
+```
+
+Libraries provide `nn.LSTM` and `nn.GRU`, which fuse the four (or three) matrix products into one for speed; the arithmetic is the same.
+
+@example
+title: One LSTM step
+problem: Run one LSTM step with $x = 1$, $h_{t-1} = 0$, $c_{t-1} = 0.5$ and the gate pre-activations $w_i x = 1$, $b_f = 1$ (no input weight on $f$), $w_o x = 1$ and $w_g x = 2$; all recurrent weights and the other biases are 0.
+step: The gates are $i = \sigma(1) = 0.7311$, $f = \sigma(1) = 0.7311$ and $o = \sigma(1) = 0.7311$. The candidate is $g = \tanh(2) = 0.9640$.
+step: The new cell state is $c_t = f\,c_{t-1} + i\,g = 0.7311 \cdot 0.5 + 0.7311 \cdot 0.9640 = 0.3655 + 0.7048 = 1.0703$.
+step: The hidden state is $h_t = o \tanh(c_t) = 0.7311 \cdot \tanh(1.0703) = 0.7311 \cdot 0.7896 = 0.5772$.
+answer: $c_t \approx 1.0703$ and $h_t \approx 0.5772$.
+
+@example
+title: One GRU step
+problem: Run one GRU step with $x = 1$, $h_{t-1} = 0.5$. The update and reset gates have all weights and biases 0, and the candidate has $w_h = 1$, $u_h = 2$, $b_h = 0$.
+step: With zero weights, $z = r = \sigma(0) = 0.5$.
+step: The candidate uses the reset state $r\,h_{t-1} = 0.25$: $\tilde h = \tanh(1 \cdot 1 + 2 \cdot 0.25) = \tanh(1.5) = 0.9051$.
+step: Interpolate: $h_t = (1 - 0.5) \cdot 0.5 + 0.5 \cdot 0.9051 = 0.25 + 0.4526 = 0.7026$.
+answer: $h_t \approx 0.7026$ (0.70257 before rounding).
+
+@mistakes
+- Using the new cell state in the forget term or the old one in the output: the order is gates, then $c_t$, then $h_t = o \tanh(c_t)$.
+- Believing the LSTM removes vanishing gradients entirely. It makes them avoidable: if the forget gates are near 1 the gradient along the cell path stays near 1, but a forget gate of 0.9 over 50 steps still gives about 0.005.
+- Mixing the GRU conventions: with $h_t = (1-z)h_{t-1} + z\tilde h$, a zero update gate copies the old state, and some libraries write it the other way round.
+- Counting an LSTM as having one set of weights; it has four, so it has about four times the parameters of a simple RNN of the same size.
+
+@practice num
+prompt: At one step of an LSTM, the forget gate is $f = 0.9$, the input gate is $i = 0.2$, the candidate is $g = -0.5$ and the previous cell state is $c_{t-1} = 2$. What is the new cell state $c_t$?
+answer: 1.7
+tol: 0.001
+check: 0.9 * 2 + 0.2 * (-0.5)
+hint: Use $c_t = f\,c_{t-1} + i\,g$.
+solution: $c_t = 0.9 \cdot 2 + 0.2 \cdot (-0.5) = 1.8 - 0.1 = 1.7$.
+
+@practice num
+prompt: A GRU step has update gate $z = 0.25$, previous state $h_{t-1} = 0.8$ and candidate $\tilde h = -0.4$, with $h_t = (1 - z)h_{t-1} + z\tilde h$. What is $h_t$?
+answer: 0.5
+tol: 0.001
+check: (1 - 0.25) * 0.8 + 0.25 * (-0.4)
+hint: The old state gets weight $1 - z = 0.75$ and the candidate gets weight $z$.
+solution: $h_t = 0.75 \cdot 0.8 + 0.25 \cdot (-0.4) = 0.6 - 0.1 = 0.5$.
+
+@practice text
+prompt: What does this program print?
+```python
+c = 1.0
+for f, i, g in [(1.0, 0.0, 0.7), (0.5, 1.0, 0.2), (0.0, 0.5, 0.6)]:
+    c = f * c + i * g
+print(round(c, 2))
+```
+answer: 0.3
+check: run("c = 1.0\nfor f, i, g in [(1.0, 0.0, 0.7), (0.5, 1.0, 0.2), (0.0, 0.5, 0.6)]:\n    c = f * c + i * g\nprint(round(c, 2))")
+hint: Track $c$ after each step: a forget gate of 1 with input gate 0 keeps it, and a forget gate of 0 erases it.
+solution: Step 1 keeps $c = 1.0$ (forget 1, input 0). Step 2 gives $0.5 \cdot 1.0 + 1.0 \cdot 0.2 = 0.7$. Step 3 forgets everything and writes $0.5 \cdot 0.6 = 0.3$, so it prints `0.3`.
+
+@practice code
+prompt: Write `gru_step(x, h, p)` for a scalar GRU. `p` maps `'z'`, `'r'` and `'h'` to `(w, u, b)` triples. Compute $z = \sigma(w_z x + u_z h + b_z)$, $r = \sigma(w_r x + u_r h + b_r)$, $\tilde h = \tanh(w_h x + u_h (r h) + b_h)$ and return $(1 - z)h + z\tilde h$.
+starter:
+```python
+def gru_step(x, h, p):
+    return h
+```
+tests:
+```python
+G = {'z': (1.0, -1.0, 0.5), 'r': (0.5, 1.0, 0.0), 'h': (1.5, 2.0, -0.2)}
+assert abs(gru_step(1.0, 0.4, G) - 0.8152551) < 1e-6
+assert abs(gru_step(-1.0, 0.0, G) - (-0.3531550)) < 1e-6
+F = {'z': (0, 0, -50), 'r': (0, 0, 0), 'h': (1, 1, 1)}
+assert abs(gru_step(0.3, 0.7, F) - 0.7) < 1e-9
+assert abs(gru_step(1.0, 0.5, {'z': (0, 0, 0), 'r': (0, 0, 0), 'h': (1, 2, 0)}) - 0.7025741) < 1e-6
+```
+model:
+```python
+from math import exp, tanh
+
+
+def gru_step(x, h, p):
+    """One step of a scalar GRU with h_t = (1 - z) h + z * candidate."""
+    def sigmoid(a):
+        return 1 / (1 + exp(-a))
+
+    z = sigmoid(p['z'][0] * x + p['z'][1] * h + p['z'][2])
+    r = sigmoid(p['r'][0] * x + p['r'][1] * h + p['r'][2])
+    cand = tanh(p['h'][0] * x + p['h'][1] * (r * h) + p['h'][2])
+    return (1 - z) * h + z * cand
+```
+hint: Compute $z$ and $r$ from $x$ and $h$, apply the reset gate inside the candidate, then interpolate with $z$.
+solution: The reset gate multiplies the old state only inside the candidate; the update gate then blends old state and candidate. In the third test $z \approx 0$, so the state is copied forward and the test fails if the roles of $z$ and $1 - z$ are swapped.
+
+@practice code
+prompt: Write `lstm_run(xs, p)` that runs a scalar LSTM over the list of inputs `xs` starting from $h = c = 0$ and returns the list of pairs `(h_t, c_t)`, one per step. `p` maps `'i'`, `'f'`, `'o'`, `'g'` to `(w, u, b)` triples, with gates $\sigma(wx + uh + b)$, candidate $\tanh(wx + uh + b)$, $c_t = f c_{t-1} + i g$ and $h_t = o\tanh(c_t)$.
+starter:
+```python
+def lstm_run(xs, p):
+    return []
+```
+tests:
+```python
+P = {'i': (1.0, 0.5, 0.0), 'f': (0.5, -1.0, 1.0),
+     'o': (1.0, 1.0, -0.5), 'g': (2.0, 0.5, 0.1)}
+out = lstm_run([1, -1, 0.5], P)
+assert len(out) == 3
+assert abs(out[0][0] - 0.3799096) < 1e-6 and abs(out[0][1] - 0.7094572) < 1e-6
+assert abs(out[1][0] - 0.0215003) < 1e-6 and abs(out[1][1] - 0.0876252) < 1e-6
+assert abs(out[2][0] - 0.2606253) < 1e-6 and abs(out[2][1] - 0.5704734) < 1e-6
+assert lstm_run([], P) == []
+```
+model:
+```python
+from math import exp, tanh
+
+
+def lstm_run(xs, p):
+    """Run a scalar LSTM over xs; return the (h, c) pair after each step."""
+    def sigmoid(a):
+        return 1 / (1 + exp(-a))
+
+    h = c = 0.0
+    out = []
+    for x in xs:
+        def pre(k):
+            w, u, b = p[k]
+            return w * x + u * h + b
+        i, f, o = sigmoid(pre('i')), sigmoid(pre('f')), sigmoid(pre('o'))
+        g = tanh(pre('g'))
+        c = f * c + i * g
+        h = o * tanh(c)
+        out.append((h, c))
+    return out
+```
+hint: Inside a loop over the inputs, compute the three gates and the candidate from the current `x` and the previous `h`, then update `c` before `h`.
+solution: The cell state must be updated first because $h_t$ uses the new $c_t$, and every gate must use the previous $h$, not the new one. The three-step test has nonzero recurrent weights, so using a stale or already-updated state gives wrong numbers.
+
+@quiz mc
+prompt: Why can an LSTM carry information across many more steps than a simple tanh RNN?
+choice*: Its cell state is updated additively, $c_t = f_t c_{t-1} + i_t g_t$, so with forget gates near 1 the gradient along the cell path is not repeatedly shrunk.
+choice: Its gates are fixed to 1, so no information is ever lost.
+choice: It has no recurrent connections, so there is nothing to backpropagate through time.
+choice: Its weights are not shared across time steps, so each step learns its own memory.
+hint: Differentiate $c_t$ with respect to $c_{t-1}$ with the gates held fixed.
+solution: The derivative is $f_t$, which the network can learn to keep close to 1, so the product over many steps need not vanish. The gates are learned functions of the input, not fixed, the LSTM is recurrent, and the weights are shared across steps as in any RNN.
+
+@quiz num
+prompt: An LSTM layer has input size 3 and hidden size 4, with three gates and a candidate block, each with input weights, recurrent weights and a bias. How many parameters does the layer have?
+answer: 128
+unit: parameters
+check: 4 * (4 * 3 + 4 * 4 + 4)
+hint: Each of the four blocks has $n_h(n_{in} + n_h + 1)$ parameters.
+solution: Each block has $4 \cdot 3 + 4 \cdot 4 + 4 = 32$ parameters, and four blocks give 128.
+
+@quiz code
+prompt: Write `cell_path_gain(fs)` that takes the list of forget-gate values $f_1, \dots, f_T$ and returns $\partial c_T / \partial c_0$ along the cell path, holding the gates fixed (the product of the forget gates). An empty list returns 1.0. For example, `cell_path_gain([0.9, 0.8, 0.5])` returns 0.36.
+starter:
+```python
+def cell_path_gain(fs):
+    return 0.0
+```
+tests:
+```python
+assert cell_path_gain([]) == 1.0
+assert abs(cell_path_gain([0.9, 0.8, 0.5]) - 0.36) < 1e-12
+assert abs(cell_path_gain([1.0] * 50) - 1.0) < 1e-12
+assert abs(cell_path_gain([0.5] * 10) - 1 / 1024) < 1e-12
+assert abs(cell_path_gain([0.9] * 50) - 0.9 ** 50) < 1e-12
+assert cell_path_gain([0.7, 0.0, 0.9]) == 0.0
+```
+model:
+```python
+def cell_path_gain(fs):
+    """Product of the forget gates: d c_T / d c_0 with gates held fixed."""
+    gain = 1.0
+    for f in fs:
+        gain *= f
+    return gain
+```
+hint: Each step multiplies the gradient by that step's forget gate.
+solution: Since $\partial c_t/\partial c_{t-1} = f_t$, the chain rule gives the product of all the gates. With fifty gates of 0.9 the gain is about 0.005, which shows that near-1 forget gates are needed for long memory, and a single gate of 0 cuts the path completely.

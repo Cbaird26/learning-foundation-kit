@@ -1,0 +1,275 @@
+@lesson
+title: Model selection: cross-validation and hyperparameter search
+summary: Choose hyperparameters with k-fold cross-validation and grid search, report an honest test estimate, and avoid selection bias and data leakage.
+objective: Implement k-fold cross-validation from scratch and compute the CV estimate and its standard error.
+objective: Run a grid search with cross-validation, apply the one-standard-error rule, and report test performance from data untouched by selection.
+objective: Identify data leakage and the optimism of selecting among many configurations, and explain when nested cross-validation is needed.
+reading: The Elements of Statistical Learning, the chapter on model assessment and selection: the sections on cross-validation and on the one-standard-error rule.
+@article
+You have trained ridge regression, trees and a boosted model, each with settings to choose: the penalty $\lambda$, the tree depth, the number of rounds. You cannot choose them by training error, which always favors the most flexible setting. You also cannot keep trying settings on the test set and then quote its score, since a number you tuned against is no longer an independent measurement. This week gives the standard procedure.
+
+### Three roles for data
+
+Training data fits the parameters. **Validation data** compares settings (hyperparameters, model types). **Test data** is touched once, at the end, to estimate how the final choice will perform on new data. Cross-validation economizes: it lets the same labeled data serve training and validation in turn, so that a small data set does not have to be cut into thirds.
+
+### K-fold cross-validation
+
+**K-fold cross-validation** splits the $n$ training examples into $K$ folds of about equal size. For each fold in turn, fit the model on the other $K - 1$ folds and measure its error on the held-out fold. The **CV estimate** is the mean of the $K$ fold errors:
+
+$$\mathrm{CV} = \frac{1}{K}\sum_{k=1}^{K} \mathrm{err}_k .$$
+
+The $K$ fold errors also give a **standard error** of the estimate, $\mathrm{SE} = s/\sqrt{K}$ with $s$ the sample standard deviation of the fold errors (an approximation, since the folds share training data). Common choices are $K = 5$ or $10$: each model trains on $80$ or $90$ percent of the data, so its error is only slightly pessimistic, and the cost is $K$ fits. Leave-one-out ($K = n$) is nearly unbiased but costly and its estimates can have high variance. For classification with a rare class, use **stratified** folds so each fold keeps the class proportions. For time series, folds must respect time: train on the past and validate on the future.
+
+### Grid search and the one-standard-error rule
+
+**Grid search** evaluates every combination in a list of hyperparameter values by cross-validation and keeps the best; **random search** samples combinations at random from ranges and is often as good with fewer fits, because usually only a few hyperparameters matter much. For scale parameters such as $\lambda$ or a learning rate, use a logarithmic grid ($10^{-3}, 10^{-2}, \dots$), then refine around the best value. The final model is **refit** on all the training data with the chosen setting.
+
+Because the CV error is itself noisy, ESL suggests the **one-standard-error rule**: take the simplest model whose CV error is within one standard error of the best. It prefers parsimony when the data cannot tell models apart.
+
+### An example
+
+Twelve points $x = 1, \dots, 12$ with noisy targets form a training set, and four further points form the test set. The model is $k$-nearest-neighbors regression: predict the mean target of the $k$ nearest training points. A small $k$ gives a wiggly, high-variance fit and a large $k$ a smooth, biased one. The hyperparameter is $k$. With $K = 4$ interleaved folds (example $i$ is in fold $i \bmod 4$):
+
+| neighbors $k$ | CV mean squared error |
+|---|---|
+| 1 | 0.754 |
+| 2 | 0.517 |
+| 3 | 0.461 |
+| 4 | 0.489 |
+| 5 | 0.909 |
+| 6 | 1.142 |
+
+The best is $k = 3$. The error is high on both sides: too flexible at 1, too smooth at 6. Refitting with $k = 3$ on all twelve points and scoring the four test points, once, gives a test MSE of $0.364$. That number is the estimate to report. If the test score had come out better for $k = 2$, switching to it would be wrong: the test set is no longer a clean measurement after it influences a decision. With only four test points the estimate is also noisy.
+
+### Pitfalls
+
+**Leakage.** Any step that uses information from the validation fold contaminates the estimate: standardizing features with the mean and standard deviation of the whole data set, selecting the best features using all labels, or oversampling before splitting. Every such step must be fit inside each training fold and only applied to the validation fold. **Selection bias.** The best of many configurations has a CV score that is optimistically biased, because the winner is partly the luckiest on these folds. With a few settings the effect is small; with hundreds of settings it can be large. To estimate the performance of the whole procedure including the search, use **nested cross-validation**: an outer loop of folds, and inside each outer training set an inner cross-validation that does the selection. The outer scores are never used for selection.
+
+### In code
+
+```python
+x = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+y = [1.1, 0.8, 2.3, 2.1, 3.2, 2.9, 4.4, 3.8, 5.1, 5.4, 6.2, 5.7]
+x_test = [2.5, 5.5, 8.5, 11.5]
+y_test = [1.9, 3.6, 4.2, 6.4]
+
+def knn_predict(xs, ys, x0, k):
+    order = sorted(range(len(xs)), key=lambda i: (abs(xs[i] - x0), i))
+    return sum(ys[i] for i in order[:k]) / k
+
+def kfold_indices(n, folds):
+    out = []
+    for f in range(folds):
+        val = [i for i in range(n) if i % folds == f]
+        train = [i for i in range(n) if i % folds != f]
+        out.append((train, val))
+    return out
+
+def mse(preds, targets):
+    return sum((p - t) ** 2 for p, t in zip(preds, targets)) / len(preds)
+
+def cv_mse(xs, ys, k, folds):
+    scores = []
+    for train, val in kfold_indices(len(xs), folds):
+        tx = [xs[i] for i in train]
+        ty = [ys[i] for i in train]
+        preds = [knn_predict(tx, ty, xs[i], k) for i in val]
+        scores.append(mse(preds, [ys[i] for i in val]))
+    return sum(scores) / len(scores), scores
+
+for k in range(1, 7):
+    m, per = cv_mse(x, y, k, 4)
+    print(k, round(m, 4), [round(s, 3) for s in per])
+best = min(range(1, 7), key=lambda k: cv_mse(x, y, k, 4)[0])
+preds = [knn_predict(x, y, v, best) for v in x_test]
+print(best, round(mse(preds, y_test), 4))
+```
+
+The folds here are interleaved so the code is deterministic; in practice shuffle the examples with a fixed seed first. With scikit-learn the same steps are `KFold`, `cross_val_score` and `GridSearchCV`; the loop above is what they do.
+
+@example
+title: Grid search by counting
+problem: A team tunes a kernel SVM with 5 values of $C$ and 4 values of $\gamma$ using 10-fold cross-validation, then refits the best setting on all training data. How many model fits does this cost, and how many would nested cross-validation with 5 outer folds cost?
+step: The grid has $5 \times 4 = 20$ settings.
+step: Each setting is evaluated with 10 fits (one per fold), so the search costs $20 \times 10 = 200$ fits, plus 1 final refit: 201.
+step: Nested cross-validation repeats the whole search inside each of 5 outer training sets, with one refit each: $5 \times (200 + 1) = 1005$ fits, plus a last search on all data to pick the deployed setting.
+step: Cost grows multiplicatively, which is why random search or a coarse grid is often used first.
+answer: 201 fits for the search with refit; 1005 inside nested cross-validation (before the final search).
+
+@example
+title: The CV estimate, its standard error and the one-standard-error rule
+problem: Four-fold CV errors for three models, ordered from simplest to most complex, have means $0.50$, $0.42$ and $0.40$. The standard error of the best (lowest) mean is $0.05$. Which model does the one-standard-error rule choose? Also compute the mean and standard error from the fold errors $0.30, 0.50, 0.40, 0.20$.
+step: The best mean is $0.40$ (the most complex model). The threshold is $0.40 + 0.05 = 0.45$.
+step: Walk from the simplest model: the first has mean $0.50 > 0.45$, so it is rejected; the second has mean $0.42 \le 0.45$, so it is chosen.
+step: The rule picks the middle model: it is within noise of the best and simpler.
+step: For the fold errors: the mean is $0.35$. The deviations are $-0.05, 0.15, 0.05, -0.15$ with squares summing to $0.05$, so the sample variance is $0.05/3$ and $s = 0.129$. Then $\mathrm{SE} = 0.129/\sqrt{4} = 0.065$.
+answer: The middle model (mean $0.42$); the fold errors give mean $0.35$ and $\mathrm{SE} \approx 0.065$.
+
+@mistakes
+- Choosing among models by training error, or reporting the CV score of the best configuration as the final performance: it is optimistically biased.
+- Standardizing, selecting features or oversampling before the split: the validation fold then influences the training step.
+- Looking at the test set to choose between candidates, then reporting its score: the test set must be used once, after every choice.
+- Using random folds for time series or grouped data (several rows from one patient): the validation fold must be as independent of the training folds as new data will be.
+
+@practice num
+prompt: A data set of 200 examples is used for 5-fold cross-validation. How many examples does each model train on?
+answer: 160
+unit: examples
+check: 200 - 200 // 5
+hint: Each fold holds out one fifth of the data for validation.
+solution: Each validation fold has $200/5 = 40$ examples, so each model trains on $200 - 40 = 160$.
+
+@practice num
+prompt: The four fold errors of a cross-validation run are $0.30, 0.50, 0.40, 0.20$. What is the standard error of the CV estimate, $s/\sqrt{K}$, with $s$ the sample standard deviation (dividing by $K - 1$)? Give three decimal places.
+answer: 0.065
+tol: 0.001
+check: (sum((v - 0.35) ** 2 for v in [0.30, 0.50, 0.40, 0.20]) / 3) ** 0.5 / 2
+hint: The mean is $0.35$. Sum the squared deviations, divide by 3, take the square root, then divide by $\sqrt{4} = 2$.
+solution: The squared deviations are $0.0025, 0.0225, 0.0025, 0.0225$, summing to $0.05$. Then $s = \sqrt{0.05/3} \approx 0.129$ and $\mathrm{SE} = 0.129/2 \approx 0.065$.
+
+@practice mc
+prompt: A team standardizes every feature using the mean and standard deviation of the whole labeled data set, and then runs 10-fold cross-validation. What is wrong?
+choice*: The scaling statistics used information from each validation fold, so the CV estimate is contaminated by leakage; the scaling should be fit on the training folds of each split only.
+choice: Nothing is wrong, because scaling does not use the labels.
+choice: Standardization is not allowed when using cross-validation.
+choice: The only problem is that the scaled features will have a mean other than zero.
+hint: Ask which data the validation fold's features were allowed to influence.
+solution: Even without labels, the means and standard deviations come partly from validation examples, so the validation folds are no longer entirely unseen. The effect is often small for scaling but can be large for steps such as feature selection. The fix is to fit the scaler inside each training fold and apply it to the validation fold.
+
+@practice code
+prompt: Write `kfold_indices(n, k)` returning a list of `k` pairs `(train, val)`. For fold `f` in `range(k)`, `val` holds the indices `i` in `range(n)` with `i % k == f` and `train` holds all the others; both lists are in increasing order.
+starter:
+```python
+def kfold_indices(n, k):
+    pass
+```
+tests:
+```python
+assert kfold_indices(6, 3) == [([1, 2, 4, 5], [0, 3]), ([0, 2, 3, 5], [1, 4]),
+                               ([0, 1, 3, 4], [2, 5])]
+folds = kfold_indices(7, 3)
+assert [len(v) for _, v in folds] == [3, 2, 2]
+seen = sorted(i for _, v in folds for i in v)
+assert seen == list(range(7))
+assert all(set(t).isdisjoint(v) and len(t) + len(v) == 7 for t, v in folds)
+assert kfold_indices(4, 4)[2] == ([0, 1, 3], [2])
+assert kfold_indices(0, 2) == [([], []), ([], [])]
+```
+model:
+```python
+def kfold_indices(n, k):
+    """Interleaved K-fold splits: example i is validated in fold i % k."""
+    folds = []
+    for f in range(k):
+        val = [i for i in range(n) if i % k == f]
+        train = [i for i in range(n) if i % k != f]
+        folds.append((train, val))
+    return folds
+```
+hint: For each fold number `f`, build `val` from the indices with `i % k == f` and `train` from the rest.
+solution: Every index lands in exactly one validation list, and the training list is its complement. With $n = 7$ and $k = 3$ the validation sizes are $3, 2, 2$, as the second test shows. In practice you would shuffle the indices first with a fixed seed.
+
+@practice code
+prompt: Write `cv_mse(xs, ys, k, folds)` returning the mean over folds of the mean squared error of $k$-nearest-neighbors regression, using the provided `knn_predict` (the mean target of the $k$ nearest training points, ties broken by position) and `kfold_indices`. For each fold, the training points are those in `train`, and the predictions are made for the points in `val`. `xs` and `ys` are lists of numbers.
+starter:
+```python
+def knn_predict(xs, ys, x0, k):
+    order = sorted(range(len(xs)), key=lambda i: (abs(xs[i] - x0), i))
+    return sum(ys[i] for i in order[:k]) / k
+
+def kfold_indices(n, k):
+    out = []
+    for f in range(k):
+        val = [i for i in range(n) if i % k == f]
+        train = [i for i in range(n) if i % k != f]
+        out.append((train, val))
+    return out
+
+def cv_mse(xs, ys, k, folds):
+    pass
+```
+tests:
+```python
+xs = [1, 2, 3, 4, 5, 6]
+ys = [2, 4, 6, 8, 10, 12]
+assert abs(cv_mse(xs, ys, 1, 3) - 4.0) < 1e-9
+assert abs(cv_mse(xs, ys, 2, 3) - 3.0) < 1e-9
+assert abs(cv_mse(xs, ys, 5, 3) - 16.18666666667) < 1e-6
+assert abs(cv_mse([1, 2, 3, 4], [5, 5, 5, 5], 2, 2)) < 1e-9
+```
+model:
+```python
+def knn_predict(xs, ys, x0, k):
+    order = sorted(range(len(xs)), key=lambda i: (abs(xs[i] - x0), i))
+    return sum(ys[i] for i in order[:k]) / k
+
+def kfold_indices(n, k):
+    out = []
+    for f in range(k):
+        val = [i for i in range(n) if i % k == f]
+        train = [i for i in range(n) if i % k != f]
+        out.append((train, val))
+    return out
+
+def cv_mse(xs, ys, k, folds):
+    """Mean over folds of the validation MSE of k-NN regression."""
+    scores = []
+    for train, val in kfold_indices(len(xs), folds):
+        tx = [xs[i] for i in train]
+        ty = [ys[i] for i in train]
+        errs = [(knn_predict(tx, ty, xs[i], k) - ys[i]) ** 2 for i in val]
+        scores.append(sum(errs) / len(errs))
+    return sum(scores) / len(scores)
+```
+hint: For each fold build the training lists, predict every validation point from them, average the squared errors within the fold, and finally average over folds.
+solution: The model must see only the training indices of each split; predicting a validation point with itself in the training list would give zero error for $k = 1$. With perfectly linear data and $k = 1$, each prediction is off by one step of 2, so the squared error is 4 and the CV error is 4.0.
+
+@quiz code
+prompt: Write `one_se_choice(candidates, means, ses)`. `candidates` lists hyperparameter values ordered from the simplest model to the most complex; `means[i]` and `ses[i]` are the CV error and its standard error for `candidates[i]`. Find the index `b` of the lowest mean (the first one on ties), and return the first candidate (in the given order) whose mean is at most `means[b] + ses[b]`.
+starter:
+```python
+def one_se_choice(candidates, means, ses):
+    pass
+```
+tests:
+```python
+assert one_se_choice([1, 2, 3, 4, 5], [0.9, 0.5, 0.46, 0.49, 0.7], [0.1] * 5) == 2
+assert one_se_choice(['lo', 'mid', 'hi'], [0.50, 0.42, 0.40], [0.04, 0.05, 0.05]) == 'mid'
+assert one_se_choice([0.1, 1, 10], [0.4, 0.3, 0.35], [0.05, 0.02, 0.1]) == 1
+assert one_se_choice([7], [1.0], [0.2]) == 7
+assert one_se_choice([1, 2], [0.5, 0.2], [0.0, 0.0]) == 2
+```
+model:
+```python
+def one_se_choice(candidates, means, ses):
+    """Simplest candidate within one standard error of the best."""
+    best = min(range(len(means)), key=lambda i: (means[i], i))
+    limit = means[best] + ses[best]
+    for cand, m in zip(candidates, means):
+        if m <= limit:
+            return cand
+    return candidates[best]
+```
+hint: Compute the threshold from the best model's mean and standard error, then scan the candidates from the simplest and stop at the first one under it.
+solution: The threshold uses the standard error of the best model only. In the first test the best mean is $0.46$, the threshold is $0.56$, and the first candidate under it is the second one, so the answer is $2$, although $3$ has the lowest error. When all standard errors are zero, the rule picks the best model itself.
+
+@quiz text
+prompt: What does this program print?
+```python
+def kfold(n, k):
+    return [[i for i in range(n) if i % k == f] for f in range(k)]
+
+print(kfold(7, 3))
+```
+answer: [[0, 3, 6], [1, 4], [2, 5]]
+check: run("def kfold(n, k):\n    return [[i for i in range(n) if i % k == f] for f in range(k)]\n\nprint(kfold(7, 3))")
+hint: Fold $f$ holds the indices whose remainder on division by 3 is $f$.
+solution: Remainder 0 gives $0, 3, 6$; remainder 1 gives $1, 4$; remainder 2 gives $2, 5$.
+
+@quiz num
+prompt: A team tunes a model with 6 values of one hyperparameter and 3 values of another, using 5-fold cross-validation, and then refits the best setting on all the training data. How many times is a model fit?
+answer: 91
+unit: fits
+check: 6 * 3 * 5 + 1
+hint: Count settings times folds, then add the final refit.
+solution: There are $6 \times 3 = 18$ settings, each fit 5 times, giving $90$ fits, plus one refit on all the training data: $91$.

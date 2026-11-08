@@ -1,0 +1,230 @@
+@lesson
+title: Embeddings for visualization: MDS, t-SNE and UMAP
+summary: Compute classical multidimensional scaling by double centering, build the t-SNE similarities and cost from scratch, and explain what t-SNE and UMAP maps can and cannot show.
+objective: Compute a classical MDS embedding from a distance matrix and relate it to PCA.
+objective: Compute the t-SNE affinities, the perplexity and the Kullback–Leibler cost for a tiny data set.
+objective: Interpret t-SNE and UMAP pictures correctly, including what distances in the picture mean.
+reading: Probabilistic Machine Learning: An Introduction (Murphy), the section on manifold learning (multidimensional scaling, t-SNE and related methods) in the chapter on dimensionality reduction.
+
+@article
+PCA draws a flat map of the data. If the data lie on a curved surface, such as a rolled-up sheet, a flat projection squashes distant parts of the surface on top of each other. **Embedding methods** try to place each point in two dimensions so that its neighborhood in the picture matches its neighborhood in the original space. They are mostly used to *look at* data, not as features for later models.
+
+### Classical MDS
+
+Given only the matrix of pairwise distances $d_{ij}$, **classical multidimensional scaling** (MDS; Torgerson) recovers coordinates. Let $\mathbf{D}^{(2)}$ hold the squared distances and $\mathbf{J} = \mathbf{I} - \tfrac{1}{n}\mathbf{1}\mathbf{1}^\top$ the centering matrix. Double centering gives
+$$\mathbf{B} = -\tfrac{1}{2}\, \mathbf{J}\, \mathbf{D}^{(2)} \mathbf{J}.$$
+If the distances are Euclidean distances between centered points $\mathbf{X}_c$, then $\mathbf{B} = \mathbf{X}_c \mathbf{X}_c^\top$ (the matrix of inner products). The top $k$ eigenpairs $(\lambda_j, \mathbf{u}_j)$ of $\mathbf{B}$ give coordinates $\sqrt{\lambda_j}\,\mathbf{u}_j$. For Euclidean input this is exactly PCA: the coordinates are the PCA scores. Entry by entry, $b_{ij} = -\tfrac12 (d_{ij}^2 - \bar{d}_{i\cdot}^2 - \bar{d}_{\cdot j}^2 + \bar{d}_{\cdot\cdot}^2)$, where bars denote row, column and grand means of $\mathbf{D}^{(2)}$.
+
+Three points on a line at positions $0$, $1$ and $3$ have distances $d_{12} = 1$, $d_{13} = 3$, $d_{23} = 2$. Centered at the mean $4/3$, the positions are $x = (-4/3, -1/3, 5/3)$, and $\mathbf{B} = \mathbf{x}\mathbf{x}^\top$ has a single nonzero eigenvalue $\lambda = \sum x_i^2 = 42/9 \approx 4.667$ with eigenvector $\mathbf{x}/\lVert\mathbf{x}\rVert$. MDS returns $\pm\mathbf{x}$: the original layout up to a shift and a reflection.
+
+### t-SNE
+
+Classical MDS tries to preserve all distances, which forces far-apart points to dominate. **t-distributed stochastic neighbor embedding** (t-SNE; van der Maaten and Hinton, 2008) preserves *neighborhoods* instead. In the original space, define the probability that point $i$ would pick $j$ as a neighbor,
+$$p_{j \mid i} = \frac{\exp(-\lVert \mathbf{x}_i - \mathbf{x}_j \rVert^2 / 2\sigma_i^2)}{\sum_{k \ne i} \exp(-\lVert \mathbf{x}_i - \mathbf{x}_k \rVert^2 / 2\sigma_i^2)}, \qquad p_{ij} = \frac{p_{j \mid i} + p_{i \mid j}}{2n}.$$
+The bandwidth $\sigma_i$ is set per point so that the **perplexity** $2^{H(P_i)}$ of the conditional distribution, where $H(P_i) = -\sum_j p_{j\mid i}\log_2 p_{j\mid i}$ is its entropy in bits, equals a user-chosen value; perplexity acts as a smooth "effective number of neighbors". For the points $0, 1, 3$ and $\sigma = 1$, point 1 (at 0) has $p_{\cdot\mid 1} = (0.982, 0.018)$ over its two other points, an entropy of $0.130$ bits and a perplexity of $1.09$: it effectively has one neighbor.
+
+In the embedding $\mathbf{y}_1, \dots, \mathbf{y}_n$ the similarities use a **Student-t distribution with one degree of freedom**, whose heavy tails let moderately distant points sit far apart in the map (the "crowding problem"):
+$$q_{ij} = \frac{(1 + \lVert \mathbf{y}_i - \mathbf{y}_j \rVert^2)^{-1}}{\sum_{k \ne l} (1 + \lVert \mathbf{y}_k - \mathbf{y}_l \rVert^2)^{-1}}.$$
+The map is found by gradient descent on the Kullback–Leibler divergence
+$$C = \mathrm{KL}(P \,\Vert\, Q) = \sum_{i \ne j} p_{ij} \log \frac{p_{ij}}{q_{ij}}, \qquad \frac{\partial C}{\partial \mathbf{y}_i} = 4 \sum_{j} (p_{ij} - q_{ij})(\mathbf{y}_i - \mathbf{y}_j)(1 + \lVert \mathbf{y}_i - \mathbf{y}_j \rVert^2)^{-1}.$$
+Because $\mathrm{KL}(P\Vert Q)$ penalizes a large $p_{ij}$ with a small $q_{ij}$ heavily but forgives the reverse, t-SNE keeps neighbors together and is relaxed about separating non-neighbors. For the layout $\mathbf{y} = (0, 1, 3)$ the $q_{ij}$ are $0.3125$, $0.0625$ and $0.125$ for the pairs $(1,2)$, $(1,3)$, $(2,3)$ (each ordered pair), which sum to 1 over all ordered pairs.
+
+### UMAP and how to read the pictures
+
+**UMAP** (McInnes, Healy and Melville, 2018) also builds a neighborhood graph in the original space, a weighted $k$-nearest-neighbor graph whose edge weights are fuzzy memberships, and then arranges points in 2-D so that a similar graph results, minimizing a cross-entropy between the two graphs. Its main settings are the number of neighbors (local versus global emphasis) and a minimum distance (how tightly points pack). It is usually faster than t-SNE and tends to keep more of the global layout, though both only approximate it.
+
+Reading the maps correctly matters more than producing them:
+
+- **Cluster sizes and the gaps between clusters are not reliable** in a t-SNE map; only the neighborhoods of nearby points are meaningful.
+- **Different perplexities, seeds or neighbor counts give different pictures**, so run several. Both objectives are non-convex.
+- Structure that survives across settings is more trustworthy than structure that appears once.
+- A map does not prove that clusters exist; it can make noise look clustered. Verify with a clustering method and with the original features.
+
+### In code
+
+```python
+from math import exp
+
+def sqdist(a, b):
+    return sum((x - y) ** 2 for x, y in zip(a, b))
+
+def conditional_p(points, i, sigma):
+    w = [0.0 if j == i else exp(-sqdist(points[i], q) / (2 * sigma ** 2))
+         for j, q in enumerate(points)]
+    total = sum(w)
+    return [a / total for a in w]
+
+print(conditional_p([[0.0], [1.0], [3.0]], 0, 1.0))
+```
+
+@example
+title: Double centering three points
+problem: Three points have pairwise distances $d_{12} = 2$, $d_{13} = 5$ and $d_{23} = 3$. Use classical MDS to find their one-dimensional coordinates.
+step: Squared distances: $d_{12}^2 = 4$, $d_{13}^2 = 25$, $d_{23}^2 = 9$. The row means of $\mathbf{D}^{(2)}$ are $29/3$, $13/3$ and $34/3$, and the grand mean is $76/9$.
+step: Compute $b_{11} = -\tfrac12\big(0 - \tfrac{29}{3} - \tfrac{29}{3} + \tfrac{76}{9}\big) = -\tfrac12 \cdot \tfrac{-98}{9} = \tfrac{49}{9}$. In the same way $b_{22} = \tfrac{1}{9}$ and $b_{33} = \tfrac{64}{9}$.
+step: These are the squares of the centered positions $\pm\tfrac73$, $\mp\tfrac13$, $\pm\tfrac83$. The points are collinear (since $2 + 3 = 5$) at positions $0, 2, 5$ with mean $7/3$, so the centered positions are $-7/3$, $-1/3$, $8/3$.
+step: $\mathbf{B}$ has one nonzero eigenvalue, $\sum x_i^2 = (49 + 1 + 64)/9 = 38/3 \approx 12.67$, and the MDS coordinates are $\pm(-2.333, -0.333, 2.667)$.
+answer: Coordinates $(-7/3, -1/3, 8/3)$ up to sign, that is the layout $0, 2, 5$ shifted to mean zero.
+
+@example
+title: How far is a KL divergence from zero?
+problem: The neighbor distribution in the original space is $P = (0.5, 0.25, 0.25)$ and the map gives the uniform distribution $Q = (1/3, 1/3, 1/3)$. Compute $\mathrm{KL}(P \Vert Q)$ in nats and the perplexity of $P$.
+step: $\mathrm{KL} = \sum p \log(p/q) = 0.5 \log 1.5 + 2 \times 0.25 \log 0.75$.
+step: Numerically, $0.5 \times 0.4055 = 0.2027$ and $0.5 \times (-0.2877) = -0.1438$, so $\mathrm{KL} = 0.0589$ nats. It is positive because $Q \ne P$ and would be 0 only if $Q = P$.
+step: Entropy of $P$ in bits: $0.5 \times 1 + 2 \times 0.25 \times 2 = 1.5$, so the perplexity is $2^{1.5} \approx 2.83$: $P$ acts like a choice among about 2.8 equally likely neighbors.
+answer: $\mathrm{KL} \approx 0.0589$ nats; perplexity $\approx 2.83$.
+
+@mistakes
+- Reading cluster sizes or the distances between clusters in a t-SNE or UMAP map as meaningful: only local neighborhoods are preserved.
+- Running t-SNE once with the default settings and trusting the picture; vary the perplexity and the random seed.
+- Mixing up the conditional $p_{j\mid i}$ (each row sums to 1) with the joint $p_{ij}$ (all entries together sum to 1).
+- Taking the logarithm base for granted: perplexity uses the entropy in bits ($2^H$), and the KL cost is usually in nats; use the base that matches the formula.
+
+@practice num
+prompt: The points $(1, 1)$, $(3, 3)$ and $(5, 5)$ lie on a line. What is the largest eigenvalue of their sample covariance matrix (divisor $n - 1 = 2$)?
+answer: 8
+tol: 0.001
+check: sum(a ** 2 + a ** 2 for a in [-2, 0, 2]) / 2
+hint: The centered points are $(-2,-2)$, $(0,0)$, $(2,2)$. Form the covariance matrix; for data on a single line one eigenvalue is 0, so the other equals the trace.
+solution: The covariance matrix is $\frac{1}{2}\begin{pmatrix} 8 & 8 \\ 8 & 8 \end{pmatrix} = \begin{pmatrix} 4 & 4 \\ 4 & 4 \end{pmatrix}$. Its trace is 8 and its determinant is 0, so the eigenvalues are 8 and 0.
+
+@practice mc
+prompt: Why does t-SNE use a Student-t distribution with one degree of freedom, instead of a Gaussian, for the similarities $q_{ij}$ in the map?
+choice*: Its heavy tails allow moderately dissimilar points to be placed far apart in the map, which relieves the crowding of points.
+choice: It guarantees that the cost function has a single global minimum.
+choice: It makes distances between clusters in the map proportional to distances in the original space.
+choice: It removes the need to choose a perplexity.
+hint: Compare how fast the Gaussian and the Student-t densities fall off with distance.
+solution: The Student-t density falls off polynomially, so a modest gap in the original space can become a large gap in the map without a large penalty. It does not make the cost convex, it does not preserve distances between clusters, and perplexity still sets the bandwidths $\sigma_i$ in the original space.
+
+@practice code
+prompt: Write `conditional_p(points, i, sigma)` that returns the t-SNE conditional neighbor probabilities $p_{j\mid i}$ of point `i`: for each `j`, $\exp(-\lVert\mathbf{x}_i - \mathbf{x}_j\rVert^2 / (2\sigma^2))$ with the entry for `j == i` set to 0, divided by the sum over `j != i`. `points` is a list of lists of floats and `sigma` is a positive float. For example, `conditional_p([[0.0], [1.0]], 0, 1.0)` returns `[0.0, 1.0]`.
+starter:
+```python
+def conditional_p(points, i, sigma):
+    return [0.0 for _ in points]
+```
+tests:
+```python
+assert conditional_p([[0.0], [1.0]], 0, 1.0) == [0.0, 1.0]
+got = conditional_p([[0.0], [1.0], [3.0]], 0, 1.0)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.9820137900379085, 0.01798620996209156]))
+got = conditional_p([[0, 0], [3, 4], [6, 8]], 0, 5)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.0, 0.8175744761936437, 0.18242552380635635]))
+got = conditional_p([[0], [2], [2], [10]], 3, 2)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [0.005523816241369522, 0.4972380918793152, 0.4972380918793152, 0.0]))
+assert abs(sum(conditional_p([[0.0], [1.0], [3.0]], 1, 0.7)) - 1.0) < 1e-9
+```
+model:
+```python
+from math import exp
+
+
+def conditional_p(points, i, sigma):
+    """t-SNE conditional probabilities p(j | i) with bandwidth sigma."""
+    weights = []
+    for j, q in enumerate(points):
+        if j == i:
+            weights.append(0.0)
+        else:
+            d2 = sum((a - b) ** 2 for a, b in zip(points[i], q))
+            weights.append(exp(-d2 / (2 * sigma ** 2)))
+    total = sum(weights)
+    return [w / total for w in weights]
+```
+hint: Compute the Gaussian weight for every other point, put 0 at index `i`, and divide by the total of the weights.
+solution: The diagonal entry is excluded from both the list and the normalizer, so the row sums to 1 over the other points. The second test is the example from the lesson; the third uses 2-D points and $\sigma = 5$, which catches a function that forgets the factor 2 or squares sigma twice.
+
+@practice code
+prompt: Write `tsne_q(Y)` that returns the t-SNE low-dimensional similarity matrix as a list of lists: entry $(i, j)$ for $i \ne j$ is $(1 + \lVert\mathbf{y}_i - \mathbf{y}_j\rVert^2)^{-1}$ divided by the sum of this quantity over all ordered pairs $k \ne l$, and the diagonal entries are 0. `Y` is a list of lists of floats (the map coordinates). For example, `tsne_q([[0.0], [1.0]])` returns `[[0.0, 0.5], [0.5, 0.0]]`.
+starter:
+```python
+def tsne_q(Y):
+    n = len(Y)
+    return [[0.0] * n for _ in range(n)]
+```
+tests:
+```python
+got = tsne_q([[0.0], [1.0]])
+assert all(abs(a - b) < 1e-9 for r, w in zip(got, [[0.0, 0.5], [0.5, 0.0]]) for a, b in zip(r, w))
+got = tsne_q([[0.0], [1.0], [3.0]])
+want = [[0.0, 0.3125, 0.0625], [0.3125, 0.0, 0.125], [0.0625, 0.125, 0.0]]
+assert all(abs(a - b) < 1e-9 for r, w in zip(got, want) for a, b in zip(r, w))
+got = tsne_q([[0.0], [1.0], [1.0]])
+want = [[0.0, 0.125, 0.125], [0.125, 0.0, 0.25], [0.125, 0.25, 0.0]]
+assert all(abs(a - b) < 1e-9 for r, w in zip(got, want) for a, b in zip(r, w))
+assert abs(sum(sum(r) for r in tsne_q([[0.0, 0.0], [3.0, 4.0], [1.0, 1.0]])) - 1.0) < 1e-9
+```
+model:
+```python
+def tsne_q(Y):
+    """Student-t similarities q_ij of a low-dimensional embedding."""
+    n = len(Y)
+    w = [[0.0 if i == j else
+          1.0 / (1.0 + sum((a - b) ** 2 for a, b in zip(Y[i], Y[j])))
+          for j in range(n)] for i in range(n)]
+    total = sum(sum(row) for row in w)
+    return [[x / total for x in row] for row in w]
+```
+hint: Build the matrix of $1/(1 + d^2)$ values with zeros on the diagonal, then divide every entry by the sum of the whole matrix.
+solution: The normalizer is the sum over all ordered pairs, so the whole matrix sums to 1, which the last test checks. In the third test two points coincide: their weight is $1/(1+0) = 1$ and the other pairs have weight $1/2$.
+
+@practice num
+prompt: A point's neighbor distribution has the probabilities $(0.5, 0.25, 0.25)$ over its other three points. What is its perplexity $2^{H}$, with the entropy $H$ in bits? Give your answer to three decimal places.
+answer: 2.828
+tol: 0.001
+check: 2 ** sum(p * log2(1 / p) for p in [0.5, 0.25, 0.25])
+hint: Compute $H = \sum p \log_2(1/p)$ first: $0.5 \cdot 1 + 0.25 \cdot 2 + 0.25 \cdot 2$.
+solution: The entropy is $0.5 + 0.5 + 0.5 = 1.5$ bits, so the perplexity is $2^{1.5} = 2.828$, about 2.8 effective neighbors.
+
+@quiz text
+prompt: What does this program print?
+```python
+D2 = [[0, 4], [4, 0]]
+n = 2
+rm = [sum(r) / n for r in D2]
+gm = sum(rm) / n
+b00 = -0.5 * (D2[0][0] - rm[0] - rm[0] + gm)
+print(b00)
+```
+answer: 1.0
+check: run("D2 = [[0, 4], [4, 0]]\nn = 2\nrm = [sum(r) / n for r in D2]\ngm = sum(rm) / n\nb00 = -0.5 * (D2[0][0] - rm[0] - rm[0] + gm)\nprint(b00)")
+hint: Each row mean of the squared distances is 2, and so is the grand mean.
+solution: With $\bar d_{1\cdot} = \bar d_{\cdot 1} = \bar d_{\cdot\cdot} = 2$ we get $b_{11} = -\tfrac12(0 - 2 - 2 + 2) = 1.0$. Two points at distance 2 are at $\pm 1$ from their midpoint, and $1^2 = 1$.
+
+@quiz code
+prompt: Write `kl_divergence(p, q)` that returns $\sum_i p_i \log(p_i / q_i)$ (natural logarithm) for two lists of probabilities of equal length, skipping the terms where $p_i = 0$. Assume $q_i > 0$ wherever $p_i > 0$. For example, `kl_divergence([1.0, 0.0], [0.5, 0.5])` returns `0.6931...`.
+starter:
+```python
+def kl_divergence(p, q):
+    return 0.0
+```
+tests:
+```python
+assert abs(kl_divergence([1.0, 0.0], [0.5, 0.5]) - 0.6931471805599453) < 1e-9
+assert abs(kl_divergence([0.5, 0.25, 0.25], [1 / 3, 1 / 3, 1 / 3]) - 0.05889151782819174) < 1e-9
+assert abs(kl_divergence([0.5, 0.5], [0.25, 0.75]) - 0.14384103622589042) < 1e-9
+assert abs(kl_divergence([0.2, 0.3, 0.5], [0.2, 0.3, 0.5])) < 1e-12
+assert abs(kl_divergence([0.1, 0.9], [0.5, 0.5]) - 0.3680642071684971) < 1e-9
+assert abs(kl_divergence([0.25, 0.75], [0.5, 0.5]) - kl_divergence([0.5, 0.5], [0.25, 0.75])) > 0.01
+```
+model:
+```python
+from math import log
+
+
+def kl_divergence(p, q):
+    """KL(p || q) in nats, with 0 log 0 treated as 0."""
+    return sum(a * log(a / b) for a, b in zip(p, q) if a > 0)
+```
+hint: Sum $p_i \log(p_i/q_i)$ over the indices where $p_i > 0$, so that $0 \log 0$ never appears.
+solution: Terms with $p_i = 0$ contribute 0 by convention and must be skipped to avoid a zero in the logarithm. The last test shows that KL divergence is not symmetric: the order of the arguments matters, which is why t-SNE's $\mathrm{KL}(P\Vert Q)$ behaves differently from $\mathrm{KL}(Q\Vert P)$.
+
+@quiz ms
+prompt: Which statements about low-dimensional embeddings are true? Select all that apply.
+choice*: For Euclidean distances between points, classical MDS gives the same coordinates, up to sign, as the PCA scores of the same points.
+choice*: In a t-SNE map, the size of a cluster and the gap between two clusters should not be read as sizes and distances in the original space.
+choice*: t-SNE and UMAP results can change with the perplexity or neighbor count and with the random seed.
+choice: A t-SNE map proves that the clusters it shows are real groups in the original data.
+hint: Recall that $\mathbf{B} = \mathbf{X}_c\mathbf{X}_c^\top$ for Euclidean distances, and that the t-SNE objective is non-convex and local.
+solution: With Euclidean distances, double centering gives $\mathbf{X}_c\mathbf{X}_c^\top$, whose top eigenvectors scaled by the square roots of the eigenvalues are the PCA scores. t-SNE preserves neighborhoods, not global distances or sizes, and its objective is non-convex, so settings and seeds matter. A map can suggest clusters but cannot prove them.

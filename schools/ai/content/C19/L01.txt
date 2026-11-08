@@ -1,0 +1,224 @@
+@lesson
+title: Text normalization and tokenization
+summary: Turn raw text into normalized tokens with regular expressions, and count tokens, types and sentences correctly.
+objective: Explain why language technology starts by normalizing text and splitting it into tokens, and name the choices involved.
+objective: Write a regular-expression tokenizer and compute token counts, type counts and the type-token ratio.
+objective: Split text into sentences with a simple rule and describe where such rules fail.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapter on regular expressions, text normalization and edit distance: the sections on words, tokenization and normalization.
+@article
+A search engine is asked for "U.S.A." and a document says "USA"; a spam filter sees "FREE!!!" and "free". To a computer, text is a string of characters, and nothing says which strings count as the same word. Before any model can be trained, we must decide what the basic units are and which spellings to treat alike. This is **text normalization**, and its first step is **tokenization**: splitting a string into a list of **tokens**.
+
+### Tokens and types
+
+Take the sentence "It was the best of times, it was the worst of times." If we lowercase it and treat each word and each punctuation mark as a token, there are 14 **tokens**. Only 9 of them are different: it, was, the, best, of, times, the comma, worst, and the period. The distinct tokens are the **types**, and the set of all types is the **vocabulary** $V$. The **type-token ratio** is $|V| / N$, where $N$ is the number of tokens: here $9/14 \approx 0.643$. Longer texts reuse words, so the ratio falls as the text grows. An empirical regularity (the Herdan–Heaps law) says the vocabulary grows roughly like a power $N^{\beta}$ of the text length with $\beta$ below 1, so a bigger corpus always contains new types.
+
+### Choices hidden in "split into words"
+
+Splitting on spaces fails quickly: "times," would be a different type from "times". Every rule is a decision, and none is right for all tasks:
+
+| string | possible tokens | issue |
+|---|---|---|
+| `can't` | `can't` or `ca` + `n't` or `can` + `'` + `t` | contractions |
+| `e-mail` | one token or three | hyphens |
+| `3.5` | `3.5` or `3` `.` `5` | numbers, decimal points |
+| `Mr.` | `Mr.` or `Mr` + `.` | the period is not a sentence end |
+| `New York` | two tokens or one | multiword names |
+
+A **regular expression** (a pattern language for strings) lets us write the decisions down. The pattern below keeps a word with an internal apostrophe together, keeps a decimal number together, and makes every other non-space character its own token. The `|` means "or", and the alternatives are tried left to right at each position.
+
+```python
+import re
+
+TOKEN = r"[a-z]+(?:'[a-z]+)?|\d+(?:\.\d+)?|[^\sa-z\d]"
+
+def tokenize(text):
+    """Lowercase text and return its tokens."""
+    return re.findall(TOKEN, text.lower())
+
+tokens = tokenize("It was the best of times, it was the worst of times.")
+print(len(tokens), len(set(tokens)), len(set(tokens)) / len(tokens))
+```
+
+This prints `14 9 0.6428571428571429`.
+
+### Normalization
+
+After tokenizing we often map variants to one form. **Case folding** lowercases everything. It merges "The" and "the", but it also merges "US" (the country) with "us" (the pronoun), so systems for some tasks keep case. **Stemming** chops suffixes by rules (the Porter stemmer is the classic); it is crude, and it can map different words to one stem or one word to different stems. **Lemmatization** maps each word to its dictionary form ("were" to "be") and needs a lexicon and the word's part of speech. Which steps help depends on the task: topic classification usually benefits, while a task that depends on tense or names may be hurt.
+
+### Sentences
+
+Splitting text into sentences seems easy: cut after `.`, `!` or `?`. But "Dr. Smith left." contains a period that does not end a sentence. A simple fix is to cut only when the next word starts with a capital letter and the word before the period is not a known abbreviation. This works for tidy text and fails on "He moved to Washington D.C. Then he left," where the same rule cannot tell whether the period ends the sentence.
+
+### Why we need fixed rules
+
+The tokenizer is part of the model: the vocabulary, the counts and every later probability depend on it. If training and test text are tokenized differently, the model sees "words" it has never met. Later weeks replace word-level tokens with subword units, which solve the problem of unseen words, but they too must be applied identically at training and test time.
+
+@example
+title: Tokenize by hand
+problem: Apply the article's `tokenize` to the string "Isn't 3.5 enough?" and list the tokens, the number of tokens and the number of types.
+step: Lowercase the string: "isn't 3.5 enough?".
+step: Scan left to right. At `i`, the first alternative matches the letters `isn`, then the optional apostrophe part matches `'t`, giving the token `isn't`.
+step: After the space, `3.5` matches the second alternative (digits, a point, digits) as one token. Then `enough` matches the first alternative, and `?` matches the last alternative, a single character that is not a space, letter or digit.
+step: The tokens are `isn't`, `3.5`, `enough`, `?`: 4 tokens, and all are different, so 4 types.
+answer: Tokens: `isn't`, `3.5`, `enough`, `?`; 4 tokens and 4 types.
+
+@example
+title: Type-token ratio of a repeated sentence
+problem: Compute the number of tokens, the number of types and the type-token ratio for "A rose is a rose." under the article's tokenizer.
+step: Lowercase and tokenize: `a`, `rose`, `is`, `a`, `rose`, `.`.
+step: There are 6 tokens.
+step: The types are `a`, `rose`, `is` and `.`, so 4 types.
+step: The ratio is $4/6 \approx 0.667$. Repetition lowers the ratio below 1.
+answer: 6 tokens, 4 types, ratio $2/3$.
+
+@mistakes
+- Counting types as tokens: "the" appearing 5 times is 5 tokens but 1 type. Say which one a question asks for.
+- Tokenizing training and test text with different rules, so words that look familiar to a person are unknown to the model.
+- Lowercasing and stemming for every task. Merging "US" with "us", or "organization" with "organ", removes information that some tasks need.
+- Splitting sentences on every period, which breaks abbreviations and decimal numbers.
+
+@practice num
+prompt: How many tokens does the tokenizer `re.findall(r"[a-z]+(?:'[a-z]+)?|\d+(?:\.\d+)?|[^\sa-z\d]", text.lower())` produce for the string "Mr. Lee's dog can't run 2.5 km!"?
+answer: 9
+check: float(run("import re\nT = r\"[a-z]+(?:'[a-z]+)?|\\d+(?:\\.\\d+)?|[^\\sa-z\\d]\"\nprint(len(re.findall(T, \"Mr. Lee's dog can't run 2.5 km!\".lower())))"))
+hint: Mark each word, number and punctuation mark. A period after "Mr" is its own token, and `2.5` stays whole.
+solution: The tokens are `mr`, `.`, `lee's`, `dog`, `can't`, `run`, `2.5`, `km`, `!`: 9 tokens.
+
+@practice num
+prompt: The text "the cat sat. the cat ran! did the cat sit?" is tokenized so that each word and each punctuation mark is a token. What is its type-token ratio? Give your answer to three decimal places.
+answer: 0.692
+tol: 0.001
+check: len(set("the cat sat . the cat ran ! did the cat sit ?".split())) / len("the cat sat . the cat ran ! did the cat sit ?".split())
+hint: There are 13 tokens. List the distinct ones: the words, and the three punctuation marks.
+solution: The 13 tokens contain 9 types: the, cat, sat, ran, did, sit, and the marks `.`, `!` and `?`. The ratio is $9/13 \approx 0.692$.
+
+@practice mc
+prompt: A team lowercases all text before training a named-entity recognizer that must tell the surname "Bush" from the plant "bush". What is the problem with case folding here?
+choice*: It merges words that differ only in capitalization, discarding a cue the task depends on.
+choice: It increases the number of types, which slows training.
+choice: It stems both words to the same root, which is lemmatization.
+choice: It changes the number of tokens, so the vocabulary cannot be rebuilt.
+hint: Ask what information the capital letter carries, and whether the task needs it.
+solution: Case folding maps "Bush" and "bush" to one type, so the model can no longer use the capital letter, which is a strong cue for names. It reduces the number of types rather than increasing it, and it is not stemming.
+
+@practice code
+prompt: Write `tokenize_hyphen(text)` that lowercases `text` and returns a list of tokens where a word may contain internal hyphens or apostrophes and stays one token (`well-known`, `isn't`), a number with an optional decimal part (`4.50`) is one token, and every other non-space character is its own token. Letters are `a` to `z` after lowercasing. For example, `tokenize_hyphen("E-mail me, please.")` returns `['e-mail', 'me', ',', 'please', '.']`.
+starter:
+```python
+import re
+
+def tokenize_hyphen(text):
+    pass
+```
+tests:
+```python
+assert tokenize_hyphen("E-mail me, please.") == ['e-mail', 'me', ',', 'please', '.']
+assert tokenize_hyphen("Well-known e-mail costs $4.50, isn't it?") == [
+    'well-known', 'e-mail', 'costs', '$', '4.50', ',', "isn't", 'it', '?']
+assert tokenize_hyphen("") == []
+assert tokenize_hyphen("A well-to-do man") == ['a', 'well-to-do', 'man']
+assert tokenize_hyphen("Wait -- what?") == ['wait', '-', '-', 'what', '?']
+```
+model:
+```python
+import re
+
+TOKEN = r"[a-z]+(?:[-'][a-z]+)*|\d+(?:\.\d+)?|[^\sa-z\d]"
+
+
+def tokenize_hyphen(text):
+    """Lowercase text and split it, keeping hyphenated words whole."""
+    return re.findall(TOKEN, text.lower())
+```
+hint: Change the word alternative so that after the first letters it allows any number of groups made of one hyphen or apostrophe followed by letters.
+solution: The word alternative becomes `[a-z]+(?:[-'][a-z]+)*`: letters, then zero or more groups of a hyphen or apostrophe plus letters. A lone hyphen, as in the dashes of the last test, has no letters after it, so it falls through to the last alternative and becomes its own token.
+
+@practice code
+prompt: Write `split_sentences(text)` that returns a list of sentences. Split `text` on whitespace into words. A word ends a sentence when it ends with `.`, `!` or `?`, it is not one of the abbreviations `mr.`, `mrs.` or `dr.` (compared in lowercase), and the next word begins with an uppercase letter. The last word always ends the final sentence. Join the words of each sentence with single spaces. For an empty or all-space text return `[]`.
+starter:
+```python
+def split_sentences(text):
+    pass
+```
+tests:
+```python
+t = "Dr. Smith met Mrs. Lee. They talked! Was it fun? yes."
+assert split_sentences(t) == ["Dr. Smith met Mrs. Lee.", "They talked!", "Was it fun? yes."]
+assert split_sentences("One only.") == ["One only."]
+assert split_sentences("   ") == []
+assert split_sentences("No end here") == ["No end here"]
+assert split_sentences("Hi.  There   you.") == ["Hi.", "There you."]
+assert split_sentences("Mr. Who?") == ["Mr. Who?"]
+```
+model:
+```python
+ABBREVIATIONS = {"mr.", "mrs.", "dr."}
+
+
+def split_sentences(text):
+    """Split text into sentences using the capital-letter and abbreviation rule."""
+    words = text.split()
+    sentences = []
+    current = []
+    for i, word in enumerate(words):
+        current.append(word)
+        last = i == len(words) - 1
+        ends = word[-1] in ".!?" and word.lower() not in ABBREVIATIONS
+        if last or (ends and words[i + 1][0].isupper()):
+            sentences.append(" ".join(current))
+            current = []
+    return sentences
+```
+hint: Walk through the words with an index so that you can look at `words[i + 1]`, and collect words in a list until a boundary is found.
+solution: Keep a list of the words of the current sentence. After adding each word, test whether it is the last word, or ends with terminal punctuation, is not an abbreviation, and the next word starts with a capital letter; if so, close the sentence. The test "Mr. Who?" checks that the abbreviation rule stops a split even before a capitalized word.
+
+@quiz text
+prompt: What does this program print?
+```python
+import re
+text = "Two cats, two dogs; 3 birds."
+tokens = re.findall(r"[a-z]+|\d+|[^\sa-z\d]", text.lower())
+print(len(tokens), len(set(tokens)))
+```
+answer: 9 8
+check: run("import re\ntext = \"Two cats, two dogs; 3 birds.\"\ntokens = re.findall(r\"[a-z]+|\\d+|[^\\sa-z\\d]\", text.lower())\nprint(len(tokens), len(set(tokens)))")
+hint: List the tokens after lowercasing: three words, then a comma, and so on. Then remove repeats.
+solution: The tokens are `two`, `cats`, `,`, `two`, `dogs`, `;`, `3`, `birds`, `.`: that is 9 tokens, with `two` repeated, so 8 types. The program prints the token count first, then the type count: `9 8`.
+
+@quiz code
+prompt: Write `light_stem(word)` that removes one suffix from a lowercase `word`. Try the suffixes `ing`, `ed`, `s` in that order and use the first one that the word ends with and that leaves a stem of at least 3 letters; otherwise return the word unchanged. For example, `light_stem("walked")` returns `"walk"`.
+starter:
+```python
+def light_stem(word):
+    return word
+```
+tests:
+```python
+assert light_stem("walked") == "walk"
+assert light_stem("cats") == "cat"
+assert light_stem("singing") == "sing"
+assert light_stem("sing") == "sing"
+assert light_stem("bus") == "bus"
+assert light_stem("glass") == "glas"
+assert light_stem("is") == "is"
+```
+model:
+```python
+def light_stem(word):
+    """Strip ing, ed or s when at least three letters remain."""
+    for suffix in ("ing", "ed", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+```
+hint: Loop over the suffixes in order and return as soon as one applies; check the stem length before cutting.
+solution: The length condition protects short words such as `sing` and `bus`. The test with `glass` shows the crudeness of rule-based stemming: it cuts the final `s` of a word that is not plural.
+
+@quiz mc
+prompt: A corpus has 1,000 tokens and 250 types. A second corpus from the same source has 10,000 tokens. Which statement about its type count is supported by the Herdan–Heaps law?
+choice*: It is larger than 250 but less than 2,500, because vocabulary grows more slowly than the text.
+choice: It is exactly 2,500, because types grow in proportion to tokens.
+choice: It is 250, because a source has a fixed vocabulary.
+choice: It is smaller than 250, because longer texts repeat words.
+hint: The law says types grow like $N^{\beta}$ with $\beta < 1$, so multiplying tokens by 10 multiplies types by less than 10.
+solution: With $\beta<1$, ten times the tokens gives fewer than ten times the types, so fewer than 2,500, and new rare words keep appearing, so more than 250. Proportional growth would mean $\beta = 1$, and a fixed vocabulary would mean $\beta = 0$.

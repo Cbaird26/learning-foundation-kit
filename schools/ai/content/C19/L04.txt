@@ -1,0 +1,260 @@
+@lesson
+title: Perplexity and evaluating language models
+summary: Compute the perplexity of a language model on held-out text, interpret it as a branching factor, and use it to choose smoothing settings.
+objective: Define perplexity and cross-entropy for a language model and convert between them.
+objective: Compute perplexity by hand and in code, handling sentence boundaries and unknown words consistently.
+objective: Explain why perplexities are comparable only for the same test text and vocabulary, and what perplexity does not tell you.
+reading: Speech and Language Processing (Jurafsky and Martin, 3rd edition draft), the chapter on n-gram language models: the section on evaluating language models and perplexity.
+@article
+Last week's smoothing parameters $k$ and $\lambda$ were chosen "on held-out data". But what number do we measure? Accuracy does not apply: a language model does not output a label. The standard answer is to ask how much probability the model gave to text it did not train on. A model that is rarely surprised by real text is a good model of the language.
+
+### Evaluating on held-out text
+
+Split the data into **training** text, used to count; **development** (held-out) text, used to tune hyperparameters; and **test** text, used once at the end. Evaluating on the training text only measures memorization: an unsmoothed bigram model can reach very high probability on its own training data.
+
+The **perplexity** of a model on a test text $W = w_1 \dots w_N$ is the inverse probability of the text, normalized by length:
+$$\mathrm{PP}(W) = P(w_1,\dots,w_N)^{-1/N} = \exp\!\Big(-\frac{1}{N}\sum_{i=1}^{N} \log P(w_i \mid \text{history})\Big).$$
+It is a geometric mean of the inverse probabilities. Lower is better. We count `</s>` among the $N$ tokens, since the model must predict where sentences end, but not `<s>`, which is given. The sum is computed with logarithms because the raw product underflows.
+
+### Two ways to read it
+
+**Cross-entropy.** The average negative log-probability per token, $H = -\frac{1}{N}\sum \log_2 P(w_i\mid\cdot)$, is the model's cross-entropy on the text in bits per token, and $\mathrm{PP} = 2^{H}$ (or $e^{H}$ when $H$ is in nats; the value of $\mathrm{PP}$ is the same). A perplexity of 8 means 3 bits per token.
+
+**Branching factor.** A model that gives every word probability $1/|V|$ has $\mathrm{PP} = |V|$. So a perplexity of 100 says the model is, on average, as uncertain as if it were choosing uniformly among 100 equally likely words. Richer models, which use more context, should leave fewer effective choices.
+
+### A worked case
+
+Train an add-one bigram model on "i read books", "i read news", "you read books" ($|V| = 6$ including `</s>`) and test it on "i read news". The four factors are $P(\text{i}\mid\texttt{<s>}) = 3/9$, $P(\text{read}\mid\text{i}) = 3/8$, $P(\text{news}\mid\text{read}) = 2/9$ and $P(\texttt{</s>}\mid\text{news}) = 2/7$. Their product is $0.007937$, and $N = 4$, so
+$$\mathrm{PP} = 0.007937^{-1/4} \approx 3.350.$$
+The unsmoothed model gives $\frac{2}{3}\cdot 1\cdot\frac13\cdot 1 = 2/9$ and $\mathrm{PP} = (9/2)^{1/4} \approx 1.456$ on this sentence, which looks better only because the sentence is built from training bigrams; on a test sentence with one unseen bigram its perplexity would be infinite.
+
+```python
+import math
+
+def perplexity(probs):
+    """Perplexity from the probabilities a model gave to each test token."""
+    total = sum(math.log(p) for p in probs)
+    return math.exp(-total / len(probs))
+
+print(round(perplexity([1 / 3, 3 / 8, 2 / 9, 2 / 7]), 3))
+```
+
+This prints `3.35`.
+
+### Fair comparisons
+
+Perplexity values compare models only when the **test text and the vocabulary are the same**. A model with a smaller vocabulary, because it maps many words to `<unk>`, gets an easier task and a lower perplexity. A model that predicts characters or subwords and one that predicts words have different numbers of tokens $N$ for the same text, so their per-token perplexities are not comparable; one can instead compare total log-probability, or convert to bits per character. Unknown words are handled by choosing a vocabulary (for example, the words seen in training), replacing every other word by `<unk>` in both training and test text, and treating `<unk>` as a word.
+
+### What perplexity does not tell you
+
+Perplexity is an **intrinsic** evaluation: it needs no downstream task and is cheap, and improvements in perplexity usually go with improvements in speech recognition or translation, but not always. An **extrinsic** evaluation plugs the model into a task and measures that task's score. Perplexity also says nothing about whether generated text is true, fair or useful, and it is only meaningful if the test text was never used for training or tuning: leakage makes it too optimistic.
+
+@example
+title: Perplexity from probabilities
+problem: A model assigns probabilities $0.2$, $0.5$, $0.1$ and $0.25$ to the four tokens of a test sentence (including `</s>`). Find the perplexity and the cross-entropy in bits per token.
+step: Take the product: $0.2 \times 0.5 \times 0.1 \times 0.25 = 0.0025$.
+step: Perplexity: $0.0025^{-1/4}$. Since $0.0025^{1/4} = 0.2236$, $\mathrm{PP} \approx 4.472$.
+step: Cross-entropy: $H = \log_2 4.472 \approx 2.161$ bits per token. Check with the other form: $2^{2.161} \approx 4.47$.
+answer: $\mathrm{PP} \approx 4.472$, $H \approx 2.161$ bits per token.
+
+@example
+title: A uniform model
+problem: A model assigns probability $1/50$ to each token of a 200-token test text. What is its perplexity and the total log-probability in nats?
+step: Every factor is $1/50$, so $\mathrm{PP} = (50^{-200})^{-1/200} = 50$.
+step: The total log-probability is $200 \log(1/50) = -200 \times 3.912 = -782.4$ nats.
+answer: $\mathrm{PP} = 50$, and the log-probability is about $-782.4$ nats.
+
+@mistakes
+- Averaging per-sentence perplexities instead of pooling all tokens: perplexity is defined from the average log-probability over all tokens.
+- Dividing by the number of words but not counting `</s>` in the probabilities (or the reverse): the probabilities and $N$ must cover the same tokens.
+- Comparing perplexities of models with different vocabularies or tokenizations, or tuning on the test set.
+- Reading a low training perplexity as a good model: it can be memorization.
+
+@practice num
+prompt: A language model gives the four probabilities $0.5$, $0.25$, $0.25$ and $0.5$ to the four tokens of a test sentence. What is its perplexity? Give your answer to three decimal places.
+answer: 2.828
+tol: 0.001
+check: (0.5 * 0.25 * 0.25 * 0.5) ** (-1 / 4)
+hint: Perplexity is the product of the probabilities raised to the power $-1/N$.
+solution: The product is $1/64$, and $N = 4$, so $\mathrm{PP} = 64^{1/4} = 2\sqrt{2} \approx 2.828$.
+
+@practice num
+prompt: A model has a cross-entropy of 2.5 bits per token on a test text. What is its perplexity? Give your answer to three decimal places.
+answer: 5.657
+tol: 0.001
+check: 2 ** 2.5
+hint: With the cross-entropy in bits, perplexity is two raised to that power.
+solution: $\mathrm{PP} = 2^{H} = 2^{2.5} = 4\sqrt{2} \approx 5.657$.
+
+@practice mc
+prompt: Model A predicts words and has a perplexity of 120 per word on a test text of 1,000 words. Model B predicts characters and has a perplexity of 6 per character on the same text, which has 5,500 characters. Which statement is correct?
+choice*: The two numbers are not directly comparable, because they are averages over different units; compare total log-probability or convert to a common unit.
+choice: Model B is better because 6 is smaller than 120.
+choice: Model A is better because it needs fewer tokens.
+choice: The numbers are comparable once both are rounded to integers.
+hint: Perplexity is a per-token average, and the two models have different token counts for the same text.
+solution: Each model gives the text a total log-probability: $-1000\ln 120 \approx -4787.5$ for model A and $-5500 \ln 6 \approx -9854.7$ for model B. These totals are comparable, and the larger one belongs to model A. The per-token perplexities are not comparable, since a character carries less information than a word.
+
+@practice code
+prompt: Write `bigram_perplexity(train, test, k)` where `train` and `test` are lists of sentences (lists of words). Use an add-`k` bigram model trained on `train` with sentences padded by `"<s>"` and `"</s>"`. The vocabulary is the words of `train` plus `"</s>"` and `"<unk>"`, so its size is `V`. In `test`, replace every word not in the vocabulary by `"<unk>"`. Probabilities are `(c(v, w) + k) / (c(v) + k * V)`. Return the perplexity over all test tokens including each sentence's `"</s>"` but not `"<s>"`. Use logarithms.
+starter:
+```python
+def bigram_perplexity(train, test, k):
+    return 0.0
+```
+tests:
+```python
+C = [["i", "read", "books"], ["i", "read", "news"], ["you", "read", "books"]]
+assert abs(bigram_perplexity(C, [["i", "read", "news"]], 1) - 3.760603093) < 1e-6
+assert abs(bigram_perplexity(C, [["i", "read", "poems"]], 1) - 5.143686724) < 1e-6
+assert abs(bigram_perplexity(C, [["i", "read", "news"]], 0) - 1.456475315) < 1e-6
+assert abs(bigram_perplexity(C, [["i", "read", "books"], ["you", "read", "news"]], 0.5) - 2.936532727) < 1e-6
+assert abs(bigram_perplexity(C, C, 0) - 1.374729637) < 1e-6
+```
+model:
+```python
+import math
+from collections import Counter
+
+
+def bigram_perplexity(train, test, k):
+    """Perplexity of an add-k bigram model with an unknown-word symbol."""
+    bigrams, contexts = Counter(), Counter()
+    vocab = {"</s>", "<unk>"}
+    for sent in train:
+        vocab.update(sent)
+        padded = ["<s>"] + sent + ["</s>"]
+        for v, w in zip(padded, padded[1:]):
+            bigrams[(v, w)] += 1
+            contexts[v] += 1
+    size = len(vocab)
+    total, n = 0.0, 0
+    for sent in test:
+        words = [w if w in vocab else "<unk>" for w in sent]
+        padded = ["<s>"] + words + ["</s>"]
+        for v, w in zip(padded, padded[1:]):
+            p = (bigrams[(v, w)] + k) / (contexts[v] + k * size)
+            total += math.log(p)
+            n += 1
+    return math.exp(-total / n)
+```
+hint: Collect the counts and the vocabulary from `train`, map unknown test words to `"<unk>"`, then add up the log-probabilities over the test tokens and divide by their number.
+solution: Perplexity is `exp(-mean log p)`, with the mean over every predicted token, `</s>` included. The test with `poems` checks the unknown-word mapping, and the test with `k = 0` confirms that the unsmoothed model matches the hand computation on an all-seen sentence.
+
+@practice code
+prompt: The function `bigram_perplexity(train, test, k)` is given in the starter code (it returns the perplexity of an add-`k` bigram model on `test`). Write `best_k(train, heldout, ks)` that returns the value in the list `ks` with the lowest perplexity on `heldout`. If two values tie, return the smaller one. `ks` is nonempty.
+starter:
+```python
+import math
+from collections import Counter
+
+def bigram_perplexity(train, test, k):
+    bigrams, contexts = Counter(), Counter()
+    vocab = {"</s>", "<unk>"}
+    for sent in train:
+        vocab.update(sent)
+        padded = ["<s>"] + sent + ["</s>"]
+        for v, w in zip(padded, padded[1:]):
+            bigrams[(v, w)] += 1
+            contexts[v] += 1
+    size, total, n = len(vocab), 0.0, 0
+    for sent in test:
+        words = [w if w in vocab else "<unk>" for w in sent]
+        padded = ["<s>"] + words + ["</s>"]
+        for v, w in zip(padded, padded[1:]):
+            total += math.log((bigrams[(v, w)] + k) / (contexts[v] + k * size))
+            n += 1
+    return math.exp(-total / n)
+
+def best_k(train, heldout, ks):
+    return None
+```
+tests:
+```python
+D = [["a", "b"], ["a", "b"], ["a", "c"], ["b", "c"]]
+ks = [0.01, 0.1, 0.5, 1, 2]
+assert best_k(D, [["a", "b"], ["b", "a"]], ks) == 1
+assert best_k(D, [["a", "c"], ["b", "b"], ["a", "b"]], ks) == 0.1
+assert best_k(D, [["b", "b"], ["c", "a"]], ks) == 2
+assert best_k(D, [["a", "b"]], [0.5]) == 0.5
+assert best_k(D, [["a", "b"]], [0.5, 0.5]) == 0.5
+```
+model:
+```python
+import math
+from collections import Counter
+
+
+def bigram_perplexity(train, test, k):
+    bigrams, contexts = Counter(), Counter()
+    vocab = {"</s>", "<unk>"}
+    for sent in train:
+        vocab.update(sent)
+        padded = ["<s>"] + sent + ["</s>"]
+        for v, w in zip(padded, padded[1:]):
+            bigrams[(v, w)] += 1
+            contexts[v] += 1
+    size, total, n = len(vocab), 0.0, 0
+    for sent in test:
+        words = [w if w in vocab else "<unk>" for w in sent]
+        padded = ["<s>"] + words + ["</s>"]
+        for v, w in zip(padded, padded[1:]):
+            total += math.log((bigrams[(v, w)] + k) / (contexts[v] + k * size))
+            n += 1
+    return math.exp(-total / n)
+
+
+def best_k(train, heldout, ks):
+    """Smoothing value with the lowest held-out perplexity (smaller on ties)."""
+    return min(ks, key=lambda k: (bigram_perplexity(train, heldout, k), k))
+```
+hint: `min` with a key that is a pair (perplexity, k) resolves ties toward the smaller `k`.
+solution: Choosing a hyperparameter on held-out text is a one-line search once the evaluation function exists. Sorting by the pair (perplexity, k) fixes ties. The three data sets favor three different values, which shows that the best smoothing depends on how often held-out bigrams were unseen.
+
+@quiz code
+prompt: Write `corpus_perplexity(sentence_probs)` where `sentence_probs` is a list of lists: each inner list holds the probabilities a model gave to the tokens of one test sentence. Return the perplexity of the whole test text, pooling all tokens (not an average of sentence perplexities). For example, `corpus_perplexity([[0.5, 0.5], [0.25]])` returns about `2.5198`.
+starter:
+```python
+def corpus_perplexity(sentence_probs):
+    return 0.0
+```
+tests:
+```python
+assert abs(corpus_perplexity([[0.5, 0.5], [0.25]]) - 16 ** (1 / 3)) < 1e-9
+assert abs(corpus_perplexity([[1.0, 1.0]]) - 1.0) < 1e-9
+assert abs(corpus_perplexity([[0.1]]) - 10.0) < 1e-9
+assert abs(corpus_perplexity([[0.25, 0.25], [0.25], [0.25]]) - 4.0) < 1e-9
+assert abs(corpus_perplexity([[0.5], [0.5, 0.5, 0.5]]) - 2.0) < 1e-9
+```
+model:
+```python
+import math
+
+
+def corpus_perplexity(sentence_probs):
+    """Pooled perplexity over all tokens of all sentences."""
+    logs = [math.log(p) for sent in sentence_probs for p in sent]
+    return math.exp(-sum(logs) / len(logs))
+```
+hint: Flatten the sentences into one list of token probabilities before averaging the logarithms.
+solution: Pooling weights each token equally, so long sentences count more. The first example gives $(2 \cdot 2 \cdot 4)^{1/3}$, while averaging the sentence perplexities 2 and 4 would give 3, which is not the perplexity of the text.
+
+@quiz num
+prompt: A language model has a perplexity of 20 on a test text of 100 tokens. What is the total log-probability (natural logarithm) it gives the text? Give your answer to two decimal places.
+answer: -299.57
+tol: 0.01
+check: -100 * log(20)
+hint: From $\mathrm{PP} = \exp(-\frac{1}{N}\log P(W))$, solve for $\log P(W)$.
+solution: $\log P(W) = -N \log \mathrm{PP} = -100 \ln 20 \approx -299.57$.
+
+@quiz text
+prompt: What does this program print?
+```python
+import math
+probs = [0.5, 0.125]
+print(round(math.exp(-sum(math.log(p) for p in probs) / len(probs)), 3))
+```
+answer: 4.0
+check: run("import math\nprobs = [0.5, 0.125]\nprint(round(math.exp(-sum(math.log(p) for p in probs) / len(probs)), 3))")
+hint: The geometric mean of the inverse probabilities 2 and 8.
+solution: The product is $1/16$ and $N = 2$, so the perplexity is $16^{1/2} = 4$, printed as `4.0`.

@@ -1,0 +1,249 @@
+@lesson
+title: Sequence-to-sequence models
+summary: Explain the encoder-decoder design, compute teacher-forced losses, and decode a toy model greedily and with beam search.
+objective: Describe how an encoder-decoder maps a source sequence to a target sequence of a different length.
+objective: Compute the teacher-forced negative log-likelihood and perplexity of a target sequence.
+objective: Run greedy decoding and beam search by hand on a small next-token table.
+objective: Implement greedy decoding and beam search in plain Python.
+reading: Dive into Deep Learning, the chapters on the encoder-decoder architecture, sequence-to-sequence learning for machine translation, and beam search.
+@article
+Translate "the cat sleeps" into French: the output may be shorter, longer, or ordered differently than the input. A plain RNN that emits one output per input cannot do that. A **sequence-to-sequence** (seq2seq) model solves it with two networks, an **encoder** that reads the whole source and a **decoder** that writes the target one token at a time. Sutskever, Vinyals and Le (2014) and Cho and colleagues (2014) introduced this design for machine translation using recurrent networks.
+
+### Encoder and decoder
+The encoder is a recurrent network (typically an LSTM or GRU) that reads the source tokens $x_1, \dots, x_S$ and produces a final state $\mathbf{c} = \mathbf{h}_S$, the **context vector**. The decoder is another recurrent network whose initial state is $\mathbf{c}$. At each step it reads the previous target token and produces a probability distribution over the vocabulary with a softmax, $p(y_t \mid y_{<t}, \mathbf{x})$. Special tokens mark the boundaries: `<s>` starts decoding and `<eos>` ends it. The probability of a whole target is the product
+
+$$p(\mathbf{y} \mid \mathbf{x}) = \prod_{t=1}^{T} p(y_t \mid y_{<t}, \mathbf{x}).$$
+
+The context vector is a **bottleneck**: a source of 5 tokens or 50 tokens is squeezed into the same fixed number of values. Long sentences suffer, and fixing this is the motivation for attention in the next lesson.
+
+### Training: teacher forcing
+We train by maximizing the likelihood of the correct target, which means minimizing the **negative log-likelihood** (cross-entropy summed over steps):
+
+$$L = -\sum_{t=1}^{T} \log p(y^\star_t \mid y^\star_{<t}, \mathbf{x}).$$
+
+With **teacher forcing**, the decoder's input at step $t$ is the *correct* previous token $y^\star_{t-1}$, not its own earlier prediction. This makes every step an independent classification problem and trains fast. The cost is a mismatch (sometimes called exposure bias): at test time the decoder must feed on its own outputs, and an early mistake can propagate. For example, if the correct target is "b `<eos>`" and a trained model assigns probabilities 0.4 and 0.7 to those two tokens, then $L = -\ln 0.4 - \ln 0.7 = -\ln 0.28 = 1.273$ nats. The **perplexity** per token is $\exp(L / T) = \exp(0.6366) = 1.89$, a measure of how many choices the model is effectively choosing among at each step.
+
+### Decoding
+At test time we want the most probable target, $\arg\max_{\mathbf{y}} p(\mathbf{y} \mid \mathbf{x})$, but the number of candidates grows as $|V|^T$. **Greedy decoding** picks the most likely token at each step. It is fast but can be wrong: a likely first token may lead to a poor continuation. **Beam search** keeps the $k$ best partial sequences (the **beam**) by total log-probability: at each step it extends every hypothesis with every token, keeps the $k$ best extensions overall, and sets aside those ending in `<eos>`. With $k = 1$ it is greedy decoding. Beam search is a heuristic, not an exact algorithm, and it favors short outputs because every extra token multiplies in a probability below 1; a common fix divides the log-probability by the length.
+
+We use a toy decoder whose next-token distribution depends only on the previous token:
+
+| previous | `a` | `b` | `<eos>` |
+|---|---|---|---|
+| `<s>` | 0.6 | 0.4 | 0 |
+| `a` | 0.1 | 0.5 | 0.4 |
+| `b` | 0.2 | 0.1 | 0.7 |
+
+Greedy decoding gives `a`, `b`, `<eos>` with probability $0.6 \cdot 0.5 \cdot 0.7 = 0.21$. But the sequence `b`, `<eos>` has probability $0.4 \cdot 0.7 = 0.28$: greedy missed it, and beam search with $k = 2$ finds it.
+
+### In code
+```python
+def greedy_decode(P, max_len=10):
+    """P[prev][token] is the next-token probability; stop at '<eos>'."""
+    prev, out = '<s>', []
+    for _ in range(max_len):
+        prev = max(P[prev], key=P[prev].get)
+        if prev == '<eos>':
+            break
+        out.append(prev)
+    return out
+
+P = {'<s>': {'a': 0.6, 'b': 0.4, '<eos>': 0.0},
+     'a': {'a': 0.1, 'b': 0.5, '<eos>': 0.4},
+     'b': {'a': 0.2, 'b': 0.1, '<eos>': 0.7}}
+print(greedy_decode(P))
+```
+
+In practice, frameworks implement the batched version of this loop on a GPU; the logic is the same.
+
+@example
+title: Teacher-forced loss
+problem: Using the table in the article, compute the negative log-likelihood and the per-token perplexity of the target `a`, `b`, `<eos>` under teacher forcing.
+step: The teacher-forced inputs are `<s>`, `a`, `b`. The correct-token probabilities are $p(a \mid \texttt{<s>}) = 0.6$, $p(b \mid a) = 0.5$ and $p(\texttt{<eos>} \mid b) = 0.7$.
+step: The loss is $-\ln 0.6 - \ln 0.5 - \ln 0.7 = 0.5108 + 0.6931 + 0.3567 = 1.5606$ nats, which equals $-\ln 0.21$.
+step: The perplexity is $\exp(1.5606 / 3) = \exp(0.5202) = 1.682$.
+answer: $L = 1.5606$ nats and perplexity $\approx 1.682$ per token.
+
+@example
+title: Beam search with k = 2
+problem: Run beam search with $k = 2$ on the article's table and report the best finished sequence.
+step: Step 1: from `<s>` the candidates are `a` (0.6) and `b` (0.4). Keep both.
+step: Step 2: extending `a` gives `a a` 0.06, `a b` 0.30, `a <eos>` 0.24; extending `b` gives `b a` 0.08, `b b` 0.04, `b <eos>` 0.28. The two best are `a b` (0.30) and `b <eos>` (0.28). The second one ends, so `b` is finished with probability 0.28.
+step: Step 3: extending `a b` gives `a b <eos>` 0.21, `a b a` 0.042 and `a b b` 0.021. The best is `a b <eos>`, so `a b` is finished with probability 0.21. Later steps only multiply by numbers below 1, so the best finished sequence is final.
+answer: The best finished sequence is `b` (probability 0.28), better than greedy's `a b` (0.21).
+
+@mistakes
+- Computing the loss of a whole sequence as an average of probabilities. The sequence probability is a product, so the log-probability is a sum.
+- Thinking beam search is exact. It is a heuristic; larger beams usually find higher-probability sequences but need not find the best one.
+- Feeding the model its own predictions during training and calling it teacher forcing. Teacher forcing feeds the ground truth.
+- Comparing hypotheses of different lengths by raw log-probability without noticing the bias towards short sequences.
+
+@practice num
+prompt: A decoder is trained with teacher forcing on a target of three tokens. The probabilities it assigns to the three correct tokens are 0.5, 0.25 and 0.8. What is the negative log-likelihood of the target in nats? Give your answer to three decimal places.
+answer: 2.303
+tol: 0.001
+unit: nats
+check: -log(0.5 * 0.25 * 0.8)
+hint: Add the negative natural logs of the three probabilities, or take the log of their product.
+solution: The product is $0.5 \cdot 0.25 \cdot 0.8 = 0.1$, and $-\ln 0.1 = 2.303$ nats.
+
+@practice num
+prompt: A beam search with beam width 3 is decoding with a vocabulary of 1000 tokens. At one step, how many extended hypotheses are scored before the best 3 are kept (assuming no hypothesis has finished)?
+answer: 3000
+unit: hypotheses
+check: 3 * 1000
+hint: Each of the 3 hypotheses is extended by every token in the vocabulary.
+solution: Each of the 3 live hypotheses is extended by all 1000 tokens, giving $3 \times 1000 = 3000$ candidates, from which the best 3 are kept.
+
+@practice text
+prompt: What does this program print?
+```python
+T = {'<s>': {'y': 0.5, 'z': 0.4, '<eos>': 0.1},
+     'y': {'y': 0.1, 'z': 0.6, '<eos>': 0.3},
+     'z': {'y': 0.2, 'z': 0.1, '<eos>': 0.7}}
+tok, out = '<s>', []
+while True:
+    tok = max(T[tok], key=T[tok].get)
+    if tok == '<eos>':
+        break
+    out.append(tok)
+print(out)
+```
+answer: ['y', 'z']
+check: run("T = {'<s>': {'y': 0.5, 'z': 0.4, '<eos>': 0.1},\n     'y': {'y': 0.1, 'z': 0.6, '<eos>': 0.3},\n     'z': {'y': 0.2, 'z': 0.1, '<eos>': 0.7}}\ntok, out = '<s>', []\nwhile True:\n    tok = max(T[tok], key=T[tok].get)\n    if tok == '<eos>':\n        break\n    out.append(tok)\nprint(out)")
+hint: At each step pick the token with the largest probability in the row of the previous token.
+solution: From `<s>` the best token is `y` (0.5); from `y` it is `z` (0.6); from `z` it is `<eos>` (0.7), which stops the loop. The program prints `['y', 'z']`.
+
+@practice code
+prompt: Write `sequence_nll(P, tokens)` that returns the negative log-likelihood (natural log) of the list `tokens` under the next-token table `P`, where `P[prev][tok]` is a probability and decoding starts from `'<s>'`. The list includes the final `'<eos>'` if there is one. For example, with `P = {'<s>': {'a': 0.5}}`, `sequence_nll(P, ['a'])` returns `-log(0.5)`.
+starter:
+```python
+def sequence_nll(P, tokens):
+    return 0.0
+```
+tests:
+```python
+from math import log
+P = {'<s>': {'a': 0.5, 'b': 0.5}, 'a': {'a': 0.25, 'b': 0.25, '<eos>': 0.5},
+     'b': {'a': 0.1, 'b': 0.1, '<eos>': 0.8}}
+assert abs(sequence_nll(P, ['a']) - log(2)) < 1e-9
+assert abs(sequence_nll(P, ['a', 'b', '<eos>']) - (-log(0.5 * 0.25 * 0.8))) < 1e-9
+assert abs(sequence_nll(P, ['b', '<eos>']) - (-log(0.4))) < 1e-9
+assert sequence_nll(P, []) == 0.0
+```
+model:
+```python
+from math import log
+
+
+def sequence_nll(P, tokens):
+    """Teacher-forced negative log-likelihood of tokens under the table P."""
+    prev, total = '<s>', 0.0
+    for tok in tokens:
+        total -= log(P[prev][tok])
+        prev = tok
+    return total
+```
+hint: Walk through the tokens keeping the previous one, and subtract the log of each conditional probability.
+solution: Teacher forcing means each step conditions on the true previous token, so the previous token is the one from the list, and the losses add. The empty list returns 0 because no token is scored.
+
+@practice code
+prompt: Write `beam_search(P, k, max_len)` for a next-token table `P` (`P[prev][tok]` is a probability, start token `'<s>'`). Keep a beam of live hypotheses, initially one empty hypothesis with log-probability 0. For each of up to `max_len` steps: extend every live hypothesis with every token whose probability is above 0, sort all extensions by log-probability (highest first), keep the best `k`, move the ones ending in `'<eos>'` to a finished list (without the `'<eos>'`) and keep the others live. Stop early if no hypothesis is live. Return `(tokens, log_prob)` of the best finished hypothesis, or `None` if none finished.
+starter:
+```python
+def beam_search(P, k, max_len):
+    return None
+```
+tests:
+```python
+from math import log
+B = {'<s>': {'a': 0.55, 'b': 0.45},
+     'a': {'a': 0.4, 'b': 0.3, '<eos>': 0.3},
+     'b': {'a': 0.1, 'b': 0.0, '<eos>': 0.9}}
+assert beam_search(B, 1, 4) is None
+tokens, lp = beam_search(B, 2, 4)
+assert tokens == ['b'] and abs(lp - log(0.405)) < 1e-9
+assert beam_search(B, 3, 4)[0] == ['b']
+C = {'<s>': {'x': 1.0}, 'x': {'<eos>': 1.0}}
+tokens, lp = beam_search(C, 2, 5)
+assert tokens == ['x'] and abs(lp) < 1e-12
+assert beam_search(C, 2, 1) is None
+```
+model:
+```python
+from math import log
+
+
+def beam_search(P, k, max_len):
+    """Beam search over a next-token table; returns (tokens, log_prob)."""
+    beam = [(0.0, [])]
+    finished = []
+    for _ in range(max_len):
+        cands = []
+        for lp, seq in beam:
+            prev = seq[-1] if seq else '<s>'
+            for tok, p in P[prev].items():
+                if p > 0:
+                    cands.append((lp + log(p), seq + [tok]))
+        cands.sort(key=lambda c: -c[0])
+        beam = []
+        for lp, seq in cands[:k]:
+            if seq[-1] == '<eos>':
+                finished.append((lp, seq[:-1]))
+            else:
+                beam.append((lp, seq))
+        if not beam:
+            break
+    if not finished:
+        return None
+    lp, seq = max(finished, key=lambda f: f[0])
+    return seq, lp
+```
+hint: Keep the live beam as a list of `(log_prob, tokens)` pairs; each step builds all extensions, sorts them, and splits the top `k` into finished and live.
+solution: The finished hypotheses leave the beam, so the beam can shrink and the loop stops when it empties. In the first test greedy decoding ($k = 1$) follows the likely token `a` and never finishes within four steps, while $k = 2$ also keeps `b`, whose continuation `<eos>` has probability 0.9.
+
+@quiz mc
+prompt: In a seq2seq model trained with teacher forcing, what does the decoder receive as its input at step $t$ during training?
+choice*: The correct target token from step $t - 1$.
+choice: The token it predicted at step $t - 1$.
+choice: The final encoder state only, with no token input.
+choice: A random token from the vocabulary.
+hint: Teacher forcing replaces the model's own earlier output with something else.
+solution: Under teacher forcing the ground-truth previous token is fed to the decoder, so each step is trained independently. Feeding the model's own predictions is what happens at test time, and the encoder state is used only to initialize the decoder.
+
+@quiz num
+prompt: A model assigns probabilities 0.5 and 0.25 to the two tokens of a target. What is the per-token perplexity, $\exp(L / T)$, where $L$ is the negative log-likelihood in nats and $T = 2$ is the number of tokens? Give your answer to three decimal places.
+answer: 2.828
+tol: 0.001
+check: exp(-(log(0.5) + log(0.25)) / 2)
+hint: The perplexity is the reciprocal of the geometric mean of the token probabilities.
+solution: $L = -\ln 0.5 - \ln 0.25 = \ln 8$, so $\exp(L/2) = \sqrt 8 \approx 2.828$.
+
+@quiz code
+prompt: Write `best_normalized(cands)` where `cands` is a nonempty list of `(tokens, log_prob)` pairs. Return the `tokens` of the pair with the highest `log_prob / len(tokens)`. If two pairs tie, return the earlier one. For example, `best_normalized([(['a', 'b'], -1.2), (['b'], -0.9)])` returns `['a', 'b']`, although the raw log-probability prefers the second pair.
+starter:
+```python
+def best_normalized(cands):
+    return max(cands, key=lambda c: c[1])[0]
+```
+tests:
+```python
+assert best_normalized([(['a', 'b'], -1.2), (['b'], -0.9)]) == ['a', 'b']
+assert best_normalized([(['b'], -0.9), (['a', 'b'], -1.2)]) == ['a', 'b']
+assert best_normalized([(['x'], -0.5)]) == ['x']
+assert best_normalized([(['a'], -1.0), (['b', 'c'], -2.0)]) == ['a']
+assert best_normalized([(['a', 'a', 'a'], -3.0), (['b'], -1.0)]) == ['a', 'a', 'a']
+```
+model:
+```python
+def best_normalized(cands):
+    """Candidate with the highest length-normalized log-probability."""
+    best, best_score = None, None
+    for tokens, lp in cands:
+        score = lp / len(tokens)
+        if best_score is None or score > best_score:
+            best, best_score = tokens, score
+    return best
+```
+hint: Divide each log-probability by its length and keep the first candidate that beats the best so far.
+solution: Normalizing makes the score an average log-probability per token, so longer hypotheses are no longer penalized just for being long. Using a strict comparison keeps the earlier candidate on ties, as the fourth test checks (both score $-1.0$).
