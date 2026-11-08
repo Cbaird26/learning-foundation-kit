@@ -71,3 +71,5 @@ Log:
 - P1 reviewed (21 fixes: items off article and example data, nats not bits, symmetrization step, loss_class_rademacher replaces a copied function, m >= 2 in an mc, perceptron margin 1/sqrt(2) and bound 32, AdaBoost stop test, Nagarajan-Kolter statement, rubric no longer rewards one conclusion, PAC-Bayes Pinsker relaxation named, Kearns-Valiant wording, ramp loss in the project); follow-ups by me: "often" for validation picking larger classes, "catalog" spelling
 - P5 done (0 errors, 96 + 3 exam, no code items; Recht 2019, Pineau 2021 kept general); review started P5
 - P5 reviewed (7 fixes: falsifying threshold matches the hypothesis, reading line no longer ties compute to the optimization chapter, unsupported phrases removed, items off article and example data); follow-up by me: project exam model answer counts 4 conditions (80 final runs) plus 90 tuning runs
+- P4 done (0 errors, 96 + 3 exam, code in 7 lessons; project options run by the writer: circuit network, sparse autoencoder rows, reward-hacking environment); review started P4
+- P6 done (0 errors, 96 + 3 exam, no code items); review started P6. All 66 courses written.
