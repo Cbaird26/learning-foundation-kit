@@ -69,10 +69,10 @@ from the AI school (C8–C10, C22, C23), philosophy of mind from the Metaphysics
 | Step | State |
 | --- | --- |
 | 1. Curriculum (`schools/neuro/work/curriculum.py`) and course files | done |
-| 2. Brief, review template, validated example lesson (`example_neuro_lesson.txt`), rebranded app | in progress |
-| 3. Write the 21 new courses | not started |
-| 4. Independent review of each course | not started |
-| 5. Integrate and build | not started |
+| 2. Brief, review template, validated example lesson (`example_neuro_lesson.txt`), rebranded app | done |
+| 3. Write the 21 new courses | done (Nov 8) |
+| 4. Independent review of each course | done (21 of 21 in `work/review_log.txt`, follow-ups in `work/WRITERS.md`) |
+| 5. Integrate and build | in progress |
 | 6. Test the page | not started |
 | 7. Publish as `neuroscience-learning-foundation` (owner's yes first) | not started |
 | 8. Add to the hub | not started |
@@ -185,3 +185,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: P4 written (review running); reviews of P1 and P4 running; writers P5 and P6 running; trial build running
 - 2026-11-08: Neuro: P5 and P6 written, so all 21 new courses are written; P1 reviewed (24 fixes); reviews of P4, P5, P6 running; trial build fine (one Try-it float fixed in C15)
 - 2026-11-08: Neuro: all 21 new courses written and independently reviewed (P4 6 fixes, P5 6, P6 8, with follow-ups); spelling audit clean; final validation and build next, then the owner is asked before publishing
+- 2026-11-08: Neuro: steps 2–4 done; step 5 (integrate and build) in progress
