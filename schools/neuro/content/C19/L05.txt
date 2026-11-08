@@ -1,0 +1,195 @@
+@lesson
+title: Functional MRI and the BOLD signal
+summary: Explain what the BOLD signal measures, build a predicted BOLD time course by convolution, fit it with a general linear model, and state which inferences fMRI supports.
+objective: Explain neurovascular coupling and why the BOLD signal is an indirect, delayed and slow measure of neural activity.
+objective: Predict a BOLD time course by convolving events with a hemodynamic response function, and estimate an effect with a general linear model.
+objective: Identify the main threats to fMRI inference: multiple comparisons, circular analysis, and reverse inference.
+reading: Neuroscience Online (UTHealth Houston): look up the topics of magnetic resonance imaging and functional imaging of the brain, and cerebral blood flow.
+@article
+When a region of cortex becomes active, its blood supply increases, and the increase exceeds the extra oxygen the tissue consumes. Blood leaving the region is therefore richer in oxygen than before. Hemoglobin without oxygen (deoxyhemoglobin) is paramagnetic and distorts the local magnetic field, which shortens the MRI signal; oxygenated hemoglobin does not. Less deoxyhemoglobin means a slightly brighter image. This **blood-oxygen-level-dependent (BOLD)** contrast (Ogawa and colleagues, 1990) is what functional MRI measures. The signal change is small, a percent or two at typical field strengths, so fMRI needs repeated trials and statistics.
+
+### What BOLD is, and what it is not
+
+BOLD is a **hemodynamic** measure. It changes about 1 to 2 seconds after neural activity starts, peaks after about 5 to 6 seconds, falls back and shows a post-stimulus **undershoot** lasting tens of seconds. This shape is the **hemodynamic response function (HRF)**. A common model is a gamma function:
+
+$$h(t) = \frac{t^{a-1} e^{-t/b}}{\Gamma(a)\, b^{a}}, \qquad \text{peak at } t = (a-1)\,b .$$
+
+With $a = 6$ and $b = 1$ s, the peak is at 5 s with value $h(5) \approx 0.175$. Values: $h(2) = 0.036$, $h(4) = 0.156$, $h(6) = 0.161$, $h(8) = 0.092$, $h(10) = 0.038$.
+
+```python
+import math
+
+
+def hrf(t, a=6.0, b=1.0):
+    """Gamma-shaped hemodynamic response (arbitrary units), t in seconds."""
+    if t <= 0:
+        return 0.0
+    return t ** (a - 1) * math.exp(-t / b) / (math.gamma(a) * b ** a)
+
+
+print(round(hrf(5.0), 4))
+```
+
+This prints `0.1755`. Spatial resolution is 1 to 3 mm voxels, limited by the vascular response as well as by acquisition; the volume is typically sampled every 1 to 2 seconds (the repetition time, TR). BOLD is closely related to local field potentials and synaptic input more than to spiking: in the monkey visual cortex, the BOLD signal was better predicted by local field potentials than by multi-unit spiking (Logothetis and colleagues, 2001). It is not a direct measure of spikes, and it cannot distinguish excitation from inhibition.
+
+### Linear systems and the general linear model
+
+If responses to successive events add (a **linear time-invariant** assumption, shown to hold approximately for stimuli lasting a few seconds or more; Boynton and colleagues, 1996), the predicted BOLD time course is the **convolution** of the stimulus time course $s(t)$ with the HRF: $x(t) = \sum_k h(k)\, s(t - k)$. The **general linear model (GLM)** fits each voxel's time series $\mathbf{y}$ as
+
+$$\mathbf{y} = \mathbf{X}\boldsymbol\beta + \boldsymbol\varepsilon ,$$
+
+where each column of $\mathbf{X}$ is a predicted time course (plus a constant), and $\hat{\boldsymbol\beta}$ is found by least squares. A **contrast** $\mathbf{c}$ tests an effect such as faces minus houses with $t = \mathbf{c}^\top\hat{\boldsymbol\beta} / \widehat{\mathrm{SE}}$. With one regressor and an intercept, $\hat\beta$ is the covariance of $x$ and $y$ divided by the variance of $x$. Signal is often expressed as a **percent signal change**, $100\,(S_{\text{task}} - S_{\text{rest}})/S_{\text{rest}}$.
+
+### Inference problems
+
+- **Multiple comparisons.** A whole brain has tens of thousands of voxels. At an uncorrected $p < 0.001$, 64,000 null voxels give about $64{,}000 \times 0.001 = 64$ false positives. Bonferroni correction uses $\alpha/m$ (with $m$ voxels); false discovery rate and cluster-based methods are less conservative. A large evaluation of common software (Eklund, Nichols and Knutsson, 2016) found that some parametric cluster methods gave false-positive rates well above the nominal 5%, especially when the cluster-forming threshold was lenient.
+- **Circular analysis.** Selecting voxels with the data that are then used to estimate their effect inflates it (Kriegeskorte and colleagues, 2009); independent data or cross-validation are needed.
+- **Subtraction logic** assumes that adding a process to a task adds only its activity, with no change to the others (pure insertion), which may be false.
+- **Correlation and reverse inference.** fMRI shows that a region is active, not that it is necessary, and activation in a region that responds to many tasks is weak evidence for any one process.
+
+Well-established: BOLD basics and the statistical problems. Debated: the precise relation of BOLD to neuronal activity types.
+
+@example
+title: Superposition of two events
+problem: With the gamma HRF above ($a = 6$, $b = 1$), events occur at 0 s and 6 s. Using linear superposition, what is the predicted BOLD value (in HRF units) at $t = 10$ s?
+step: The first event began 10 s ago, so it contributes $h(10) = 10^5 e^{-10}/120 = 0.0378$.
+step: The second began 4 s ago, so it contributes $h(4) = 4^5 e^{-4}/120 = 0.1563$.
+step: By linearity, the prediction at 10 s is the sum: $0.0378 + 0.1563 = 0.1941$.
+step: The result exceeds either alone, which is how overlapping events build a larger slow response.
+answer: About $0.194$ (HRF units).
+
+@example
+title: A t statistic from a contrast
+problem: In one voxel, the estimated effects are $\hat\beta_{\text{face}} = 2.1$ and $\hat\beta_{\text{house}} = 0.9$ (percent signal change), and the standard error of their difference is $0.4$. What is the $t$ value of faces minus houses?
+step: The contrast vector is $\mathbf{c} = (1, -1)$, so $\mathbf{c}^\top\hat{\boldsymbol\beta} = 2.1 - 0.9 = 1.2$.
+step: Divide by the standard error: $t = 1.2/0.4 = 3$.
+step: Interpret with care: if this voxel was one of 50,000 tested, then $t = 3$ alone may not survive correction for multiple comparisons.
+answer: $t = 3$.
+
+@mistakes
+- Equating BOLD with spiking: it reflects mostly synaptic input and local field potentials, filtered through blood flow.
+- Reading BOLD timing as neural timing: the response lags by seconds and different regions have different vascular delays.
+- Selecting voxels and testing them on the same data: this circular analysis inflates effects.
+- Ignoring multiple comparisons: with 64,000 voxels at $p < 0.001$ about 64 false positives are expected.
+
+@practice num
+prompt: A voxel's average signal is 1000 (arbitrary units) at rest and 1012 during a task. What is the percent signal change?
+answer: 1.2
+unit: %
+tol: 0.01
+check: (1012 - 1000) / 1000 * 100
+hint: Divide the change by the resting signal and multiply by 100.
+solution: $(1012 - 1000)/1000 \times 100 = 1.2\%$.
+
+@practice num
+prompt: A whole-brain analysis tests 80,000 voxels at a family-wise error rate of 0.05 with a Bonferroni correction. What is the per-voxel threshold, multiplied by $10^7$ (for example, $3 \times 10^{-7}$ is entered as 3)?
+answer: 6.25
+tol: 0.01
+check: 0.05 / 80000 * 1e7
+hint: Divide $0.05$ by the number of voxels, then multiply by $10^7$.
+solution: $0.05/80000 = 6.25 \times 10^{-7}$, so the answer is 6.25.
+
+@practice num
+prompt: A gamma HRF has shape $a = 7$ and scale $b = 1.5$ s. At what time after the event, in seconds, is its peak? (The peak of the gamma density is at $(a-1)b$.)
+answer: 9
+unit: s
+check: (7 - 1) * 1.5
+hint: Use the peak time formula $t = (a - 1)b$.
+solution: $t = (7 - 1) \times 1.5 = 9$ s, a slower response than the usual 5 s.
+
+@practice mc
+prompt: In the monkey visual cortex, what relation was found between BOLD and neural measures in a study using simultaneous fMRI and electrical recording?
+choice*: BOLD was better predicted by local field potentials than by multi-unit spiking, though all measures correlated.
+choice: BOLD followed the spike rate of single neurons exactly.
+choice: BOLD was unrelated to any electrical measure.
+choice: BOLD reflected only inhibitory neurons.
+hint: The conclusion concerned synaptic input and population activity versus spikes.
+solution: Logothetis and colleagues found that local field potentials, reflecting input and local processing, predicted BOLD better than multi-unit spikes, so BOLD is not a direct spike counter.
+
+@practice ms
+prompt: Which of these are valid concerns about a whole-brain fMRI study that selects the 100 most active voxels and then reports their effect size in the same data?
+choice*: The effect size is inflated by selection (circular analysis).
+choice*: The same data should not both select the voxels and estimate their effect; an independent data set or cross-validation should.
+choice: BOLD cannot be measured in 100 voxels.
+choice: The effect must be a false positive.
+hint: Selecting by the result biases the result upward, even if the effect is real.
+solution: Circular analysis inflates effect sizes, and independent data fix it. A real effect can still be present, so the effect need not be a false positive.
+
+@practice code
+prompt: Write `convolve(stim, kernel)` that returns the discrete convolution of the list `stim` with the list `kernel`, truncated to `len(stim)` values: `out[n]` equals the sum over `k` of `kernel[k] * stim[n - k]` for those `k` with `0 <= n - k < len(stim)` and `k < len(kernel)`. For example, `convolve([1, 0, 0, 1, 0], [1, 2, 1])` returns `[1, 2, 1, 1, 2]`.
+starter:
+```python
+def convolve(stim, kernel):
+    return []
+```
+tests:
+```python
+assert convolve([1, 0, 0, 1, 0], [1, 2, 1]) == [1, 2, 1, 1, 2]
+assert convolve([0, 0, 0], [1, 2, 3]) == [0, 0, 0]
+assert convolve([1, 0, 0], [1, 2, 3]) == [1, 2, 3]
+assert convolve([2, 1], [1]) == [2, 1]
+assert convolve([1, 1, 1, 1], [0, 1]) == [0, 1, 1, 1]
+```
+model:
+```python
+def convolve(stim, kernel):
+    """Convolution of a stimulus sequence with a kernel, truncated."""
+    n = len(stim)
+    out = [0] * n
+    for i, s in enumerate(stim):
+        for k, h in enumerate(kernel):
+            if i + k < n:
+                out[i + k] += s * h
+    return out
+```
+hint: Each stimulus value at position `i` adds a scaled copy of the kernel starting at position `i`; ignore the part that falls beyond the end.
+solution: Viewing convolution as superposition: every event adds the kernel shifted to its time, scaled by its size. The kernel `[0, 1]` in the last test delays the stimulus by one sample, and the truncated output keeps the first `len(stim)` values.
+
+@quiz num
+prompt: In one voxel, the estimated effects of two conditions are $\hat\beta_A = 1.8$ and $\hat\beta_B = 0.6$ (percent signal change), and the standard error of their difference is $0.3$. What is the $t$ value of A minus B?
+answer: 4
+check: (1.8 - 0.6) / 0.3
+hint: The contrast numerator is the difference of the effects.
+solution: $t = (1.8 - 0.6)/0.3 = 4$.
+
+@quiz mc
+prompt: A study reports that region X was active during a moral judgment task and concludes that region X computes moral judgment. Which additional information would most improve the inference?
+choice*: How often region X is active across many other tasks, because a nonselective region makes a weak reverse inference.
+choice: Whether the BOLD signal peaked at 5 seconds.
+choice: The size of the voxels used.
+choice: Whether the task lasted more than a minute.
+hint: Think about the probability of activation when the process is not engaged.
+solution: A reverse inference depends on selectivity, that is, on $P(\text{activation} \mid \text{other tasks})$. Voxel size, HRF timing and task length do not address it.
+
+@quiz code
+prompt: Write `fit_line(x, y)` that fits `y = intercept + slope * x` by least squares for equal-length lists `x` (not constant) and `y`, and returns the tuple `(intercept, slope)`. It is the one-regressor GLM with a constant. For example, `fit_line([1, 2, 3, 4], [2, 2, 4, 4])` returns `(1.0, 0.8)`.
+starter:
+```python
+def fit_line(x, y):
+    return (0.0, 0.0)
+```
+tests:
+```python
+b0, b1 = fit_line([1, 2, 3, 4], [2, 2, 4, 4])
+assert abs(b0 - 1.0) < 1e-9 and abs(b1 - 0.8) < 1e-9
+b0, b1 = fit_line([0, 1, 2, 3], [1, 3, 5, 7])
+assert abs(b0 - 1.0) < 1e-9 and abs(b1 - 2.0) < 1e-9
+b0, b1 = fit_line([10, 11, 12], [5, 5, 5])
+assert abs(b0 - 5.0) < 1e-9 and abs(b1) < 1e-9
+b0, b1 = fit_line([-1, 1], [4, 0])
+assert abs(b0 - 2.0) < 1e-9 and abs(b1 + 2.0) < 1e-9
+```
+model:
+```python
+def fit_line(x, y):
+    """Least-squares intercept and slope of y on x."""
+    n = len(x)
+    mx = sum(x) / n
+    my = sum(y) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    sxx = sum((a - mx) ** 2 for a in x)
+    slope = sxy / sxx
+    return (my - slope * mx, slope)
+```
+hint: The slope is the covariance of x and y divided by the variance of x (centered sums); the line passes through the two means.
+solution: Center both variables, divide the cross-product sum by the sum of squares of $x$ for the slope, then get the intercept from $\bar y - \hat\beta \bar x$. A constant $y$ (third test) must give a slope of zero and an intercept equal to that constant, and the last test checks negative values of $x$.

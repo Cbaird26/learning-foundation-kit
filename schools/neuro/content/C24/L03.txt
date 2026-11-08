@@ -1,0 +1,235 @@
+@lesson
+title: Tuning curves and their fitting
+summary: Turn trials of spike counts into a tuning curve, fit a cosine tuning model in closed form and a Gaussian bump by grid search, and read off preferred stimulus and selectivity.
+objective: Compute the mean firing rate for each stimulus from trial data to get a tuning curve.
+objective: Fit the cosine tuning model $r(\theta) = b + a\cos(\theta - \theta_0)$ by least squares in closed form for equally spaced angles.
+objective: Fit one parameter of a tuning model by a grid search over the sum of squared errors, and compute a direction selectivity index.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies that relate spiking to a stimulus or a behavioral variable; for tuning curves in general, the chapter on neural encoding in Theoretical Neuroscience (Dayan and Abbott).
+
+@article
+Hubel and Wiesel (1959, 1962) found that a neuron in primary visual cortex responds best to a bar of light at one orientation and responds less and less as the bar rotates away. Plot mean firing rate against orientation and you get the neuron's **tuning curve**. It is the basic summary of what a neuron cares about, and the first thing most analyses estimate.
+
+### From trials to a tuning curve
+
+Present each stimulus value many times and count spikes in a fixed window of $T$ seconds on each trial. The tuning curve is the mean rate for each stimulus, $r(s) = \bar n(s)/T$, in hertz, where $\bar n(s)$ is the mean count over the trials with stimulus $s$. Always report the number of trials per stimulus: a mean over three trials is far less certain than a mean over thirty.
+
+### Cosine tuning
+
+For a variable on a circle, such as direction of motion in degrees, a simple model is
+
+$$r(\theta) = b + a\cos(\theta - \theta_0),$$
+
+with baseline $b$ (Hz), amplitude $a$ (Hz) and **preferred direction** $\theta_0$. Using $\cos(\theta - \theta_0) = \cos\theta_0 \cos\theta + \sin\theta_0 \sin\theta$, write the model as linear in three numbers,
+
+$$r(\theta) = b + c_1\cos\theta + c_2\sin\theta, \qquad c_1 = a\cos\theta_0,\ c_2 = a\sin\theta_0 .$$
+
+Fit them by **least squares**, minimizing $\sum_i \big(r_i - b - c_1\cos\theta_i - c_2\sin\theta_i\big)^2$. When the $N \ge 3$ angles are equally spaced around the full circle, $\sum_i \cos\theta_i = \sum_i \sin\theta_i = 0$, $\sum_i \cos^2\theta_i = \sum_i \sin^2\theta_i = N/2$ and $\sum_i \cos\theta_i \sin\theta_i = 0$, so the normal equations separate and the solution is
+
+$$b = \frac{1}{N}\sum_i r_i, \quad c_1 = \frac{2}{N}\sum_i r_i \cos\theta_i, \quad c_2 = \frac{2}{N}\sum_i r_i \sin\theta_i,$$
+
+then $a = \sqrt{c_1^2 + c_2^2}$ and $\theta_0 = \operatorname{atan2}(c_2, c_1)$, taken in $[0^\circ, 360^\circ)$. For eight directions $0^\circ, 45^\circ, \dots, 315^\circ$ and mean rates $12, 19, 22, 15, 8, 4, 3, 6$ Hz, the fit is $b = 11.125$ Hz, $a = 9.23$ Hz, $\theta_0 = 77.1^\circ$. The raw maximum is at $90^\circ$ (22 Hz), but the fit uses all eight points, so it places the peak between the sampled directions.
+
+```python
+import math
+
+
+def cosine_fit(angles_deg, rates):
+    """Closed-form fit of b + a*cos(theta - theta0) for equally spaced angles.
+
+    Returns (b, a, theta0_deg) with theta0 in [0, 360).
+    """
+    n = len(rates)
+    b = sum(rates) / n
+    c1 = 2 / n * sum(r * math.cos(math.radians(t)) for t, r in zip(angles_deg, rates))
+    c2 = 2 / n * sum(r * math.sin(math.radians(t)) for t, r in zip(angles_deg, rates))
+    return b, math.hypot(c1, c2), math.degrees(math.atan2(c2, c1)) % 360
+```
+
+If the angles are not equally spaced, the sums no longer separate and you solve a $3 \times 3$ linear system instead; NumPy's `numpy.linalg.lstsq` does that in one call.
+
+### Grid search for a nonlinear parameter
+
+A bump-shaped tuning curve for a variable on a line, such as stimulus position, is often modeled by a Gaussian,
+
+$$r(s) = b + A\, e^{-(s - c)^2/(2\sigma^2)},$$
+
+which is **nonlinear** in the center $c$ and width $\sigma$, so there is no closed form. A **grid search** evaluates the sum of squared errors $\mathrm{SSE}(c) = \sum_i (r_i - r(s_i; c))^2$ on a list of candidate values and keeps the best. It is slow in many dimensions but transparent in one or two, and with a fixed grid the answer is only as fine as the grid. Ties go to the first candidate in the list.
+
+### Summaries of selectivity
+
+The preferred stimulus is the argmax of the fitted curve. Two summaries of selectivity are common. The **modulation depth** is $(r_{\max} - r_{\min})/(r_{\max} + r_{\min})$. For direction tuning, the **direction selectivity index** compares the preferred direction with the opposite one: $\mathrm{DSI} = (R_{\text{pref}} - R_{\text{null}})/(R_{\text{pref}} + R_{\text{null}})$, which is 0 for a neuron that responds equally to both and 1 for a neuron silent in the null direction.
+
+### Limits
+
+A tuning curve measured with one stimulus dimension is a slice of a higher-dimensional response: change contrast, size or speed, and the curve changes. Cosine tuning cannot represent a neuron with two peaks (an axis-tuned neuron), and the fit gives no information about trial-to-trial variability, the subject of the next lesson.
+
+@example
+title: Fitting four directions
+problem: A neuron's mean rates at $0^\circ, 90^\circ, 180^\circ, 270^\circ$ are $6, 16, 6, 2$ Hz. Fit $b + a\cos(\theta - \theta_0)$ and predict the rate at $45^\circ$.
+step: The baseline is the mean: $b = (6 + 16 + 6 + 2)/4 = 7.5$ Hz.
+step: Compute $c_1 = \tfrac{2}{4}(6\cos 0^\circ + 16\cos 90^\circ + 6\cos 180^\circ + 2\cos 270^\circ) = \tfrac12(6 + 0 - 6 + 0) = 0$.
+step: Compute $c_2 = \tfrac{2}{4}(6\sin 0^\circ + 16\sin 90^\circ + 6\sin 180^\circ + 2\sin 270^\circ) = \tfrac12(0 + 16 + 0 - 2) = 7$.
+step: So $a = \sqrt{0 + 49} = 7$ Hz and $\theta_0 = \operatorname{atan2}(7, 0) = 90^\circ$. The predicted rate at $45^\circ$ is $7.5 + 7\cos(45^\circ - 90^\circ) = 7.5 + 7(0.7071) = 12.45$ Hz.
+answer: $b = 7.5$ Hz, $a = 7$ Hz, $\theta_0 = 90^\circ$; the prediction at $45^\circ$ is $12.45$ Hz.
+
+@mistakes
+- Mixing degrees and radians: `math.cos` takes radians, so convert angles with `math.radians` first.
+- Using the closed-form fit when the angles are unequally spaced or cover only part of the circle: the sums no longer vanish and the answer is wrong.
+- Reading the preferred direction as the stimulus with the highest observed rate when the data are noisy; a fit that uses all points is usually more stable.
+- Treating a tuning curve as a complete description of the neuron: it depends on the other stimulus parameters, which were held fixed.
+
+@practice num
+prompt: A neuron's mean rates at $0^\circ, 90^\circ, 180^\circ, 270^\circ$ are $8, 15, 12, 5$ Hz. Using the closed-form cosine fit, what is the preferred direction $\theta_0$, in degrees in $[0, 360)$, to one decimal place?
+answer: 111.8
+unit: degrees
+tol: 0.1
+check: math.degrees(math.atan2(2 / 4 * (15 - 5), 2 / 4 * (8 - 12))) % 360
+hint: Compute $c_1 = \tfrac{2}{4}(r_0 - r_{180})$ and $c_2 = \tfrac{2}{4}(r_{90} - r_{270})$ and take $\operatorname{atan2}(c_2, c_1)$.
+solution: $c_1 = \tfrac12(8 - 12) = -2$ and $c_2 = \tfrac12(15 - 5) = 5$. The angle of the point $(-2, 5)$ is $\operatorname{atan2}(5, -2) = 111.8^\circ$, in the second quadrant.
+
+@practice mc
+prompt: A neuron fires $20$ Hz at $0^\circ$, $5$ Hz at $90^\circ$, $20$ Hz at $180^\circ$ and $5$ Hz at $270^\circ$. Which description fits its tuning?
+choice*: It is tuned to an axis (orientation) but not to direction, because it responds equally to $0^\circ$ and $180^\circ$.
+choice: It is strongly direction selective, because the rate at $0^\circ$ is high.
+choice: It is untuned, because the mean rate over the four directions is above zero.
+choice: It is tuned to $90^\circ$ because that direction lies between the two peaks.
+hint: Compare the rate at the best direction with the rate at the opposite direction.
+solution: The responses at $0^\circ$ and $180^\circ$ are equal, so the direction selectivity index is 0, while the responses at $90^\circ$ and $270^\circ$ are lower: the neuron prefers a stimulus axis. A single cosine cannot describe this two-peaked curve.
+
+@practice code
+prompt: Write `mean_rates_by_stimulus(stims, counts, T)` where `stims[i]` is the stimulus value on trial `i`, `counts[i]` the spike count in a window of `T` seconds on that trial. Return a list of `(stimulus, mean_rate_hz)` pairs sorted by stimulus value, where the mean rate for a stimulus is the mean count over its trials divided by `T`. For example, `mean_rates_by_stimulus([90, 0, 90, 0, 45], [10, 2, 14, 4, 6], 0.5)` returns `[(0, 6.0), (45, 12.0), (90, 24.0)]`.
+starter:
+```python
+def mean_rates_by_stimulus(stims, counts, T):
+    pass
+```
+tests:
+```python
+got = mean_rates_by_stimulus([90, 0, 90, 0, 45], [10, 2, 14, 4, 6], 0.5)
+assert [s for s, _ in got] == [0, 45, 90]
+assert all(abs(r - w) < 1e-9 for (_, r), w in zip(got, [6.0, 12.0, 24.0]))
+got = mean_rates_by_stimulus([3], [0], 2.0)
+assert got == [(3, 0.0)]
+got = mean_rates_by_stimulus([10, 5, 10, 5, 10], [4, 1, 5, 2, 9], 0.25)
+assert [s for s, _ in got] == [5, 10]
+assert abs(got[0][1] - 6.0) < 1e-9 and abs(got[1][1] - 24.0) < 1e-9
+assert mean_rates_by_stimulus([], [], 1.0) == []
+```
+model:
+```python
+def mean_rates_by_stimulus(stims, counts, T):
+    """Tuning curve: mean spike count per stimulus divided by T, sorted."""
+    groups = {}
+    for s, n in zip(stims, counts):
+        groups.setdefault(s, []).append(n)
+    return [(s, sum(v) / len(v) / T) for s, v in sorted(groups.items())]
+```
+hint: Collect the counts for each stimulus value in a dictionary of lists, then average each list and divide by the window length.
+solution: Grouping by stimulus value, taking the mean of each group (not the mean of all counts) and dividing by $T$ gives the rate in hertz. With three stimuli observed on unequal numbers of trials, a pooled mean would weight stimuli by how often they were shown, which is wrong.
+
+@practice code
+prompt: A neuron's tuning for stimulus position (degrees) is modeled by $r(s) = b + A\,e^{-(s-c)^2/(2\sigma^2)}$ with known $b$, $A$ and $\sigma$. Write `fit_center(stims, rates, b, amp, sigma, grid)` that returns the value `c` from the list `grid` that minimizes the sum of squared errors between `rates` and the model at `stims`. If two grid values tie exactly, return the first in the list. For example, with data generated from $b = 2$, $A = 20$, $\sigma = 15$ and $c = 8$, a grid of the integers from $-30$ to $30$ returns `8`.
+starter:
+```python
+def fit_center(stims, rates, b, amp, sigma, grid):
+    pass
+```
+tests:
+```python
+import math
+
+
+def gen(c):
+    return [2 + 20 * math.exp(-(s - c) ** 2 / (2 * 15 ** 2)) for s in [-40, -20, 0, 20, 40]]
+
+
+stims = [-40, -20, 0, 20, 40]
+assert fit_center(stims, gen(8), 2, 20, 15, list(range(-30, 31))) == 8
+assert fit_center(stims, gen(-5), 2, 20, 15, list(range(-30, 31))) == -5
+assert fit_center(stims, gen(8), 2, 20, 15, list(range(-30, 31, 10))) == 10
+noisy = [3.5, 9.0, 20.5, 12.0, 2.5]
+assert fit_center(stims, noisy, 2, 20, 15, list(range(-30, 31))) == 2
+assert fit_center([0], [2.0], 2, 0.0, 15, [7, 3]) == 7
+```
+model:
+```python
+import math
+
+
+def fit_center(stims, rates, b, amp, sigma, grid):
+    """Grid search for the Gaussian center with the smallest SSE."""
+    best, best_sse = None, None
+    for c in grid:
+        sse = 0.0
+        for s, r in zip(stims, rates):
+            pred = b + amp * math.exp(-(s - c) ** 2 / (2 * sigma ** 2))
+            sse += (r - pred) ** 2
+        if best_sse is None or sse < best_sse:
+            best, best_sse = c, sse
+    return best
+```
+hint: Loop over the candidate centers, compute the SSE for each, and keep the candidate with the smallest value, replacing the best only on a strictly smaller SSE.
+solution: Replacing the best only when the SSE is strictly smaller keeps the first of any exact ties (the last test, where the amplitude is 0, makes every candidate tie). The third test shows the grid's limit: the true center 8 is not on the coarse grid, so the nearest grid value, 10, is returned.
+
+@practice text
+prompt: What does this program print?
+```python
+import math
+angles = [0, 90, 180, 270]
+rates = [3, 12, 5, 2]
+c2 = 2 / 4 * sum(r * math.sin(math.radians(a)) for a, r in zip(angles, rates))
+print(round(c2, 2))
+```
+answer: 5.0
+check: run("import math\nangles = [0, 90, 180, 270]\nrates = [3, 12, 5, 2]\nc2 = 2 / 4 * sum(r * math.sin(math.radians(a)) for a, r in zip(angles, rates))\nprint(round(c2, 2))")
+hint: Only the $90^\circ$ and $270^\circ$ terms matter, with sines $+1$ and $-1$.
+solution: The sines are about $0, 1, 0, -1$, so the sum is $12 - 2 = 10$ and $c_2 = \tfrac12 \times 10 = 5$. The program prints `5.0`.
+
+@quiz code
+prompt: Write `direction_selectivity(rates)` for mean rates at $n$ equally spaced directions around the circle ($n$ even; the entries are in order of increasing angle). The preferred direction is the index of the largest rate (the first, if tied) and the null direction is the opposite one, $n/2$ entries further around, wrapping at the end. Return $(R_{\text{pref}} - R_{\text{null}})/(R_{\text{pref}} + R_{\text{null}})$, or `0.0` if the denominator is 0. For example, `direction_selectivity([20, 5, 20, 5])` returns `0.0`.
+starter:
+```python
+def direction_selectivity(rates):
+    pass
+```
+tests:
+```python
+assert abs(direction_selectivity([30, 22, 10, 6, 5, 6, 10, 22]) - 25 / 35) < 1e-9
+assert abs(direction_selectivity([12, 19, 22, 15, 8, 4, 3, 6]) - 19 / 25) < 1e-9
+assert direction_selectivity([20, 5, 20, 5]) == 0.0
+assert direction_selectivity([0, 0, 0, 0]) == 0.0
+assert abs(direction_selectivity([1, 2, 9, 3, 7, 0]) - 9 / 9) < 1e-9
+assert abs(direction_selectivity([7, 8, 9, 10, 11, 20, 3, 4]) - 12 / 28) < 1e-9
+```
+model:
+```python
+def direction_selectivity(rates):
+    """(R_pref - R_null) / (R_pref + R_null) for evenly spaced directions."""
+    n = len(rates)
+    pref = rates.index(max(rates))
+    null = (pref + n // 2) % n
+    total = rates[pref] + rates[null]
+    if total == 0:
+        return 0.0
+    return (rates[pref] - rates[null]) / total
+```
+hint: Find the index of the maximum, add half the list length with wraparound, and form the ratio after checking for a zero denominator.
+solution: The wraparound `(pref + n // 2) % n` finds the opposite direction even when the preferred index is in the second half of the list: in the last test the maximum is at index 5, whose null is index 1 (rate 8), giving $12/28$. In the fifth test the null rate is 0, so the index is 1.
+
+@quiz num
+prompt: Eight directions $0^\circ, 45^\circ, \dots, 315^\circ$ give mean rates $5, 9, 16, 22, 14, 8, 4, 3$ Hz. Using the closed-form cosine fit, what is the amplitude $a$, in hertz, to two decimal places?
+answer: 8.5
+unit: Hz
+tol: 0.01
+check: math.hypot(2 / 8 * sum(r * math.cos(math.radians(45 * k)) for k, r in enumerate([5, 9, 16, 22, 14, 8, 4, 3])), 2 / 8 * sum(r * math.sin(math.radians(45 * k)) for k, r in enumerate([5, 9, 16, 22, 14, 8, 4, 3])))
+hint: Compute $c_1$ and $c_2$ as $\tfrac{2}{8}$ times the sums of $r_i\cos\theta_i$ and $r_i\sin\theta_i$, then $a = \sqrt{c_1^2 + c_2^2}$.
+solution: The sums give $c_1 = -5.43$ and $c_2 = 6.54$, so $a = \sqrt{29.5 + 42.7} = 8.50$ Hz. The preferred direction is $\operatorname{atan2}(6.54, -5.43) \approx 129.7^\circ$.
+
+@quiz mc
+prompt: You fit $b + a\cos(\theta - \theta_0)$ in closed form to a neuron with mean rates $20, 5, 20, 5$ Hz at $0^\circ, 90^\circ, 180^\circ, 270^\circ$. What does the fit return?
+choice*: An amplitude of 0 and a flat curve at 12.5 Hz, because a one-peaked cosine cannot represent two equal peaks.
+choice: An amplitude of 15 Hz with preferred direction $0^\circ$.
+choice: An amplitude of 7.5 Hz with preferred direction $90^\circ$.
+choice: An error, because the angles are equally spaced.
+hint: Compute $c_1$ from the rates at $0^\circ$ and $180^\circ$, and $c_2$ from the rates at $90^\circ$ and $270^\circ$.
+solution: Here $c_1 = \tfrac12(20 - 20) = 0$ and $c_2 = \tfrac12(5 - 5) = 0$, so $a = 0$ and $b = 12.5$ Hz. The neuron is strongly modulated, but by a $\cos 2\theta$ pattern that the one-lobed model cannot express: a poor fit does not mean a poorly tuned neuron.

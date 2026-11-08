@@ -1,0 +1,230 @@
+@lesson
+title: Spike-train statistics and the Poisson model
+summary: Measure the variability of spike counts and intervals with the Fano factor and the coefficient of variation, and use the Poisson model to generate spikes and to fit a rate by maximum likelihood.
+objective: Compute the Fano factor of spike counts and the coefficient of variation of interspike intervals, and say what a value of 1 means.
+objective: Evaluate Poisson probabilities and the Poisson log-likelihood of spike counts, and find the maximum-likelihood rate.
+objective: Generate a homogeneous Poisson spike train from supplied uniform random numbers.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case studies on point process models of spiking; for the Poisson spike model, the chapter on spike trains in Theoretical Neuroscience (Dayan and Abbott).
+
+@article
+Show the same stimulus twice and a cortical neuron rarely fires the same number of spikes. Is this variability random noise around a fixed rate, and if so, what kind of randomness? The simplest answer is that spikes occur independently at a constant rate: the **homogeneous Poisson process**. It is a baseline model, and testing how far real neurons depart from it is a standard first analysis.
+
+### Counts: mean, variance and the Fano factor
+
+Count spikes in a window of $T$ seconds on $N$ trials, giving counts $n_1, \dots, n_N$. The mean is $\bar n$ and the **sample variance** (divisor $N - 1$) is $s^2$. The **Fano factor** is
+
+$$F = \frac{s^2}{\bar n}.$$
+
+For a Poisson process with rate $\lambda$ (Hz), the count in $T$ seconds follows the **Poisson distribution** with mean $\mu = \lambda T$:
+
+$$P(n) = \frac{\mu^n e^{-\mu}}{n!}, \qquad \mathbb{E}[n] = \operatorname{Var}(n) = \mu,$$
+
+so $F = 1$. Counts more regular than Poisson give $F < 1$ (a refractory period does this); counts that vary more give $F > 1$ (a rate that drifts from trial to trial does this, as do bursts). Because $F$ is computed from a finite sample, it scatters around its true value: for roughly Poisson counts with a moderate mean, its standard error is about $\sqrt{2/(N - 1)}$, so with five trials a value of $0.6$ or $1.5$ is not strong evidence against Poisson.
+
+```python
+import math
+
+
+def fano(counts):
+    """Fano factor with the sample variance (divisor N - 1)."""
+    n = len(counts)
+    mean = sum(counts) / n
+    var = sum((c - mean) ** 2 for c in counts) / (n - 1)
+    return var / mean
+
+
+def poisson_pmf(k, mu):
+    """P(n = k) for a Poisson count with mean mu."""
+    return mu ** k * math.exp(-mu) / math.factorial(k)
+```
+
+### Intervals: the coefficient of variation
+
+For a homogeneous Poisson process the interspike intervals are independent and **exponentially distributed** with mean $1/\lambda$ and standard deviation $1/\lambda$. The **coefficient of variation** of the ISIs,
+
+$$\mathrm{CV} = \frac{\text{standard deviation of ISIs}}{\text{mean of ISIs}},$$
+
+is therefore 1 for a Poisson train, near 0 for a clock-like regular neuron, and above 1 for bursty firing. Compute the ISIs inside each trial and pool them; an interval that spans two trials is not an ISI. Because the exponential distribution has many very short intervals, the Poisson model fails at short times for a real neuron: the refractory period forbids spikes within about 1 to 2 ms.
+
+### Generating a Poisson train
+
+If $u$ is uniform on $(0, 1)$, then $-\ln(u)/\lambda$ is exponentially distributed with mean $1/\lambda$. So a Poisson train starts at 0, adds $-\ln(u_i)/\lambda$ for each successive random number $u_i$, and stops at the end of the window. To keep analyses reproducible, supply the random numbers as a list (for example from `random.Random(seed)`) rather than drawing them inside the function.
+
+### The likelihood and the maximum-likelihood rate
+
+Given counts $n_i$ from trials of length $T$, and assuming independent Poisson counts with rate $\lambda$, the **log-likelihood** is
+
+$$\ell(\lambda) = \sum_{i=1}^{N}\Big[n_i \ln(\lambda T) - \lambda T - \ln(n_i!)\Big].$$
+
+Setting $d\ell/d\lambda = \sum_i (n_i/\lambda - T) = 0$ gives the **maximum-likelihood estimate** (MLE)
+
+$$\hat\lambda = \frac{\sum_i n_i}{N T},$$
+
+the pooled mean rate. For the counts $4, 7, 3, 5, 9, 2$ with $T = 0.5$ s, $\hat\lambda = 30/3 = 10$ Hz and $\ell(10) = -13.49$; any other rate gives a lower log-likelihood. A likelihood is a function of the rate for fixed data, not a probability of the rate.
+
+### Testing the assumption
+
+To test Poisson spiking in a tuning experiment, compute $F$ separately for each stimulus (the mean count changes with the stimulus, so pooling across stimuli inflates the variance), and compare with 1, remembering the sampling scatter. Real cortical neurons often give $F$ near or somewhat above 1 for counts in windows of a few hundred milliseconds, but the value depends on the neuron, the window and the stimulus, so measure it.
+
+@example
+title: Is this count variability Poisson?
+problem: A neuron fires $6, 3, 4, 5, 2$ spikes in the same 1 s window on five trials. Compute the Fano factor and decide whether it is clearly different from 1. Then give the Poisson probability of exactly $4$ spikes if the true mean count is $4$.
+step: The mean is $\bar n = (6 + 3 + 4 + 5 + 2)/5 = 4$. The deviations are $2, -1, 0, 1, -2$, with squares $4, 1, 0, 1, 4$, which sum to $10$.
+step: The sample variance uses divisor $N - 1 = 4$, so $s^2 = 10/4 = 2.5$ and $F = 2.5/4 = 0.625$.
+step: The standard error of $F$ is about $\sqrt{2/4} = 0.71$, so $F = 0.625$ is only about half a standard error below 1. Five trials cannot distinguish this from Poisson variability.
+step: The probability of exactly 4 spikes at mean 4 is $4^4 e^{-4}/4! = 256 \times 0.018316/24 = 0.1954$.
+answer: $F = 0.625$, not clearly different from 1 with five trials; $P(4) \approx 0.195$.
+
+@mistakes
+- Computing the Fano factor from counts pooled over different stimuli, which mixes real rate differences into the variance.
+- Using the population variance (divisor $N$) in one place and the sample variance in another; state the divisor and keep it.
+- Reading $\mathrm{CV} \approx 1$ as proof of Poisson spiking: a train can have exponential-looking ISIs yet have a rate that changes over time, which a constant-rate Poisson model cannot capture.
+- Computing ISIs across the boundary between two trials.
+
+@practice num
+prompt: A neuron fires as a homogeneous Poisson process at $8$ Hz. What is the probability of observing no spikes in a $0.25$ s window? Give your answer to three decimal places.
+answer: 0.135
+tol: 0.001
+check: exp(-8 * 0.25)
+hint: The mean count is $\mu = \lambda T$; the probability of $n = 0$ is $e^{-\mu}$.
+solution: $\mu = 8 \times 0.25 = 2$, so $P(0) = e^{-2} = 0.1353$.
+
+@practice mc
+prompt: Spike counts over many trials of the same stimulus have mean 10 and a Fano factor of 0.4. Which statement is correct?
+choice*: The counts are more regular than Poisson counts would be; a refractory period or other regularizing mechanism could produce this.
+choice: The counts are more variable than Poisson counts, so the neuron bursts.
+choice: The counts are Poisson, because the mean count is positive.
+choice: The variance is 0.4, so the counts are nearly constant.
+hint: Write the variance in terms of $F$ and the mean, and compare with the Poisson case, where variance equals mean.
+solution: The variance is $F \times \text{mean} = 4$, below the Poisson value of 10, so the counts are sub-Poisson, more regular than a Poisson process. A variance of 4 is not "nearly constant" because the mean is 10.
+
+@practice code
+prompt: Write `poisson_train(us, rate_hz, t_max)` that builds a homogeneous Poisson spike train from the supplied random numbers `us` (each strictly between 0 and 1). Start at time 0 s; for each `u` in order, add the interval `-ln(u) / rate_hz` (in seconds) to the running time; if the new time is less than `t_max`, record it as a spike, otherwise stop. If `us` runs out first, stop. Return the list of spike times in seconds. For example, `poisson_train([0.5] * 10, 10.0, 0.5)` returns 7 spikes, spaced about 0.0693 s apart.
+starter:
+```python
+def poisson_train(us, rate_hz, t_max):
+    pass
+```
+tests:
+```python
+got = poisson_train([0.5] * 10, 10.0, 0.5)
+assert len(got) == 7
+assert abs(got[0] - 0.0693147) < 1e-6 and abs(got[-1] - 0.4852030) < 1e-6
+assert len(poisson_train([0.5] * 3, 10.0, 5.0)) == 3
+assert poisson_train([0.001], 10.0, 0.5) == []
+assert poisson_train([], 10.0, 1.0) == []
+got = poisson_train([0.9, 0.2, 0.7, 0.4, 0.05], 20.0, 0.2)
+assert all(b > a for a, b in zip(got, got[1:])) and all(0 < t < 0.2 for t in got)
+assert len(got) == 4
+```
+model:
+```python
+import math
+
+
+def poisson_train(us, rate_hz, t_max):
+    """Spike times (s) of a homogeneous Poisson process from uniforms."""
+    t, spikes = 0.0, []
+    for u in us:
+        t += -math.log(u) / rate_hz
+        if t >= t_max:
+            break
+        spikes.append(t)
+    return spikes
+```
+hint: Keep a running time. For each random number, add its exponential interval, and stop as soon as the time reaches `t_max`.
+solution: The intervals are cumulative, so the running time must be updated before the check. With `u = 0.5` the interval is $\ln 2/10 = 0.0693$ s, and the eighth spike would fall at $0.5545$ s, beyond the window. In the last test the fifth spike would fall at about $0.30$ s, beyond the 0.2 s window, so only four are kept.
+
+@practice code
+prompt: Write `cv_isi(trials)` where `trials` is a list of spike trains (sorted spike times in seconds, one list per trial). Pool the interspike intervals computed **within** each trial and return their coefficient of variation: the sample standard deviation (divisor $n - 1$) divided by the mean. If fewer than two ISIs exist in total, return `None`. For example, `cv_isi([[0.0, 0.1, 0.3]])` returns about `0.4714`.
+starter:
+```python
+def cv_isi(trials):
+    pass
+```
+tests:
+```python
+assert abs(cv_isi([[0.0, 0.1, 0.3]]) - 0.4714045) < 1e-6
+got = cv_isi([[0.0, 0.1, 0.3], [1.0, 1.05, 1.2, 1.5]])
+assert abs(got - 0.6011058) < 1e-6
+assert cv_isi([[0.5, 0.6]]) is None
+assert cv_isi([[0.5], [], [0.7, 0.9]]) is None
+assert abs(cv_isi([[0.0, 0.2, 0.4, 0.6, 0.8]])) < 1e-9
+```
+model:
+```python
+import math
+
+
+def cv_isi(trials):
+    """Coefficient of variation of ISIs pooled within trials."""
+    isis = []
+    for spikes in trials:
+        isis.extend(b - a for a, b in zip(spikes, spikes[1:]))
+    if len(isis) < 2:
+        return None
+    mean = sum(isis) / len(isis)
+    var = sum((x - mean) ** 2 for x in isis) / (len(isis) - 1)
+    return math.sqrt(var) / mean
+```
+hint: Build the interval list trial by trial, so no interval joins two trials, then take the standard deviation over the mean.
+solution: The second test pools the intervals $0.1, 0.2, 0.05, 0.15, 0.3$; including the false interval $0.7$ between the trials would change the result. A perfectly regular train has CV 0, the fifth test.
+
+@practice num
+prompt: A neuron's spike counts in five trials of $0.2$ s each are $4, 1, 0, 3, 2$. Assuming Poisson counts, what is the maximum-likelihood firing rate, in hertz?
+answer: 10
+unit: Hz
+check: sum([4, 1, 0, 3, 2]) / (5 * 0.2)
+hint: The MLE is the total count divided by the total observation time.
+solution: The total count is 10 over $5 \times 0.2 = 1.0$ s of observation, so $\hat\lambda = 10$ Hz.
+
+@quiz code
+prompt: Write `poisson_loglik(counts, rate_hz, T)` that returns the Poisson log-likelihood (natural logarithm) of the list of spike counts, each from a window of `T` seconds, for a constant rate `rate_hz` in Hz: the sum over trials of $n\ln\mu - \mu - \ln(n!)$ with $\mu = $ `rate_hz * T`. Compute $\ln(n!)$ as a sum of logarithms (not with `math.lgamma`). Assume `rate_hz > 0`. For example, `poisson_loglik([0], 10.0, 0.1)` returns `-1.0`.
+starter:
+```python
+def poisson_loglik(counts, rate_hz, T):
+    pass
+```
+tests:
+```python
+assert abs(poisson_loglik([0], 10.0, 0.1) + 1.0) < 1e-9
+assert abs(poisson_loglik([3, 5, 2, 6], 8.0, 0.5) + 7.6709398) < 1e-6
+assert abs(poisson_loglik([3, 5, 2, 6], 4.0, 0.5) + 10.7612947) < 1e-6
+assert abs(poisson_loglik([2, 0, 1], 6.0, 0.25) + 3.9767519) < 1e-6
+best = poisson_loglik([3, 5, 2, 6], 8.0, 0.5)
+assert best > poisson_loglik([3, 5, 2, 6], 7.5, 0.5)
+assert best > poisson_loglik([3, 5, 2, 6], 8.5, 0.5)
+```
+model:
+```python
+import math
+
+
+def poisson_loglik(counts, rate_hz, T):
+    """Log-likelihood of Poisson counts with mean rate_hz * T per trial."""
+    mu = rate_hz * T
+    total = 0.0
+    for n in counts:
+        log_fact = sum(math.log(i) for i in range(2, n + 1))
+        total += n * math.log(mu) - mu - log_fact
+    return total
+```
+hint: For each count compute $n\ln\mu - \mu - \ln(n!)$, where $\ln(n!)$ is the sum of $\ln i$ for $i$ from 2 to $n$, then add over trials.
+solution: A zero count contributes $-\mu$ only, since $0 \cdot \ln\mu = 0$ and $\ln 0! = 0$. The last two tests confirm that the log-likelihood peaks at the MLE, $16/(4 \times 0.5) = 8$ Hz.
+
+@quiz num
+prompt: Spike counts on five trials of one stimulus are $10, 14, 12, 8, 16$. What is the Fano factor, using the sample variance (divisor $N - 1$), to two decimal places?
+answer: 0.83
+tol: 0.01
+check: sum((c - 12) ** 2 for c in [10, 14, 12, 8, 16]) / 4 / 12
+hint: Find the mean, the sum of squared deviations, divide by $N - 1$, and then by the mean.
+solution: The mean is 12 and the squared deviations are $4, 4, 0, 16, 16$, summing to 40. The sample variance is $40/4 = 10$ and $F = 10/12 = 0.83$.
+
+@quiz mc
+prompt: Across trials of one stimulus, a neuron has a Fano factor of 1.8 for counts in a 500 ms window, with mean count 20. Which explanation is consistent with this?
+choice*: The neuron's underlying rate fluctuates from trial to trial, so counts vary more than a constant-rate Poisson process predicts.
+choice: A long absolute refractory period makes spiking more regular than Poisson.
+choice: The counts must be Poisson, because a Poisson process has a count variance that grows with the mean.
+choice: The mean count is too high for the Fano factor to be defined.
+hint: A Fano factor above 1 means the variance exceeds the mean; ask which mechanisms add variability.
+solution: The variance is about $1.8 \times 20 = 36$, above the Poisson value of 20. A rate that changes from trial to trial (from fluctuating attention or arousal, for example) or bursting adds variance. Refractoriness lowers $F$ below 1, and a Poisson process would give $F = 1$ at any mean.

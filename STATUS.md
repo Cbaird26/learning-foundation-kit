@@ -95,16 +95,16 @@ tasks with volunteers who agree, and no project involves animals.
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
 | C11 | Introduction to neuroscience: brain and behavior | 13/13 | yes | yes |
-| C12 | Cellular and molecular neuroscience | 13/13 | yes |  |
+| C12 | Cellular and molecular neuroscience | 13/13 | yes | yes |
 | C13 | Neuroanatomy and functional systems | 13/13 | yes | yes |
 | C14 | Cognitive psychology | 13/13 | yes | yes |
 | C15 | Statistics and experimental design for brain and behavioral science | 13/13 | yes | yes |
-| C16 | Sensation, perception and psychophysics | 6/13 |  |  |
-| C17 | Learning, memory and plasticity | 7/13 |  |  |
-| C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 6/13 |  |  |
-| C19 | Cognitive neuroscience | 4/13 |  |  |
-| C20 | Language and cognitive development | 3/13 |  |  |
-| C24 | Neural data analysis | 0/13 |  |  |
+| C16 | Sensation, perception and psychophysics | 10/13 |  |  |
+| C17 | Learning, memory and plasticity | 10/13 |  |  |
+| C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 11/13 |  |  |
+| C19 | Cognitive neuroscience | 10/13 |  |  |
+| C20 | Language and cognitive development | 10/13 |  |  |
+| C24 | Neural data analysis | 4/13 |  |  |
 | C25 | Computational neuroscience | 0/13 |  |  |
 | C26 | Computational cognitive modeling | 0/13 |  |  |
 | C27 | Neuroimaging methods: fMRI, EEG and MEG | 0/13 |  |  |
@@ -171,3 +171,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: C15 written and in review; C19 started
 - 2026-11-08: C14 reviewed; C20 started
 - 2026-11-08: C12 written and in review; C15 reviewed with follow-up; C24 started
+- 2026-11-08: C12 reviewed with follow-ups

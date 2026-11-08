@@ -1,0 +1,259 @@
+@lesson
+title: Peristimulus time histograms and smoothing
+summary: Build a peristimulus time histogram from trials of spike times and smooth it with a normalized kernel, stating every convention.
+objective: Compute a PSTH in hertz from trials of spike times with half-open bins.
+objective: Smooth a PSTH with a boxcar or a normalized Gaussian kernel and explain how the width trades bias against noise.
+objective: Estimate the uncertainty of each PSTH bin across trials and find a response latency.
+reading: Case Studies in Neural Data Analysis (Kramer and Eden, Python edition): look up the case study on spike trains and the histogram of spikes in time bins.
+
+@article
+A neuron fires a different number of spikes on every repetition of the same stimulus, and a single raster row is too sparse to show how its firing changes in time. Average over trials, and the pattern appears. The **peristimulus time histogram** (PSTH) is the oldest and still the most common way to do this: align all trials to the stimulus, count the spikes in time bins, and divide by what you counted over.
+
+### Conventions
+
+In this lesson spike times are in **milliseconds** (ms), measured from the start of the analysis window. Choose a start $t_s$, a stop $t_e$ and a **bin width** $w$ (ms) that divides $t_e - t_s$. Bin $k$ (counting from 0) is the half-open interval $[t_s + k w,\ t_s + (k+1) w)$. A spike exactly on an internal edge belongs to the bin that starts there, and a spike exactly at $t_e$ (or later, or before $t_s$) is ignored. The bin index of a spike is therefore $\lfloor (t - t_s)/w \rfloor$; with integer milliseconds, integer division `(t - t_s) // w` computes it exactly.
+
+With $N$ trials and total count $c_k$ in bin $k$, the PSTH is
+
+$$r_k = \frac{c_k}{N \, w/1000} \quad \text{(Hz)},$$
+
+the mean rate in the bin, since $w/1000$ is the bin width in seconds. Take three trials in $[0, 400)$ ms with $w = 100$ ms: trial 1 at $30, 80, 120, 150, 310$; trial 2 at $50, 110, 130, 340, 360$; trial 3 at $90, 100, 140, 180, 330$. The spike at 100 ms starts bin 1. The counts are $4, 7, 0, 4$, so $r = (13.3,\ 23.3,\ 0,\ 13.3)$ Hz.
+
+```python
+def psth(trials, t_start, t_stop, bin_ms):
+    """PSTH in Hz; spike times in ms, half-open bins."""
+    n_bins = (t_stop - t_start) // bin_ms
+    counts = [0] * n_bins
+    for spikes in trials:
+        for t in spikes:
+            if t_start <= t < t_stop:
+                counts[(t - t_start) // bin_ms] += 1
+    return [c / (len(trials) * bin_ms / 1000) for c in counts]
+```
+
+### Bin width and the bias-variance trade-off
+
+The bin width is a choice, not a fact about the neuron. Narrow bins give fine timing but few spikes per bin, so $r_k$ is noisy. Wide bins give stable estimates but blur real changes. If counts in a bin are roughly Poisson, the relative standard error of $r_k$ is about $1/\sqrt{c_k}$.
+
+### Smoothing with a kernel
+
+Instead of one rigid bin choice, **smooth** the PSTH by replacing each value with a weighted average of its neighbors. A **kernel** $g_j$ for offsets $j = -m, \dots, m$ (in bins) is **normalized** if $\sum_j g_j = 1$. The smoothed value is
+
+$$\tilde r_k = \sum_{j=-m}^{m} g_j \, r_{k+j},$$
+
+with values outside the list treated as 0 (**zero padding**), so values near the ends are pulled down. Two common kernels: the **boxcar** of odd width $2m+1$ with $g_j = 1/(2m+1)$, and the **Gaussian** with standard deviation $\sigma$ bins, $g_j \propto e^{-j^2/(2\sigma^2)}$ for $|j| \le m$, divided by the sum of these weights. For $\sigma = 1$ and $m = 2$ the weights are $0.054, 0.244, 0.403, 0.244, 0.054$. Normalization keeps the area under the PSTH (apart from the edges) the same, so a smoothed peak is lower and wider but contains the same spikes. A larger $\sigma$ reduces noise but biases the estimated rate toward the neighbors, so a brief response looks weaker and longer than it was.
+
+```python
+import math
+
+
+def gaussian_kernel(sigma, half):
+    """Weights for offsets -half..half, normalized to sum to 1."""
+    w = [math.exp(-k * k / (2 * sigma * sigma)) for k in range(-half, half + 1)]
+    total = sum(w)
+    return [x / total for x in w]
+
+
+def smooth(x, kernel):
+    """Zero-padded convolution with an odd-length kernel."""
+    half = len(kernel) // 2
+    n = len(x)
+    out = []
+    for i in range(n):
+        acc = 0.0
+        for j, g in enumerate(kernel):
+            k = i + j - half
+            if 0 <= k < n:
+                acc += g * x[k]
+        out.append(acc)
+    return out
+```
+
+Smoothing the single spike-like input `[0, 0, 9, 0, 0]` with the kernel above gives about `[0.49, 2.20, 3.62, 2.20, 0.49]`; the total, 9, is kept except for the weight that fell off the ends.
+
+### Uncertainty across trials
+
+Each trial has its own rate $c_{jk}/(w/1000)$ in bin $k$. The **standard error of the mean** (SEM) is the sample standard deviation across trials (divisor $N - 1$) divided by $\sqrt N$. A PSTH without error bars cannot tell a real peak from a fluke of a few trials. NumPy computes the counts in one line with `numpy.histogram` over concatenated spikes; the loop above is the same operation.
+
+### Latency
+
+The **response latency** is often defined as the start of the first bin whose rate reaches a criterion, for instance the baseline mean plus a few standard deviations. It depends on the bin width, so report both.
+
+@example
+title: A PSTH and one smoothed bin
+problem: Four trials have spikes (ms) at $[15, 42, 47]$, $[44, 48, 90]$, $[10, 45, 46, 49]$ and $[88]$ in $[0, 100)$ with 20 ms bins. Compute the whole PSTH, then the boxcar-smoothed value (width 3, zero padded) of the last bin.
+step: Count the spikes per bin over all trials. Bin $[0, 20)$ has $15$ and $10$; bin $[20, 40)$ is empty; bin $[40, 60)$ has $42, 47, 44, 48, 45, 46, 49$; bin $[60, 80)$ is empty; bin $[80, 100)$ has $90$ and $88$. The counts are $2, 0, 7, 0, 2$.
+step: Convert to rates: the observation time per bin is $4 \times 0.020 = 0.08$ s, so $r = (25,\ 0,\ 87.5,\ 0,\ 25)$ Hz.
+step: Boxcar of width 3 on the last bin uses its left neighbor (0), the bin itself (25) and one zero for the missing right neighbor: $(0 + 25 + 0)/3 = 8.33$ Hz.
+step: Note the edge effect: the unsmoothed value 25 fell to 8.33 partly because of zero padding. A reader should know that smoothed values at the ends of the window are underestimates.
+answer: The PSTH is $(25, 0, 87.5, 0, 25)$ Hz and the smoothed last bin is $8.33$ Hz.
+
+@mistakes
+- Dividing counts by the number of trials but not by the bin width (or using the width in ms), which gives spikes per bin rather than hertz.
+- Using a kernel that does not sum to 1, so the smoothed PSTH has the wrong overall rate.
+- Reading a smoothed PSTH's latency and width as properties of the neuron when they partly come from the kernel.
+- Letting a spike exactly at the stop time create an extra bin or be counted twice.
+
+@practice num
+prompt: Six trials contribute a total of $18$ spikes to one $20$ ms bin of a PSTH. What is the PSTH value for that bin, in hertz?
+answer: 150
+unit: Hz
+check: 18 / (6 * 20 / 1000)
+hint: Divide the total count by the number of trials times the bin width in seconds.
+solution: The bin is $0.020$ s wide and there are 6 trials, so the total observation time is $6 \times 0.020 = 0.12$ s, and $r = 18/0.12 = 150$ Hz.
+
+@practice mc
+prompt: A PSTH has a sharp one-bin peak of 80 Hz. You smooth it with a normalized Gaussian kernel and then double its standard deviation. What happens to the peak?
+choice*: It gets lower and wider, because a larger normalized kernel spreads the same spikes over more bins.
+choice: It gets higher and narrower, because more neighbors are averaged in.
+choice: It keeps its height but moves to a later bin.
+choice: It disappears, because a normalized kernel removes all spikes.
+hint: A normalized kernel's weights sum to 1; a wider kernel gives each neighbor a larger share.
+solution: The kernel conserves the total area (away from the edges), so a wider kernel spreads a brief peak over more bins, lowering its height and widening it. It does not shift a symmetric peak or create spikes.
+
+@practice code
+prompt: Write `psth_sem(trials, t_start, t_stop, bin_ms)` for spike times in **milliseconds**. Use half-open bins $[t_s + k w, t_s + (k+1) w)$ and ignore spikes outside $[t_s, t_e)$. Return a pair `(rates, sems)` of lists with one entry per bin: `rates[k]` is the mean over trials of the per-trial rate (count divided by `bin_ms / 1000`), and `sems[k]` is the sample standard deviation of the per-trial rates (divisor $N - 1$) divided by $\sqrt N$. With one trial the SEM is `0.0`. For example, three trials in `[0, 80)` with `bin_ms = 40`: `psth_sem([[10, 30, 60], [20, 25, 70], [55, 65, 75]], 0, 80, 40)` gives rates about `[33.3, 41.7]` and SEMs about `[16.7, 16.7]`.
+starter:
+```python
+def psth_sem(trials, t_start, t_stop, bin_ms):
+    pass
+```
+tests:
+```python
+rates, sems = psth_sem([[10, 30, 60], [20, 25, 70], [55, 65, 75]], 0, 80, 40)
+assert abs(rates[0] - 100 / 3) < 1e-6 and abs(rates[1] - 125 / 3) < 1e-6
+assert abs(sems[0] - 50 / 3) < 1e-6 and abs(sems[1] - 50 / 3) < 1e-6
+rates, sems = psth_sem([[5, 12, 44, 45, 79], [41, 50, 50], [1, 2, 3, 4, 8, 9]], 0, 80, 20)
+want_r = [400 / 3, 0.0, 250 / 3, 50 / 3]
+want_s = [88.19171036881968, 0.0, 44.09585518440984, 50 / 3]
+assert all(abs(a - b) < 1e-6 for a, b in zip(rates, want_r))
+assert all(abs(a - b) < 1e-6 for a, b in zip(sems, want_s))
+rates, sems = psth_sem([[5, 12, 44]], 0, 60, 20)
+assert rates == [100.0, 0.0, 50.0] and sems == [0.0, 0.0, 0.0]
+rates, sems = psth_sem([[5], [85], [80]], 0, 80, 40)
+assert abs(rates[0] - 25 / 3) < 1e-6 and rates[1] == 0.0
+```
+model:
+```python
+import math
+
+
+def psth_sem(trials, t_start, t_stop, bin_ms):
+    """Mean rate (Hz) and its standard error across trials, per bin."""
+    n_bins = (t_stop - t_start) // bin_ms
+    n = len(trials)
+    per_trial = []
+    for spikes in trials:
+        counts = [0] * n_bins
+        for t in spikes:
+            if t_start <= t < t_stop:
+                counts[(t - t_start) // bin_ms] += 1
+        per_trial.append([c / (bin_ms / 1000) for c in counts])
+    rates, sems = [], []
+    for k in range(n_bins):
+        vals = [row[k] for row in per_trial]
+        mean = sum(vals) / n
+        rates.append(mean)
+        if n > 1:
+            var = sum((v - mean) ** 2 for v in vals) / (n - 1)
+            sems.append(math.sqrt(var / n))
+        else:
+            sems.append(0.0)
+    return rates, sems
+```
+hint: First build a per-trial rate for each bin; then, for each bin, take the mean and the sample standard deviation across trials.
+solution: The mean across trials of per-trial rates equals the pooled PSTH, and the SEM uses the divisor $N - 1$. The third test has one trial, where a sample variance is undefined, so the function returns 0.0; the fourth shows that spikes at or after the stop time are dropped.
+
+@practice code
+prompt: Write `smooth_boxcar(x, width)` that smooths the list `x` with a boxcar kernel of odd length `width`, every weight equal to `1/width`, with zero padding: values outside the list count as 0 (so the output has the same length as `x`). For example, `smooth_boxcar([0, 6, 0, 0, 0], 3)` returns `[2.0, 2.0, 2.0, 0.0, 0.0]`.
+starter:
+```python
+def smooth_boxcar(x, width):
+    pass
+```
+tests:
+```python
+assert all(abs(a - b) < 1e-9 for a, b in zip(smooth_boxcar([0, 6, 0, 0, 0], 3), [2, 2, 2, 0, 0]))
+got = smooth_boxcar([10, 40, 10, 0], 3)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [50 / 3, 20, 50 / 3, 10 / 3]))
+got = smooth_boxcar([5, 5, 5, 5, 5], 5)
+assert all(abs(a - b) < 1e-9 for a, b in zip(got, [3, 4, 5, 4, 3]))
+assert smooth_boxcar([7.0, 1.0], 1) == [7.0, 1.0]
+assert smooth_boxcar([], 3) == []
+```
+model:
+```python
+def smooth_boxcar(x, width):
+    """Moving average of odd width with zero padding at the ends."""
+    half = width // 2
+    n = len(x)
+    out = []
+    for i in range(n):
+        total = 0.0
+        for k in range(i - half, i + half + 1):
+            if 0 <= k < n:
+                total += x[k]
+        out.append(total / width)
+    return out
+```
+hint: For output position $i$, add the values from $i - \text{half}$ to $i + \text{half}$ that exist, and always divide by `width`.
+solution: Dividing by the full width, not by the number of values that exist, is what zero padding means, so the ends are pulled down (the fifth-sample test gives 3 and 4 at the edges, not 5). A width of 1 returns the input.
+
+@practice num
+prompt: A PSTH has the values $10, 40, 10, 0$ Hz in four consecutive bins. Smooth it with a boxcar of width 3 and zero padding. What is the smoothed value in the last bin, in hertz, to two decimal places?
+answer: 3.33
+unit: Hz
+tol: 0.01
+check: (10 + 0) / 3
+hint: Average the last bin, its left neighbor, and a zero for the missing right neighbor.
+solution: The last smoothed value is $(10 + 0 + 0)/3 = 3.33$ Hz, where the first 10 is the left neighbor, 0 is the bin itself and 0 is the zero padding.
+
+@quiz code
+prompt: Write `response_latency(rates, t_start, bin_ms, criterion)` that returns the start time, in ms, of the first bin of the PSTH `rates` (Hz, one value per bin) whose rate is greater than or equal to `criterion`, or `None` if no bin reaches it. Bin $k$ starts at `t_start + k * bin_ms`. For example, `response_latency([5, 6, 4, 30, 45, 12], -50, 25, 30)` returns `25`.
+starter:
+```python
+def response_latency(rates, t_start, bin_ms, criterion):
+    pass
+```
+tests:
+```python
+assert response_latency([5, 6, 4, 30, 45, 12], -50, 25, 30) == 25
+assert response_latency([5, 6, 4, 30, 45, 12], -50, 25, 31) == 50
+assert response_latency([5, 6, 4, 30, 45, 12], -50, 25, 50) is None
+assert response_latency([40, 1, 2], 0, 10, 20) == 0
+assert response_latency([], 0, 10, 20) is None
+```
+model:
+```python
+def response_latency(rates, t_start, bin_ms, criterion):
+    """Start (ms) of the first bin with rate >= criterion, or None."""
+    for k, r in enumerate(rates):
+        if r >= criterion:
+            return t_start + k * bin_ms
+    return None
+```
+hint: Scan the bins in order and stop at the first one that reaches the criterion; the comparison includes equality.
+solution: A criterion equal to a bin's rate counts (the first test), so the comparison is `>=`. The bin's start time is the start of the window plus its index times the width; the result depends on the bin width.
+
+@quiz num
+prompt: A normalized Gaussian kernel has $\sigma = 1$ bin and half-width $m = 1$, so three weights proportional to $e^{-1/2}, 1, e^{-1/2}$. What is the weight on the center bin, to three decimal places?
+answer: 0.452
+tol: 0.001
+check: 1 / (1 + 2 * exp(-0.5))
+hint: Divide the center weight by the sum of the three unnormalized weights.
+solution: The unnormalized weights sum to $1 + 2e^{-1/2} = 2.2131$, so the center weight is $1/2.2131 = 0.452$; the neighbors each get $0.274$.
+
+@quiz text
+prompt: What does this program print?
+```python
+spikes = [100, 149, 150, 199, 200]
+counts = [0, 0]
+for t in spikes:
+    if 100 <= t < 200:
+        counts[(t - 100) // 50] += 1
+print(counts)
+```
+answer: [2, 2]
+check: run("spikes = [100, 149, 150, 199, 200]\ncounts = [0, 0]\nfor t in spikes:\n    if 100 <= t < 200:\n        counts[(t - 100) // 50] += 1\nprint(counts)")
+hint: The spike at 150 starts the second bin and the spike at 200 is outside the window.
+solution: The spikes at 100 and 149 fall in the first bin, and 150 and 199 in the second. The spike at 200 equals the stop time, so it is dropped. The program prints `[2, 2]`.

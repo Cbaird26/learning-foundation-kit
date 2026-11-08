@@ -1,0 +1,256 @@
+@lesson
+title: Hebbian and spike-timing-dependent plasticity
+summary: Simulate Hebbian learning with and without Oja's normalization, compute the principal axis of the inputs, and compute weight changes from spike timing with an exponential STDP window.
+objective: State the Hebbian rule and Oja's rule and explain why plain Hebbian growth is unstable and what Oja's rule converges to.
+objective: Write the STDP window with amplitudes and time constants and compute the weight change for spike pairs under an all-to-all scheme.
+objective: Simulate Oja's rule on small two-dimensional data and compare the result with the principal eigenvector of the data.
+reading: Neuroscience Online (McGovern Medical School): look up the topics of synaptic plasticity and associative (Hebbian) learning; for the experiments on spike timing, the 1997 paper by Markram and colleagues and the 1998 paper by Bi and Poo.
+@article
+Hebb's postulate says that a synapse strengthens when the presynaptic cell takes part in firing the postsynaptic one. A mathematical version is very simple: for presynaptic activity $x_j$ and postsynaptic activity $y$, change the weight by $\Delta w_j = \eta\,x_j\,y$, where $\eta$ is a small learning rate. With a linear neuron $y = \mathbf{w}^\top \mathbf{x}$ this is **Hebbian learning**. It makes weights grow where inputs are correlated with the output, so the neuron comes to respond more to the inputs it already responds to. But there is a catch: the more a weight grows, the larger $y$ becomes, and the faster it grows.
+
+### Instability and Oja's rule
+
+Take zero-mean two-dimensional inputs: $(2,1)$, $(-2,-1)$, $(1,1)$, $(-1,-1)$, $(1,0)$, $(-1,0)$, presented in this order, repeatedly, with $\eta = 0.05$ and starting weights $\mathbf{w} = (0.5, 0.1)$. Under plain Hebbian learning the weight vector's length after each epoch (one pass through the data) is:
+
+| epoch | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| $\lVert\mathbf{w}\rVert$ | 0.99 | 1.97 | 3.95 | 7.92 | 15.89 |
+
+It roughly doubles each epoch, without bound. The direction, though, converges to the direction of largest variance of the inputs. For zero-mean data with covariance matrix $\mathbf{C}$, the average Hebbian change is $\eta\,\mathbf{C}\mathbf{w}$, whose growth is fastest along the eigenvector of $\mathbf{C}$ with the largest eigenvalue. Here $\mathbf{C} = \begin{pmatrix} 2 & 1 \\ 1 & 2/3 \end{pmatrix}$, with eigenvalues $2.535$ and $0.131$; the principal eigenvector is $(0.8817, 0.4719)$, at an angle of $28.15^\circ$ above the first axis.
+
+**Oja's rule** (Oja, 1982) adds a decay term proportional to $y^2$:
+
+$$\Delta \mathbf{w} = \eta\,y\,(\mathbf{x} - y\,\mathbf{w}).$$
+
+The first term is Hebbian; the second pulls $\mathbf{w}$ back in proportion to how strongly the neuron is already responding. For small $\eta$ and zero-mean inputs the weight vector converges to the unit-length principal eigenvector of $\mathbf{C}$, so the neuron becomes a detector of the main axis of variation of its inputs (a principal component analyzer). Local information is enough: each synapse needs only $x_j$, $y$ and its own weight.
+
+```python
+def oja_train(data, eta, epochs, w0):
+    """Oja's rule on a list of input vectors; returns the final weights."""
+    w = list(w0)
+    for _ in range(epochs):
+        for x in data:
+            y = sum(wi * xi for wi, xi in zip(w, x))
+            w = [wi + eta * y * (xi - y * wi) for wi, xi in zip(w, x)]
+    return w
+
+data = [(2.0, 1.0), (-2.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, 0.0), (-1.0, 0.0)]
+print([round(v, 3) for v in oja_train(data, 0.05, 20, (0.5, 0.1))])
+```
+
+This prints `[0.883, 0.472]`: its length is $1.001$ and its angle $28.1^\circ$, close to the principal eigenvector. A tiny difference remains because $\eta$ is finite and the inputs come in a fixed order. After one epoch the weights are $(0.732, 0.260)$, with length $0.777$, and after 5 epochs $(0.886, 0.466)$.
+
+### Spike timing
+
+Hebbian rules use rates. Experiments in cultured and slice neurons by Markram and colleagues (1997) and Bi and Poo (1998) found that the sign of the change depends on the order of spikes within tens of milliseconds: a presynaptic spike shortly before a postsynaptic spike potentiates the synapse, and the reverse order depresses it. With $\Delta t = t_{\text{post}} - t_{\text{pre}}$, a common model of this **spike-timing-dependent plasticity** (STDP) is
+
+$$\Delta w = \begin{cases} A_+\,e^{-\Delta t/\tau_+} & \Delta t > 0 \\ -A_-\,e^{\Delta t/\tau_-} & \Delta t < 0 \end{cases}$$
+
+with amplitudes $A_+$ and $A_-$ and time constants $\tau_+$ and $\tau_-$ in ms, and no change for $\Delta t = 0$. The causal order (pre before post) strengthens; the acausal order weakens. With the **all-to-all** scheme, the total change for spike trains is the sum over every (pre, post) pair. Take $A_+ = 0.010$, $A_- = 0.0105$, $\tau_+ = \tau_- = 20$ ms, pre spikes at 10 and 50 ms, post spikes at 15 and 40 ms:
+
+| pre | post | $\Delta t$ (ms) | $\Delta w$ |
+|---|---|---|---|
+| 10 | 15 | +5 | +0.00779 |
+| 10 | 40 | +30 | +0.00223 |
+| 50 | 15 | −35 | −0.00182 |
+| 50 | 40 | −10 | −0.00637 |
+
+The sum is $+0.00183$. Choosing $A_- \tau_- $ slightly larger than $A_+ \tau_+$ makes uncorrelated firing produce net depression, which keeps weights from growing without bound. Other schemes (pairing each spike only with its nearest neighbor, or adding triplet terms) fit some data better.
+
+### Limits
+
+STDP is robust in some preparations and weak in others: the sign and size depend on the synapse type, location on the dendrite, firing rate and calcium dynamics, so a single window is an idealization. Whether STDP or rate-based mechanisms (week 9) dominate learning in the intact brain is debated. Another idea, the BCM rule, makes the threshold between depression and potentiation slide with the neuron's recent activity, which also stabilizes learning.
+
+@example
+title: One step of Oja's rule
+problem: A neuron has weights $\mathbf{w} = (0.6, 0.8)$ and receives the input $\mathbf{x} = (1, 0.5)$. With $\eta = 0.1$, find the new weights.
+step: The output is $y = 0.6 \times 1 + 0.8 \times 0.5 = 1.0$.
+step: The correction is $\mathbf{x} - y\mathbf{w} = (1 - 0.6,\ 0.5 - 0.8) = (0.4, -0.3)$.
+step: The change is $\eta y \times (0.4, -0.3) = (0.04, -0.03)$.
+step: The new weights are $(0.64, 0.77)$; the weight on the first, more strongly active input grew.
+answer: $\mathbf{w} = (0.64, 0.77)$.
+
+@example
+title: Two spike pairs with an STDP window
+problem: Use $A_+ = 0.010$, $A_- = 0.0105$ and $\tau_+ = \tau_- = 20$ ms. A presynaptic spike at 20 ms is followed by a postsynaptic spike at 30 ms. Another presynaptic spike at 70 ms follows a postsynaptic spike at 60 ms. Find the weight change from each pair and the net change.
+step: First pair: $\Delta t = 30 - 20 = +10$ ms, so $\Delta w = 0.010\,e^{-10/20} = 0.010 \times 0.6065 = +0.00607$.
+step: Second pair: $\Delta t = 60 - 70 = -10$ ms, so $\Delta w = -0.0105\,e^{-10/20} = -0.00637$.
+step: The net change is $0.00607 - 0.00637 = -0.00030$, slightly negative because $A_- > A_+$.
+answer: $+0.00607$ and $-0.00637$, net $-0.00030$.
+
+@mistakes
+- Writing $\Delta t = t_{\text{pre}} - t_{\text{post}}$ when the formula uses $t_{\text{post}} - t_{\text{pre}}$; the sign of $\Delta t$ decides between potentiation and depression.
+- Believing that Hebbian growth stops by itself; the rule has positive feedback, and some form of normalization or competition is needed.
+- Using Oja's rule on data with a nonzero mean and expecting the principal axis of variance; the rule finds the top eigenvector of $\mathbb{E}[\mathbf{x}\mathbf{x}^\top]$, which equals the covariance only for zero-mean inputs.
+- Treating the STDP window as universal; the curve depends on the preparation and on firing rate.
+
+@practice num
+prompt: An STDP rule has $A_+ = 0.012$ and $\tau_+ = 15$ ms. A presynaptic spike precedes a postsynaptic spike by 10 ms. What is the weight change $\Delta w$? Give your answer to five decimal places.
+answer: 0.00616
+tol: 0.00001
+check: 0.012 * exp(-10 / 15)
+hint: Here $\Delta t = +10$ ms, so use $A_+ e^{-\Delta t/\tau_+}$.
+solution: $\Delta w = 0.012\,e^{-10/15} = 0.012 \times 0.5134 = 0.00616$.
+
+@practice num
+prompt: A neuron has weights $\mathbf{w} = (0.5, 0.5)$ and receives the input $\mathbf{x} = (2, 1)$. Using Oja's rule $\Delta\mathbf{w} = \eta y(\mathbf{x} - y\mathbf{w})$ with $\eta = 0.1$, what is the first component of the new weight vector?
+answer: 0.6875
+tol: 0.0001
+check: 0.5 + 0.1 * (0.5 * 2 + 0.5 * 1) * (2 - (0.5 * 2 + 0.5 * 1) * 0.5)
+hint: First compute $y = \mathbf{w}^\top\mathbf{x}$, then $x_1 - y w_1$.
+solution: $y = 0.5 \times 2 + 0.5 \times 1 = 1.5$. The first correction is $2 - 1.5 \times 0.5 = 1.25$, so $\Delta w_1 = 0.1 \times 1.5 \times 1.25 = 0.1875$ and $w_1 = 0.6875$.
+
+@practice mc
+prompt: Why does plain Hebbian learning, $\Delta w_j = \eta x_j y$, need an additional mechanism such as Oja's decay term?
+choice*: The more a weight grows the larger the output becomes, which makes the weight grow faster, so the weights increase without bound.
+choice: Hebbian learning cannot increase a weight, only decrease it.
+choice: The rule changes the weights only when the neuron fires a spike, which is too rare to learn anything.
+choice: Hebbian learning always converges to the smallest eigenvector of the input covariance.
+hint: Follow the loop: larger weights give a larger $y$, and $y$ appears in the change.
+solution: With $y = \mathbf{w}^\top\mathbf{x}$ the update is proportional to the current weights, so the weight length grows exponentially. The rule does increase weights, works with graded rates and finds the direction of the largest, not smallest, eigenvalue. Oja's term $-\eta y^2 \mathbf{w}$ limits the growth.
+
+@practice code
+prompt: Write `oja_epochs(data, etas, w0)` for Oja's rule with a learning-rate schedule. `data` is a list of input vectors (tuples of two numbers), `etas` is a list with one learning rate per epoch, and `w0` is the starting weight vector. In each epoch, visit the inputs in order, updating the weights after every input with $y = \mathbf{w}^\top \mathbf{x}$ and $\mathbf{w} \leftarrow \mathbf{w} + \eta y(\mathbf{x} - y\mathbf{w})$. Return the final weights as a list. For example, with `data = [(1.0, 1.0), (-1.0, -1.0), (1.0, 0.5), (-1.0, -0.5)]`, `etas = [0.1, 0.1, 0.1]` and `w0 = (0.3, 0.2)` the result is about `[0.7619, 0.5544]`.
+starter:
+```python
+def oja_epochs(data, etas, w0):
+    return list(w0)
+```
+tests:
+```python
+import math
+d = [(1.0, 1.0), (-1.0, -1.0), (1.0, 0.5), (-1.0, -0.5)]
+w = oja_epochs(d, [0.1] * 3, (0.3, 0.2))
+assert abs(w[0] - 0.7619083) < 1e-6 and abs(w[1] - 0.5544228) < 1e-6
+assert oja_epochs(d, [], (0.3, 0.2)) == [0.3, 0.2]
+w = oja_epochs(d, [0.2, 0.05], (1.0, 0.0))
+assert abs(w[0] - 0.8904970) < 1e-6 and abs(w[1] - 0.4637782) < 1e-6
+w = oja_epochs(d, [0.05] * 300, (0.3, 0.2))
+assert abs(math.hypot(w[0], w[1]) - 1.0) < 0.01
+assert abs(math.degrees(math.atan2(w[1], w[0])) - 37.98) < 1.0
+```
+model:
+```python
+def oja_epochs(data, etas, w0):
+    """Oja's rule with one learning rate per epoch; returns the weights."""
+    w = list(w0)
+    for eta in etas:
+        for x in data:
+            y = sum(wi * xi for wi, xi in zip(w, x))
+            w = [wi + eta * y * (xi - y * wi) for wi, xi in zip(w, x)]
+    return w
+```
+hint: Loop over the learning rates (one per epoch), then over the inputs; compute $y$ from the current weights and build the new weight list from the old one.
+solution: The update must use the old weights in every component (a list comprehension builds the new list from the old one). After many epochs the length is close to 1 and the direction approaches the principal axis of the data, about 38 degrees for these inputs, which is the covariance eigenvector direction $0.5\,\text{atan2}(1.5, 0.375)$.
+
+@practice code
+prompt: Write `stdp_total(pre, post, a_plus, a_minus, tau_plus, tau_minus)` that returns the total weight change under the all-to-all STDP rule. `pre` and `post` are lists of spike times in ms. For every (pre, post) pair, with $\Delta t = t_{\text{post}} - t_{\text{pre}}$, add $A_+ e^{-\Delta t/\tau_+}$ if $\Delta t > 0$ and subtract $A_- e^{\Delta t/\tau_-}$ if $\Delta t < 0$; pairs with $\Delta t = 0$ contribute nothing. For example, `stdp_total([100], [90], 0.01, 0.012, 20, 20)` returns about `-0.00728`.
+starter:
+```python
+def stdp_total(pre, post, a_plus, a_minus, tau_plus, tau_minus):
+    return 0.0
+```
+tests:
+```python
+assert abs(stdp_total([100], [90], 0.01, 0.012, 20, 20) + 0.0072784) < 1e-6
+assert abs(stdp_total([0, 30], [10, 25], 0.02, 0.015, 10, 20) + 0.0082009) < 1e-6
+assert stdp_total([5], [5], 0.01, 0.01, 20, 20) == 0.0
+assert stdp_total([], [1, 2], 0.01, 0.01, 20, 20) == 0.0
+assert stdp_total([1, 2], [], 0.01, 0.01, 20, 20) == 0.0
+```
+model:
+```python
+import math
+
+
+def stdp_total(pre, post, a_plus, a_minus, tau_plus, tau_minus):
+    """Total all-to-all STDP weight change for two spike trains (ms)."""
+    total = 0.0
+    for t_pre in pre:
+        for t_post in post:
+            dt = t_post - t_pre
+            if dt > 0:
+                total += a_plus * math.exp(-dt / tau_plus)
+            elif dt < 0:
+                total -= a_minus * math.exp(dt / tau_minus)
+    return total
+```
+hint: Use two nested loops over the spike lists and branch on the sign of $\Delta t$; remember the minus sign for the depression branch.
+solution: The single-pair test has the post spike 10 ms before the pre spike, so $\Delta t = -10$ ms and the change is $-0.012\,e^{-10/20} = -0.00728$. In the second test the four pairs have $\Delta t = +10, +25, -20$ and $-5$; with different time constants for the two sides the exponents use $\tau_+$ for potentiation and $\tau_-$ for depression.
+
+@quiz code
+prompt: Write `stdp_nearest(pre, post, a_plus, a_minus, tau_plus, tau_minus)` for a nearest-neighbor STDP scheme. Each post spike is paired only with the most recent pre spike strictly before it (potentiation $A_+e^{-\Delta t/\tau_+}$ with $\Delta t = t_{\text{post}} - t_{\text{pre}}$), and each pre spike is paired only with the most recent post spike strictly before it (depression $-A_-e^{-\Delta t/\tau_-}$ with $\Delta t = t_{\text{pre}} - t_{\text{post}}$). Times are in ms and spikes at equal times are not paired. Return the total change. For example, `stdp_nearest([5, 6], [10], 0.01, 0.01, 20, 20)` returns about `0.00819`.
+starter:
+```python
+def stdp_nearest(pre, post, a_plus, a_minus, tau_plus, tau_minus):
+    return 0.0
+```
+tests:
+```python
+assert abs(stdp_nearest([5, 6], [10], 0.01, 0.01, 20, 20) - 0.0081873) < 1e-6
+assert abs(stdp_nearest([0, 30], [10, 25], 0.02, 0.015, 10, 20) + 0.0026827) < 1e-6
+assert stdp_nearest([0], [0], 0.01, 0.01, 20, 20) == 0.0
+assert stdp_nearest([], [3], 0.01, 0.01, 20, 20) == 0.0
+assert abs(stdp_nearest([10], [4, 7], 0.01, 0.02, 20, 20) + 0.02 * 0.8607079764) < 1e-6
+```
+model:
+```python
+import math
+
+
+def stdp_nearest(pre, post, a_plus, a_minus, tau_plus, tau_minus):
+    """Nearest-neighbor STDP: each spike pairs with the latest earlier spike."""
+    total = 0.0
+    for t_post in post:
+        earlier = [t for t in pre if t < t_post]
+        if earlier:
+            total += a_plus * math.exp(-(t_post - max(earlier)) / tau_plus)
+    for t_pre in pre:
+        earlier = [t for t in post if t < t_pre]
+        if earlier:
+            total -= a_minus * math.exp(-(t_pre - max(earlier)) / tau_minus)
+    return total
+```
+hint: For every post spike find the latest earlier pre spike, and for every pre spike the latest earlier post spike; add the potentiation terms and subtract the depression terms.
+solution: In the first test the post spike at 10 ms pairs only with the pre spike at 6 ms ($\Delta t = 4$ ms), and neither pre spike has an earlier post spike, so only potentiation occurs. In the last test the pre spike at 10 ms pairs with the post spike at 7 ms, not 4 ms, so the depression is $-0.02\,e^{-3/20}$. The all-to-all rule would count both post spikes.
+
+@quiz code
+prompt: Write `principal_axis_angle(data)` that returns, in degrees, the direction of the principal eigenvector of the covariance matrix of two-dimensional data. `data` is a list of `(x, y)` tuples. Center the data by subtracting the means, compute $c_{xx}$, $c_{yy}$ and $c_{xy}$ as averages over the points (divide by the number of points), and return $\frac{1}{2}\,\text{atan2}(2c_{xy},\, c_{xx} - c_{yy})$ converted to degrees. For example, `principal_axis_angle([(3, 1), (-3, -1), (1, 2), (-1, -2)])` returns about `31.72`.
+starter:
+```python
+def principal_axis_angle(data):
+    return 0.0
+```
+tests:
+```python
+assert abs(principal_axis_angle([(3, 1), (-3, -1), (1, 2), (-1, -2)]) - 31.7175) < 1e-3
+assert abs(principal_axis_angle([(1, 1), (-1, -1), (2, 2), (-2, -2)]) - 45.0) < 1e-6
+assert abs(principal_axis_angle([(2, 0), (-2, 0), (0, 1), (0, -1)])) < 1e-6
+assert abs(principal_axis_angle([(1, -1), (-1, 1), (2, -2), (-2, 2)]) + 45.0) < 1e-6
+assert abs(principal_axis_angle([(11, 13), (9, 7), (12, 12), (8, 8)]) - principal_axis_angle([(1, 3), (-1, -3), (2, 2), (-2, -2)])) < 1e-6
+```
+model:
+```python
+import math
+
+
+def principal_axis_angle(data):
+    """Angle (degrees) of the principal axis of 2D data."""
+    n = len(data)
+    mx = sum(p[0] for p in data) / n
+    my = sum(p[1] for p in data) / n
+    cxx = sum((p[0] - mx) ** 2 for p in data) / n
+    cyy = sum((p[1] - my) ** 2 for p in data) / n
+    cxy = sum((p[0] - mx) * (p[1] - my) for p in data) / n
+    return math.degrees(0.5 * math.atan2(2 * cxy, cxx - cyy))
+```
+hint: Subtract the means before computing the covariances; the formula for the angle then needs only the three covariance terms.
+solution: The angle formula comes from diagonalizing the $2 \times 2$ covariance matrix. Without centering, the last test would give a different angle, because the data there are the second data set shifted by $(10, 10)$; centering removes the shift. A perfect diagonal gives 45 degrees and the anti-diagonal gives $-45$ degrees.
+
+@quiz self
+prompt: Compare plain Hebbian learning, Oja's rule and the STDP rule as accounts of how a synapse could change. For each, say what information the synapse needs, what stabilizes the weights (or fails to), and one experimental result that supports or challenges it.
+hint: For each rule, ask what is the local signal, and what stops the weights from growing.
+solution: Plain Hebbian learning needs only the presynaptic activity and the postsynaptic activity at the synapse, and nothing stops the growth: weights increase exponentially along the principal direction of the inputs, so it needs an outside normalization. It is supported by the requirement for coincident pre- and postsynaptic activity in NMDA-dependent LTP (week 9) and challenged by the need for stability. Oja's rule adds a local decay proportional to $y^2 w$: the synapse needs its own weight in addition to $x$ and $y$, the weight length converges to 1, and the neuron extracts the first principal component; whether synapses actually implement a decay of this kind is uncertain, although competition for limited synaptic resources and homeostatic scaling are observed. STDP needs the relative timing of pre- and postsynaptic spikes, which are available at the synapse as calcium and voltage signals; with $A_-\tau_-$ larger than $A_+\tau_+$ uncorrelated activity produces net depression, which stabilizes growth. It is supported by the experiments of Markram and colleagues and of Bi and Poo, and challenged by results showing that the window varies with firing rate, synapse type and dendritic location.
+rubric: States the signals each rule needs (rates or spike timing, own weight for Oja's rule).
+rubric: Explains stability: none for plain Hebb, the decay term for Oja, net depression and competition for STDP.
+rubric: Gives one supporting or challenging result for each rule or notes that the evidence is mixed.
