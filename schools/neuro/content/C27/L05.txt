@@ -1,0 +1,239 @@
+@lesson
+title: The general linear model for fMRI
+summary: Write the general linear model for a voxel time series, solve it by the normal equations in plain Python, and interpret the fitted weights, residuals and fit.
+objective: Write a voxel's time series as a design matrix times weights plus noise, and derive the least-squares weights from the normal equations.
+objective: Solve a small general linear model in plain Python for any number of regressors.
+objective: Compute residuals, the residual variance with its degrees of freedom, and $R^2$, and say what the weights mean.
+reading: Andy's Brain Book, the chapters on first-level analysis with the general linear model: look up the design matrix, regressors, beta weights and residuals.
+@article
+Lesson 2 gave you a predicted time course for a task: the event sequence convolved with the HRF. A real voxel's time series is that prediction, scaled by some unknown amount, riding on a baseline, plus noise. How much of the voxel's variation does the task explain, and how large is the task effect? Fitting a **general linear model** (GLM) to each voxel answers both questions. It is the workhorse of fMRI analysis.
+
+### The model
+
+For one voxel with $n$ scans, let $\mathbf{y}$ be the time series (length $n$), and let $\mathbf{X}$ be the $n \times p$ **design matrix** whose columns are regressors: the convolved task regressors, a constant (the baseline), and nuisance regressors such as a slow drift or motion. The model is
+
+$$\mathbf{y} = \mathbf{X}\boldsymbol\beta + \boldsymbol\varepsilon, \qquad \boldsymbol\varepsilon \sim \text{noise with mean } 0 \text{ and variance } \sigma^2.$$
+
+The unknown weights $\boldsymbol\beta$ (the **betas**) say how much of each regressor is in the data. We choose $\hat{\boldsymbol\beta}$ to minimize the residual sum of squares $\text{RSS} = \|\mathbf{y} - \mathbf{X}\boldsymbol\beta\|^2$. Setting the derivative with respect to $\boldsymbol\beta$ to zero, $-2\mathbf{X}^\top(\mathbf{y} - \mathbf{X}\boldsymbol\beta) = \mathbf{0}$, gives the **normal equations**
+
+$$\mathbf{X}^\top\mathbf{X}\,\hat{\boldsymbol\beta} = \mathbf{X}^\top\mathbf{y}, \qquad \hat{\boldsymbol\beta} = (\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{X}^\top\mathbf{y}.$$
+
+The inverse exists when the columns of $\mathbf{X}$ are linearly independent; if two regressors are perfectly correlated, the individual betas cannot be separated.
+
+### A worked fit
+
+Eight scans (TR $= 2$ s) with a convolved task regressor $\mathbf{r} = [0, 1, 2, 2, 1, 0, 0, 0]$ (arbitrary units) and a constant column, and a time series in scanner units, $\mathbf{y} = [10.1,\ 10.9,\ 12.2,\ 11.8,\ 11.1,\ 10.2,\ 9.9,\ 10.1]$. Then
+
+$$\mathbf{X}^\top\mathbf{X} = \begin{pmatrix} 10 & 6 \\ 6 & 8 \end{pmatrix}, \qquad \mathbf{X}^\top\mathbf{y} = \begin{pmatrix} 70 \\ 86.3 \end{pmatrix}.$$
+
+The determinant is $10 \times 8 - 6 \times 6 = 44$, so
+
+$$\hat\beta_\text{task} = \frac{8 \times 70 - 6 \times 86.3}{44} = 0.959, \qquad \hat\beta_0 = \frac{10 \times 86.3 - 6 \times 70}{44} = 10.068.$$
+
+The fitted values are $\hat{\mathbf{y}} = \mathbf{X}\hat{\boldsymbol\beta}$ = $[10.07,\ 11.03,\ 11.99,\ 11.99,\ 11.03,\ 10.07,\ 10.07,\ 10.07]$. The task weight 0.959 means the voxel's signal rises by 0.959 scanner units for each unit of the regressor, so at the regressor's peak of 2 the model predicts a rise of 1.92 units above the baseline of 10.07, about 19%; this is a large effect chosen for easy arithmetic, as real effects are often below 2%.
+
+### Residuals and fit
+
+The **residuals** are $\mathbf{e} = \mathbf{y} - \hat{\mathbf{y}}$. Here RSS $= 0.1495$. The noise variance is estimated with the **degrees of freedom** $n - p$ (scans minus fitted parameters):
+
+$$\hat\sigma^2 = \frac{\text{RSS}}{n - p} = \frac{0.1495}{8 - 2} = 0.0249.$$
+
+The proportion of variance explained is $R^2 = 1 - \text{RSS}/\text{TSS}$, where $\text{TSS} = \sum (y_i - \bar y)^2 = 5.209$; here $R^2 = 0.971$.
+
+### What goes in $\mathbf{X}$
+
+- **A constant** column is almost always needed: the raw signal is far from zero, and without it the task regressor would be asked to explain the baseline.
+- **Drift** regressors (a few low-frequency cosines or polynomials) absorb slow scanner drift. Without them, drift ends up in the residuals, inflating $\hat\sigma^2$.
+- **Motion** regressors can absorb part of the leftover motion effect.
+- Each experimental condition gets its own convolved regressor (and, if wanted, a derivative regressor).
+
+The betas for a regressor depend on the other columns. If two regressors overlap, a beta measures only the part of its regressor that the others do not explain. A beta's units are signal units per regressor unit, so to report a percent signal change the regressor is usually scaled to a known peak height (for example 1) and the beta divided by the baseline.
+
+### The assumptions
+
+The standard inference assumes that the noise is independent across scans with equal variance. fMRI noise is in fact **autocorrelated** (a scan resembles its neighbors), so software models the autocorrelation (pre-whitening) or the p-values will be too small. The model is also *linear*, so its HRF assumption matters.
+
+### In code
+
+```python
+def fit_two(r, y):
+    """Least-squares weights of y on [r, 1] by the 2 by 2 normal equations."""
+    n = len(r)
+    srr = sum(a * a for a in r)
+    sr = sum(r)
+    sry = sum(a * b for a, b in zip(r, y))
+    sy = sum(y)
+    det = srr * n - sr * sr
+    return ((n * sry - sr * sy) / det, (srr * sy - sr * sry) / det)
+
+r = [0, 1, 2, 2, 1, 0, 0, 0]
+y = [10.1, 10.9, 12.2, 11.8, 11.1, 10.2, 9.9, 10.1]
+print([round(b, 3) for b in fit_two(r, y)])
+```
+
+This prints `[0.959, 10.068]`. For more regressors the same equations need a solver for a $p \times p$ linear system, which you will write as an exercise; in NumPy it is `np.linalg.lstsq(X, y)`.
+
+@example
+title: Solving a two-weight GLM by hand
+problem: A voxel with $n = 5$ scans has a task regressor and a constant. The sums are $\mathbf{X}^\top\mathbf{X} = \begin{pmatrix} 6 & 4 \\ 4 & 5 \end{pmatrix}$ and $\mathbf{X}^\top\mathbf{y} = \begin{pmatrix} 9 \\ 20 \end{pmatrix}$. Find the task weight and the baseline.
+step: Compute the determinant: $6 \times 5 - 4 \times 4 = 14$.
+step: Task weight: $\hat\beta_1 = (5 \times 9 - 4 \times 20)/14 = (45 - 80)/14 = -2.5$.
+step: Baseline: $\hat\beta_0 = (6 \times 20 - 4 \times 9)/14 = (120 - 36)/14 = 6$.
+step: Check in the normal equations: $6(-2.5) + 4(6) = 9$ and $4(-2.5) + 5(6) = 20$. Both hold.
+answer: The task weight is $-2.5$ and the baseline is $6$.
+
+@mistakes
+- Leaving out the constant (or using a regressor that is not centered while also omitting the constant), so the task regressor must absorb the baseline.
+- Reading a beta as an effect on its own when regressors are correlated: it is the effect after the other regressors in the model have taken their share.
+- Dividing the residual sum of squares by $n$ rather than by $n - p$ to estimate the noise variance, which underestimates it.
+- Treating the p-values as exact when the noise is autocorrelated and the model has not accounted for it.
+
+@practice num
+prompt: A voxel is fitted with a task regressor and a constant. The normal equations have $\mathbf{X}^\top\mathbf{X} = \begin{pmatrix} 4 & 6 \\ 6 & 14 \end{pmatrix}$ and $\mathbf{X}^\top\mathbf{y} = \begin{pmatrix} 10 \\ 23 \end{pmatrix}$, with the second column and entry belonging to the constant. What is the task weight $\hat\beta_\text{task}$?
+answer: 0.1
+tol: 0.001
+check: (inv(mat([[4, 6], [6, 14]])) @ mat([10, 23]))[0]
+hint: Use the 2 by 2 inverse: the determinant is $4 \times 14 - 6 \times 6 = 20$.
+solution: $\hat\beta_\text{task} = (14 \times 10 - 6 \times 23)/20 = (140 - 138)/20 = 0.1$, and the constant is $(4 \times 23 - 6 \times 10)/20 = 1.6$.
+
+@practice mc
+prompt: Two regressors in a design matrix are almost perfectly correlated. What happens to the estimates of their betas?
+choice*: The matrix $\mathbf{X}^\top\mathbf{X}$ is nearly singular, so the individual betas are very uncertain and can be large with opposite signs, although their combined effect may be well estimated.
+choice: The betas are exactly zero, because correlated regressors cancel in the normal equations.
+choice: The betas are estimated more precisely, because two regressors carry twice as much information.
+choice: Nothing, because least squares always separates the contributions of the columns regardless of their correlation.
+hint: Ask whether the data can tell which of two nearly identical columns deserves the credit.
+solution: With near-collinear columns the determinant of $\mathbf{X}^\top\mathbf{X}$ is close to zero, so its inverse is huge and the variance of each individual beta is huge. The data constrain the sum of the effects but not how it is split. The betas are not set to zero, and they are not more precise.
+
+@practice code
+prompt: Write `fit_glm(X, y)` that returns the list of least-squares weights for a design matrix `X` (a list of `n` rows, each a list of `p` numbers) and a time series `y` (a list of `n` numbers). Form $\mathbf{X}^\top\mathbf{X}$ and $\mathbf{X}^\top\mathbf{y}$ and solve the normal equations by Gauss–Jordan elimination with partial pivoting (swap in the row with the largest absolute value in the column). Do not use any libraries. For example, `fit_glm([[1, 0], [1, 1], [1, 2]], [1, 3, 5])` returns `[1.0, 2.0]`.
+starter:
+```python
+def fit_glm(X, y):
+    pass
+```
+tests:
+```python
+def close(a, b):
+    return len(a) == len(b) and all(abs(u - v) < 1e-6 for u, v in zip(a, b))
+
+assert close(fit_glm([[1, 0], [1, 1], [1, 2]], [1, 3, 5]), [1.0, 2.0])
+X = [[1, 0, 0], [1, 1, 0], [1, 2, 1], [1, 3, 1], [1, 4, 0]]
+assert close(fit_glm(X, [2.0, 2.5, 6.0, 6.5, 4.0]), [2.0, 0.5, 3.0])
+assert close(fit_glm([[2.0], [4.0]], [1.0, 2.0]), [0.5])
+assert close(fit_glm([[0, 1], [1, 1], [2, 1], [3, 1]], [0.5, 2.5, 4.5, 6.5]), [2.0, 0.5])
+```
+model:
+```python
+def fit_glm(X, y):
+    """Least-squares weights via the normal equations and Gauss-Jordan."""
+    n, p = len(X), len(X[0])
+    A = [[sum(X[i][a] * X[i][b] for i in range(n)) for b in range(p)]
+         + [sum(X[i][a] * y[i] for i in range(n))] for a in range(p)]
+    for col in range(p):
+        pivot = max(range(col, p), key=lambda r: abs(A[r][col]))
+        A[col], A[pivot] = A[pivot], A[col]
+        div = A[col][col]
+        A[col] = [v / div for v in A[col]]
+        for r in range(p):
+            if r != col:
+                f = A[r][col]
+                A[r] = [v - f * w for v, w in zip(A[r], A[col])]
+    return [A[i][p] for i in range(p)]
+```
+hint: Build the augmented matrix whose rows are the rows of $\mathbf{X}^\top\mathbf{X}$ followed by the matching entry of $\mathbf{X}^\top\mathbf{y}$; then eliminate column by column.
+solution: Build $\mathbf{X}^\top\mathbf{X}$ and $\mathbf{X}^\top\mathbf{y}$ with sums over scans, append the right-hand side as an extra column, and for each column pick the largest pivot, scale the row so the pivot is 1, and subtract multiples of it from the other rows. The weights are the last column. The fourth test lists the constant last, so a solver that assumes the first column is the constant fails it.
+
+@practice code
+prompt: Write `residual_variance(X, y, betas)` that returns the estimated noise variance $\text{RSS}/(n - p)$, where `X` is a list of `n` rows with `p` numbers each, `y` is the time series, `betas` is a list of `p` weights, and RSS is the sum of squared differences between `y` and the fitted values $\sum_j X_{ij}\beta_j$. For example, `residual_variance([[1, 0], [1, 1], [1, 2], [1, 3]], [1, 2, 2, 4], [1, 1])` returns `0.5`.
+starter:
+```python
+def residual_variance(X, y, betas):
+    pass
+```
+tests:
+```python
+assert abs(residual_variance([[1, 0], [1, 1], [1, 2], [1, 3]], [1, 2, 2, 4], [1, 1]) - 0.5) < 1e-9
+assert abs(residual_variance([[1, 0], [1, 1], [1, 2]], [1, 3, 5], [1, 2])) < 1e-12
+X = [[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]]
+assert abs(residual_variance(X, [0, 1, 0, 1, 0], [0.5, 0]) - 1.25 / 3) < 1e-9
+assert abs(residual_variance([[1.0], [1.0], [1.0]], [1.0, 2.0, 3.0], [2.0]) - 1.0) < 1e-9
+```
+model:
+```python
+def residual_variance(X, y, betas):
+    """Residual sum of squares divided by n minus p."""
+    n, p = len(X), len(betas)
+    rss = 0.0
+    for row, target in zip(X, y):
+        fit = sum(x * b for x, b in zip(row, betas))
+        rss += (target - fit) ** 2
+    return rss / (n - p)
+```
+hint: Compute each fitted value as a dot product of a row with the weights, accumulate the squared residuals, and divide by $n - p$.
+solution: The degrees of freedom are the number of scans minus the number of fitted parameters, here `len(X) - len(betas)`. In the first test the fitted values are 1, 2, 3, 4, so the residuals are 0, 0, -1, 0 and RSS is 1 over 2 degrees of freedom. Dividing by `n` instead would give 0.25.
+
+@practice num
+prompt: A GLM with $p = 3$ regressors is fitted to $n = 83$ scans. The data have a total sum of squares $\text{TSS} = 400$ about their mean and a residual sum of squares $\text{RSS} = 100$. What is $R^2$?
+answer: 0.75
+tol: 0.001
+check: 1 - 100 / 400
+hint: $R^2 = 1 - \text{RSS}/\text{TSS}$; the number of scans only matters for the variance estimate.
+solution: $R^2 = 1 - 100/400 = 0.75$. For the residual variance one would divide by $n - p = 80$, giving $1.25$.
+
+@quiz text
+prompt: What does this program print?
+```python
+r = [0, 1, 1, 0]
+y = [5.0, 7.0, 7.0, 5.0]
+n = len(r)
+sr, sy = sum(r), sum(y)
+srr = sum(a * a for a in r)
+sry = sum(a * b for a, b in zip(r, y))
+det = srr * n - sr * sr
+print(round((n * sry - sr * sy) / det, 2), round((srr * sy - sr * sry) / det, 2))
+```
+answer: 2.0 5.0
+check: run("r = [0, 1, 1, 0]\ny = [5.0, 7.0, 7.0, 5.0]\nn = len(r)\nsr, sy = sum(r), sum(y)\nsrr = sum(a * a for a in r)\nsry = sum(a * b for a, b in zip(r, y))\ndet = srr * n - sr * sr\nprint(round((n * sry - sr * sy) / det, 2), round((srr * sy - sr * sry) / det, 2))")
+hint: The data are exactly 5 plus 2 times the regressor, so the fit should recover those numbers.
+solution: Here $n = 4$, $\sum r = 2$, $\sum y = 24$, $\sum r^2 = 2$, $\sum ry = 14$, and $\det = 2 \times 4 - 4 = 4$. The task weight is $(4 \times 14 - 2 \times 24)/4 = 2.0$ and the constant is $(2 \times 24 - 2 \times 14)/4 = 5.0$.
+
+@quiz code
+prompt: Write `orthogonalize(a, b)` that returns a new list equal to the regressor `a` with its projection onto the regressor `b` removed: $a - \frac{a\cdot b}{b\cdot b}\,b$. If `b` is all zeros, return a copy of `a`. For example, `orthogonalize([1, 2, 3], [1, 0, 0])` returns `[0.0, 2.0, 3.0]`. The result is uncorrelated in the dot-product sense with `b`, which is how a nuisance regressor's shared variance is assigned to it.
+starter:
+```python
+def orthogonalize(a, b):
+    pass
+```
+tests:
+```python
+def close(u, v):
+    return len(u) == len(v) and all(abs(x - y) < 1e-9 for x, y in zip(u, v))
+
+assert close(orthogonalize([1, 2, 3], [1, 0, 0]), [0.0, 2.0, 3.0])
+assert close(orthogonalize([2, 2], [1, 1]), [0.0, 0.0])
+assert close(orthogonalize([1, 1, 0], [1, -1, 0]), [1.0, 1.0, 0.0])
+assert close(orthogonalize([3, 4], [0, 0]), [3.0, 4.0])
+res = orthogonalize([1.0, 2.0, 4.0], [1.0, 1.0, 1.0])
+assert abs(sum(u * v for u, v in zip(res, [1.0, 1.0, 1.0]))) < 1e-9
+```
+model:
+```python
+def orthogonalize(a, b):
+    """Remove from a its projection onto b."""
+    bb = sum(v * v for v in b)
+    if bb == 0:
+        return [float(v) for v in a]
+    k = sum(u * v for u, v in zip(a, b)) / bb
+    return [u - k * v for u, v in zip(a, b)]
+```
+hint: Compute the dot product of `a` and `b` over the dot product of `b` with itself, then subtract that multiple of `b` from `a`.
+solution: The coefficient is the least-squares weight of `b` for explaining `a`; subtracting it leaves the part of `a` that `b` cannot explain. The second test shows an `a` that is entirely explained by `b`, which leaves zeros, and the fourth shows the guard for an all-zero `b`.
+
+@quiz self
+prompt: A student fits a GLM to a voxel with a task regressor whose peak height is 1, a constant column that has the value 1200 (scanner units), and a drift column. The task beta is 6.0. Explain what this beta means, convert it to a percent signal change, and say what would change if the regressor were rescaled so its peak height were 2.
+hint: A beta is signal per unit of its regressor.
+solution: The task beta is the change in the fitted signal, in scanner units, when the task regressor rises by one unit, which is its peak height here, so at its peak the task raises the voxel signal by 6.0 units. Relative to a baseline of 1200 this is $100 \times 6.0/1200 = 0.5\%$. If the regressor were rescaled to a peak of 2, the fit would be identical, but the beta would be halved to 3.0, because one regressor unit is now twice as large; the percent signal change at the peak is still 0.5%, which is why the regressor's scale must be known before betas are compared across studies or described as effect sizes. Correlation with the drift and constant columns matters too: the beta is the effect of the task after those columns have taken their share.
+rubric: Interprets the beta as signal units per unit of regressor and converts using the baseline.
+rubric: States that doubling the regressor's height halves the beta while the fit and percent change stay the same.
+rubric: Notes that the beta is conditional on the other columns of the design.

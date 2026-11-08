@@ -104,14 +104,14 @@ tasks with volunteers who agree, and no project involves animals.
 | C18 | Behavioral neuroscience: motivation, emotion, sleep and stress | 13/13 | yes | yes |
 | C19 | Cognitive neuroscience | 13/13 | yes | yes |
 | C20 | Language and cognitive development | 13/13 | yes | yes |
-| C24 | Neural data analysis | 13/13 | yes |  |
-| C25 | Computational neuroscience | 9/13 |  |  |
-| C26 | Computational cognitive modeling | 9/13 |  |  |
-| C27 | Neuroimaging methods: fMRI, EEG and MEG | 5/13 |  |  |
-| C30 | Neuroethics and neurotechnology | 7/13 |  |  |
-| P1 | Theoretical neuroscience | 4/13 |  |  |
-| P2 | Circuits and systems neuroscience: methods and causal evidence | 0/13 |  |  |
-| P3 | Consciousness and the science of the mind | 0/13 |  |  |
+| C24 | Neural data analysis | 13/13 | yes | yes |
+| C25 | Computational neuroscience | 11/13 |  |  |
+| C26 | Computational cognitive modeling | 11/13 |  |  |
+| C27 | Neuroimaging methods: fMRI, EEG and MEG | 7/13 |  |  |
+| C30 | Neuroethics and neurotechnology | 11/13 |  |  |
+| P1 | Theoretical neuroscience | 6/13 |  |  |
+| P2 | Circuits and systems neuroscience: methods and causal evidence | 3/13 |  |  |
+| P3 | Consciousness and the science of the mind | 2/13 |  |  |
 | P4 | Brains and machines: neural networks as models of the brain | 0/13 |  |  |
 | P5 | Research methods and reproducibility in the brain and behavioral sciences | 0/13 |  |  |
 | P6 | Research apprenticeship and qualifying exams | 0/13 |  |  |
@@ -175,3 +175,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: C18 and C20 written and in review; C16, C17, C19, C24, C25 and C26 being written
 - 2026-11-08: Neuro: C16, C17, C19 written; C18 (7 fixes), C19 (13), C20 (4) reviewed with follow-ups; reviews of C16 and C17 running; writers C24, C25, C26, C27, C30, P1 running; BRIEF adds the OECD 2019 neurotechnology recommendation
 - 2026-11-08: Neuro: C24 written (review running); C16 (7 fixes) and C17 (17 fixes) reviewed with follow-ups; P2 and P3 started; BRIEF adds graduate attributions, Cogitate 2025, the 2023 IIT letter and the 2024 New York Declaration
+- 2026-11-08: Neuro: C24 reviewed (20 fixes); P4 started; BRIEF adds NIH data-sharing and public-access dates and reporting guidelines; writers C25, C26, C27, C30, P1, P2, P3, P4 running; P5 and P6 next

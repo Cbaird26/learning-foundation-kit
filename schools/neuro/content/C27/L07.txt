@@ -1,0 +1,227 @@
+@lesson
+title: Multiple comparisons and cluster inference
+summary: Explain why mass-univariate maps need correction, and implement Bonferroni, false discovery rate, cluster labeling and a permutation threshold in plain Python.
+objective: Compute the expected number of false positives for uncorrected voxel-wise tests and the Bonferroni-corrected threshold.
+objective: Apply the Benjamini–Hochberg procedure and say how controlling the false discovery rate differs from controlling the familywise error rate.
+objective: Find clusters of suprathreshold voxels, describe cluster-extent inference with its assumptions, and compute a permutation-based threshold from the null distribution of the maximum statistic.
+reading: Andy's Brain Book, the material on thresholding and multiple comparison correction: look up familywise error, false discovery rate, cluster-extent thresholding and permutation testing.
+@article
+Suppose the brain were pure noise and you ran a test at every one of 50,000 voxels, calling a voxel active when $p < 0.05$. About $0.05 \times 50{,}000 = 2{,}500$ voxels would light up. A statistical map without a correction for the number of tests can therefore look like a finding when it is a pattern in noise. This is the **multiple comparisons problem**, and every mass-univariate imaging analysis has to address it.
+
+### Error rates
+
+With $m$ independent tests at level $\alpha$, the expected number of false positives under the global null is $m\alpha$, and the chance of at least one is $1 - (1-\alpha)^m$; for $m = 100$ and $\alpha = 0.05$ this is 0.994. The **familywise error rate** (FWER) is the probability of one or more false positives anywhere in the map. The **false discovery rate** (FDR) is the expected proportion of the voxels declared active that are false positives. They answer different questions: FWER control says "I am unlikely to have any false positive", while FDR control says "most of what I report is real".
+
+### Bonferroni
+
+To control the FWER at $\alpha$, test each voxel at $\alpha/m$. For $m = 50{,}000$ and $\alpha = 0.05$ the threshold is $10^{-6}$. It is valid for any dependence between the tests, but conservative when tests are positively correlated, which neighboring voxels are, especially after smoothing.
+
+### Benjamini–Hochberg FDR
+
+Benjamini and Hochberg (1995) sort the $m$ p values, $p_{(1)} \le \dots \le p_{(m)}$, and find the largest $k$ with
+
+$$p_{(k)} \le \frac{k}{m}\,q,$$
+
+then declare the $k$ smallest significant, where $q$ is the target false discovery rate. For $m = 10$, $q = 0.05$ and the sorted values $0.0004,\ 0.003,\ 0.012,\ 0.018,\ 0.021,\ 0.041,\ 0.19,\ 0.33,\ 0.52,\ 0.81$, the limits are $0.005,\ 0.010,\ 0.015,\ 0.020,\ 0.025,\ 0.030,\dots$. The fifth value is $0.021 \le 0.025$ and the sixth $0.041 > 0.030$, so $k = 5$ and five tests are significant. Bonferroni at $0.05/10 = 0.005$ would keep only two. The procedure holds when the tests are independent or positively dependent, which is the usual situation for imaging data.
+
+### Cluster inference
+
+Real activations are spatially extended, and noise is spatially smooth, so a group of adjacent suprathreshold voxels (a **cluster**) is stronger evidence than one isolated voxel. In **cluster-extent inference** we choose a **cluster-forming threshold** (a voxel-level statistic cutoff), find the connected groups of voxels above it, and ask how large a cluster would be under the null. A cluster is significant if its size exceeds the corrected cutoff. Neighbors are usually defined by faces (4-connectivity in two dimensions, 6 in three) or including edges and corners (8 or 26).
+
+Consider the 5 by 5 grid with 1 for a voxel above threshold:
+
+```text
+1 1 0 0 1
+1 0 0 1 1
+0 0 0 0 1
+0 1 1 0 0
+0 1 0 0 0
+```
+
+With face connectivity it has three clusters, of sizes 4 (right side), 3 (top left) and 3 (bottom).
+
+The null distribution of cluster size can be derived from random field theory, which assumes that the data are smooth and that the smoothness is uniform and has a particular shape. Eklund, Nichols and Knutsson (2016) tested the standard parametric cluster methods by analyzing real resting-state data sets as if they contained tasks, so that no effect was present. With a liberal cluster-forming threshold (voxel-wise $p < 0.01$) the false positive rates were far above the nominal 5%; with a stricter threshold ($p < 0.001$) they were closer to nominal, and permutation-based methods came close to nominal in most settings. The lesson is to choose a strict cluster-forming threshold, or use a permutation method, and to remember what a significant cluster means: that *some* voxel inside it is active, not that every voxel within its boundary is.
+
+### Permutation tests
+
+A permutation test builds the null distribution from the data. For a group of subjects with one contrast estimate each, if the true effect is zero the sign of each subject's effect is arbitrary, so we flip the signs in every possible way ($2^N$ patterns for $N$ subjects). For each pattern we compute the t value at all voxels and record the **maximum** across voxels. The sorted maxima form the null distribution of the biggest statistic in the map, and the critical threshold is the value that only a fraction $\alpha$ of the maxima exceed. A voxel above this threshold has a FWER-corrected p value below $\alpha$. The method assumes only that the null distribution is symmetric, and it adapts to the data's own smoothness.
+
+### In code
+
+```python
+def bonferroni_threshold(m, alpha=0.05):
+    """Per-test p threshold that keeps the familywise error rate at alpha."""
+    return alpha / m
+
+print(bonferroni_threshold(50000))
+```
+
+This prints `1e-06`.
+
+@example
+title: A Benjamini–Hochberg decision
+problem: Six voxels have p values $0.002,\ 0.009,\ 0.020,\ 0.031,\ 0.150,\ 0.600$. Use the Benjamini–Hochberg procedure with $q = 0.05$ to decide which are significant.
+step: Sort (already sorted) and list the limits $kq/m$ with $m = 6$: $0.0083,\ 0.0167,\ 0.0250,\ 0.0333,\ 0.0417,\ 0.0500$.
+step: Compare: $0.002 \le 0.0083$ (yes), $0.009 \le 0.0167$ (yes), $0.020 \le 0.0250$ (yes), $0.031 \le 0.0333$ (yes), $0.150 \le 0.0417$ (no), $0.600 \le 0.05$ (no).
+step: The largest $k$ for which the condition holds is $k = 4$.
+step: Declare the four smallest p values significant. Bonferroni ($0.05/6 = 0.0083$) would keep only the first.
+answer: The first four voxels are significant; the last two are not.
+
+@mistakes
+- Thresholding at $p < 0.001$ uncorrected and calling it corrected. With 50,000 voxels that threshold still expects about 50 false positives under the null.
+- Stopping at the first p value that fails its limit. The step-up rule uses the largest $k$ that passes, so an early failure does not prevent a later pass (for $m = 2$, $q = 0.05$ and p values 0.03 and 0.04, the first fails its limit of 0.025 but the second passes 0.05, so both are significant).
+- Interpreting a significant cluster as proof that every voxel in it is active, or its edges as the edges of the effect.
+- Choosing a cluster-forming threshold after looking at which one gives the best-looking result.
+
+@practice num
+prompt: An analysis tests $m = 2000$ voxels in a region of interest. What per-voxel p threshold does the Bonferroni correction give for a familywise error rate of $0.05$?
+answer: 0.000025
+tol: 0.0000001
+check: 0.05 / 2000
+hint: Divide the familywise level by the number of tests.
+solution: $0.05/2000 = 2.5 \times 10^{-5}$.
+
+@practice mc
+prompt: A researcher controls the false discovery rate at $q = 0.05$ and reports 80 active voxels. What does that guarantee, under the conditions of the procedure?
+choice*: On average across such analyses, no more than about 5% of the voxels declared active (about 4 of 80) are false positives.
+choice: The probability that at least one of the 80 voxels is a false positive is at most 5%.
+choice: Each of the 80 voxels has a probability of at most 5% of being active.
+choice: Exactly 76 of the 80 voxels are truly active.
+hint: FDR is about a proportion of the discoveries, not the chance of any error.
+solution: FDR control bounds the expected proportion of false discoveries among those reported, so about 4 of 80 on average. The statement about at least one false positive is the familywise error rate. It does not say which voxels are false, and 76 is an expected value, not an exact count.
+
+@practice code
+prompt: Write `bh_significant(pvals, q)` that applies the Benjamini–Hochberg procedure to a list of p values and returns a list of booleans, one per input p value in the original order, `True` where the test is declared significant. Sort the p values, find the largest $k$ (counting from 1) for which the $k$-th smallest satisfies $p_{(k)} \le kq/m$, and declare significant every test whose p value is among the $k$ smallest (that is, whose p value is at most $p_{(k)}$). If no $k$ qualifies, nothing is significant. For example, `bh_significant([0.04, 0.001, 0.03], 0.05)` returns `[True, True, True]`.
+starter:
+```python
+def bh_significant(pvals, q):
+    pass
+```
+tests:
+```python
+assert bh_significant([0.04, 0.001, 0.03], 0.05) == [True, True, True]
+assert bh_significant([0.9, 0.2, 0.7], 0.05) == [False, False, False]
+got = bh_significant([0.002, 0.60, 0.009, 0.150, 0.031, 0.020], 0.05)
+assert got == [True, False, True, False, True, True]
+assert bh_significant([0.02, 0.03, 0.40], 0.05) == [True, True, False]
+assert bh_significant([], 0.05) == []
+```
+model:
+```python
+def bh_significant(pvals, q):
+    """Benjamini-Hochberg decisions in the original order."""
+    m = len(pvals)
+    order = sorted(pvals)
+    k = 0
+    for i, p in enumerate(order, start=1):
+        if p <= i * q / m:
+            k = i
+    if k == 0:
+        return [False] * m
+    cutoff = order[k - 1]
+    return [p <= cutoff for p in pvals]
+```
+hint: Loop over the sorted p values with a counter that starts at 1, remember the last counter value that passes, and use the corresponding p value as the cutoff.
+solution: The step-up rule takes the largest passing $k$, even if some smaller $k$ fails; then every p value up to the $k$-th smallest is significant. In the first test the smallest limits fail but the largest ($0.04 \le 0.05$) passes, so all three tests count. Mapping back to the original order is done with the cutoff, not with the sorted indices.
+
+@practice code
+prompt: Write `cluster_sizes(grid)` that takes a two-dimensional grid (a list of rows of 0 and 1, where 1 marks a voxel above the cluster-forming threshold) and returns the sizes of the clusters in descending order, where two voxels belong to the same cluster if they share a face (neighbors above, below, left or right; diagonal neighbors do not count). Return an empty list if there are no voxels above threshold. For example, `cluster_sizes([[1, 1, 0], [0, 0, 0], [1, 0, 1]])` returns `[2, 1, 1]`.
+starter:
+```python
+def cluster_sizes(grid):
+    pass
+```
+tests:
+```python
+assert cluster_sizes([[1, 1, 0], [0, 0, 0], [1, 0, 1]]) == [2, 1, 1]
+assert cluster_sizes([[1, 1, 0, 0], [0, 0, 0, 1], [1, 0, 1, 1], [1, 0, 0, 0]]) == [3, 2, 2]
+assert cluster_sizes([[1, 0], [0, 1]]) == [1, 1]
+assert cluster_sizes([[1, 1, 1], [1, 1, 1]]) == [6]
+assert cluster_sizes([[0, 0], [0, 0]]) == []
+assert cluster_sizes([]) == []
+```
+model:
+```python
+def cluster_sizes(grid):
+    """Sizes of face-connected clusters of 1s, largest first."""
+    seen = set()
+    sizes = []
+    for r in range(len(grid)):
+        for c in range(len(grid[r])):
+            if grid[r][c] == 1 and (r, c) not in seen:
+                stack = [(r, c)]
+                seen.add((r, c))
+                size = 0
+                while stack:
+                    i, j = stack.pop()
+                    size += 1
+                    for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        a, b = i + di, j + dj
+                        if (0 <= a < len(grid) and 0 <= b < len(grid[a])
+                                and grid[a][b] == 1 and (a, b) not in seen):
+                            seen.add((a, b))
+                            stack.append((a, b))
+                sizes.append(size)
+    return sorted(sizes, reverse=True)
+```
+hint: Scan the grid; when you meet an unvisited 1, flood outward with a stack, marking visited cells and counting them.
+solution: A flood fill from each unvisited voxel finds its whole cluster. Diagonal moves are not allowed, so the checkerboard in the third test gives two clusters of one, which a solution using eight neighbors would merge.
+
+@practice num
+prompt: A whole-brain analysis tests 30,000 voxels with an uncorrected threshold of $p < 0.001$. If there is no true effect anywhere and the tests were independent, how many false-positive voxels are expected?
+answer: 30
+tol: 0.001
+unit: voxels
+check: 30000 * 0.001
+hint: The expected count is the number of tests times the threshold.
+solution: $30{,}000 \times 0.001 = 30$ voxels. Neighboring voxels are correlated, so the false positives come in clumps and their number varies a great deal between data sets.
+
+@quiz text
+prompt: What does this program print?
+```python
+ps = [0.01, 0.04, 0.03]
+q = 0.05
+order = sorted(ps)
+m = len(ps)
+k = max([i + 1 for i, p in enumerate(order) if p <= (i + 1) * q / m] or [0])
+print(k)
+```
+answer: 3
+check: run("ps = [0.01, 0.04, 0.03]\nq = 0.05\norder = sorted(ps)\nm = len(ps)\nk = max([i + 1 for i, p in enumerate(order) if p <= (i + 1) * q / m] or [0])\nprint(k)")
+hint: The sorted p values are 0.01, 0.03, 0.04, and the limits are 0.0167, 0.0333, 0.05.
+solution: All three satisfy their limits ($0.01 \le 0.0167$, $0.03 \le 0.0333$, $0.04 \le 0.05$), so the largest passing index is $3$.
+
+@quiz code
+prompt: Write `perm_threshold(maxima, alpha)` that returns the critical threshold from a permutation null distribution of the maximum statistic: with $N$ = `len(maxima)` and $k = \lfloor \alpha N \rfloor$ (compute it as `int(alpha * N + 1e-9)`), return the $(k+1)$-th largest value of `maxima`, so that at most $k$ of the maxima are strictly greater than the threshold. A voxel whose statistic is above this value is significant at familywise level `alpha`. For example, with `maxima = list(range(1, 21))` and `alpha = 0.05`, it returns `19`.
+starter:
+```python
+def perm_threshold(maxima, alpha):
+    pass
+```
+tests:
+```python
+m = list(range(1, 21))
+assert perm_threshold(m, 0.05) == 19
+assert perm_threshold(m, 0.1) == 18
+assert perm_threshold(m, 0.01) == 20
+assert perm_threshold([3.2, 1.1, 2.7, 4.5, 2.2, 3.9, 1.8, 2.9], 0.25) == 3.2
+assert perm_threshold([2.0], 0.05) == 2.0
+```
+model:
+```python
+def perm_threshold(maxima, alpha):
+    """Critical value of the maximum statistic at familywise level alpha."""
+    n = len(maxima)
+    k = int(alpha * n + 1e-9)
+    return sorted(maxima, reverse=True)[k]
+```
+hint: Sort the maxima from largest to smallest and take the entry at index `k`.
+solution: With $N = 20$ and $\alpha = 0.05$, one maximum may exceed the threshold, so the threshold is the second largest, 19. With $\alpha = 0.01$ no maximum may exceed it, so it is the largest, 20. In the fourth test $k = \lfloor 0.25 \times 8 \rfloor = 2$, so the third largest, 3.2, is returned.
+
+@quiz self
+prompt: A paper reports "a significant cluster of 140 voxels in the left insula, $p < 0.05$ corrected", found with a voxel-wise cluster-forming threshold of $p < 0.01$ and a parametric cluster method. Explain what the claim does and does not show, and what you would check or ask the authors to do before relying on it.
+hint: Think about what a cluster-level p value says about individual voxels, and about the 2016 evaluation of cluster methods.
+solution: A significant cluster-level result says that, if the null were true, a cluster this large would be unlikely anywhere in the searched volume; it licenses the claim that some activation exists in the area, but not that all 140 voxels, or the cluster's exact boundary, are active. The cluster-forming threshold of 0.01 is liberal, and evaluations of parametric cluster inference on null data (Eklund, Nichols and Knutsson, 2016) found false positive rates well above 5% under such settings, mainly because the data are not as smooth, or as uniformly smooth, as the theory assumes. So I would ask whether the conclusion survives a stricter forming threshold (for example 0.001), a permutation-based correction, or voxel-wise FWE or FDR control; I would also ask for the effect size in the cluster, the smoothness and threshold chosen in advance, the unthresholded map, and ideally an independent replication or a held-out sample.
+rubric: States that cluster-level significance does not localize the effect to every voxel in the cluster.
+rubric: Explains the problem with a liberal cluster-forming threshold and parametric methods and cites the evidence.
+rubric: Proposes concrete checks such as a stricter threshold, permutation inference, effect sizes, unthresholded maps or replication.
