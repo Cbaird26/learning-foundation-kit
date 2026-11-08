@@ -47,11 +47,11 @@ Decisions so far:
 | C17 | Deep learning foundations | 13/13 | yes | yes |
 | C18 | Deep learning architectures: convolution, recurrence and attention | 13/13 | yes | yes |
 | C19 | Natural language processing | 13/13 | yes | yes |
-| C20 | Computer vision | 13/13 | yes |  |
-| C21 | Reinforcement learning | 8/13 |  |  |
-| C22 | Causal inference and experimentation | 8/13 |  |  |
-| C23 | AI ethics, safety and governance | 6/13 |  |  |
-| C24 | Machine learning engineering and MLOps | 4/13 |  |  |
+| C20 | Computer vision | 13/13 | yes | yes |
+| C21 | Reinforcement learning | 9/13 |  |  |
+| C22 | Causal inference and experimentation | 10/13 |  |  |
+| C23 | AI ethics, safety and governance | 8/13 |  |  |
+| C24 | Machine learning engineering and MLOps | 6/13 |  |  |
 | P1 | Statistical learning theory | 0/13 |  |  |
 | P2 | Probabilistic machine learning and generative models | 0/13 |  |  |
 | P3 | Large language models | 0/13 |  |  |
@@ -96,3 +96,4 @@ Decisions so far:
 - 2026-11-07: C17 reviewed (34 fixes plus one follow-up).
 - 2026-11-07: C20 written (0 errors) and in review; P1 started.
 - 2026-11-07: C19 reviewed (27 fixes plus one follow-up).
+- 2026-11-07: C20 reviewed (15 fixes plus two follow-ups).

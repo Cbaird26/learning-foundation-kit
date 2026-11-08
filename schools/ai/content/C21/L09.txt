@@ -1,0 +1,279 @@
+@lesson
+title: Q-learning and SARSA
+summary: Learn action values online with the SARSA and Q-learning updates, and explain the difference between on-policy and off-policy control.
+objective: Apply the SARSA, Q-learning and expected SARSA updates by hand.
+objective: Train tabular agents on a small gridworld with hazards using epsilon-greedy exploration and a supplied sequence of random numbers.
+objective: Explain why SARSA and Q-learning can learn different behavior when exploration continues.
+reading: Reinforcement Learning: An Introduction (Sutton and Barto), 2nd edition, the temporal-difference chapter: Sarsa (on-policy TD control), Q-learning (off-policy TD control) and expected Sarsa.
+@article
+Monte Carlo control needs whole episodes, and TD(0) as we wrote it only evaluates a fixed policy. For control we want the best of both: learn action values from single steps and improve the policy while we learn. The two classic algorithms differ in a single term, and that term decides what the agent is actually learning.
+
+### SARSA: on-policy TD control
+
+Learn $Q(s, a) \approx q(s, a)$ with the TD idea applied to action values. The agent is in $S_t$, takes $A_t$, receives $R_{t+1}$, lands in $S_{t+1}$ and picks its next action $A_{t+1}$ with its current behavior policy (say $\varepsilon$-greedy in $Q$). The update uses the quintuple $(S_t, A_t, R_{t+1}, S_{t+1}, A_{t+1})$, which gives the algorithm its name:
+
+$$Q(S_t, A_t) \leftarrow Q(S_t, A_t) + \alpha\,\big[\,R_{t+1} + \gamma\,Q(S_{t+1}, A_{t+1}) - Q(S_t, A_t)\,\big].$$
+
+If $S_{t+1}$ is terminal the bootstrap term is 0. SARSA is **on-policy**: it learns the value of the policy it is following, exploration included.
+
+### Q-learning: off-policy TD control
+
+Q-learning (Watkins, 1989) replaces the sampled next action by the best one:
+
+$$Q(S_t, A_t) \leftarrow Q(S_t, A_t) + \alpha\,\big[\,R_{t+1} + \gamma\,\max_{a'} Q(S_{t+1}, a') - Q(S_t, A_t)\,\big].$$
+
+The target does not depend on which action the agent will actually take next, so Q-learning is **off-policy**: whatever policy generates the data, $Q$ approximates $q_*$, the optimal action-value function, provided every state-action pair keeps being visited and the step sizes shrink appropriately (the tabular convergence result is due to Watkins and Dayan, 1992). It is the sampled version of the Bellman optimality backup.
+
+**Expected SARSA** averages over the next action under the current policy $\pi$ instead of sampling it:
+
+$$Q(S_t, A_t) \leftarrow Q(S_t, A_t) + \alpha\,\big[\,R_{t+1} + \gamma \sum_{a'} \pi(a' \mid S_{t+1})\,Q(S_{t+1}, a') - Q(S_t, A_t)\,\big].$$
+
+It has lower variance than SARSA, and with a greedy $\pi$ it is Q-learning.
+
+A numeric contrast. Suppose $Q(s', \text{safe}) = -1$ and $Q(s', \text{risky}) = -9$, the agent got $R = -1$ from $(s, a)$ with $Q(s, a) = -2$, $\alpha = 0.5$, $\gamma = 1$, and its exploration happened to pick `risky` in $s'$. Q-learning's target is $-1 + \max(-1, -9) = -2$, so $Q(s, a)$ stays at $-2$. SARSA's target is $-1 + (-9) = -10$, so $Q(s, a) \leftarrow -2 + 0.5(-10 + 2) = -6$. SARSA charges $(s, a)$ for the chance of exploring badly next.
+
+### The cliff
+
+Take a grid of 3 rows and 4 columns with start $(2, 0)$ and goal $(2, 3)$. The cells $(2, 1)$ and $(2, 2)$ are a cliff: entering one gives reward $-100$ and ends the episode. Every other move gives $-1$, including the move into the goal, and $\gamma = 1$. The shortest path goes up one row, along row 1 beside the cliff, and down into the goal: 5 moves, return $-5$. The safe path uses row 0, two rows from the cliff: 7 moves, return $-7$. For an agent that follows an $\varepsilon$-greedy policy with $\varepsilon = 0.1$, the best such policy takes the safe path (its value at the start is about $-10.5$, since each random step beside the cliff can be fatal), while the policy that is best when acting greedily takes the short path. Q-learning learns the values of the short path, so its $\varepsilon$-greedy agent occasionally falls in; SARSA learns the values of what it actually does and settles on the safe route. If $\varepsilon$ is decayed to zero, both approach the shortest path.
+
+### In code
+
+```python
+def epsilon_greedy(Q, s, actions, eps, u1, u2):
+    """Explore if u1 < eps (arm int(u2 * k)); else the first greedy action."""
+    if u1 < eps:
+        return actions[int(u2 * len(actions))]
+    best = actions[0]
+    for a in actions[1:]:
+        if Q[(s, a)] > Q[(s, best)]:
+            best = a
+    return best
+
+def q_learning_update(Q, s, a, r, s2, actions, alpha, gamma):
+    nxt = max(Q[(s2, b)] for b in actions) if s2 is not None else 0.0
+    Q[(s, a)] += alpha * (r + gamma * nxt - Q[(s, a)])
+
+def sarsa_update(Q, s, a, r, s2, a2, alpha, gamma):
+    nxt = Q[(s2, a2)] if s2 is not None else 0.0
+    Q[(s, a)] += alpha * (r + gamma * nxt - Q[(s, a)])
+
+acts = ['safe', 'risky']
+Q = {('s', 'go'): -2.0, ('s2', 'safe'): -1.0, ('s2', 'risky'): -9.0}
+Q2 = dict(Q)
+q_learning_update(Q, 's', 'go', -1.0, 's2', acts, 0.5, 1.0)
+sarsa_update(Q2, 's', 'go', -1.0, 's2', 'risky', 0.5, 1.0)
+print(Q[('s', 'go')], Q2[('s', 'go')])
+```
+
+This prints `-2.0 -6.0`, the numbers computed above. In graded exercises the "random" numbers are supplied as a list of pairs `(u1, u2)`: an $\varepsilon$-greedy decision explores when `u1 < eps`, choosing action `int(u2 * k)`, and otherwise acts greedily with ties going to the first listed action.
+
+@example
+title: Two Q-learning updates in a corridor
+problem: A corridor has non-terminal cells 1 and 2, a hazard cell 0 and a goal cell 3, with actions `L` and `R`. Moving into the goal gives reward 10, moving into the hazard gives $-10$, and every other move gives $-1$. All $Q$ values start at 0, $\alpha = 0.5$ and $\gamma = 0.9$. Episode 1: the agent is in cell 2 and takes `R`. Episode 2: it is in cell 1, takes `R` to cell 2, and the next action it selects is `L`. Apply the Q-learning updates, then compute what SARSA would do for the second update.
+step: Episode 1: the move lands in the terminal goal with reward 10, so the target is 10 and $Q(2, R) = 0 + 0.5(10 - 0) = 5$.
+step: Episode 2, Q-learning: moving from cell 1 to cell 2 gives reward $-1$ and the target is $-1 + 0.9 \max(Q(2, L), Q(2, R)) = -1 + 0.9 \times 5 = 3.5$.
+step: The update is $Q(1, R) = 0 + 0.5(3.5 - 0) = 1.75$.
+step: SARSA uses the action actually chosen next, `L`, with $Q(2, L) = 0$: the target is $-1 + 0.9 \times 0 = -1$, so $Q(1, R) = 0 + 0.5(-1 - 0) = -0.5$.
+answer: Q-learning gives $Q(2, R) = 5$ and then $Q(1, R) = 1.75$; SARSA would give $Q(1, R) = -0.5$.
+
+@mistakes
+- Using the maximum in SARSA, or the sampled next action in Q-learning: the whole difference between the methods is that term.
+- Forgetting that the bootstrap term is 0 when the next state is terminal, so the reward alone is the target.
+- Choosing the next action in SARSA after the update instead of before it: the update needs $A_{t+1}$, and the same action is then executed.
+- Calling Q-learning "greedy": it behaves $\varepsilon$-greedily but learns about the greedy policy; that is what off-policy means.
+- Decaying $\varepsilon$ or $\alpha$ to zero too fast: states never revisited keep poor estimates.
+
+@practice num
+prompt: A Q-learning agent with $\alpha = 0.2$ and $\gamma = 0.9$ is in state $s$ and takes action $a$ with $Q(s, a) = 1.0$. It receives reward 2 and lands in state $s'$ where $Q(s', \cdot) = (3, 5, 4)$. What is the new $Q(s, a)$? Give your answer to two decimal places.
+answer: 2.1
+tol: 0.01
+check: 1.0 + 0.2 * (2 + 0.9 * max(3, 5, 4) - 1.0)
+hint: The Q-learning target uses the largest action value in the next state, whatever action is taken next.
+solution: The target is $2 + 0.9 \times 5 = 6.5$ and the error is $6.5 - 1.0 = 5.5$. The new value is $1.0 + 0.2 \times 5.5 = 2.1$.
+
+@practice num
+prompt: A SARSA agent with $\alpha = 0.2$ and $\gamma = 0.9$ is in state $s$ and takes action $a$ with $Q(s, a) = 1.0$. It receives reward 2 and lands in state $s'$ where $Q(s', \cdot) = (3, 5, 4)$, and its behavior policy selects the action with value 4 next. What is the new $Q(s, a)$? Give your answer to two decimal places.
+answer: 1.92
+tol: 0.01
+check: 1.0 + 0.2 * (2 + 0.9 * 4 - 1.0)
+hint: The SARSA target uses the value of the action that was actually selected next.
+solution: The target is $2 + 0.9 \times 4 = 5.6$ and the error is $4.6$, so the new value is $1.0 + 0.2 \times 4.6 = 1.92$.
+
+@practice mc
+prompt: An agent behaves $\varepsilon$-greedily with $\varepsilon = 0.1$ during learning. What does each algorithm's $Q$ converge to (with suitable step sizes and enough visits)?
+choice*: SARSA converges to the action values of the $\varepsilon$-greedy policy it follows, and Q-learning converges to the optimal action values $q_*$.
+choice: Both converge to the optimal action values $q_*$, because both use $\max$ in their targets.
+choice: Both converge to the action values of the $\varepsilon$-greedy policy, because that policy generates the data.
+choice: SARSA converges to $q_*$ and Q-learning to the action values of the $\varepsilon$-greedy policy.
+hint: Which algorithm's target contains the next action chosen by the behavior policy?
+solution: SARSA's target contains the sampled next action, so it evaluates the policy that picks that action, exploration included. Q-learning's target contains a maximum, so it evaluates the greedy policy regardless of how the data are generated, and therefore converges to $q_*$.
+
+@practice code
+prompt: Write `expected_sarsa_update(Q, s, a, r, s2, actions, alpha, gamma, eps)`. `Q` is a dictionary keyed by `(state, action)`; `actions` is the list of all actions (the same in every state). The next-action distribution is $\varepsilon$-greedy in `Q[(s2, .)]`: the greedy action (the first listed action with the largest value) has probability `1 - eps + eps / k` and every other action has probability `eps / k`, where `k = len(actions)`. If `s2` is `None` (terminal) the expected next value is 0. Update `Q[(s, a)]` in place by `alpha * (r + gamma * expected - Q[(s, a)])` and return the new value.
+starter:
+```python
+def expected_sarsa_update(Q, s, a, r, s2, actions, alpha, gamma, eps):
+    pass
+```
+tests:
+```python
+acts = ['a', 'b', 'c']
+Q = {('t', 'a'): 1.0, ('t', 'b'): 3.0, ('t', 'c'): 2.0, ('s', 'x'): 0.5}
+new = expected_sarsa_update(Q, 's', 'x', 1.0, 't', acts, 0.5, 0.9, 0.3)
+assert abs(new - 1.965) < 1e-9 and abs(Q[('s', 'x')] - 1.965) < 1e-9
+Q = {('s', 'x'): 0.5}
+assert abs(expected_sarsa_update(Q, 's', 'x', 1.0, None, acts, 0.5, 0.9, 0.3) - 0.75) < 1e-9
+Q = {('t', 'a'): 2.0, ('t', 'b'): 2.0, ('t', 'c'): 0.0, ('s', 'x'): 0.0}
+new = expected_sarsa_update(Q, 's', 'x', 0.0, 't', acts, 1.0, 1.0, 0.6)
+assert abs(new - 1.6) < 1e-9
+Q = {('t', 'a'): 1.0, ('t', 'b'): 3.0, ('t', 'c'): 2.0, ('s', 'x'): 0.0}
+new = expected_sarsa_update(Q, 's', 'x', 0.0, 't', acts, 1.0, 1.0, 0.0)
+assert abs(new - 3.0) < 1e-9
+```
+model:
+```python
+def expected_sarsa_update(Q, s, a, r, s2, actions, alpha, gamma, eps):
+    """Expected SARSA update under an epsilon-greedy next-action policy."""
+    k = len(actions)
+    expected = 0.0
+    if s2 is not None:
+        best = actions[0]
+        for b in actions[1:]:
+            if Q[(s2, b)] > Q[(s2, best)]:
+                best = b
+        for b in actions:
+            prob = eps / k + ((1 - eps) if b == best else 0.0)
+            expected += prob * Q[(s2, b)]
+    Q[(s, a)] += alpha * (r + gamma * expected - Q[(s, a)])
+    return Q[(s, a)]
+```
+hint: Find the greedy action first with a strict comparison, give it `1 - eps + eps / k` and the others `eps / k`, then take the weighted sum of the next action values.
+solution: With $\varepsilon = 0.3$ the three probabilities are $0.1$, $0.8$ and $0.1$, so the expected next value is $0.1 + 2.4 + 0.2 = 2.7$ and the target is $1 + 0.9 \times 2.7 = 3.43$. The third test has a tie between `a` and `b` (the first, `a`, is greedy), and the last shows that `eps = 0` reduces the update to Q-learning's.
+
+@practice code
+prompt: Write `train(step, start, actions, draws, alpha, gamma, eps, n_episodes, max_steps, sarsa)` for a deterministic gridworld given as `step[s][a] = (next_state, reward)`; a state that is not a key of `step` is terminal. Every non-terminal state has every action in the list `actions`. Start with `Q[(s, a)] = 0.0` for every non-terminal `s` and every action. `draws` is a list of pairs `(u1, u2)`, consumed in order, one pair per action choice: if `u1 < eps` the action is `actions[int(u2 * len(actions))]`, otherwise it is the greedy action (first listed action with the largest `Q`, using a strict comparison). Each episode starts in `start` and chooses its first action with one draw. At each step (up to `max_steps` steps in the episode) take the action, observe `(s2, r)`; if `s2` is terminal update `Q[(s, a)] += alpha * (r - Q[(s, a)])` and end the episode; otherwise choose the next action `a2` with one draw, then update with the target `r + gamma * Q[(s2, a2)]` if `sarsa` is true or `r + gamma * max(Q[(s2, b)] for b in actions)` otherwise, and continue from `(s2, a2)`. Return `Q`.
+starter:
+```python
+def train(step, start, actions, draws, alpha, gamma, eps, n_episodes,
+          max_steps, sarsa):
+    pass
+```
+tests:
+```python
+step = {1: {'L': (0, -10), 'R': (2, -1)}, 2: {'L': (1, -1), 'R': (3, 10)}}
+acts = ['L', 'R']
+D = [(0.9, 0.0), (0.1, 0.7), (0.9, 0.0), (0.1, 0.2), (0.5, 0.5), (0.05, 0.1),
+     (0.9, 0.3), (0.5, 0.5), (0.1, 0.9), (0.6, 0.6), (0.6, 0.1), (0.3, 0.3),
+     (0.7, 0.7), (0.1, 0.1), (0.8, 0.8), (0.4, 0.4), (0.9, 0.9), (0.9, 0.9),
+     (0.9, 0.9), (0.9, 0.9)]
+def close(Q, want):
+    return all(abs(Q[k] - v) < 1e-9 for k, v in want.items())
+Q = train(step, 1, acts, D, 0.5, 0.9, 0.2, 0, 10, False)
+assert close(Q, {(1, 'L'): 0.0, (1, 'R'): 0.0, (2, 'L'): 0.0, (2, 'R'): 0.0})
+Q = train(step, 1, acts, D, 0.5, 0.9, 0.2, 1, 10, False)
+assert close(Q, {(1, 'L'): -5.0, (1, 'R'): 0.0})
+Q = train(step, 1, acts, D, 0.5, 0.9, 0.2, 3, 10, False)
+assert close(Q, {(1, 'L'): -7.5, (1, 'R'): -0.875, (2, 'L'): -1.2, (2, 'R'): 5.0})
+Q = train(step, 1, acts, D, 0.5, 0.9, 0.2, 3, 10, True)
+assert close(Q, {(1, 'L'): -7.5, (1, 'R'): -1.49375, (2, 'L'): -2.769375,
+                 (2, 'R'): 5.0})
+```
+model:
+```python
+def train(step, start, actions, draws, alpha, gamma, eps, n_episodes,
+          max_steps, sarsa):
+    """Tabular SARSA or Q-learning driven by a supplied list of draws."""
+    Q = {(s, a): 0.0 for s in step for a in actions}
+    stream = iter(draws)
+
+    def choose(s):
+        u1, u2 = next(stream)
+        if u1 < eps:
+            return actions[int(u2 * len(actions))]
+        best = actions[0]
+        for a in actions[1:]:
+            if Q[(s, a)] > Q[(s, best)]:
+                best = a
+        return best
+
+    for _ in range(n_episodes):
+        s = start
+        a = choose(s)
+        for _ in range(max_steps):
+            s2, r = step[s][a]
+            if s2 not in step:
+                Q[(s, a)] += alpha * (r - Q[(s, a)])
+                break
+            a2 = choose(s2)
+            if sarsa:
+                target = r + gamma * Q[(s2, a2)]
+            else:
+                target = r + gamma * max(Q[(s2, b)] for b in actions)
+            Q[(s, a)] += alpha * (target - Q[(s, a)])
+            s, a = s2, a2
+    return Q
+```
+hint: Make a small helper `choose(s)` that consumes one draw; the next action is chosen before the update, and the same action is executed on the following step.
+solution: The first episode takes the greedy action `L` (a tie goes to the first listed action) and falls into the hazard, giving $Q(1, L) = -5$. After three episodes the two algorithms have diverged at the states where the next action is exploratory: SARSA charges $Q(1, R)$ and $Q(2, L)$ for the poor actions actually selected next, while Q-learning bootstraps from the best action.
+
+@quiz code
+prompt: Write `greedy_return(step, Q, actions, start, gamma, max_steps)` for a deterministic gridworld `step[s][a] = (next_state, reward)` (states that are not keys of `step` are terminal) and a table `Q[(s, a)]`. Follow the greedy policy for `Q` (the first listed action with the largest value, using a strict comparison) from `start` for at most `max_steps` moves, or until a terminal state, and return the discounted return of the rewards received.
+starter:
+```python
+def greedy_return(step, Q, actions, start, gamma, max_steps):
+    pass
+```
+tests:
+```python
+step = {1: {'L': (0, -10), 'R': (2, -1)}, 2: {'L': (1, -1), 'R': (3, 10)}}
+acts = ['L', 'R']
+Q = {(1, 'L'): -7.5, (1, 'R'): -0.875, (2, 'L'): -1.2, (2, 'R'): 5.0}
+assert abs(greedy_return(step, Q, acts, 1, 0.9, 10) - 8.0) < 1e-9
+assert abs(greedy_return(step, Q, acts, 1, 0.9, 1) + 1.0) < 1e-9
+assert abs(greedy_return(step, Q, acts, 0, 0.9, 10)) < 1e-9
+zeros = {(s, a): 0.0 for s in step for a in acts}
+assert abs(greedy_return(step, zeros, acts, 1, 0.9, 10) + 10.0) < 1e-9
+loop = {(1, 'L'): -1.0, (1, 'R'): 1.0, (2, 'L'): 1.0, (2, 'R'): 0.0}
+assert abs(greedy_return(step, loop, acts, 1, 0.9, 4) + 3.439) < 1e-9
+```
+model:
+```python
+def greedy_return(step, Q, actions, start, gamma, max_steps):
+    """Discounted return of the greedy policy for Q."""
+    total, discount, s = 0.0, 1.0, start
+    for _ in range(max_steps):
+        if s not in step:
+            break
+        best = actions[0]
+        for a in actions[1:]:
+            if Q[(s, a)] > Q[(s, best)]:
+                best = a
+        s, r = step[s][best]
+        total += discount * r
+        discount *= gamma
+    return total
+```
+hint: At each state pick the first best action, add `discount * reward`, multiply the discount by `gamma`, and stop at a terminal state or after `max_steps` moves.
+solution: The learned table sends the agent right twice: $-1 + 0.9 \times 10 = 8$. With all-zero values the tie goes to `L`, which leads straight into the hazard for $-10$. The `loop` table makes the greedy policy bounce between the two cells, so only `max_steps` stops it.
+
+@quiz num
+prompt: An expected SARSA agent has $\varepsilon = 0.2$ and four actions. In the next state $Q(s', \cdot) = (1, 5, 3, 2)$ and the policy is $\varepsilon$-greedy in these values. With reward $r = 2$ and $\gamma = 0.9$, what is the expected SARSA target $r + \gamma \sum_{a'} \pi(a' \mid s')\,Q(s', a')$? Give your answer to three decimal places.
+answer: 6.095
+tol: 0.001
+check: 2 + 0.9 * (0.85 * 5 + 0.05 * (1 + 3 + 2))
+hint: The greedy action has probability $1 - 0.2 + 0.2/4 = 0.85$ and each other action has probability $0.2/4 = 0.05$.
+solution: The expected next value is $0.85 \times 5 + 0.05 \times (1 + 3 + 2) = 4.25 + 0.3 = 4.55$, so the target is $2 + 0.9 \times 4.55 = 6.095$.
+
+@quiz text
+prompt: What does this program print?
+```python
+Q = {('a', 'x'): 0.0, ('a', 'y'): 1.0, ('b', 'x'): 2.0, ('b', 'y'): 4.0}
+r, alpha, gamma = 1.0, 0.5, 0.5
+best = max(Q[('b', 'x')], Q[('b', 'y')])
+Q[('a', 'x')] += alpha * (r + gamma * best - Q[('a', 'x')])
+print(Q[('a', 'x')])
+```
+answer: 1.5
+check: run("Q = {('a', 'x'): 0.0, ('a', 'y'): 1.0, ('b', 'x'): 2.0, ('b', 'y'): 4.0}\nr, alpha, gamma = 1.0, 0.5, 0.5\nbest = max(Q[('b', 'x')], Q[('b', 'y')])\nQ[('a', 'x')] += alpha * (r + gamma * best - Q[('a', 'x')])\nprint(Q[('a', 'x')])")
+hint: This is a Q-learning update: the target uses the largest value in state `'b'`.
+solution: The best next value is 4.0, so the target is $1 + 0.5 \times 4 = 3$ and the update gives $0 + 0.5(3 - 0) = 1.5$.

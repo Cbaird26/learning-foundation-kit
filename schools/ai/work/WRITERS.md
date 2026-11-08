@@ -50,3 +50,5 @@ Log:
 - started C24
 - C20 done (0 errors, 0 warnings, 96; EU AI Act Articles 5 and 50, Gender Shades, NISTIR 8280 and vision attributions passed to the reviewer with verified facts); review started C20; started P1
 - C19 reviewed (27 fixes: items off example data, BPE 'bust', underflow claim corrected (1,000 words), kappa 'no more than', Mitchell 2018, Caliskan year removed, Dickens excerpt labeled, project split and greedy-decoding steps fixed); follow-up by me: L08 overflow test now checks the exact average 2.0
+- started P2
+- C20 reviewed (15 fixes: items off article and example data, AP test that needs the envelope, attention overflow test made real, Article 50 dates with the Omnibus detail, world_to_pixel order test); follow-ups by me: L07 notes VOC 11-point and COCO 101-point AP, L10 copyright sentence made neutral

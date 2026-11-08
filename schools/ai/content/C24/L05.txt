@@ -1,0 +1,185 @@
+@lesson
+title: Training at scale: accelerators, memory and mixed precision
+summary: Estimate the memory and compute needed to train a model from its parameter count and token count, and explain how mixed precision and loss scaling reduce cost.
+objective: Compute the bytes per parameter of weights, gradients and optimizer state for common precisions.
+objective: Estimate training compute with the approximation of 6 times parameters times tokens and convert it to days on given hardware.
+objective: Explain fp16, bf16 and fp32, why fp16 training needs loss scaling, and what gradient checkpointing trades.
+reading: Made With ML, the lessons on training and optimization; for hardware and precision, look up "mixed precision training" and "GPU memory" in the documentation of a deep learning library.
+@article
+Before you rent a cluster, you can answer two questions on paper: will the model fit in memory, and how long will it take? Both come from simple arithmetic on the number of parameters $N$ and the number of training tokens $D$. The answers are estimates, and every estimate below states its assumptions.
+
+### Accelerators in one paragraph
+
+A **GPU** (or similar accelerator) has thousands of arithmetic units that do matrix multiplications in parallel, and a limited amount of fast memory, for example tens of gigabytes. Two numbers describe it: **peak throughput** in floating-point operations per second (FLOP/s) and **memory capacity**. Real programs reach only a fraction of peak, called the **utilization**, because data movement, small operations and waiting for other devices cost time; 30 to 50% is a reasonable planning figure for large matrix-heavy models.
+
+### Memory: bytes per parameter
+
+A **parameter** stored in 32-bit floating point (fp32) takes 4 bytes; in 16-bit formats (fp16, bf16) 2 bytes; as an 8-bit integer 1 byte. Training must also store gradients and, for the Adam optimizer, two running averages per parameter (the first and second moments). With everything in fp32 the accounting is
+
+$$4\ (\text{weights}) + 4\ (\text{gradients}) + 4 + 4\ (\text{Adam moments}) = 16 \text{ bytes per parameter.}$$
+
+The common **mixed-precision** recipe keeps a 2-byte copy of the weights and 2-byte gradients for the forward and backward passes, plus fp32 "master" weights and fp32 moments for accurate updates: $2 + 2 + 4 + 4 + 4 = 16$ bytes per parameter as well. Mixed precision therefore speeds up the arithmetic and shrinks **activations** (the intermediate values saved for backpropagation), but it does not shrink this fixed per-parameter cost. Activation memory is extra: it grows with batch size, sequence length and depth, and is not included in the 16 bytes. Take 1 GB to be $10^9$ bytes. For $N = 10^9$ parameters the state is about $16$ GB, before activations. For inference only, the weights alone need $2$ GB in 16-bit precision.
+
+```python
+def training_memory_gb(n_params, bytes_per_param=16):
+    """Weights + gradients + Adam state, in GB (1 GB = 1e9 bytes)."""
+    return n_params * bytes_per_param / 1e9
+
+def training_flops(n_params, n_tokens):
+    """Approximate training compute: 6 * parameters * tokens."""
+    return 6 * n_params * n_tokens
+
+print(training_memory_gb(1e9))      # 16.0
+print(training_flops(1e9, 2e10))    # 1.2e+20
+```
+
+### Compute: the $6ND$ rule
+
+For a dense model, a forward pass costs about $2N$ FLOPs per token (one multiply and one add per parameter) and the backward pass about twice that, $4N$, so training costs roughly $6ND$ FLOPs. This is an **approximation**: it ignores the attention computation that grows with sequence length and treats all parameters as used for every token. Kaplan and colleagues (2020) and Hoffmann and colleagues (2022) used compute counted this way in their scaling studies; the second suggested roughly 20 training tokens per parameter as a compute-optimal rule of thumb.
+
+**Time** is $\text{FLOPs} / (\text{peak} \times \text{utilization} \times \text{devices})$. For $N = 10^9$, $D = 2 \times 10^{10}$ the compute is $1.2 \times 10^{20}$ FLOPs. On one device with peak $10^{14}$ FLOP/s at 40% utilization that is $1.2 \times 10^{20} / (4 \times 10^{13}) = 3 \times 10^{6}$ seconds, about 34.7 days. Spreading the work over 64 devices cuts the ideal time to 0.54 days if communication costs nothing (week 6 shows why it does not).
+
+### Number formats and loss scaling
+
+| format | bytes | exponent bits | mantissa bits | largest value |
+|---|---|---|---|---|
+| fp32 | 4 | 8 | 23 | about $3.4 \times 10^{38}$ |
+| fp16 | 2 | 5 | 10 | 65,504 |
+| bf16 | 2 | 8 | 7 | about $3.4 \times 10^{38}$ |
+
+fp16 has a narrow range: values below about $6 \times 10^{-8}$ round to zero, and small gradients are common. **Loss scaling** multiplies the loss by a constant $S$ before backpropagation, so every gradient is multiplied by $S$ and avoids underflow; the gradients are divided by $S$ before the update. A gradient of $10^{-8}$ becomes $3.3 \times 10^{-4}$ with $S = 2^{15} = 32768$, which fp16 can represent. $S$ must be small enough that no scaled gradient exceeds 65,504. bf16 has the exponent range of fp32 (and less precision), so it usually needs no loss scaling.
+
+### Trading compute for memory
+
+**Gradient checkpointing** discards most activations in the forward pass and recomputes them in the backward pass. It costs about one extra forward pass, $2ND$, so total compute rises from $6ND$ to about $8ND$ (33% more), in exchange for much lower activation memory.
+@example
+title: Memory and time for a 2-billion-parameter model
+problem: A model has $N = 2 \times 10^9$ parameters and is trained on $D = 4 \times 10^{10}$ tokens with Adam in mixed precision (16 bytes per parameter). It runs on 8 devices, each with peak $2 \times 10^{14}$ FLOP/s at 50% utilization. Estimate the parameter-and-optimizer memory and the training time, assuming the devices share the work perfectly.
+step: Memory for weights, gradients and optimizer state: $2 \times 10^9 \times 16 = 3.2 \times 10^{10}$ bytes, which is $32$ GB. Activations come on top of this.
+step: Compute: $6ND = 6 \times 2 \times 10^9 \times 4 \times 10^{10} = 4.8 \times 10^{20}$ FLOPs.
+step: Effective throughput: $8 \times 2 \times 10^{14} \times 0.5 = 8 \times 10^{14}$ FLOP/s.
+step: Time: $4.8 \times 10^{20} / (8 \times 10^{14}) = 6 \times 10^{5}$ seconds, and $6 \times 10^5 / 86{,}400 \approx 6.94$ days. Real runs take longer because the perfect-sharing assumption fails and utilization varies.
+answer: About 32 GB of state (before activations) and about 6.9 days.
+@mistakes
+- Counting only the weights: training also stores gradients and optimizer state, about 16 bytes per parameter with Adam, not 2 or 4.
+- Forgetting activations, which can dominate memory at large batch sizes and sequence lengths.
+- Using peak throughput as real throughput; planning with 30 to 50% utilization is more realistic.
+- Applying $6ND$ without saying that it is an approximation for dense models that ignores attention and other overheads.
+@practice num
+prompt: A model has $3 \times 10^9$ parameters stored in bf16 (2 bytes each) for inference. How much memory do the weights need, in GB, taking 1 GB to be $10^9$ bytes?
+answer: 6
+unit: GB
+check: 3e9 * 2 / 1e9
+hint: Multiply the number of parameters by the bytes per parameter, then divide by $10^9$.
+solution: $3 \times 10^9 \times 2 = 6 \times 10^9$ bytes, which is 6 GB.
+@practice num
+prompt: Using the approximation of $6ND$ FLOPs, how many FLOPs does it take to train a model with $N = 3.5 \times 10^8$ parameters on $D = 7 \times 10^9$ tokens? Give the answer in scientific notation, such as 1.5e19.
+answer: 1.47e19
+unit: FLOPs
+tol: 1%
+check: 6 * 3.5e8 * 7e9
+hint: Multiply 6 by the parameter count and by the token count.
+solution: $6 \times 3.5 \times 10^8 \times 7 \times 10^9 = 147 \times 10^{17} = 1.47 \times 10^{19}$ FLOPs.
+@practice mc
+prompt: Which statement about number formats for training is correct?
+choice*: bf16 has the same number of exponent bits as fp32, so it covers the same range of magnitudes with fewer mantissa bits.
+choice: fp16 has the same range of magnitudes as fp32, so it never underflows.
+choice: bf16 has more mantissa bits than fp16, so it is more precise.
+choice: Mixed precision removes the need to store optimizer state.
+hint: Compare the exponent and mantissa bits in the table.
+solution: bf16 has 8 exponent bits like fp32 (range) and 7 mantissa bits (precision). fp16 has only 5 exponent bits, so it can underflow, and it has 10 mantissa bits, more than bf16. Mixed precision still stores optimizer state.
+@practice code
+prompt: Write `training_days(n_params, n_tokens, peak_flops, utilization, n_devices, checkpointing=False)`. Compute `flops = 6 * n_params * n_tokens`, or `8 * n_params * n_tokens` when `checkpointing` is true, divide by `peak_flops * utilization * n_devices` to get seconds, and return the time in days (86,400 seconds per day). For example, `training_days(1e9, 2e10, 1e14, 0.4, 1)` is about `34.72`.
+starter:
+```python
+def training_days(n_params, n_tokens, peak_flops, utilization, n_devices,
+                  checkpointing=False):
+    pass
+```
+tests:
+```python
+assert abs(training_days(1e9, 2e10, 1e14, 0.4, 1) - 34.7222222) < 1e-4
+assert abs(training_days(1e9, 2e10, 1e14, 0.4, 64) - 0.5425347) < 1e-6
+assert abs(training_days(1e9, 2e10, 1e14, 0.4, 64, True) - 0.7233796) < 1e-6
+assert abs(training_days(3e8, 6e9, 5e13, 0.5, 4) - 1.25) < 1e-9
+assert training_days(1e9, 0, 1e14, 0.4, 1) == 0.0
+```
+model:
+```python
+def training_days(n_params, n_tokens, peak_flops, utilization, n_devices,
+                  checkpointing=False):
+    """Estimated training time in days from the 6ND (or 8ND) rule."""
+    factor = 8 if checkpointing else 6
+    flops = factor * n_params * n_tokens
+    seconds = flops / (peak_flops * utilization * n_devices)
+    return seconds / 86400
+```
+hint: Pick the factor 6 or 8 first, then divide the FLOPs by the effective throughput and convert seconds to days.
+solution: The effective throughput is peak times utilization times the number of devices. Gradient checkpointing adds one forward pass, so the factor is 8 instead of 6, which the third test checks (the time is 4/3 as long as in the second test).
+@practice code
+prompt: A loss scale $S$ must be small enough that the largest scaled gradient does not exceed the fp16 maximum, 65504. Write `safe_scale(grads, candidates)`: `grads` is a nonempty list of gradient values (positive or negative, not all zero) and `candidates` a list of positive scales. Return the largest candidate $S$ with `max(abs(g)) * S <= 65504`. Raise `ValueError` if no candidate qualifies. For example, with `grads=[0.5, -0.25]` and `candidates=[1, 1024, 65536, 131072]` the answer is `65536`.
+starter:
+```python
+def safe_scale(grads, candidates):
+    pass
+```
+tests:
+```python
+c = [1, 256, 4096, 65536, 131072]
+assert safe_scale([0.5, -0.25, 0.01], c) == 65536
+assert safe_scale([3.0, -1.0], c) == 4096
+assert safe_scale([-0.5], [131072, 1, 65536]) == 65536
+assert safe_scale([65504.0], c) == 1
+assert raises(ValueError, safe_scale, [70000.0], c)
+```
+model:
+```python
+def safe_scale(grads, candidates):
+    """Largest candidate loss scale that keeps scaled gradients in fp16 range."""
+    biggest = max(abs(g) for g in grads)
+    ok = [s for s in candidates if biggest * s <= 65504]
+    if not ok:
+        raise ValueError("no candidate scale is safe")
+    return max(ok)
+```
+hint: Find the largest absolute gradient, keep the candidates whose product with it is at most 65504, and take the largest of those.
+solution: Scaling multiplies every gradient by $S$, so the largest magnitude decides whether anything overflows. Candidates need not be sorted (third test), and a gradient already at the limit allows only a scale of 1 (fourth test). The last test shows the error when even a scale of 1 overflows.
+@quiz code
+prompt: Write `max_params(gb_per_device, bytes_per_param, reserve)` that returns the largest number of parameters, as an integer rounded down, whose weights, gradients and optimizer state fit on one device. The device has `gb_per_device` GB (1 GB = $10^9$ bytes); a fraction `reserve` of it is set aside for activations and cannot be used for parameter state. For example, 80 GB, 16 bytes per parameter and a reserve of 0.25 give `3750000000`.
+starter:
+```python
+def max_params(gb_per_device, bytes_per_param, reserve):
+    pass
+```
+tests:
+```python
+assert max_params(80, 16, 0.25) == 3750000000
+assert max_params(24, 2, 0.5) == 6000000000
+assert max_params(40, 16, 0.5) == 1250000000
+assert max_params(16, 16, 1.0) == 0
+assert max_params(1, 16, 0.0) == 62500000
+```
+model:
+```python
+def max_params(gb_per_device, bytes_per_param, reserve):
+    """Most parameters whose training state fits in the non-reserved memory."""
+    usable_bytes = gb_per_device * 1e9 * (1 - reserve)
+    return int(usable_bytes // bytes_per_param)
+```
+hint: The usable memory in bytes is the total times one minus the reserve; divide by the bytes per parameter and round down.
+solution: Reserving a fraction of memory for activations leaves `gb * 1e9 * (1 - reserve)` bytes for parameter state, and floor division by the bytes per parameter gives a whole number of parameters. A reserve of 1.0 leaves nothing, so the answer is 0.
+@quiz num
+prompt: A model with $N = 1.5 \times 10^9$ parameters is trained on $D = 3 \times 10^{10}$ tokens. Gradient checkpointing recomputes the forward pass, adding about $2ND$ FLOPs to the usual $6ND$. How many extra FLOPs does it add?
+answer: 9e19
+unit: FLOPs
+tol: 1%
+check: 2 * 1.5e9 * 3e10
+hint: The extra work is one additional forward pass, which costs $2N$ FLOPs per token.
+solution: $2ND = 2 \times 1.5 \times 10^9 \times 3 \times 10^{10} = 9 \times 10^{19}$ FLOPs, which raises the total from $2.7 \times 10^{20}$ to $3.6 \times 10^{20}$.
+@quiz self
+prompt: Your team wants to train a model with $7 \times 10^9$ parameters on $1.4 \times 10^{11}$ tokens using accelerators with 80 GB of memory each. Estimate the parameter-and-optimizer memory (16 bytes per parameter) and the compute ($6ND$), and explain what a single device cannot hold and which techniques you would consider.
+hint: Compute $7 \times 10^9 \times 16$ bytes and compare it with 80 GB; remember that activations come on top.
+solution: Parameter and optimizer state needs $7 \times 10^9 \times 16 = 1.12 \times 10^{11}$ bytes, or 112 GB, which exceeds the 80 GB of one device even before activations, so the state must be split across several devices (sharding the optimizer state, gradients and weights, or model parallelism, covered next week). Compute is $6 \times 7 \times 10^9 \times 1.4 \times 10^{11} = 5.9 \times 10^{21}$ FLOPs; at an effective $4 \times 10^{13}$ FLOP/s per device that is about $1.5 \times 10^{8}$ device-seconds, or around 1,700 device-days, so many devices are needed to finish in a few weeks. To save memory consider mixed precision for activations, gradient checkpointing (at about 33% more compute), a smaller batch per device with gradient accumulation, and sharded optimizer state. All of these numbers are estimates under stated assumptions: 16 bytes per parameter, the 6ND approximation, and 40% of an assumed peak.
+rubric: Computes about 112 GB of state and notes that it exceeds one 80 GB device before counting activations.
+rubric: Computes the $6ND$ compute (about $5.9 \times 10^{21}$ FLOPs) and converts to a time or device-days with stated utilization.
+rubric: Names at least two memory-saving techniques (sharding, checkpointing, mixed precision, accumulation) and states the assumptions behind the estimates.
