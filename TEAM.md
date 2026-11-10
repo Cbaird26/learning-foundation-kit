@@ -31,7 +31,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways, and on Nov 10, 
 | C19 | Dynamical systems and chaos | Claude | Codex | being written by Claude (Nov 10) |
 | C23 | Problem solving and mathematical writing | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | P1 | Measure theory and integration | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
-| P2 | Graduate algebra: groups, rings, modules and fields | Claude | Grok | written; internal review running |
+| P2 | Graduate algebra: groups, rings, modules and fields | Claude | Grok | written and reviewed internally (Nov 10); ready for Grok review |
 | P3 | Algebraic topology | Claude | Grok | written and reviewed internally (Nov 10); ready for Grok review |
 | P4 | Smooth manifolds | Claude | Grok | written and reviewed internally (Nov 10); ready for Grok review |
 | P5 | Functional analysis | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |

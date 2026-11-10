@@ -1,0 +1,286 @@
+@lesson
+title: Gaussian elimination, LU factorization and pivoting
+summary: Factor a matrix as $A = LU$ (or $PA = LU$ with pivoting), solve linear systems by substitution, and explain why pivoting is needed for accuracy and for existence.
+objective: Interpret Gaussian elimination as an LU factorization and count its cost.
+objective: State and prove when an LU factorization exists without pivoting and that partial pivoting always works for a nonsingular matrix.
+objective: Show with a small example how a tiny pivot destroys accuracy in floating point.
+objective: Implement LU factorization, forward and back substitution in exact fractions.
+reading: Fundamentals of Numerical Computation by Driscoll and Braun, Python edition: the chapter on linear systems; look up "LU factorization", "row pivoting" and "forward and backward substitution".
+
+@article
+To solve $A\mathbf{x} = \mathbf{b}$ you learned elimination: subtract multiples of row $1$ from the rows below to clear column $1$, then continue. Recording the multiples turns the method into a factorization that can solve many right-hand sides cheaply and can be analyzed.
+
+### Elimination as factorization
+
+Suppose $A$ is $n \times n$. Step $k$ subtracts $l_{ik} = a^{(k)}_{ik}/a^{(k)}_{kk}$ times row $k$ from row $i > k$, for $i = k+1, \dots, n$. The end result is an upper triangular matrix $U$, and the multipliers fill a **unit lower triangular** matrix $L$ (ones on the diagonal, $l_{ik}$ below it) with $A = LU$. To solve $A\mathbf{x} = \mathbf{b}$: solve $L\mathbf{y} = \mathbf{b}$ by **forward substitution**, then $U\mathbf{x} = \mathbf{y}$ by **back substitution**. Each substitution costs $O(n^2)$, and the factorization $O(n^3)$: step $k$ performs $(n-k)^2$ multiply–subtract updates, so the total is
+$$\sum_{k=1}^{n-1}(n-k)^2 = \frac{(n-1)n(2n-1)}{6} \approx \frac{n^3}{3}$$
+multiply–subtract pairs, about $\tfrac23 n^3$ floating-point operations.
+
+**Theorem 1 (LU without pivoting).** Let $A$ be an $n \times n$ matrix whose leading principal submatrices $A_{[1..k]}$ (the top-left $k \times k$ blocks) are nonsingular for $k = 1, \dots, n - 1$. Then $A = LU$ with $L$ unit lower triangular and $U$ upper triangular.
+
+*Proof.* Induction on $n$. For $n = 1$, take $L = (1)$, $U = A$. For $n \ge 2$ write $A = \begin{pmatrix} a & r^\top \\ c & B \end{pmatrix}$ with $a = a_{11} \ne 0$ (the case $k = 1$). One step of elimination gives
+$$A = \begin{pmatrix} 1 & 0 \\ c/a & I \end{pmatrix}\begin{pmatrix} a & r^\top \\ 0 & S \end{pmatrix}, \qquad S = B - \tfrac1a\,c\,r^\top.$$
+Row operations of the form "subtract a multiple of row $1$ from a lower row" do not change the determinant of any leading principal submatrix, so the determinant of the leading $(k+1) \times (k+1)$ block of $A$ equals $a$ times the determinant of the leading $k \times k$ block of $S$. For $k + 1 \le n - 1$ these are nonzero, so $S$ ($(n-1) \times (n-1)$) satisfies the hypothesis, and $S = L'U'$ by induction. Then $A = \begin{pmatrix} 1 & 0 \\ c/a & L' \end{pmatrix}\begin{pmatrix} a & r^\top \\ 0 & U' \end{pmatrix}$. $\blacksquare$
+
+The hypothesis is needed: the permutation matrix $\begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}$ is nonsingular but has $a_{11} = 0$, and no $LU$ factorization exists, since $l_{21}u_{11} = 1$ would force $u_{11} \ne 0$ while $u_{11} = a_{11} = 0$. (A singular matrix such as $\begin{pmatrix} 1 & 1 \\ 1 & 1 \end{pmatrix}$ can have an $LU$ factorization: its hypothesis holds.)
+
+### Pivoting
+
+Even when $LU$ exists, a small pivot is dangerous. Take $A = \begin{pmatrix} 10^{-20} & 1 \\ 1 & 1 \end{pmatrix}$, $\mathbf b = (1, 2)^\top$, with exact solution $x_1 \approx 1$, $x_2 \approx 1$. Without pivoting $l_{21} = 10^{20}$ and $u_{22} = 1 - 10^{20} \approx -10^{20}$ in floating point (the $1$ is lost), $y_2 = 2 - 10^{20} \approx -10^{20}$, so $x_2 = 1$ and $x_1 = (1 - x_2)/10^{-20} = 0$: the first component is completely wrong although the problem is well conditioned. **Partial pivoting** swaps the row with the largest $|a_{ik}|$ ($i \ge k$) into the pivot position before each step, producing $PA = LU$ with $P$ a permutation matrix and all multipliers $|l_{ik}| \le 1$.
+
+**Theorem 2.** For every nonsingular $A$, partial pivoting runs to completion and gives $PA = LU$ with $|l_{ik}| \le 1$.
+
+*Proof.* Suppose step $k$ has started: the matrix so far has the form $\begin{pmatrix} U_{11} & * \\ 0 & S \end{pmatrix}$ with $U_{11}$ upper triangular with nonzero diagonal ($k - 1$ steps done), and its determinant equals $\pm\det A \ne 0$, since elimination steps keep it and swaps only change the sign. If the first column of $S$ were zero, the determinant would be $\det U_{11}\det S = 0$, a contradiction. So some entry in column $k$ on or below the diagonal is nonzero, the largest one is a valid pivot, and it makes every multiplier at most $1$ in absolute value. $\blacksquare$
+
+The multipliers being at most $1$ does not make partial pivoting perfect: the entries of $U$ can in principle grow like $2^{n-1}$, but this almost never happens in practice (stated without proof).
+
+```python
+from fractions import Fraction
+
+
+def lu_nopivot(A):
+    """Return (L, U) for A = LU; entries are Fractions; no row swaps."""
+    n = len(A)
+    U = [[Fraction(x) for x in row] for row in A]
+    L = [[Fraction(int(i == j)) for j in range(n)] for i in range(n)]
+    for k in range(n - 1):
+        for i in range(k + 1, n):
+            L[i][k] = U[i][k] / U[k][k]
+            for j in range(k, n):
+                U[i][j] -= L[i][k] * U[k][j]
+    return L, U
+
+
+L, U = lu_nopivot([[4, 3], [6, 3]])
+print(L[1][0], U[1][1])      # 3/2 -3/2
+```
+
+Using `Fraction` the factorization is exact, so $LU = A$ holds exactly; in floats you would compare with a tolerance.
+
+@example
+title: Solving a tridiagonal system
+problem: Solve $A\mathbf x = \mathbf b$ with $A = \begin{pmatrix} 2 & -1 & 0 \\ -1 & 2 & -1 \\ 0 & -1 & 2\end{pmatrix}$ and $\mathbf b = (1, 0, 1)^\top$ by $LU$.
+step: Step $1$: $l_{21} = -1/2$; row $2$ becomes $(0, 3/2, -1)$. Row $3$ is unchanged, $l_{31} = 0$.
+step: Step $2$: $l_{32} = (-1)/(3/2) = -2/3$; the $(3,3)$ entry becomes $2 - (-2/3)(-1) = 4/3$. So $U = \begin{pmatrix} 2 & -1 & 0 \\ 0 & 3/2 & -1 \\ 0 & 0 & 4/3\end{pmatrix}$, and $\det A = 2 \cdot \tfrac32 \cdot \tfrac43 = 4$.
+step: Forward substitution $L\mathbf y = \mathbf b$: $y_1 = 1$, $y_2 = 0 + \tfrac12 \cdot 1 = \tfrac12$, $y_3 = 1 + \tfrac23 \cdot \tfrac12 = \tfrac43$.
+step: Back substitution $U\mathbf x = \mathbf y$: $x_3 = (4/3)/(4/3) = 1$, $x_2 = (\tfrac12 + x_3)/\tfrac32 = 1$, $x_1 = (1 + x_2)/2 = 1$.
+answer: $\mathbf x = (1, 1, 1)^\top$ and $\det A = 4$.
+
+@example
+title: Partial pivoting on a 3 by 3 matrix
+problem: Compute $PA = LU$ for $A = \begin{pmatrix} 1 & 2 & -1 \\ 3 & 1 & 2 \\ 2 & -3 & 6\end{pmatrix}$ and find $\det A$.
+step: Column $1$: the largest entry is $3$ (row $2$). Swap rows $1$ and $2$: rows are now $(3, 1, 2)$, $(1, 2, -1)$, $(2, -3, 6)$. Multipliers $1/3$ and $2/3$ give rows $(0, 5/3, -5/3)$ and $(0, -11/3, 14/3)$.
+step: Column $2$: compare $5/3$ and $-11/3$; the larger in absolute value is $-11/3$, so swap the last two rows. The multiplier is $(5/3)/(-11/3) = -5/11$ and the $(3,3)$ entry becomes $-5/3 - (-5/11)(14/3) = 5/11$.
+step: $U = \begin{pmatrix} 3 & 1 & 2 \\ 0 & -11/3 & 14/3 \\ 0 & 0 & 5/11\end{pmatrix}$ and $L = \begin{pmatrix} 1 & 0 & 0 \\ 2/3 & 1 & 0 \\ 1/3 & -5/11 & 1\end{pmatrix}$, where $P$ puts the original rows in the order $2, 3, 1$ (row $2$ of $A$ first, then row $3$, then row $1$).
+step: Two swaps give $\det P = +1$, so $\det A = 3 \cdot (-\tfrac{11}{3}) \cdot \tfrac{5}{11} = -5$; direct expansion confirms $-5$.
+answer: $\det A = -5$, with $U$ and $L$ as above.
+
+@mistakes
+- Assuming that a nonsingular matrix always has an $LU$ factorization: a zero pivot (here $a_{11} = 0$) can stop the process; row swaps fix this.
+- Pivoting only when a pivot is exactly zero: a tiny nonzero pivot gives huge multipliers and destroys accuracy, so always pivot on the largest entry.
+- Forgetting to swap the already computed multipliers in $L$ together with the rows of $U$ when exchanging rows.
+- Losing the sign of the determinant: each row swap multiplies $\det$ by $-1$, so $\det A = (-1)^{\text{swaps}}\prod u_{kk}$.
+
+@practice num
+prompt: Gaussian elimination without pivoting is applied to $A = \begin{pmatrix} 2 & 4 & 2 \\ 1 & 5 & 3 \\ 3 & 7 & 9\end{pmatrix}$, giving $A = LU$. Find the entry $u_{33}$ as an exact fraction.
+answer: 16/3
+check: Fraction(round(det([[2, 4, 2], [1, 5, 3], [3, 7, 9]])), 2 * 3)
+hint: After step $1$ the second row is $(0, 3, 2)$ and the third is $(0, 1, 6)$; then eliminate with $l_{32} = 1/3$.
+solution: With $l_{21} = 1/2$ and $l_{31} = 3/2$ the rows become $(0, 3, 2)$ and $(0, 1, 6)$. Then $l_{32} = 1/3$ and $u_{33} = 6 - \tfrac13 \cdot 2 = 16/3$. As a check, $\det A = 32 = u_{11}u_{22}u_{33} = 2 \cdot 3 \cdot \tfrac{16}{3}$.
+
+@practice mc
+prompt: Which of these matrices has no $LU$ factorization $A = LU$ with $L$ unit lower triangular and $U$ upper triangular (no row swaps)?
+choice*: $\begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}$, because its $(1,1)$ entry is $0$ while the matrix is nonsingular.
+choice: $\begin{pmatrix} 1 & 1 \\ 1 & 1 \end{pmatrix}$, because it is singular.
+choice: $\begin{pmatrix} 2 & 1 \\ 1 & 2 \end{pmatrix}$, because it is not diagonal.
+choice: The identity matrix, because $U$ would equal $A$.
+hint: Compute the factorization when $a_{11} \ne 0$; compare with the case $a_{11} = 0$.
+solution: If $a_{11} = 0$ and $a_{21} \ne 0$, then $a_{11} = u_{11} = 0$ forces $l_{21}u_{11} = 0 \ne a_{21}$. The singular matrix with all ones has $L = \begin{pmatrix}1&0\\1&1\end{pmatrix}$, $U = \begin{pmatrix}1&1\\0&0\end{pmatrix}$. The matrix $\begin{pmatrix}2&1\\1&2\end{pmatrix}$ has $a_{11} = 2 \ne 0$, and the identity is its own $LU$ factorization with $L = U = I$.
+
+@practice text
+prompt: What does this program print?
+```python
+L = [[1, 0], [2, 1]]
+b = [3, 10]
+y = [0, 0]
+for i in range(2):
+    y[i] = b[i] - sum(L[i][j] * y[j] for j in range(i))
+print(y)
+```
+answer: [3, 4]
+check: run("L = [[1, 0], [2, 1]]\nb = [3, 10]\ny = [0, 0]\nfor i in range(2):\n    y[i] = b[i] - sum(L[i][j] * y[j] for j in range(i))\nprint(y)")
+hint: This is forward substitution for a unit lower triangular matrix.
+solution: For $i = 0$ the sum is empty, so $y_0 = 3$. For $i = 1$, $y_1 = 10 - 2 \cdot 3 = 4$. The program prints `[3, 4]`.
+
+@practice code
+prompt: Write `lu_solve(L, U, b)` that solves $LU\mathbf x = \mathbf b$ for a lower triangular `L` and an upper triangular `U` (lists of rows, nonzero diagonals) and a vector `b`. Use forward substitution to get $\mathbf y$ with $L\mathbf y = \mathbf b$ and back substitution for $U\mathbf x = \mathbf y$, in exact `Fraction` arithmetic, and return the list `x` of Fractions. Do not assume that `L` has ones on its diagonal. For example, with $L = \begin{pmatrix}1&0\\2&1\end{pmatrix}$, $U = \begin{pmatrix}1&2\\0&3\end{pmatrix}$ and $\mathbf b = (3, 10)$ the answer is $(1/3, 4/3)$.
+starter:
+```python
+from fractions import Fraction
+
+
+def lu_solve(L, U, b):
+    pass
+```
+tests:
+```python
+from fractions import Fraction
+L = [[1, 0, 0], [2, 1, 0], [3, 3, 1]]
+U = [[1, 2, 3], [0, 1, 1], [0, 0, 2]]
+assert lu_solve(L, U, [5, 11, 22]) == [1, -1, 2]
+assert lu_solve([[1, 0], [2, 1]], [[1, 2], [0, 3]], [3, 10]) == [Fraction(1, 3), Fraction(4, 3)]
+assert lu_solve([[2, 0], [1, 4]], [[1, 0], [0, 1]], [6, 11]) == [3, Fraction(2)]
+assert lu_solve([[5]], [[2]], [3]) == [Fraction(3, 10)]
+assert all(isinstance(v, Fraction) for v in lu_solve(L, U, [5, 11, 22]))
+```
+model:
+```python
+from fractions import Fraction
+
+
+def lu_solve(L, U, b):
+    """Solve L U x = b by forward and back substitution (exact)."""
+    n = len(b)
+    y = [Fraction(0)] * n
+    for i in range(n):
+        s = Fraction(b[i])
+        for j in range(i):
+            s -= L[i][j] * y[j]
+        y[i] = s / L[i][i]
+    x = [Fraction(0)] * n
+    for i in range(n - 1, -1, -1):
+        s = y[i]
+        for j in range(i + 1, n):
+            s -= U[i][j] * x[j]
+        x[i] = s / U[i][i]
+    return x
+```
+hint: Forward substitution runs over rows $0, 1, \dots$ and divides by `L[i][i]`; back substitution runs over rows $n-1, \dots, 0$ and divides by `U[i][i]`.
+solution: Each unknown is found from one equation after the later (back) or earlier (forward) unknowns are known: $y_i = (b_i - \sum_{j<i} l_{ij}y_j)/l_{ii}$ and $x_i = (y_i - \sum_{j>i} u_{ij}x_j)/u_{ii}$. Dividing by the diagonal entries (not assuming ones) keeps the function correct for general triangular factors. The cost is $O(n^2)$.
+
+@practice code
+prompt: Write `lu_pivot(A)` for a square matrix `A` (list of rows of integers or Fractions) that performs Gaussian elimination with partial pivoting in exact `Fraction` arithmetic and returns `(perm, L, U)`. Here `perm` is a list such that row `i` of `PA` is row `perm[i]` of `A`; `L` is unit lower triangular and `U` upper triangular, with `PA = LU`. At step `k`, choose the row `i >= k` with the largest `abs` value in column `k` (the smallest `i` on ties) and swap rows of `U`, of the already-computed multipliers in `L`, and entries of `perm`. If the pivot candidate is zero, raise `ValueError`. For example, for `[[1, 2], [3, 4]]` it returns `perm = [1, 0]`.
+starter:
+```python
+from fractions import Fraction
+
+
+def lu_pivot(A):
+    pass
+```
+tests:
+```python
+from fractions import Fraction
+def matmul(X, Y):
+    n = len(X)
+    return [[sum(X[i][k] * Y[k][j] for k in range(n)) for j in range(n)] for i in range(n)]
+A = [[1, 2, -1], [3, 1, 2], [2, -3, 6]]
+perm, L, U = lu_pivot(A)
+assert perm == [1, 2, 0]
+assert U[2][2] == Fraction(5, 11) and L[2][1] == Fraction(-5, 11)
+assert matmul(L, U) == [[Fraction(v) for v in A[p]] for p in perm]
+assert all(abs(L[i][k]) <= 1 for i in range(3) for k in range(i))
+perm, L, U = lu_pivot([[0, 1], [1, 0]])
+assert perm == [1, 0] and L == [[1, 0], [0, 1]] and U == [[1, 0], [0, 1]]
+assert raises(ValueError, lu_pivot, [[1, 2], [2, 4]])
+```
+model:
+```python
+from fractions import Fraction
+
+
+def lu_pivot(A):
+    """PA = LU with partial pivoting, in exact arithmetic."""
+    n = len(A)
+    U = [[Fraction(x) for x in row] for row in A]
+    L = [[Fraction(0)] * n for _ in range(n)]
+    perm = list(range(n))
+    for k in range(n):
+        p = k
+        for i in range(k + 1, n):
+            if abs(U[i][k]) > abs(U[p][k]):
+                p = i
+        if U[p][k] == 0:
+            raise ValueError("singular matrix")
+        if p != k:
+            U[k], U[p] = U[p], U[k]
+            L[k], L[p] = L[p], L[k]
+            perm[k], perm[p] = perm[p], perm[k]
+        for i in range(k + 1, n):
+            L[i][k] = U[i][k] / U[k][k]
+            for j in range(k, n):
+                U[i][j] -= L[i][k] * U[k][j]
+    for i in range(n):
+        L[i][i] = Fraction(1)
+    return perm, L, U
+```
+hint: Find the row of largest absolute value in column `k` among rows `k..n-1`, swap it up (in `U`, `L` and `perm`), then eliminate below.
+solution: The swap must include the multipliers already stored in `L`, otherwise `L` no longer matches the rows of `U`. Strict inequality in the search picks the smallest index on ties. With exact fractions, `matmul(L, U)` equals the permuted matrix exactly, as the test checks. Theorem 2 guarantees that the pivot candidate is nonzero for a nonsingular matrix, so `ValueError` signals a singular input.
+
+@quiz ms
+prompt: Which statements about LU factorization are true?
+choice*: Elimination without pivoting on an $n \times n$ matrix costs about $\tfrac13 n^3$ multiply–subtract updates.
+choice*: Every nonsingular matrix has a factorization $PA = LU$ with partial pivoting.
+choice: If $A$ is nonsingular then $A = LU$ with $L$ unit lower triangular and $U$ upper triangular exists.
+choice*: Partial pivoting makes every multiplier $l_{ik}$ satisfy $|l_{ik}| \le 1$.
+choice: A tiny nonzero pivot is harmless in floating-point arithmetic.
+hint: Recall the permutation matrix example and the $10^{-20}$ example.
+solution: The count is $\sum(n-k)^2 \approx n^3/3$. Theorem 2 gives $PA = LU$ for every nonsingular $A$ with multipliers at most $1$. Without row swaps, the matrix with $a_{11} = 0$ has no factorization, and a tiny pivot produces huge multipliers and a wrong answer.
+
+@quiz num
+prompt: Count the multiply–subtract updates $u_{ij} \leftarrow u_{ij} - l_{ik}u_{kj}$ made by Gaussian elimination on a $12 \times 12$ matrix, where step $k$ updates an $(n-k) \times (n-k)$ block for $k = 1, \dots, 11$.
+answer: 506
+check: sum((12 - k) ** 2 for k in range(1, 12))
+hint: The total is $\sum_{m=1}^{11} m^2 = 11 \cdot 12 \cdot 23/6$.
+solution: Step $k$ updates $(12-k)^2$ entries, so the total is $1^2 + 2^2 + \dots + 11^2 = \dfrac{11 \cdot 12 \cdot 23}{6} = 506$.
+
+@quiz code
+prompt: Write `det_pivot(A)` for a square matrix `A` of integers or Fractions. It computes the determinant by Gaussian elimination with partial pivoting in exact `Fraction` arithmetic: at each step swap the row with the largest absolute value in the column into place (each swap flips the sign), eliminate below, and return the signed product of the diagonal. If the column has only zeros from the diagonal down, return `Fraction(0)`. For example, `det_pivot([[0, 1], [1, 0]])` is `-1`.
+starter:
+```python
+from fractions import Fraction
+
+
+def det_pivot(A):
+    pass
+```
+tests:
+```python
+from fractions import Fraction
+assert det_pivot([[0, 1], [1, 0]]) == -1
+assert det_pivot([[0, 2, 1], [1, 1, 0], [3, 0, 2]]) == -7
+assert det_pivot([[1, 2], [2, 4]]) == 0
+assert det_pivot([[5]]) == 5
+assert det_pivot([[Fraction(1, 2), 1], [3, 4]]) == Fraction(-1)
+assert det_pivot([[2, 0, 0, 0], [0, 3, 0, 0], [0, 0, 0, 1], [0, 0, 4, 0]]) == -24
+```
+model:
+```python
+from fractions import Fraction
+
+
+def det_pivot(A):
+    """Determinant by elimination with partial pivoting."""
+    n = len(A)
+    M = [[Fraction(x) for x in row] for row in A]
+    sign = 1
+    result = Fraction(1)
+    for k in range(n):
+        p = k
+        for i in range(k + 1, n):
+            if abs(M[i][k]) > abs(M[p][k]):
+                p = i
+        if M[p][k] == 0:
+            return Fraction(0)
+        if p != k:
+            M[k], M[p] = M[p], M[k]
+            sign = -sign
+        result *= M[k][k]
+        for i in range(k + 1, n):
+            factor = M[i][k] / M[k][k]
+            for j in range(k, n):
+                M[i][j] -= factor * M[k][j]
+    return sign * result
+```
+hint: Keep a sign variable that flips at each row swap, multiply the pivots together, and return `Fraction(0)` as soon as no nonzero pivot exists.
+solution: Elimination without swaps keeps the determinant; each swap multiplies it by $-1$; the determinant of the final upper triangular matrix is the product of its diagonal. A column of zeros at or below the diagonal means the matrix is singular, so the determinant is $0$. For the first test the single swap gives $-1$.

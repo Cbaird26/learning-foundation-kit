@@ -154,13 +154,13 @@ checkout lives elsewhere.
 | C13 | Complex analysis | 13/13 | yes | yes |
 | C14 | Topology | 13/13 | yes | yes |
 | C15 | Number theory | 13/13 | yes | yes |
-| C16 | Combinatorics and graph theory | 6/13 |  |  |
-| C17 | Numerical analysis | 7/13 |  |  |
-| C18 | Differential geometry of curves and surfaces | 4/13 |  |  |
-| C19 | Dynamical systems and chaos | 5/13 |  |  |
+| C16 | Combinatorics and graph theory | 8/13 |  |  |
+| C17 | Numerical analysis | 9/13 |  |  |
+| C18 | Differential geometry of curves and surfaces | 7/13 |  |  |
+| C19 | Dynamical systems and chaos | 7/13 |  |  |
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
-| P2 | Graduate algebra: groups, rings, modules and fields | 13/13 | yes |  |
+| P2 | Graduate algebra: groups, rings, modules and fields | 13/13 | yes | yes |
 | P3 | Algebraic topology | 13/13 | yes | yes |
 | P4 | Smooth manifolds | 13/13 | yes | yes |
 | P5 | Functional analysis | 13/13 | yes | yes |
@@ -265,3 +265,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math C13, C14, P5 reviewed internally (ready for second opinions); P2 written, internal review running
 - 2026-11-10: Math C15 reviewed internally (25 fixes); ready for Codex's review
 - 2026-11-10: Math P3, P4 reviewed internally; ready for Grok's review
+- 2026-11-10: Math P2 reviewed internally; ready for Grok's review
