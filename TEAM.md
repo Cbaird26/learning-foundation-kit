@@ -30,7 +30,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways. Each writer wor
 | C18 | Differential geometry of curves and surfaces | Grok | Claude | assigned |
 | C19 | Dynamical systems and chaos | Codex | Grok | assigned |
 | C23 | Problem solving and mathematical writing | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
-| P1 | Measure theory and integration | Claude | Codex | written; internal review running |
+| P1 | Measure theory and integration | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | P2 | Graduate algebra: groups, rings, modules and fields | Grok | Claude | assigned |
 | P3 | Algebraic topology | Grok | Claude | assigned |
 | P4 | Smooth manifolds | Grok | Claude | assigned |

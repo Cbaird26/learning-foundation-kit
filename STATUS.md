@@ -253,3 +253,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math: C12 reviewed internally (4 edits); ready for Codex review; internal reviews of C9, C11, C23, P1 running
 - 2026-11-09: Math: C9 reviewed internally (5 fixes plus one follow-up); ready for Codex review; internal reviews of C11, C23, P1 running
 - 2026-11-09: Math C11 and C23 reviewed internally (C11 readings now name Judson's chapters and sections); both ready for Codex's review
+- 2026-11-09: Math P1 reviewed internally; all seven of Claude's new courses (C9-C12, C23, P1, P7) are ready for Codex's review
