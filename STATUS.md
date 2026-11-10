@@ -129,11 +129,11 @@ logic from the Metaphysics school (C21), theory of computation from the Coding s
 | --- | --- |
 | 1. Curriculum (`schools/math/work/curriculum.py`) and course files | done |
 | 2. Brief, review template, validated example lesson (`example_math_lesson.txt`), rebranded app | done |
-| 3. Write the 19 new courses (split three ways: Claude 7, Codex 6, Grok 6; see TEAM.md) | in progress: Claude's 7 written (Nov 10); Codex's 6 and Grok's 6 not started |
+| 3. Write the 19 new courses (owner's choice, Nov 10: Claude writes all 19; Codex and Grok give second-opinion reviews; see TEAM.md) | in progress: 7 written and reviewed internally; the other 12 being written (Nov 10) |
 | 4. Independent review of each course | in progress: Claude's 7 reviewed internally and waiting for Codex's review |
 | 5. Integrate and build | trial run Nov 10: the 52 existing courses pass validation with the browser check and build into one page; the 12 unwritten courses show as coming |
 | 6. Test the page | trial run Nov 10 on the 52: 696 routes with no KaTeX errors or page errors, all 198 Try-it blocks match standard Python (one `random` block differs by design), practice code, final exam, error log and scratchpad work; an American-spelling pass fixed 149 words, mostly in the reused K–12 courses |
-| 7. Publish as `mathematics-learning-foundation` (owner's yes first) | not started; `schools/math/publish/README.md` is written for math |
+| 7. Publish as `mathematics-learning-foundation` (owner's yes first) | the owner chose on Nov 10 to go live when all 64 courses are done; `schools/math/publish/README.md` is written for math |
 | 8. Add to the hub | entry ready, not applied: color `--c-math` #3e5573 (dark #a9bad4), a Σ glyph named `sigma`, key `mathlf`, placed between Law and Medicine; README row "Kindergarten to PhD qualifying exams in mathematics", 64 courses |
 
 How to continue step 3: for each course without 13 files, write it exactly as `schools/math/toolkit/BRIEF.md` says,
@@ -255,3 +255,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math C11 and C23 reviewed internally (C11 readings now name Judson's chapters and sections); both ready for Codex's review
 - 2026-11-09: Math P1 reviewed internally; all seven of Claude's new courses (C9-C12, C23, P1, P7) are ready for Codex's review
 - 2026-11-09: Math trial build of the 52 existing courses passed (696 routes, Try-it, practice code, exam); American-spelling pass (149 words, mostly reused K-12 courses); stage blurbs corrected; publish README written; hub entry prepared
+- 2026-11-09: Math: owner chose (Nov 10) that Claude writes the last 12 courses too; Codex and Grok switch to second-opinion reviews; publish when all 64 are done

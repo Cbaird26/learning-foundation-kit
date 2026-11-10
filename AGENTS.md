@@ -45,6 +45,8 @@ A course is always reviewed by a different AI from the one that wrote it.
 | Codex  | Grok     |
 | Grok   | Claude   |
 
+When one agent writes most of a school, TEAM.md may give its courses to either of the other two agents for review (in Mathematics, Claude wrote all 19 new courses, so Codex and Grok share the second-opinion reviews).
+
 ## Setup
 
 As in HANDOFF.md "Setup": `npm install`, then `python3 tools/relocate.py` once per checkout. Without Playwright and Chromium, set `TOE_SKIP_BROWSER=1`. Never commit the changes `relocate.py` makes to scripts, briefs or `tools/paths.json`.
