@@ -271,3 +271,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math: all 19 new courses written (C16, C18 reviews running); BRIEF and the site's Python note now cover a browser for-loop difference
 - 2026-11-10: Math C17 reviewed internally; ready for Codex's review
 - 2026-11-10: Math C16 reviewed internally; ready for Codex's review
+- 2026-11-10: Math C18 reviewed internally; ready for Grok's review
