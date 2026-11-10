@@ -129,8 +129,8 @@ logic from the Metaphysics school (C21), theory of computation from the Coding s
 | --- | --- |
 | 1. Curriculum (`schools/math/work/curriculum.py`) and course files | done |
 | 2. Brief, review template, validated example lesson (`example_math_lesson.txt`), rebranded app | done |
-| 3. Write the 19 new courses (owner's choice, Nov 10: Claude writes all 19; Codex and Grok give second-opinion reviews; see TEAM.md) | in progress: 7 written and reviewed internally; the other 12 being written (Nov 10) |
-| 4. Independent review of each course | in progress: Claude's 7 reviewed internally and waiting for Codex's review |
+| 3. Write the 19 new courses (owner's choice, Nov 10: Claude writes all 19; Codex and Grok give second-opinion reviews; see TEAM.md) | done (Nov 10) |
+| 4. Independent review of each course | internal reviews done for all 19 (Nov 10); second-opinion reviews by Codex and Grok (see TEAM.md) can follow publication |
 | 5. Integrate and build | trial run Nov 10: the 52 existing courses pass validation with the browser check and build into one page; the 12 unwritten courses show as coming |
 | 6. Test the page | trial run Nov 10 on the 52: 696 routes with no KaTeX errors or page errors, all 198 Try-it blocks match standard Python (one `random` block differs by design), practice code, final exam, error log and scratchpad work; an American-spelling pass fixed 149 words, mostly in the reused K–12 courses |
 | 7. Publish as `mathematics-learning-foundation` (owner's yes first) | the owner chose on Nov 10 to go live when all 64 courses are done; `schools/math/publish/README.md` is written for math |
@@ -157,7 +157,7 @@ checkout lives elsewhere.
 | C16 | Combinatorics and graph theory | 13/13 | yes | yes |
 | C17 | Numerical analysis | 13/13 | yes | yes |
 | C18 | Differential geometry of curves and surfaces | 13/13 | yes | yes |
-| C19 | Dynamical systems and chaos | 13/13 | yes |  |
+| C19 | Dynamical systems and chaos | 13/13 | yes | yes |
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
 | P2 | Graduate algebra: groups, rings, modules and fields | 13/13 | yes | yes |
@@ -272,3 +272,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math C17 reviewed internally; ready for Codex's review
 - 2026-11-10: Math C16 reviewed internally; ready for Codex's review
 - 2026-11-10: Math C18 reviewed internally; ready for Grok's review
+- 2026-11-10: Math: C19 reviewed internally; all 19 new courses written and reviewed internally; integrating next
