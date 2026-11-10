@@ -14,8 +14,8 @@ STAGES = [
     ('K', 'Elementary school (K–5)', 'Numbers, reading and writing, science and the world around us, plus first steps in computational thinking and Python, learned with a grown-up close by.'),
     ('J', 'Middle school (6–8)', 'Ratios to algebra, reading and writing, life, physical and earth science, history, and programming in Python.'),
     ('H', 'High school (9–12)', 'Algebra, geometry, trigonometry, precalculus, calculus and statistics, the sciences, English and history, and Python for data and simulation.'),
-    ('C', 'College mathematics degree', 'Calculus, linear algebra, proof and discrete mathematics; real and complex analysis, abstract algebra and topology; probability, number theory, combinatorics, numerical analysis and differential equations; geometry, dynamics, logic and computation as electives; and problem solving and mathematical writing.'),
-    ('P', 'Graduate study and qualifying exams in mathematics', 'Measure theory, graduate algebra, algebraic topology, smooth manifolds, functional analysis and probability theory, with qualifying-exam preparation and a first expository paper.'),
+    ('C', 'College mathematics degree', 'Calculus, linear algebra, proof and discrete mathematics; real and complex analysis, abstract algebra and topology; differential equations, probability and statistics, number theory, combinatorics and numerical analysis; differential geometry, dynamical systems, Fourier methods and PDEs, logic and computation as electives; and problem solving and mathematical writing.'),
+    ('P', 'Graduate study and qualifying exams in mathematics', 'Measure theory, graduate algebra, algebraic topology, smooth manifolds and functional analysis, with probability theory as an elective, qualifying-exam preparation and a first expository paper.'),
 ]
 LEVEL = {'K': 'elementary', 'J': 'middle', 'H': 'high', 'C': 'college', 'P': 'professional'}
 FINAL_MIN = {'elementary': 30, 'middle': 45, 'high': 60, 'college': 120, 'professional': 180}
