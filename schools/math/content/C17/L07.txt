@@ -1,0 +1,233 @@
+@lesson
+title: Numerical differentiation and Richardson extrapolation
+summary: Derive difference formulas for derivatives with their truncation errors, balance them against rounding error to choose a step size, and raise the order with Richardson extrapolation.
+objective: Derive the forward, central and second-difference formulas from Taylor's theorem and state their orders.
+objective: Bound the total error (truncation plus rounding) of a difference quotient and find the best step size.
+objective: Apply Richardson extrapolation to remove the leading error term and prove the resulting order.
+objective: Implement difference formulas and an extrapolation table in plain Python and check their orders numerically.
+reading: Fundamentals of Numerical Computation by Driscoll and Braun, Python edition: the sections on finite differences and on extrapolation in the chapter on numerical integration and differentiation; look up "finite difference" and "Richardson extrapolation".
+
+@article
+The derivative is a limit, $f'(x) = \lim_{h \to 0}(f(x+h) - f(x))/h$, so it seems that taking $h$ smaller always improves the answer. Try $h = 10^{-14}$ in double precision and the answer is wrong in the third digit. There are two competing errors, and understanding both is the heart of this week.
+
+### Truncation error
+
+Suppose $f$ has enough continuous derivatives. Taylor's theorem gives $f(x + h) = f(x) + h f'(x) + \tfrac12 h^2 f''(\xi_1)$ for some $\xi_1$ between $x$ and $x+h$. Hence the **forward difference** satisfies
+$$\frac{f(x+h) - f(x)}{h} - f'(x) = \tfrac12 h f''(\xi_1) = O(h).$$
+Expanding one order further, with $\xi_\pm$ between $x$ and $x \pm h$:
+$$f(x \pm h) = f(x) \pm h f'(x) + \tfrac12 h^2 f''(x) \pm \tfrac16 h^3 f'''(\xi_\pm).$$
+Subtract the two expansions: $f(x+h) - f(x-h) = 2h f'(x) + \tfrac16 h^3\bigl(f'''(\xi_+) + f'''(\xi_-)\bigr)$. The **central difference** therefore satisfies
+$$D(h) := \frac{f(x+h) - f(x-h)}{2h}, \qquad |D(h) - f'(x)| \le \frac{h^2}{6}\max|f'''| \quad (f \in C^3).$$
+Adding the two expansions (carried to fourth order) gives the **second difference** $\dfrac{f(x+h) - 2f(x) + f(x-h)}{h^2} = f''(x) + \tfrac{1}{12}h^2 f^{(4)}(\xi)$ for $f \in C^4$.
+
+### Rounding error and the best step size
+
+A computer evaluates $f$ with an absolute error of at most $\epsilon$ (for $f \approx 1$, $\epsilon \approx u \approx 10^{-16}$).
+
+**Theorem 1.** Let $f \in C^3$ with $|f'''| \le M$ near $x$, and suppose the computed values $\tilde f(x \pm h)$ satisfy $|\tilde f(x \pm h) - f(x \pm h)| \le \epsilon$. Then the computed central difference $\tilde D(h) = (\tilde f(x+h) - \tilde f(x-h))/(2h)$ satisfies (ignoring the rounding of the subtraction and division themselves)
+$$|\tilde D(h) - f'(x)| \le \frac{M h^2}{6} + \frac{\epsilon}{h},$$
+and the right side is smallest at $h^* = (3\epsilon/M)^{1/3}$.
+
+*Proof.* $|\tilde D - D| \le (\epsilon + \epsilon)/(2h) = \epsilon/h$, and $|D - f'| \le Mh^2/6$; add by the triangle inequality. The function $E(h) = Mh^2/6 + \epsilon/h$ has $E'(h) = Mh/3 - \epsilon/h^2$, negative for $h < h^*$ and positive for $h > h^*$, so $h^*$ is its minimum point. $\blacksquare$
+
+At $h^*$ the error is of order $\epsilon^{2/3}$, about $10^{-11}$ for $\epsilon = 10^{-16}$: a central difference cannot give more than about eleven correct digits. For $f(x) = \ln x$ at $x = 2$ the measured errors are about $4 \times 10^{-4}$, $4 \times 10^{-6}$, $4 \times 10^{-8}$ for $h = 10^{-1}, 10^{-2}, 10^{-3}$ (dropping a factor $100$ for each factor $10$: order $2$), a minimum of order $10^{-11}$ near $h = 10^{-5}$, and then growth like $1/h$ to about $10^{-8}$ at $h = 10^{-8}$ and $10^{-2}$ at $h = 10^{-14}$. The exact digits you see depend on the computer.
+
+### Richardson extrapolation
+
+If the leading error term is known, remove it. Suppose $f \in C^5$. Then $D(h) = f'(x) + a h^2 + r(h)$ with $a = f'''(x)/6$ and $|r(h)| \le C h^4$ for small $h$.
+
+**Theorem 2 (Richardson extrapolation).** Under this assumption the combination
+$$R(h) = \frac{4D(h/2) - D(h)}{3}$$
+satisfies $|R(h) - f'(x)| \le \tfrac{5}{12} C h^4$.
+
+*Proof.* $4D(h/2) - D(h) = 4f' + 4a\,h^2/4 + 4r(h/2) - f' - a h^2 - r(h) = 3f' + 4r(h/2) - r(h)$, because the $h^2$ terms $a h^2$ cancel. Hence $|R(h) - f'| = \tfrac13|4r(h/2) - r(h)| \le \tfrac13\bigl(4C h^4/16 + C h^4\bigr) = \tfrac{5}{12}C h^4$. $\blacksquare$
+
+The idea repeats: the next extrapolation $R_{k,j} = R_{k,j-1} + (R_{k,j-1} - R_{k-1,j-1})/(4^j - 1)$ removes the $h^{2j}$ term, provided $f$ is smooth enough. Extrapolation costs a few more function values and no smaller step, so it avoids the rounding trap of tiny $h$.
+
+```python
+def central(f, x, h):
+    return (f(x + h) - f(x - h)) / (2 * h)
+
+
+def richardson1(f, x, h):
+    """One extrapolation step: error O(h^4) for smooth f."""
+    return (4 * central(f, x, h / 2) - central(f, x, h)) / 3
+
+
+import math
+print(abs(central(math.log, 2.0, 0.1) - 0.5) < 5e-4)        # True
+print(abs(richardson1(math.log, 2.0, 0.1) - 0.5) < 1e-6)    # True
+```
+
+Both checks are evidence for particular inputs; Theorems 1 and 2 are the guarantees.
+
+@example
+title: Central difference of the exponential
+problem: Estimate $f'(0)$ for $f(x) = e^x$ with $h = 0.1$, and compare the error with the bound of Theorem 1 (ignoring rounding).
+step: $D(0.1) = (e^{0.1} - e^{-0.1})/0.2 = 1.10517 - 0.90484 = 0.20033$, divided by $0.2$: $D(0.1) \approx 1.001668$.
+step: The exact derivative is $f'(0) = 1$, so the error is about $1.67 \times 10^{-3}$.
+step: Bound: $M = \max_{[-0.1, 0.1]}|f'''| = e^{0.1} \approx 1.105$, so the bound is $Mh^2/6 \approx 1.105 \cdot 0.01/6 \approx 1.84 \times 10^{-3}$.
+step: The actual error $1.67 \times 10^{-3}$ is below the bound $1.84 \times 10^{-3}$; indeed $h^2 f'''(0)/6 = 1.67 \times 10^{-3}$ is the leading term.
+answer: $D(0.1) \approx 1.00167$, error $\approx 1.7 \times 10^{-3}$, below the bound $1.8 \times 10^{-3}$.
+
+@example
+title: The best step size
+problem: Function values carry an error of $\epsilon = 10^{-16}$ and $|f'''| \le 1$. Find the best step size for the central difference and the error at that step.
+step: By Theorem 1, $h^* = (3\epsilon/M)^{1/3} = (3 \times 10^{-16})^{1/3} \approx 6.7 \times 10^{-6}$.
+step: The truncation part is $Mh^{*2}/6 \approx (6.7 \times 10^{-6})^2/6 \approx 7.5 \times 10^{-12}$.
+step: The rounding part is $\epsilon/h^* \approx 10^{-16}/(6.7 \times 10^{-6}) \approx 1.5 \times 10^{-11}$, twice the truncation part (at the minimum $\epsilon/h = 2 \cdot Mh^2/6$).
+step: The total bound is about $2.2 \times 10^{-11}$.
+answer: $h^* \approx 6.7 \times 10^{-6}$ and a total error bound of about $2 \times 10^{-11}$.
+
+@mistakes
+- Believing that a smaller $h$ is always better: below $h^*$ the rounding term $\epsilon/h$ dominates and the error grows.
+- Using the forward difference where an $O(h^2)$ method is as cheap: the central difference needs the same number of evaluations.
+- Applying the Richardson factor $4$ to a method whose error expansion starts at $h$ (for the forward difference the factor is $2$): the factor is $2^p$ for a leading term $h^p$.
+- Extrapolating with an $h$ so small that rounding noise, not the truncation term, is what the two values differ by.
+
+@practice num
+prompt: A central difference is computed from function values with absolute error $\epsilon = 10^{-12}$ (noisy measurements), and $|f'''| \le 0.5$. By Theorem 1 the best step size is $h^* = (3\epsilon/M)^{1/3}$. Give $h^*$ in scientific notation, as a decimal such as 0.000182.
+answer: 0.000182
+tol: 1%
+check: (3 * 1e-12 / 0.5) ** (1 / 3)
+hint: Substitute $\epsilon = 10^{-12}$ and $M = 0.5$ into $h^* = (3\epsilon/M)^{1/3}$; the quantity inside is $6 \times 10^{-12}$.
+solution: $h^* = (6 \times 10^{-12})^{1/3} \approx 1.817 \times 10^{-4}$.
+
+@practice mc
+prompt: Suppose $D(h) = f'(x) + c_2 h^2 + c_4 h^4 + \cdots$. Which combination of $D(h)$ and $D(h/2)$ eliminates the $h^2$ term?
+choice*: $\dfrac{4D(h/2) - D(h)}{3}$
+choice: $2D(h/2) - D(h)$
+choice: $\dfrac{D(h/2) + D(h)}{2}$
+choice: $\dfrac{D(h/2) - D(h)}{3}$
+hint: The $h^2$ coefficient of $D(h/2)$ is $c_2/4$; find weights that cancel it.
+solution: With weights $4$ and $-1$ the $h^2$ terms are $4 \cdot c_2h^2/4 - c_2h^2 = 0$, and the weights sum to $3$, so divide by $3$. The combination $2D(h/2) - D(h)$ cancels a term proportional to $h$, not $h^2$; the average does not cancel anything; and the last choice drops the constant term $f'(x)$ altogether.
+
+@practice text
+prompt: What does this program print?
+```python
+f = lambda x: x ** 3
+print((f(3) - f(1)) / 2)
+```
+answer: 13.0
+check: run("f = lambda x: x ** 3\nprint((f(3) - f(1)) / 2)")
+hint: This is the central difference of $x^3$ at $x = 2$ with $h = 1$.
+solution: $(27 - 1)/2 = 13.0$, while $f'(2) = 12$. The truncation error is $h^2 f'''/6 = 1 \cdot 6/6 = 1$, exactly the difference: for a cubic the third derivative is constant and the formula's error is exactly the leading term.
+
+@practice code
+prompt: Write `second_diff(f, x, h)` returning the second difference $\bigl(f(x+h) - 2f(x) + f(x-h)\bigr)/h^2$, an approximation of $f''(x)$ with error $\frac{h^2}{12}f^{(4)}(\xi)$. For example, for $f(x) = x^4$, `x = 1.0`, `h = 0.5` the result is `12.5`.
+starter:
+```python
+def second_diff(f, x, h):
+    pass
+```
+tests:
+```python
+import math
+assert abs(second_diff(lambda x: x ** 4, 1.0, 0.5) - 12.5) < 1e-12
+assert abs(second_diff(lambda x: 3 * x * x - x, 2.0, 1.0) - 6.0) < 1e-12
+assert abs(second_diff(math.exp, 0.0, 0.01) - (1 + 0.01 ** 2 / 12)) < 1e-8
+assert abs(second_diff(lambda x: 7.0, 3.0, 0.1)) < 1e-9
+e1 = abs(second_diff(math.sin, 1.0, 0.2) + math.sin(1.0))
+e2 = abs(second_diff(math.sin, 1.0, 0.1) + math.sin(1.0))
+assert 3.8 < e1 / e2 < 4.2
+```
+model:
+```python
+def second_diff(f, x, h):
+    """Three-point approximation of f''(x)."""
+    return (f(x + h) - 2 * f(x) + f(x - h)) / (h * h)
+```
+hint: Combine $f(x+h)$, $-2f(x)$ and $f(x-h)$ and divide by $h^2$, not by $h$.
+solution: Adding the Taylor expansions of $f(x \pm h)$ to fourth order cancels the odd terms and leaves $f''(x)h^2 + \frac{1}{12}h^4 f^{(4)}(\xi)$, so the error is $O(h^2)$: halving $h$ divides it by about $4$, as the last test checks.
+
+@practice code
+prompt: Write `richardson_derivative(f, x, h, levels)` for an integer `levels >= 0`. Let `D(s) = (f(x + s) - f(x - s)) / (2 * s)` be the central difference. Build the table with `R[k][0] = D(h / 2**k)` for `k = 0..levels` and, for `j = 1..k`, `R[k][j] = R[k][j-1] + (R[k][j-1] - R[k-1][j-1]) / (4**j - 1)`. Return `R[levels][levels]`. For example, `levels = 0` returns `D(h)`.
+starter:
+```python
+def richardson_derivative(f, x, h, levels):
+    pass
+```
+tests:
+```python
+import math
+d = lambda s: (math.sin(1 + s) - math.sin(1 - s)) / (2 * s)
+assert abs(richardson_derivative(math.sin, 1.0, 0.5, 0) - d(0.5)) < 1e-12
+e1 = abs(richardson_derivative(math.sin, 1.0, 0.5, 1) - math.cos(1.0))
+assert 1e-5 < e1 < 1e-4
+assert abs(richardson_derivative(math.sin, 1.0, 0.5, 3) - math.cos(1.0)) < 1e-10
+assert abs(richardson_derivative(lambda t: t ** 4, 1.0, 1.0, 2) - 4.0) < 1e-9
+assert abs(richardson_derivative(math.exp, 0.0, 0.4, 2) - 1.0) < 1e-6
+```
+model:
+```python
+def richardson_derivative(f, x, h, levels):
+    """Richardson table for the central difference; returns R[levels][levels]."""
+    def d(s):
+        return (f(x + s) - f(x - s)) / (2 * s)
+
+    table = []
+    for k in range(levels + 1):
+        row = [d(h / 2 ** k)]
+        for j in range(1, k + 1):
+            row.append(row[j - 1] + (row[j - 1] - table[k - 1][j - 1]) / (4 ** j - 1))
+        table.append(row)
+    return table[levels][levels]
+```
+hint: Fill the table row by row: row `k` starts with the central difference at `h / 2**k` and each later entry uses the entry to its left and the entry above that.
+solution: Column $j$ removes the $h^{2j}$ error term using the factor $4^j$ (the ratio $2^{2j}$ of the error terms for steps $h$ and $h/2$), so $R[k][j]$ has error $O(h^{2j+2})$. A common slip is using $2^j - 1$ (the forward-difference factor), which does not cancel the $h^2$ term. Polynomials up to degree $5$ are differentiated exactly with `levels = 2`.
+
+@quiz ms
+prompt: Which statements about numerical differentiation are true?
+choice*: The central difference $(f(x+h) - f(x-h))/(2h)$ has truncation error $O(h^2)$ for $f \in C^3$.
+choice*: In floating point the total error of a difference quotient first decreases and then increases as $h \to 0$.
+choice: The forward difference has the same order of accuracy as the central difference.
+choice*: Richardson extrapolation of a central difference with the factor $4$ cancels the $h^2$ term of its error expansion.
+choice: Choosing $h$ as close to $0$ as the computer allows gives the most accurate derivative.
+hint: Use the error analysis: truncation $\propto h^p$ and rounding $\propto 1/h$.
+solution: The first and third follow from Taylor's theorem: forward is $O(h)$, central $O(h^2)$. The rounding error $\epsilon/h$ grows as $h \to 0$, so the error has a minimum at $h^*$. Extrapolation with $(4D(h/2) - D(h))/3$ cancels the $h^2$ term (Theorem 2). A tiny $h$ is the worst choice, not the best.
+
+@quiz num
+prompt: A central difference gives $D(h) = 3.0800$ and $D(h/2) = 3.0200$. Compute the Richardson extrapolation $(4D(h/2) - D(h))/3$.
+answer: 3
+check: (4 * 3.0200 - 3.0800) / 3
+hint: Compute $4 \cdot 3.0200 = 12.08$ first.
+solution: $(12.08 - 3.08)/3 = 9/3 = 3.0000$.
+
+@quiz code
+prompt: Write `observed_order(f, df, x, h, rule)` where `df` is the exact derivative and `rule` is `'forward'` or `'central'`. Let `D(s)` be the forward difference $(f(x+s) - f(x))/s$ or the central difference $(f(x+s) - f(x-s))/(2s)$ accordingly, and `err(s) = abs(D(s) - df(x))`. Return `math.log2(err(h) / err(h / 2))`, the observed order. For example, for the exponential at `x = 0.5`, `h = 0.1`, the central rule gives about `2.0` and the forward rule about `1.0`.
+starter:
+```python
+import math
+
+
+def observed_order(f, df, x, h, rule):
+    pass
+```
+tests:
+```python
+import math
+assert abs(observed_order(math.exp, math.exp, 0.5, 0.1, 'central') - 2.0) < 0.05
+assert abs(observed_order(math.exp, math.exp, 0.5, 0.1, 'forward') - 1.0) < 0.05
+assert abs(observed_order(math.sin, math.cos, 1.0, 0.1, 'central') - 2.0) < 0.05
+assert abs(observed_order(math.log, lambda t: 1 / t, 2.0, 0.2, 'forward') - 1.0) < 0.1
+assert abs(observed_order(lambda t: t * t * t, lambda t: 3 * t * t, 1.0, 0.1, 'central') - 2.0) < 1e-6
+```
+model:
+```python
+import math
+
+
+def observed_order(f, df, x, h, rule):
+    """log2 of the error ratio between step h and step h / 2."""
+    def d(s):
+        if rule == 'forward':
+            return (f(x + s) - f(x)) / s
+        return (f(x + s) - f(x - s)) / (2 * s)
+
+    def err(s):
+        return abs(d(s) - df(x))
+
+    return math.log2(err(h) / err(h / 2))
+```
+hint: Define the difference quotient for the chosen rule, then take the base-2 logarithm of the ratio of the two errors.
+solution: If the error behaves like $C h^p$, then $\text{err}(h)/\text{err}(h/2) \approx 2^p$, so the base-2 logarithm estimates $p$. For the cubic the central-difference error is exactly $h^2$ (the third derivative is constant), so the ratio is exactly $4$.
