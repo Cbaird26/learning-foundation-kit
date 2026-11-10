@@ -35,7 +35,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways, and on Nov 10, 
 | P3 | Algebraic topology | Claude | Grok | being written by Claude (Nov 10) |
 | P4 | Smooth manifolds | Claude | Grok | being written by Claude (Nov 10) |
 | P5 | Functional analysis | Claude | Codex | being written by Claude (Nov 10) |
-| P6 | Probability theory | Claude | Codex | being written by Claude (Nov 10) |
+| P6 | Probability theory | Claude | Codex | written; internal review running |
 | P7 | Research apprenticeship and qualifying exams | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 
 Course notes for every writer are in `schools/math/work/WRITERS.md` (for example: permutations as 0-based image lists in code, no `cmath` in graded code, integers below about 10^30 in graded code, original problems only in C23). The example lesson `schools/math/toolkit/example_math_lesson.txt` is a format sample: never copy its examples, data or items.

@@ -1,0 +1,299 @@
+@lesson
+title: Primality tests and factoring algorithms
+summary: Test numbers for primality with the Fermat and Miller–Rabin tests, factor with Pollard's rho method and Fermat's method, and say precisely what each algorithm proves.
+objective: Explain why the Fermat test can be fooled and prove that the Miller–Rabin test never rejects a prime.
+objective: Implement the Miller–Rabin test with a supplied list of bases and interpret its answers (composite is a proof, probably prime is not).
+objective: Implement Pollard's rho method and Fermat's factorization method and prove what their outputs mean.
+objective: Explain why primes in a toy RSA key that are close together or small make the key weak.
+reading: In Stein's Elementary Number Theory, read the material on primality testing and on factoring methods such as Pollard's rho method.
+
+@article
+Week 5 gave a tempting test: if $a^{n-1} \not\equiv 1 \pmod n$ then $n$ is composite, and a prime always passes. Does passing prove primality? No, because of Carmichael numbers like $561$. Is there a test that composites fail with good probability, whatever $n$ is? Yes: the Miller–Rabin test (Miller 1976, Rabin 1980). And once you know that $n$ is composite, how do you find a factor without trying all divisors? This week answers both, and also shows what makes a toy RSA key weak.
+
+### Strong probable primes: the Miller–Rabin test
+
+Let $n \ge 3$ be odd. Write $n - 1 = 2^s t$ with $t$ odd. For a base $a$ with $2 \le a \le n - 2$ consider the chain
+$$a^t,\quad a^{2t},\quad a^{4t},\quad \dots,\quad a^{2^{s}t} = a^{n-1} \pmod n,$$
+in which each term is the square of the previous one. We say $n$ is a **strong probable prime to base $a$** if $a^t \equiv 1 \pmod n$ or $a^{2^i t} \equiv -1 \pmod n$ for some $0 \le i < s$. A base for which $n$ fails is a **witness** for the compositeness of $n$.
+
+**Theorem 1.** If $n$ is an odd prime, then $n$ is a strong probable prime to every base $a$ with $n \nmid a$. Equivalently: if some base is a witness, then $n$ is composite.
+
+*Proof.* Since $n$ is prime and $n \nmid a$, Fermat's little theorem gives $a^{2^s t} = a^{n-1} \equiv 1$. The last term of the chain is $1$. If $a^t \equiv 1$ we are done. Otherwise let $j \ge 1$ be the least index with $a^{2^j t} \equiv 1$, and put $y = a^{2^{j-1}t}$. Then $y^2 \equiv 1$ and $y \not\equiv 1$ by the choice of $j$. Hence $n \mid (y-1)(y+1)$ and $n \nmid y - 1$, so by Euclid's lemma $n \mid y + 1$, that is $y \equiv -1$ with $j - 1 < s$. $\blacksquare$
+
+So "composite" answers are certain, while "probably prime" answers are not. The reverse needs a deeper fact, which we state **without proof** (Rabin, 1980): if $n$ is odd and composite, at most $(n-1)/4$ of the bases $a \in \{1, \dots, n-1\}$ fail to be witnesses. Therefore if $k$ bases are chosen independently and uniformly at random, a composite $n$ is declared "probably prime" with probability at most $4^{-k}$. A fixed list of bases is not random: $3215031751 = 151 \cdot 751 \cdot 28351$ is composite but passes the strong test for the bases $2, 3, 5, 7$.
+
+```python
+def is_strong_probable_prime(n, a):
+    """Strong test of an odd n >= 5 to base a (2 <= a <= n - 2)."""
+    t, s = n - 1, 0
+    while t % 2 == 0:
+        t //= 2
+        s += 1
+    x = pow(a, t, n)
+    if x == 1 or x == n - 1:
+        return True
+    for _ in range(s - 1):
+        x = x * x % n
+        if x == n - 1:
+            return True
+    return False
+
+
+def miller_rabin(n, bases):
+    """False: n is certainly composite. True: n passed every supplied base."""
+    if n < 2:
+        return False
+    if n < 4:
+        return True
+    if n % 2 == 0:
+        return False
+    for a in bases:
+        a %= n
+        if a in (0, 1, n - 1):
+            continue                      # such a base tells us nothing
+        if not is_strong_probable_prime(n, a):
+            return False
+    return True
+
+
+print(miller_rabin(2047, [2]), miller_rabin(2047, [2, 3]),
+      miller_rabin(104729, [2, 3, 5]))
+```
+
+The output is `True False True`: $2047 = 23 \cdot 89$ fools base $2$ but not base $3$, and $104729$ is prime. The random choices (the bases) are an argument, as the course requires, so you can reproduce any run.
+
+### Pollard's rho method
+
+To split a composite $n$, iterate $x_{i+1} = x_i^2 + c \bmod n$ from a start $x_0$. If $p$ is a prime factor of $n$, the sequence modulo $p$ takes at most $p$ values, so it repeats after about $\sqrt{p}$ terms (a birthday-paradox *heuristic*, not proved here), usually long before the sequence modulo $n$ does. A repeat modulo $p$, that is $x_i \equiv x_j \pmod p$, means $p \mid x_i - x_j$, and then $\gcd(|x_i - x_j|, n)$ is a multiple of $p$. Floyd's trick compares $x_i$ with $x_{2i}$ so that only two variables are stored.
+
+```python
+from math import gcd
+
+
+def pollard_rho(n, c, x0):
+    """Return a divisor d of n with 1 < d < n, or None if this (c, x0) fails."""
+    x = y = x0 % n
+    d = 1
+    while d == 1:
+        x = (x * x + c) % n          # tortoise: one step
+        y = (y * y + c) % n          # hare: two steps
+        y = (y * y + c) % n
+        d = gcd(abs(x - y), n)
+    return d if d != n else None
+
+
+print(pollard_rho(10403, 1, 2))
+```
+
+This prints `101` (and $10403 = 101 \cdot 103$).
+
+**Theorem 2.** For $n \ge 2$, `pollard_rho` terminates, and when it returns an integer $d$ then $d \mid n$ and $1 < d < n$.
+
+*Proof.* The sequence $x_i \bmod n$ takes finitely many values and each term determines the next, so it is eventually periodic: there are $\mu \ge 0$ and $\lambda \ge 1$ with $x_i = x_{i+\lambda}$ for $i \ge \mu$. For any $i \ge \mu$ that is a multiple of $\lambda$ we get $x_{2i} = x_{i+i} = x_i$ (as $i$ is a multiple of the period), so $\gcd(|x_i - x_{2i}|, n) = \gcd(0, n) = n \ne 1$. Hence the loop stops at the latest at such an $i$. At exit $d = \gcd(\cdot, n)$ is a divisor of $n$, and the function returns it only if $d \ne n$; $d \ne 1$ by the loop condition. $\blacksquare$
+
+When it returns `None`, a different $c$ or $x_0$ is tried; all such choices are supplied by the caller.
+
+### Fermat's factorization method
+
+If $n = a^2 - b^2 = (a - b)(a + b)$, then $n$ is factored. For an odd $n = pq$ with $p \le q$, take $a = (p + q)/2$ and $b = (q - p)/2$. Fermat's method tries $a = \lceil \sqrt{n} \rceil, \lceil \sqrt{n} \rceil + 1, \dots$ until $a^2 - n$ is a perfect square. It finds the factorization whose factors are closest to $\sqrt{n}$ and is fast exactly when $p$ and $q$ are close: a toy RSA key with close primes falls at once. When $p$ and $q$ are far apart it can be slower than trial division.
+
+@example
+title: A witness for 561
+problem: Show that $n = 561$ is composite using the Miller–Rabin test with base $2$, and extract a factor.
+step: $n - 1 = 560 = 2^4 \cdot 35$, so $s = 4$ and $t = 35$. Compute $2^{35} \bmod 561 = 263$.
+step: Square repeatedly: $263^2 = 69169 \equiv 166$, $166^2 = 27556 \equiv 67$, $67^2 = 4489 \equiv 1 \pmod{561}$.
+step: The chain $263, 166, 67, 1$ never shows $1$ at the start or $-1 \equiv 560$ before the end. So $2$ is a witness, and by Theorem 1, $561$ is composite.
+step: Moreover $67^2 \equiv 1$ with $67 \not\equiv \pm 1$ is a nontrivial square root of $1$, so $561 \mid (67 - 1)(67 + 1)$ but divides neither factor; $\gcd(66, 561) = 33$ is a proper divisor.
+answer: $561$ is composite, and $\gcd(66, 561) = 33$ is a proper factor ($561 = 33 \cdot 17$).
+
+@example
+title: Pollard's rho on a small number
+problem: Run `pollard_rho(91, 1, 2)` by hand.
+step: Start with $x = y = 2$ and $f(x) = x^2 + 1$.
+step: One round: $x = f(2) = 5$ and $y = f(f(2)) = f(5) = 26$.
+step: Compute $d = \gcd(|5 - 26|, 91) = \gcd(21, 91) = 7$.
+step: Since $1 < 7 < 91$, the function returns $7$, and $91 = 7 \cdot 13$. The sequences modulo $7$ are $2, 5, 5, \dots$ (as $26 \equiv 5$), which already repeat, though modulo $91$ they do not.
+answer: The method returns the factor $7$ after one round.
+
+@mistakes
+- Reading "probably prime" as a proof. Only "composite" is certain; $2047$ passes base $2$.
+- Using a base $a \equiv 0, \pm 1 \pmod n$: such a base passes for every $n$ and tells you nothing.
+- Believing a fixed list of bases proves primality for all $n$: $3215031751$ passes $2, 3, 5, 7$.
+- Treating a `None` result of Pollard's rho as "$n$ is prime": it only means this choice of $c$ and $x_0$ failed.
+
+@practice num
+prompt: Use Fermat's factorization method on $n = 10873$. Starting at $a = \lceil \sqrt{n} \rceil$, how many consecutive values of $a$ (counting the successful one) must you try before $a^2 - n$ is a perfect square?
+answer: 3
+check: next(a for a in range(ceil(sqrt(10873)), 300) if math.isqrt(a * a - 10873) ** 2 == a * a - 10873) - ceil(sqrt(10873)) + 1
+hint: $\sqrt{10873}$ is between $104$ and $105$, so start at $a = 105$.
+solution: $105^2 - n = 152$, $106^2 - n = 363$, $107^2 - n = 576 = 24^2$. So three values are tried, and $n = (107 - 24)(107 + 24) = 83 \cdot 131$.
+
+@practice mc
+prompt: A composite number $n$ passes the strong probable prime test to base $2$. Which conclusion is correct?
+choice*: Nothing about $n$ is proved; $n$ is a strong pseudoprime to base $2$, and another base may still be a witness.
+choice: $n$ must be a Carmichael number.
+choice: $n$ must be prime, because composites always fail the strong test.
+choice: $n$ is prime if it also passes the Fermat test to base $2$.
+hint: Recall $2047 = 23 \cdot 89$ and Theorem 1.
+solution: Theorem 1 only says that primes pass; a composite may pass for some bases (strong liars), as $2047$ does for base $2$. Passing a Fermat test as well adds nothing, since passing the strong test already implies passing the Fermat test. A strong pseudoprime need not be a Carmichael number ($2047$ is not one).
+
+@practice code
+prompt: Write `mr_witnesses(n, bases)` for an odd integer $n \ge 5$ and a list of integers `bases`. It returns the list (in the given order) of those bases $a$ for which $n$ fails the strong probable prime test, that is, the witnesses. Skip any base with $a \bmod n \in \{0, 1, n - 1\}$ (it is never a witness). For example, `mr_witnesses(2047, [2, 3])` returns `[3]`.
+starter:
+```python
+def mr_witnesses(n, bases):
+    pass
+```
+tests:
+```python
+assert mr_witnesses(2047, [2, 3]) == [3]
+assert mr_witnesses(561, [2, 3, 5, 7]) == [2, 3, 5, 7]
+assert mr_witnesses(97, [2, 3, 5, 7]) == []
+assert mr_witnesses(3215031751, [2, 3, 5, 7]) == []
+assert mr_witnesses(3215031751, [2, 3, 5, 7, 11]) == [11]
+assert mr_witnesses(21, [1, 20, 21, 2]) == [2]
+assert mr_witnesses(9, [8, 2]) == [2]
+```
+model:
+```python
+def mr_witnesses(n, bases):
+    """Bases that prove the odd number n composite (strong test fails)."""
+    t, s = n - 1, 0
+    while t % 2 == 0:
+        t //= 2
+        s += 1
+    found = []
+    for a in bases:
+        r = a % n
+        if r in (0, 1, n - 1):
+            continue
+        x = pow(r, t, n)
+        passed = x in (1, n - 1)
+        for _ in range(s - 1):
+            if passed:
+                break
+            x = x * x % n
+            passed = x == n - 1
+        if not passed:
+            found.append(a)
+    return found
+```
+hint: Factor $n - 1 = 2^s t$ once, then run the chain $a^t, a^{2t}, \dots$ for each base, looking for $1$ at the start or $-1$ before the end.
+solution: The test for a base is exactly the definition: success if the first term is $\pm 1$ appropriately or some earlier term equals $-1$. Collecting the failures lists the witnesses. The two examples with $3215031751$ show that four bases can all fail to detect a composite while a fifth does.
+
+@practice self
+prompt: Prove that if an odd integer $n \ge 5$ is a strong probable prime to base $a$ (with $\gcd(a, n) = 1$), then $a^{n-1} \equiv 1 \pmod n$. Then show by an example that the converse is false.
+hint: Write $n - 1 = 2^s t$ and look at where in the chain $a^t, a^{2t}, \dots, a^{2^s t}$ the value $1$ or $-1$ occurs; squaring $-1$ gives $1$.
+solution: Write $n - 1 = 2^s t$ with $t$ odd. If $a^t \equiv 1$, then $a^{n-1} = (a^t)^{2^s} \equiv 1$. Otherwise $a^{2^i t} \equiv -1$ for some $0 \le i < s$, and then $a^{n-1} = (a^{2^i t})^{2^{s-i}} \equiv (-1)^{2^{s-i}} = 1$, because $s - i \ge 1$ makes the exponent even. So the strong test implies the Fermat condition. The converse fails: for $n = 341 = 11 \cdot 31$ and $a = 2$ we have $340 = 4 \cdot 85$, $2^{85} \equiv 32$, and $32^2 = 1024 \equiv 1 \pmod{341}$, so $2^{340} \equiv 1$; but the chain $32, 1$ does not contain $\pm 1$ at the required places ($32 \not\equiv \pm 1$), so $341$ fails the strong test.
+rubric: Handles both cases of the definition and uses that $s - i \ge 1$ (or $2^s$ is a multiple of $2$) to square $-1$ into $1$.
+rubric: States a correct counterexample to the converse with a composite $n$ and base $a$.
+rubric: Verifies the counterexample's numbers ($2^{85} \bmod 341$, the chain $32, 1$).
+
+@practice code
+prompt: Write `fermat_factor(n)` for an odd integer $n \ge 3$. Starting at $a = \lceil \sqrt{n} \rceil$ (use `math.isqrt`, with exact integers), increase $a$ until $a^2 - n$ is a perfect square $b^2$, and return `(a - b, a + b)`. For a prime $n$ the result is `(1, n)`. For example, `fermat_factor(45)` returns `(5, 9)` (not `(3, 15)`), and `fermat_factor(8051)` returns `(83, 97)`.
+starter:
+```python
+def fermat_factor(n):
+    pass
+```
+tests:
+```python
+assert fermat_factor(45) == (5, 9)
+assert fermat_factor(8051) == (83, 97)
+assert fermat_factor(91) == (7, 13)
+assert fermat_factor(13) == (1, 13)
+assert fermat_factor(9) == (3, 3)
+assert fermat_factor(1022117) == (1009, 1013)
+assert fermat_factor(3027) == (3, 1009)
+assert fermat_factor(25) == (5, 5)
+```
+model:
+```python
+from math import isqrt
+
+
+def fermat_factor(n):
+    """Factor odd n = (a - b)(a + b); the factors closest to sqrt(n)."""
+    a = isqrt(n)
+    if a * a < n:
+        a += 1
+    while True:
+        b2 = a * a - n
+        b = isqrt(b2)
+        if b * b == b2:
+            return a - b, a + b
+        a += 1
+```
+hint: For an odd $n = uv$ with $u \le v$ the loop must stop at $a = (u + v)/2$ at the latest.
+solution: If $a^2 - n = b^2$ then $n = (a - b)(a + b)$. The loop terminates for odd $n$ because $a = (n + 1)/2$ gives $a^2 - n = ((n - 1)/2)^2$, which yields the trivial factorization $(1, n)$. The first $a$ that works corresponds to the factor pair closest to $\sqrt{n}$, which is why $45$ gives $(5, 9)$. For $3027 = 3 \cdot 1009$ the loop is long: the method is slow when the factors are far apart.
+
+@quiz ms
+prompt: Which of these statements are true?
+choice*: If an odd $n \ge 5$ is prime, it passes the strong probable prime test to every base $a$ with $2 \le a \le n - 2$.
+choice: If an odd composite $n$ passes the strong test to the bases $2, 3, 5, 7$, then $n$ is prime.
+choice*: A Carmichael number passes the Fermat test to every base coprime to it, yet it is composite.
+choice*: Pollard's rho method with given $c$ and $x_0$ can fail by producing the gcd $n$.
+choice: Fermat's factorization method is fast when the two prime factors are far apart.
+hint: Recall the numbers $3215031751$ and $561$, and compare the quantity $a - \lceil \sqrt{n} \rceil$ for close and far factors.
+solution: The first is Theorem 1. The second is false: $3215031751 = 151 \cdot 751 \cdot 28351$ passes these bases. The third is the definition of a Carmichael number, such as $561$. The fourth: when the sequence closes up modulo every prime factor at the same step, the gcd is $n$ and one retries with another $c$. The fifth is false: Fermat's method needs about $(q-p)^2/(8\sqrt{n})$ steps, large when $q - p$ is large.
+
+@quiz text
+prompt: What does this program print?
+```python
+from math import gcd
+n, x, y, d = 77, 1, 1, 1
+steps = 0
+while d == 1:
+    x = (x * x + 1) % n
+    y = (y * y + 1) % n
+    y = (y * y + 1) % n
+    d = gcd(abs(x - y), n)
+    steps += 1
+print(d, steps)
+```
+answer: 7 2
+check: run("from math import gcd\nn, x, y, d = 77, 1, 1, 1\nsteps = 0\nwhile d == 1:\n    x = (x * x + 1) % n\n    y = (y * y + 1) % n\n    y = (y * y + 1) % n\n    d = gcd(abs(x - y), n)\n    steps += 1\nprint(d, steps)")
+hint: Round 1 gives $x = 2$, $y = 5$ and gcd $1$. Compute round 2 yourself.
+solution: Round 1: $x = 2$, $y = f(f(1)) = f(2) = 5$, $\gcd(3, 77) = 1$. Round 2: $x = f(2) = 5$, $y = f(f(5)) = f(26) = 677 \bmod 77 = 61$, and $\gcd(|5 - 61|, 77) = \gcd(56, 77) = 7$. The program prints `7 2`.
+
+@quiz code
+prompt: For an odd composite $n$ a base $a$ with $1 \le a \le n - 1$ is a *strong liar* if $n$ passes the strong probable prime test to base $a$, where the base $a = 1$ and $a = n - 1$ count as passing. Write `strong_liars(n)` for an odd integer $n \ge 3$ that returns the sorted list of all strong liars $a$ in $\{1, \dots, n - 1\}$ (for a prime this is every $a$). For example, `strong_liars(15)` returns `[1, 14]`.
+starter:
+```python
+def strong_liars(n):
+    pass
+```
+tests:
+```python
+assert strong_liars(15) == [1, 14]
+assert strong_liars(9) == [1, 8]
+assert strong_liars(25) == [1, 7, 18, 24]
+assert strong_liars(13) == list(range(1, 13))
+assert strong_liars(91) == [1, 9, 10, 12, 16, 17, 22, 29, 38, 53, 62, 69,
+                            74, 75, 79, 81, 82, 90]
+assert all(len(strong_liars(m)) <= (m - 1) // 4
+           for m in (21, 33, 45, 49, 77, 85, 105, 121))
+```
+model:
+```python
+def strong_liars(n):
+    """All a in 1..n-1 for which odd n passes the strong test to base a."""
+    t, s = n - 1, 0
+    while t % 2 == 0:
+        t //= 2
+        s += 1
+    liars = []
+    for a in range(1, n):
+        x = pow(a, t, n)
+        ok = x in (1, n - 1)
+        for _ in range(s - 1):
+            if ok:
+                break
+            x = x * x % n
+            ok = x == n - 1
+        if ok:
+            liars.append(a)
+    return liars
+```
+hint: Run the chain of squarings for every base from $1$ to $n - 1$ and keep those that pass.
+solution: Apply the definition of the strong test to every base. The last assertion illustrates Rabin's bound on the number of liars for composite $n$ (a numerical check on a few $n$, not a proof). For a prime, Theorem 1 says every base passes, so the list is all of $1, \dots, n - 1$.
