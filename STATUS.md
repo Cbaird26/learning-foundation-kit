@@ -20,8 +20,8 @@ A school of artificial intelligence and machine learning: 66 courses from kinder
 | 2. Rebrand the app (storage prefix `alf`, texts, tutor, method and path pages) | done |
 | 3. Write the 20 new courses | done (see table) |
 | 4. Independent review of each course | done (see table) |
-| 5. Integrate and build | done (66 courses validate with 0 errors; 16.8 MB page) |
-| 6. Test the page | done (279 routes, in-page Python, grading, final exam, error log, phone and dark views) |
+| 5. Integrate and build | done Nov 10: all 64 courses validate with the browser check and build into one 16.2 MB page with 315 runnable code blocks |
+| 6. Test the page | done Nov 10: 852 routes with no KaTeX or page errors, every Try-it block matches standard Python (one `random` block differs by design), practice code, final exam, error log and scratchpad work, no page overflows at phone width (896 pages checked; five wide inline formulas rewritten), privacy scan clean |
 | 7. Publish as `ai-learning-foundation` (owner's yes first) | done (approved; live on GitHub Pages) |
 | 8. Add to the hub | done |
 
@@ -273,3 +273,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math C16 reviewed internally; ready for Codex's review
 - 2026-11-10: Math C18 reviewed internally; ready for Grok's review
 - 2026-11-10: Math: C19 reviewed internally; all 19 new courses written and reviewed internally; integrating next
+- 2026-11-10: Math: all 64 courses integrated, built and tested; ready to publish
