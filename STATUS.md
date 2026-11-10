@@ -268,3 +268,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math P2 reviewed internally; ready for Grok's review
 - 2026-11-10: Math C17 written (0 errors); internal review running
 - 2026-11-10: Math C19 written (0 errors); internal review running; C16, C18 writers and the C17 review resumed after a usage-limit stop
+- 2026-11-10: Math: all 19 new courses written (C16, C18 reviews running); BRIEF and the site's Python note now cover a browser for-loop difference
