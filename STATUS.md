@@ -152,8 +152,8 @@ checkout lives elsewhere.
 | C11 | Abstract algebra II: rings, fields and Galois theory | 13/13 | yes | yes |
 | C12 | Real analysis II: metric spaces, uniform convergence and several variables | 13/13 | yes | yes |
 | C13 | Complex analysis | 13/13 | yes |  |
-| C14 | Topology | 12/13 |  |  |
-| C15 | Number theory | 12/13 |  |  |
+| C14 | Topology | 13/13 | yes |  |
+| C15 | Number theory | 13/13 | yes |  |
 | C16 | Combinatorics and graph theory | 0/13 |  |  |
 | C17 | Numerical analysis | 0/13 |  |  |
 | C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
@@ -161,7 +161,7 @@ checkout lives elsewhere.
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
 | P2 | Graduate algebra: groups, rings, modules and fields | 10/13 |  |  |
-| P3 | Algebraic topology | 11/13 |  |  |
+| P3 | Algebraic topology | 12/13 |  |  |
 | P4 | Smooth manifolds | 11/13 |  |  |
 | P5 | Functional analysis | 12/13 |  |  |
 | P6 | Probability theory | 13/13 | yes |  |
@@ -258,3 +258,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math: owner chose (Nov 10) that Claude writes the last 12 courses too; Codex and Grok switch to second-opinion reviews; publish when all 64 are done
 - 2026-11-09: Math: started writing P2-P6, C13, C14, C15 (C16-C19 next)
 - 2026-11-10: Math P6 written (0 errors); internal review running; C16 started
+- 2026-11-10: Math C13 written (0 errors); internal review running; C17 started; BRIEF: cmath and int/float .conjugate() fail in the browser

@@ -22,7 +22,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways, and on Nov 10, 
 | C10 | Abstract algebra I: groups | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C11 | Abstract algebra II: rings, fields and Galois theory | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C12 | Real analysis II: metric spaces, uniform convergence and several variables | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
-| C13 | Complex analysis | Claude | Grok | being written by Claude (Nov 10) |
+| C13 | Complex analysis | Claude | Grok | written; internal review running |
 | C14 | Topology | Claude | Grok | being written by Claude (Nov 10) |
 | C15 | Number theory | Claude | Codex | being written by Claude (Nov 10) |
 | C16 | Combinatorics and graph theory | Claude | Codex | being written by Claude (Nov 10) |
