@@ -242,3 +242,4 @@ checkout lives elsewhere.
 - 2026-11-08: Neuro: hub checked live (8 schools, neuro card links to the live school)
 - 2026-11-08: Team mode: AGENTS.md (rules) and TEAM.md (assignments) added so Claude, Codex and Grok can work in parallel; Claude leads; second-opinion reviews of the live Neuroscience school assigned (Grok: C30, P3; Codex: C24, C25); next: design the Mathematics school
 - 2026-11-09: Math: owner chose PhD-quals scope with Python; curriculum (64 courses, 45 reused, 19 new), brief, review template, validated example lesson and rebranded app done; trial build fine; writing starts
+- 2026-11-09: Math: writing started for Claude's share (C9-C12, C23, P1, P7); Codex and Grok start their shares after their Neuroscience reviews
