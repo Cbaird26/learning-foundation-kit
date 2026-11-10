@@ -36,7 +36,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways. Each writer wor
 | P4 | Smooth manifolds | Grok | Claude | assigned |
 | P5 | Functional analysis | Codex | Grok | assigned |
 | P6 | Probability theory | Codex | Grok | assigned |
-| P7 | Research apprenticeship and qualifying exams | Claude | Codex | writing |
+| P7 | Research apprenticeship and qualifying exams | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 
 Course notes for every writer are in `schools/math/work/WRITERS.md` (for example: permutations as 0-based image lists in code, no `cmath` in graded code, integers below about 10^30 in graded code, original problems only in C23). The example lesson `schools/math/toolkit/example_math_lesson.txt` is a format sample: never copy its examples, data or items.
 

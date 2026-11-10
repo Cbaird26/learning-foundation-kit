@@ -147,10 +147,10 @@ checkout lives elsewhere.
 <!-- course-table -->
 | Course | Title | Files | Validates | Reviewed |
 | --- | --- | --- | --- | --- |
-| C9 | Linear algebra II: vector spaces, inner products and spectral theory | 9/13 |  |  |
-| C10 | Abstract algebra I: groups | 10/13 |  |  |
-| C11 | Abstract algebra II: rings, fields and Galois theory | 9/13 |  |  |
-| C12 | Real analysis II: metric spaces, uniform convergence and several variables | 10/13 |  |  |
+| C9 | Linear algebra II: vector spaces, inner products and spectral theory | 12/13 |  |  |
+| C10 | Abstract algebra I: groups | 12/13 |  |  |
+| C11 | Abstract algebra II: rings, fields and Galois theory | 11/13 |  |  |
+| C12 | Real analysis II: metric spaces, uniform convergence and several variables | 12/13 |  |  |
 | C13 | Complex analysis | 0/13 |  |  |
 | C14 | Topology | 0/13 |  |  |
 | C15 | Number theory | 0/13 |  |  |
@@ -158,14 +158,14 @@ checkout lives elsewhere.
 | C17 | Numerical analysis | 0/13 |  |  |
 | C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
 | C19 | Dynamical systems and chaos | 0/13 |  |  |
-| C23 | Problem solving and mathematical writing | 9/13 |  |  |
-| P1 | Measure theory and integration | 9/13 |  |  |
+| C23 | Problem solving and mathematical writing | 11/13 |  |  |
+| P1 | Measure theory and integration | 11/13 |  |  |
 | P2 | Graduate algebra: groups, rings, modules and fields | 0/13 |  |  |
 | P3 | Algebraic topology | 0/13 |  |  |
 | P4 | Smooth manifolds | 0/13 |  |  |
 | P5 | Functional analysis | 0/13 |  |  |
 | P6 | Probability theory | 0/13 |  |  |
-| P7 | Research apprenticeship and qualifying exams | 13/13 | yes |  |
+| P7 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 <!-- /course-table -->
 
 ## Queue of future schools (one at a time, in this order)
@@ -244,3 +244,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math: owner chose PhD-quals scope with Python; curriculum (64 courses, 45 reused, 19 new), brief, review template, validated example lesson and rebranded app done; trial build fine; writing starts
 - 2026-11-09: Math: writing started for Claude's share (C9-C12, C23, P1, P7); Codex and Grok start their shares after their Neuroscience reviews
 - 2026-11-09: Math: P7 written (0 errors), internal review running; C9-C12, C23, P1 being written
+- 2026-11-09: Math: P7 reviewed internally (10 fixes); ready for Codex's cross-model review; C9-C12, C23, P1 being written
