@@ -23,7 +23,7 @@ A school of artificial intelligence and machine learning: 66 courses from kinder
 | 5. Integrate and build | done Nov 10: all 64 courses validate with the browser check and build into one 16.2 MB page with 315 runnable code blocks |
 | 6. Test the page | done Nov 10: 852 routes with no KaTeX or page errors, every Try-it block matches standard Python (one `random` block differs by design), practice code, final exam, error log and scratchpad work, no page overflows at phone width (896 pages checked; five wide inline formulas rewritten), privacy scan clean |
 | 7. Publish as `ai-learning-foundation` (owner's yes first) | done (approved; live on GitHub Pages) |
-| 8. Add to the hub | done |
+| 8. Add to the hub | done Nov 10: listed between Law and Medicine (color `--c-math` #3e5573, dark #a9bad4, a Σ glyph named `sigma`, key `mathlf`), with a README row |
 
 The AI school's writer prompt, per-course notes and log are in `schools/ai/work/WRITERS.md`.
 
@@ -115,7 +115,7 @@ tasks with volunteers who agree, and no project involves animals.
 | P5 | Research methods and reproducibility in the brain and behavioral sciences | 13/13 | yes | yes |
 | P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 
-## In progress: Mathematics Learning Foundation (`schools/math`)
+## Published: Mathematics Learning Foundation (`schools/math`)
 
 Mathematics from kindergarten to PhD qualifying exams, with Python in the page for computation (owner's choices, Nov 9:
 "Math to PhD quals" and "Yes, for computation"). 64 courses in five stages: K–12 from the AI school (with its
@@ -133,7 +133,7 @@ logic from the Metaphysics school (C21), theory of computation from the Coding s
 | 4. Independent review of each course | internal reviews done for all 19 (Nov 10); second-opinion reviews by Codex and Grok (see TEAM.md) can follow publication |
 | 5. Integrate and build | trial run Nov 10: the 52 existing courses pass validation with the browser check and build into one page; the 12 unwritten courses show as coming |
 | 6. Test the page | trial run Nov 10 on the 52: 696 routes with no KaTeX errors or page errors, all 198 Try-it blocks match standard Python (one `random` block differs by design), practice code, final exam, error log and scratchpad work; an American-spelling pass fixed 149 words, mostly in the reused K–12 courses |
-| 7. Publish as `mathematics-learning-foundation` (owner's yes first) | the owner chose on Nov 10 to go live when all 64 courses are done; `schools/math/publish/README.md` is written for math |
+| 7. Publish (owner's yes first) | done Nov 10: live at https://cbaird26.github.io/learning-foundation/mathematics/ as a folder of the hub repository, because this session could not create a new repository (no signed-in browser); it can move to its own `mathematics-learning-foundation` repository later, leaving a redirect page in the folder |
 | 8. Add to the hub | entry ready, not applied: color `--c-math` #3e5573 (dark #a9bad4), a Σ glyph named `sigma`, key `mathlf`, placed between Law and Medicine; README row "Kindergarten to PhD qualifying exams in mathematics", 64 courses |
 
 How to continue step 3: for each course without 13 files, write it exactly as `schools/math/toolkit/BRIEF.md` says,
@@ -274,3 +274,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math C18 reviewed internally; ready for Grok's review
 - 2026-11-10: Math: C19 reviewed internally; all 19 new courses written and reviewed internally; integrating next
 - 2026-11-10: Math: all 64 courses integrated, built and tested; ready to publish
+- 2026-11-10: Math published (Nov 10) at https://cbaird26.github.io/learning-foundation/mathematics/ and on the hub

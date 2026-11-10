@@ -1,6 +1,6 @@
 # Mathematics Learning Foundation
 
-**Open the school:** https://cbaird26.github.io/mathematics-learning-foundation/
+**Open the school:** https://cbaird26.github.io/learning-foundation/mathematics/
 
 A Khan Academy-style self-study school: 64 courses in five stages, from kindergarten through a complete college degree in
 mathematics to graduate study and PhD qualifying exams. The stages are elementary, middle and high school (including
