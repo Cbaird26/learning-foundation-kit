@@ -154,16 +154,16 @@ checkout lives elsewhere.
 | C13 | Complex analysis | 13/13 | yes |  |
 | C14 | Topology | 13/13 | yes |  |
 | C15 | Number theory | 13/13 | yes |  |
-| C16 | Combinatorics and graph theory | 0/13 |  |  |
-| C17 | Numerical analysis | 0/13 |  |  |
+| C16 | Combinatorics and graph theory | 2/13 |  |  |
+| C17 | Numerical analysis | 1/13 |  |  |
 | C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
 | C19 | Dynamical systems and chaos | 0/13 |  |  |
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
-| P2 | Graduate algebra: groups, rings, modules and fields | 10/13 |  |  |
+| P2 | Graduate algebra: groups, rings, modules and fields | 11/13 |  |  |
 | P3 | Algebraic topology | 12/13 |  |  |
-| P4 | Smooth manifolds | 11/13 |  |  |
-| P5 | Functional analysis | 12/13 |  |  |
+| P4 | Smooth manifolds | 12/13 |  |  |
+| P5 | Functional analysis | 13/13 | yes |  |
 | P6 | Probability theory | 13/13 | yes |  |
 | P7 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 <!-- /course-table -->
@@ -259,3 +259,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math: started writing P2-P6, C13, C14, C15 (C16-C19 next)
 - 2026-11-10: Math P6 written (0 errors); internal review running; C16 started
 - 2026-11-10: Math C13 written (0 errors); internal review running; C17 started; BRIEF: cmath and int/float .conjugate() fail in the browser
+- 2026-11-10: Math C14, C15, P5 written (0 errors); internal reviews running; C18, C19 started

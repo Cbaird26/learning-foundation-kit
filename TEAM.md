@@ -23,8 +23,8 @@ The owner chose on Nov 9 to split the 19 new courses three ways, and on Nov 10, 
 | C11 | Abstract algebra II: rings, fields and Galois theory | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C12 | Real analysis II: metric spaces, uniform convergence and several variables | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C13 | Complex analysis | Claude | Grok | written; internal review running |
-| C14 | Topology | Claude | Grok | being written by Claude (Nov 10) |
-| C15 | Number theory | Claude | Codex | being written by Claude (Nov 10) |
+| C14 | Topology | Claude | Grok | written; internal review running |
+| C15 | Number theory | Claude | Codex | written; internal review running |
 | C16 | Combinatorics and graph theory | Claude | Codex | being written by Claude (Nov 10) |
 | C17 | Numerical analysis | Claude | Codex | being written by Claude (Nov 10) |
 | C18 | Differential geometry of curves and surfaces | Claude | Grok | being written by Claude (Nov 10) |
@@ -34,7 +34,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways, and on Nov 10, 
 | P2 | Graduate algebra: groups, rings, modules and fields | Claude | Grok | being written by Claude (Nov 10) |
 | P3 | Algebraic topology | Claude | Grok | being written by Claude (Nov 10) |
 | P4 | Smooth manifolds | Claude | Grok | being written by Claude (Nov 10) |
-| P5 | Functional analysis | Claude | Codex | being written by Claude (Nov 10) |
+| P5 | Functional analysis | Claude | Codex | written; internal review running |
 | P6 | Probability theory | Claude | Codex | written; internal review running |
 | P7 | Research apprenticeship and qualifying exams | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 

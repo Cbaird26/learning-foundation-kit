@@ -1,0 +1,233 @@
+@lesson
+title: Floating-point numbers, rounding and cancellation
+summary: Explain how doubles are stored and rounded, bound the rounding error, and rewrite a formula so that cancellation does not destroy its digits.
+objective: Describe the structure of a normalized IEEE 754 double and compute the gap between neighboring doubles.
+objective: Prove that rounding to the nearest double has relative error at most the unit roundoff $u = 2^{-53}$.
+objective: Explain catastrophic cancellation and bound the error it causes in a subtraction.
+objective: Rewrite an unstable formula in an algebraically equal stable form and test it in Python.
+reading: Fundamentals of Numerical Computation by Driscoll and Braun, Python edition: the opening chapter's treatment of floating-point numbers; look up "floating-point numbers" and "machine epsilon".
+
+@article
+The function $f(x) = (1 - \cos x)/x^2$ tends to $1/2$ as $x \to 0$. Evaluate it in double precision at $x = 10^{-8}$ and a program returns exactly $0$. Nothing is wrong with the cosine routine: the mistake is in the formula. This week you learn why, and how to fix such formulas.
+
+### Doubles
+
+A normalized **double** (IEEE 754 binary64, standardized in 1985 and revised since) is a number
+$$\pm (1 + m/2^{52}) \cdot 2^{e}, \qquad m \in \{0, 1, \dots, 2^{52} - 1\}, \quad e \in \{-1022, \dots, 1023\}.$$
+So a double has a $53$-bit significand: a leading $1$ and $52$ stored bits. Inside the interval $[2^e, 2^{e+1})$ the doubles are equally spaced, with gap $2^{e-52}$; the gap doubles each time you pass a power of two. The gap at $1$ is the **machine epsilon** $\varepsilon_{\text{mach}} = 2^{-52}$. Most decimal fractions, such as $0.1$, are not doubles: they are rounded.
+
+**Rounding.** Write $\mathrm{fl}(x)$ for the double nearest to the real number $x$ (ties go to the one with an even last bit). The **unit roundoff** is $u = 2^{-53}$.
+
+**Theorem 1 (rounding error).** Let $x$ be a real number with $2^{-1022} \le |x| \le$ the largest double. Then $\mathrm{fl}(x) = x(1 + \delta)$ for some $\delta$ with $|\delta| \le u$.
+
+*Proof.* Let $2^e \le |x| < 2^{e+1}$ with $-1022 \le e \le 1023$. The doubles of the same sign near $x$ are spaced $2^{e-52}$ apart, and $x$ lies between two of them (the endpoint $2^{e+1}$ is also a double, or, for $e = 1023$, $|x|$ is at most the largest double). The nearest one is at distance at most half a gap, so $|\mathrm{fl}(x) - x| \le 2^{e-53}$. Dividing by $|x| \ge 2^e$ gives $|\mathrm{fl}(x) - x|/|x| \le 2^{-53} = u$. Put $\delta = (\mathrm{fl}(x) - x)/x$. $\blacksquare$
+
+IEEE arithmetic returns the correctly rounded exact result, so for $\circ \in \{+, -, \times, \div\}$ and doubles $a, b$ (no overflow or underflow) we get the **standard model**: $\mathrm{fl}(a \circ b) = (a \circ b)(1 + \delta)$ with $|\delta| \le u$. Each single operation is accurate in the relative sense; trouble comes from what happens between operations.
+
+### Cancellation
+
+**Theorem 2 (error in a difference).** Let $\tilde x = x(1 + \delta_x)$ and $\tilde y = y(1 + \delta_y)$ with $|\delta_x|, |\delta_y| \le \eta$ and $x \ne y$. Then
+$$\frac{|(\tilde x - \tilde y) - (x - y)|}{|x - y|} \le \eta\, \frac{|x| + |y|}{|x - y|}.$$
+
+*Proof.* $(\tilde x - \tilde y) - (x - y) = x\delta_x - y\delta_y$, whose absolute value is at most $\eta(|x| + |y|)$ by the triangle inequality. Divide by $|x - y|$. $\blacksquare$
+
+When $x$ and $y$ are close, the factor $(|x| + |y|)/|x - y|$ is huge: the digits that agree cancel, and the rounding errors already present in the inputs become the leading digits of the answer. This is **catastrophic cancellation**. A remark, stated here without proof: when $x$ and $y$ are positive doubles with $y/2 \le x \le 2y$ the subtraction $x - y$ is itself computed exactly (Sterbenz's lemma), so the subtraction does no harm; it only exposes errors made earlier.
+
+### Rewriting a formula
+
+The cure is algebra, done before the computer subtracts. Since $1 - \cos x = 2\sin^2(x/2)$, we may compute $f(x) = 2\sin^2(x/2)/x^2$, which has no subtraction of nearby numbers:
+
+```python
+import math
+
+
+def naive(x):
+    return (1 - math.cos(x)) / x**2
+
+
+def stable(x):
+    s = math.sin(x / 2)
+    return 2 * s * s / x**2
+
+
+x = 1e-8
+print(naive(x))                    # 0.0
+print(abs(stable(x) - 0.5) < 1e-12)   # True
+```
+
+For $x = 10^{-8}$, $\cos x$ differs from $1$ by about $5 \times 10^{-17}$, below half the gap $2^{-53}$ below $1$, so $\cos x$ rounds to exactly $1$ and all information is lost.
+
+### Exact arithmetic as a lens
+
+Python's `fractions.Fraction(x)` converts a double to its exact rational value, so you can measure rounding errors without any further rounding. Compare computed floats with a tolerance, never with `==`, and never trust a printed decimal to show every digit. Also note that these tests are evidence about particular inputs; Theorems 1 and 2 are what prove the behavior for all inputs.
+
+@example
+title: Measuring the error of storing 0.1
+problem: The double nearest to $1/10$ is $\mathrm{fl}(1/10) = 3602879701896397/2^{55}$. Find the exact error and the relative error, and check them against Theorem 1.
+step: The exact error is $\mathrm{fl}(1/10) - 1/10 = \dfrac{3602879701896397 \cdot 10 - 2^{55}}{10 \cdot 2^{55}}$.
+step: Compute $2^{55} = 36028797018963968$ and $3602879701896397 \cdot 10 = 36028797018963970$. The numerator is $2$, so the error is $\dfrac{2}{10 \cdot 2^{55}} = \dfrac{1}{5 \cdot 2^{55}}$, positive: the stored number is slightly too large.
+step: The relative error is $\dfrac{1/(5 \cdot 2^{55})}{1/10} = \dfrac{2}{2^{55}} = 2^{-54}$.
+step: Theorem 1 allows relative error up to $2^{-53}$, and $2^{-54} \le 2^{-53}$, so the theorem holds here. (Python check: `Fraction(0.1) - Fraction(1, 10)` equals `Fraction(1, 5 * 2**55)`.)
+answer: Absolute error $1/(5 \cdot 2^{55})$, relative error $2^{-54}$.
+
+@example
+title: Cancellation in a difference of square roots
+problem: Compute $g(x) = \sqrt{x + 1} - \sqrt{x}$ for $x = 10^{14}$ accurately.
+step: The direct formula subtracts two numbers near $10^7$ that agree in about $15$ digits. Theorem 2 gives the amplification factor $(|x| + |y|)/|x - y| \approx 2 \cdot 10^7 / (5 \cdot 10^{-8}) = 4 \cdot 10^{14}$, so an input error of size $10^{-16}$ can ruin the answer.
+step: Multiply and divide by the conjugate: $\sqrt{x+1} - \sqrt{x} = \dfrac{(x + 1) - x}{\sqrt{x+1} + \sqrt{x}} = \dfrac{1}{\sqrt{x+1} + \sqrt{x}}$. The new denominator adds two positive numbers, so no cancellation occurs.
+step: For $x = 10^{14}$ this gives $1/(2 \cdot 10^7) = 5 \times 10^{-8}$ to about sixteen digits. The direct formula in double precision gives about $5.03 \times 10^{-8}$, wrong in the third digit.
+answer: $g(10^{14}) \approx 5.0 \times 10^{-8}$, computed stably as $1/(\sqrt{x+1} + \sqrt{x})$.
+
+@mistakes
+- Comparing floats with `==`: `0.1 * 3 == 0.3` is false because each side carries its own rounding error. Compare with a tolerance.
+- Thinking every subtraction loses accuracy: the subtraction of nearby doubles is exact (Sterbenz); the damage comes from errors in the inputs, which cancellation magnifies.
+- Confusing absolute and relative error: the gap between doubles grows with the size of the number, but the relative error bound $u$ does not.
+- Concluding that a formula is stable because it works on a few test values: stability needs an argument or a test across the whole range of inputs.
+
+@practice num
+prompt: The doubles in the interval $[1024, 2048)$ are equally spaced. The gap between $1024$ and the next double is $2^{-k}$. Find the integer $k$.
+answer: 42
+check: -int(log2(math.ulp(1024.0)))
+hint: Write $1024 = 2^{10}$ and use that the gap in $[2^e, 2^{e+1})$ is $2^{e-52}$.
+solution: With $e = 10$ the gap is $2^{10 - 52} = 2^{-42}$, so $k = 42$.
+
+@practice mc
+prompt: A double $x$ is the rounded value of a real number. For which statement about the rounding errors of numbers near $10^{300}$ and near $10^{-300}$ (both in the normal range) is true?
+choice*: The relative error bound $2^{-53}$ is the same for both, but the possible absolute error near $10^{300}$ is vastly larger.
+choice: The absolute error bound is the same for both, because doubles are equally spaced everywhere.
+choice: Numbers near $10^{300}$ are rounded with a larger relative error because they are larger.
+choice: Both have the same absolute error bound $2^{-53}$.
+hint: Recall that the gap between doubles doubles at each power of two.
+solution: Theorem 1 bounds the relative error by $u = 2^{-53}$ for every normal number. The gap near $10^{300}$ is enormous (about $10^{284}$), so the absolute error can be too, while near $10^{-300}$ it is tiny. Doubles are not equally spaced across the whole range.
+
+@practice text
+prompt: What does this program print? (Python's `==` between floats compares the stored values exactly.)
+```python
+big = float(2**53)
+print(big + 1 == big)
+```
+answer: True
+check: run("big = float(2**53)\nprint(big + 1 == big)")
+hint: Find the gap between doubles in $[2^{53}, 2^{54})$.
+solution: The gap in $[2^{53}, 2^{54})$ is $2^{53 - 52} = 2$. The exact sum $2^{53} + 1$ lies halfway between $2^{53}$ and $2^{53} + 2$, and ties go to the even significand, which is $2^{53}$. So `big + 1 == big` is `True`, and the program prints `True`.
+
+@practice code
+prompt: The function $h(x) = \sqrt{x^2 + 1} - x$ suffers cancellation for large $x > 0$. Write `h(x)` for a float $x \ge 0$ that returns a result accurate to a relative error of about $10^{-12}$ for every such $x$, by rewriting the formula algebraically. For example, `h(0.0)` returns `1.0`.
+starter:
+```python
+import math
+
+
+def h(x):
+    return math.sqrt(x * x + 1) - x
+```
+tests:
+```python
+import math
+assert abs(h(0.0) - 1.0) < 1e-12
+assert abs(h(0.5) - (math.sqrt(1.25) - 0.5)) < 1e-12
+assert abs(h(1e8) / 5e-9 - 1) < 1e-12
+assert abs(h(1e5) * 2e5 - 1) < 1e-9
+assert abs(h(3e7) * 6e7 - 1) < 1e-12
+```
+model:
+```python
+import math
+
+
+def h(x):
+    """sqrt(x^2 + 1) - x, computed without cancellation."""
+    return 1.0 / (math.sqrt(x * x + 1) + x)
+```
+hint: Multiply and divide by the conjugate $\sqrt{x^2+1} + x$.
+solution: Since $(\sqrt{x^2+1} - x)(\sqrt{x^2+1} + x) = 1$, we have $h(x) = 1/(\sqrt{x^2+1} + x)$. The denominator is a sum of nonnegative numbers, so nothing cancels, and each operation has relative error at most $u$.
+
+@practice code
+prompt: Write `real_roots(a, b, c)` for floats with $a \ne 0$ and $b^2 - 4ac \ge 0$. It returns the two roots of $ax^2 + bx + c$ as a tuple `(r1, r2)` with `r1 <= r2`, computed so that both roots have small relative error even when $b^2 \gg |4ac|$. Use $q = -\tfrac12\left(b + \operatorname{sign}(b)\sqrt{b^2 - 4ac}\right)$ with $\operatorname{sign}(0) = +1$, and the roots $q/a$ and $c/q$. If $q = 0$ (which happens only when $b = c = 0$) return `(0.0, 0.0)`.
+starter:
+```python
+import math
+
+
+def real_roots(a, b, c):
+    d = math.sqrt(b * b - 4 * a * c)
+    r = sorted([(-b + d) / (2 * a), (-b - d) / (2 * a)])
+    return (r[0], r[1])
+```
+tests:
+```python
+r1, r2 = real_roots(1.0, -1e8, 1.0)
+assert abs(r1 / 1e-8 - 1) < 1e-12 and abs(r2 / 1e8 - 1) < 1e-12
+r1, r2 = real_roots(2.0, -7.0, 3.0)
+assert abs(r1 - 0.5) < 1e-12 and abs(r2 - 3.0) < 1e-12
+r1, r2 = real_roots(1.0, 6e7, 5.0)
+assert abs(r2 / (-5 / 6e7) - 1) < 1e-12 and abs(r1 / -6e7 - 1) < 1e-12
+assert real_roots(1.0, 0.0, 0.0) == (0.0, 0.0)
+r1, r2 = real_roots(1.0, 0.0, -4.0)
+assert abs(r1 + 2) < 1e-12 and abs(r2 - 2) < 1e-12
+```
+model:
+```python
+import math
+
+
+def real_roots(a, b, c):
+    """Real roots of a*x^2 + b*x + c without cancellation."""
+    d = math.sqrt(b * b - 4 * a * c)
+    sign = -1.0 if b < 0 else 1.0
+    q = -0.5 * (b + sign * d)
+    if q == 0:
+        return (0.0, 0.0)
+    r = sorted([q / a, c / q])
+    return (r[0], r[1])
+```
+hint: Choose the sign so that $b$ and $\operatorname{sign}(b)\sqrt{\cdot}$ have the same sign: then the sum in $q$ never cancels.
+solution: The sum $b + \operatorname{sign}(b)\sqrt{b^2 - 4ac}$ adds two numbers of the same sign, so $q$ is accurate. The two roots satisfy $x_1 x_2 = c/a$, and $q/a$ is one root, so the other is $c/q$. The textbook formula subtracts nearly equal numbers for one of the roots when $b^2 \gg |4ac|$.
+
+@quiz ms
+prompt: Which of these statements about IEEE double precision are true?
+choice*: Every integer $n$ with $|n| \le 2^{53}$ is exactly representable as a double.
+choice: The decimal number $0.1$ is exactly representable as a double.
+choice*: For a real $x$ in the normal range, $|\mathrm{fl}(x) - x| \le 2^{-53}|x|$.
+choice: Floating-point addition is associative: $(a + b) + c = a + (b + c)$ for all doubles.
+choice*: If $x, y$ are positive doubles with $y/2 \le x \le 2y$, then $x - y$ is computed exactly.
+hint: Think of the significand: $53$ bits can hold every integer up to $2^{53}$; and test associativity with one very large and one very small number.
+solution: Integers up to $2^{53}$ fit in a $53$-bit significand. Theorem 1 gives the relative bound. Sterbenz's lemma gives exactness of close subtractions. The number $0.1$ has an infinite binary expansion, so it is rounded. Associativity fails: $(10^{16} + 1) + (-10^{16}) = 0$, but $(10^{16} + (-10^{16})) + 1 = 1$, so regrouping changes the result.
+
+@quiz code
+prompt: Write `gap_exponent(x)` for a float $x \ge 1$ that returns the smallest integer $k \ge 0$ such that `x + 2.0 ** (-k) == x`. For example, `gap_exponent(1.0)` returns `53`.
+starter:
+```python
+def gap_exponent(x):
+    pass
+```
+tests:
+```python
+assert gap_exponent(1.0) == 53
+assert gap_exponent(1024.0) == 43
+assert gap_exponent(3.0) == 52
+assert gap_exponent(1e6) == 34
+assert gap_exponent(0.5 + 0.5) == 53
+```
+model:
+```python
+def gap_exponent(x):
+    """Smallest k >= 0 with x + 2**-k rounding back to x."""
+    k = 0
+    while x + 2.0 ** (-k) != x:
+        k += 1
+    return k
+```
+hint: Start at $k = 0$ and increase $k$ while adding $2^{-k}$ still changes $x$.
+solution: Adding a power of two smaller than half the gap leaves $x$ unchanged, and exactly half the gap ties to the even significand, which for these inputs is $x$. The loop finds the first such $k$; for $x = 1$ it is $53$, and each doubling of $x$ lowers $k$ by one.
+
+@quiz text
+prompt: What does this program print?
+```python
+a = 1e16
+print((a + 1) - a, (a + 2) - a)
+```
+answer: 0.0 2.0
+check: run("a = 1e16\nprint((a + 1) - a, (a + 2) - a)")
+hint: The gap between doubles near $10^{16}$ is $2$.
+solution: Near $10^{16}$ (between $2^{53}$ and $2^{54}$) the gap is $2$. The exact value $a + 1$ is a tie and rounds to the even neighbor $a$, so the first difference is `0.0`. The value $a + 2$ is a double, so the second difference is `2.0`.
