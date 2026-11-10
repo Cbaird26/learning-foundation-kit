@@ -21,7 +21,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways. Each writer wor
 | C9 | Linear algebra II: vector spaces, inner products and spectral theory | Claude | Codex | written; internal review running |
 | C10 | Abstract algebra I: groups | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C11 | Abstract algebra II: rings, fields and Galois theory | Claude | Codex | written; internal review running |
-| C12 | Real analysis II: metric spaces, uniform convergence and several variables | Claude | Codex | written; internal review running |
+| C12 | Real analysis II: metric spaces, uniform convergence and several variables | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C13 | Complex analysis | Grok | Claude | assigned |
 | C14 | Topology | Grok | Claude | assigned |
 | C15 | Number theory | Codex | Grok | assigned |

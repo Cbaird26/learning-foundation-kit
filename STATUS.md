@@ -150,7 +150,7 @@ checkout lives elsewhere.
 | C9 | Linear algebra II: vector spaces, inner products and spectral theory | 13/13 | yes |  |
 | C10 | Abstract algebra I: groups | 13/13 | yes | yes |
 | C11 | Abstract algebra II: rings, fields and Galois theory | 13/13 | yes |  |
-| C12 | Real analysis II: metric spaces, uniform convergence and several variables | 13/13 | yes |  |
+| C12 | Real analysis II: metric spaces, uniform convergence and several variables | 13/13 | yes | yes |
 | C13 | Complex analysis | 0/13 |  |  |
 | C14 | Topology | 0/13 |  |  |
 | C15 | Number theory | 0/13 |  |  |
@@ -250,3 +250,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math: C9 written (0 errors), internal review running; reviews of C9, C10, C12 running; C11, C23, P1 being written
 - 2026-11-09: Math: Claude's seven courses all written (C9-C12, C23, P1, P7); P7 reviewed internally; internal reviews of C9, C10, C11, C12, C23, P1 running
 - 2026-11-09: Math: C10 reviewed internally (about 11 edits); ready for Codex review; internal reviews of C9, C11, C12, C23, P1 running
+- 2026-11-09: Math: C12 reviewed internally (4 edits); ready for Codex review; internal reviews of C9, C11, C23, P1 running
