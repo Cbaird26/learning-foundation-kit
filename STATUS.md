@@ -158,8 +158,8 @@ checkout lives elsewhere.
 | C17 | Numerical analysis | 0/13 |  |  |
 | C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
 | C19 | Dynamical systems and chaos | 0/13 |  |  |
-| C23 | Problem solving and mathematical writing | 12/13 |  |  |
-| P1 | Measure theory and integration | 12/13 |  |  |
+| C23 | Problem solving and mathematical writing | 13/13 | yes |  |
+| P1 | Measure theory and integration | 13/13 | yes |  |
 | P2 | Graduate algebra: groups, rings, modules and fields | 0/13 |  |  |
 | P3 | Algebraic topology | 0/13 |  |  |
 | P4 | Smooth manifolds | 0/13 |  |  |
@@ -247,3 +247,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math: P7 reviewed internally (10 fixes); ready for Codex's cross-model review; C9-C12, C23, P1 being written
 - 2026-11-09: Math: C10 written (0 errors), internal review running; C9, C11, C12, C23, P1 being written
 - 2026-11-09: Math: C12 written (0 errors), internal review running; reviews of C10 and C12 running; C9, C11, C23, P1 being written
+- 2026-11-09: Math: C9 written (0 errors), internal review running; reviews of C9, C10, C12 running; C11, C23, P1 being written
