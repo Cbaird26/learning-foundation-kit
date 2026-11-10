@@ -1,0 +1,256 @@
+@lesson
+title: Euler and Runge–Kutta methods for differential equations
+summary: Solve initial value problems with Euler's method and Runge–Kutta methods, prove Euler's convergence bound, and verify the order of a method numerically.
+objective: Derive Euler's method and prove that its global error is $O(h)$ for a Lipschitz right-hand side.
+objective: Show that the midpoint Runge–Kutta method has local error $O(h^3)$ and state the classical fourth-order method.
+objective: Estimate the order of an ODE solver from a table of errors for halved step sizes.
+objective: Explain step-size stability for $y' = -\lambda y$ and implement the methods in plain Python.
+reading: Fundamentals of Numerical Computation by Driscoll and Braun, Python edition: the chapter on initial-value problems (Euler's method, Runge–Kutta methods, stability); look up "Euler's method", "Runge–Kutta" and "stiff".
+
+@article
+A differential equation $y' = f(t, y)$ with $y(t_0) = y_0$ rarely has a closed-form solution, but it tells you the slope at every point: follow the slope for a short time, then recompute it. Choosing how to follow it decides the accuracy.
+
+### Euler's method
+
+With step $h$ and $t_n = t_0 + nh$, **Euler's method** is $y_{n+1} = y_n + h f(t_n, y_n)$: take the tangent-line step. If $y$ is the exact solution, Taylor's theorem gives $y(t_{n+1}) = y(t_n) + h f(t_n, y(t_n)) + \tfrac12 h^2 y''(\xi_n)$. The last term is the **local truncation error**, of size $O(h^2)$ per step. Over $T/h$ steps these accumulate to a **global error** of order $h$.
+
+**Theorem 1 (convergence of Euler's method).** Let $y \in C^2[t_0, T]$ solve $y' = f(t, y)$, with $|y''| \le M$, and suppose $|f(t, u) - f(t, v)| \le L|u - v|$ for all $t \in [t_0, T]$ and all $u, v$ (with $L > 0$). If $y_0 = y(t_0)$, then for $t_n \le T$
+$$|y(t_n) - y_n| \le \frac{Mh}{2L}\left(e^{L(t_n - t_0)} - 1\right).$$
+
+*Proof.* Let $e_n = y(t_n) - y_n$. Subtracting the Euler step from the Taylor formula: $e_{n+1} = e_n + h\bigl(f(t_n, y(t_n)) - f(t_n, y_n)\bigr) + \tau_n$ with $|\tau_n| \le \tfrac12 Mh^2$. By the Lipschitz condition $|e_{n+1}| \le (1 + hL)|e_n| + \tfrac12 Mh^2$. With $e_0 = 0$, unrolling gives $|e_n| \le \tfrac12 Mh^2\sum_{j=0}^{n-1}(1 + hL)^j = \tfrac12 Mh^2\,\dfrac{(1 + hL)^n - 1}{hL}$. Finally $1 + hL \le e^{hL}$, so $(1 + hL)^n \le e^{nhL} = e^{L(t_n - t_0)}$. $\blacksquare$
+
+The exponential factor shows how errors compound; the bound is usually pessimistic. The Lipschitz hypothesis is needed: for $y' = \sqrt{|y|}$, $y(0) = 0$ (not Lipschitz at $0$) Euler stays at $0$ while $y(t) = t^2/4$ is also a solution.
+
+### Runge–Kutta methods
+
+To get higher order, sample the slope at several points. The **midpoint method** (a second-order Runge–Kutta method) is
+$$k_1 = f(t_n, y_n), \quad k_2 = f\bigl(t_n + \tfrac h2,\ y_n + \tfrac h2 k_1\bigr), \quad y_{n+1} = y_n + h k_2.$$
+**Claim:** its local truncation error is $O(h^3)$. *Proof* (for $f$ with continuous second derivatives, starting from the exact value $y_n = y(t_n)$). The exact solution satisfies $y(t_n + h) = y + hf + \tfrac12 h^2(f_t + f f_y) + O(h^3)$, because $y'' = f_t + f_y y' = f_t + f f_y$. Taylor-expanding $k_2$ about $(t_n, y_n)$ gives $k_2 = f + \tfrac h2 f_t + \tfrac h2 f f_y + O(h^2)$, so $y_n + hk_2 = y + hf + \tfrac12 h^2(f_t + ff_y) + O(h^3)$. The two expansions agree through $h^2$. $\blacksquare$
+A local error of $O(h^{p+1})$ gives a global error $O(h^p)$ by the same recurrence as in Theorem 1 (with $\tfrac12 Mh^2$ replaced by $Ch^{p+1}$), so the midpoint method is second-order. **Heun's method** $y_{n+1} = y_n + \tfrac h2\bigl(f(t_n, y_n) + f(t_{n+1}, y_n + hf(t_n, y_n))\bigr)$ is another.
+
+The **classical fourth-order Runge–Kutta method** (Runge 1895, Kutta 1901) is
+$$k_1 = f(t_n, y_n),\; k_2 = f\bigl(t_n + \tfrac h2, y_n + \tfrac h2k_1\bigr),\; k_3 = f\bigl(t_n + \tfrac h2, y_n + \tfrac h2k_2\bigr),\; k_4 = f(t_n + h, y_n + hk_3),$$
+$$y_{n+1} = y_n + \tfrac h6\,(k_1 + 2k_2 + 2k_3 + k_4).$$
+Its local error is $O(h^5)$ and its global error $O(h^4)$ (stated without proof; the algebra of matching Taylor series through $h^4$ is long, and Week 12's exercises check the order numerically). For $f$ independent of $y$ it reduces to Simpson's rule.
+
+### Order from a table
+
+If the global error is $Ch^p$, then halving $h$ divides it by $2^p$, so $p \approx \log_2\bigl(E(h)/E(h/2)\bigr)$.
+
+```python
+import math
+
+
+def euler(f, t0, y0, T, N):
+    """Euler's method with N steps from t0 to T; returns y_N."""
+    h = (T - t0) / N
+    t, y = t0, y0
+    for _ in range(N):
+        y = y + h * f(t, y)
+        t = t + h
+    return y
+
+
+def midpoint(f, t0, y0, T, N):
+    h = (T - t0) / N
+    t, y = t0, y0
+    for _ in range(N):
+        k2 = f(t + h / 2, y + h / 2 * f(t, y))
+        y = y + h * k2
+        t = t + h
+    return y
+
+
+f = lambda t, y: y            # y' = y, y(0) = 1, exact solution e^t
+e1 = abs(euler(f, 0, 1.0, 1.0, 100) - math.e)
+e2 = abs(euler(f, 0, 1.0, 1.0, 200) - math.e)
+print(1.9 < e1 / e2 < 2.1)    # True: order 1
+```
+
+### Stability of the step size
+
+For $y' = -\lambda y$ with $\lambda > 0$ the exact solution decays. Euler gives $y_{n+1} = (1 - h\lambda)y_n$, so $y_n = (1 - h\lambda)^ny_0$ decays if and only if $|1 - h\lambda| < 1$, that is $h < 2/\lambda$. For larger steps the numerical solution grows although the true solution decays. For a **stiff** problem (a large $\lambda$ together with slow components) explicit methods are forced to take tiny steps; implicit methods such as backward Euler, $y_{n+1} = y_n/(1 + h\lambda)$, decay for every $h > 0$ on this equation.
+
+@example
+title: Euler's method and its error bound
+problem: Apply Euler's method with $h = 0.1$ to $y' = -2y$, $y(0) = 1$ up to $t = 0.3$, and compare the error with Theorem 1.
+step: Euler gives $y_{n+1} = (1 - 0.2)y_n = 0.8y_n$, so $y_1 = 0.8$, $y_2 = 0.64$, $y_3 = 0.512$.
+step: The exact solution is $e^{-2t}$, so $y(0.3) = e^{-0.6} \approx 0.5488$ and the error is about $0.0368$.
+step: Constants: $L = 2$ and $y'' = 4e^{-2t}$, so $M = 4$. Theorem 1 gives $\dfrac{Mh}{2L}(e^{L t_n} - 1) = \dfrac{4 \cdot 0.1}{4}(e^{0.6} - 1) \approx 0.1 \cdot 0.8221 = 0.0822$.
+step: The actual error $0.0368$ is below the bound $0.0822$, as it must be; halving $h$ would roughly halve both.
+answer: $y_3 = 0.512$, error $\approx 0.037 \le 0.082$.
+
+@example
+title: One step of the classical Runge–Kutta method
+problem: Take one RK4 step of size $h = 0.5$ for $y' = y$, $y(0) = 1$ and compare with $e^{0.5}$.
+step: $k_1 = 1$. Then $k_2 = f(y + \tfrac h2k_1) = 1 + 0.25 = 1.25$.
+step: $k_3 = 1 + 0.25 \cdot 1.25 = 1.3125$ and $k_4 = 1 + 0.5 \cdot 1.3125 = 1.65625$.
+step: $y_1 = 1 + \tfrac{0.5}{6}(1 + 2 \cdot 1.25 + 2 \cdot 1.3125 + 1.65625) = 1 + \tfrac{0.5}{6}\cdot 7.78125 = 1.6484375$.
+step: The exact value is $e^{0.5} \approx 1.6487213$, so the error is about $2.8 \times 10^{-4}$ after one big step. The result equals the Taylor polynomial $1 + h + h^2/2 + h^3/6 + h^4/24$ of $e^h$ at $h = 0.5$.
+answer: $y_1 = 1.6484375$, error $\approx 2.8 \times 10^{-4}$.
+
+@mistakes
+- Believing that a smaller local error automatically means a smaller global error: the global error is the accumulated, amplified local error, and the order drops by one.
+- Taking steps larger than the stability limit $2/\lambda$ for Euler on a decaying problem: the numerical solution then grows.
+- Using the Euler bound to predict the actual error: it contains $e^{L T}$ and is usually far too large; use it for the order, not the size.
+- In RK4, evaluating all four slopes at the old $y_n$ instead of at the intermediate points $y_n + \tfrac h2 k_1$, and so on.
+
+@practice num
+prompt: Take two Euler steps with $h = 0.1$ for $y' = y^2 - t$, $y(0) = 1$. What is $y_2$ (the approximation at $t = 0.2$)?
+answer: 1.211
+tol: 0.0005
+check: (1 + 0.1 * (1 ** 2 - 0)) + 0.1 * ((1 + 0.1 * (1 ** 2 - 0)) ** 2 - 0.1)
+hint: $y_1 = y_0 + h(y_0^2 - t_0)$, then repeat with $t_1 = 0.1$.
+solution: $y_1 = 1 + 0.1(1 - 0) = 1.1$. Then $y_2 = 1.1 + 0.1(1.1^2 - 0.1) = 1.1 + 0.1 \cdot 1.11 = 1.211$.
+
+@practice mc
+prompt: Euler's method applied to a smooth Lipschitz problem on $[0, 1]$ has error $4 \times 10^{-3}$ at $t = 1$ with $h = 0.1$. What error do you expect with $h = 0.05$?
+choice*: About $2 \times 10^{-3}$, since the global error of Euler's method is $O(h)$.
+choice: About $1 \times 10^{-3}$, since the error is $O(h^2)$.
+choice: About $4 \times 10^{-3}$, since the error does not depend on $h$.
+choice: About $8 \times 10^{-3}$, since smaller steps accumulate more rounding.
+hint: The global order of Euler's method is $1$: halving $h$ divides the error by $2^1$.
+solution: By Theorem 1 the error is bounded by a constant times $h$, and in practice it is close to proportional to $h$, so halving $h$ halves the error to about $2 \times 10^{-3}$. The local error is $O(h^2)$, but the global error loses one power.
+
+@practice text
+prompt: What does this program print?
+```python
+from fractions import Fraction
+
+y = Fraction(1)
+h = Fraction(1)
+k1 = y
+k2 = y + h / 2 * k1
+k3 = y + h / 2 * k2
+k4 = y + h * k3
+print(y + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4))
+```
+answer: 65/24
+check: run("from fractions import Fraction\n\ny = Fraction(1)\nh = Fraction(1)\nk1 = y\nk2 = y + h / 2 * k1\nk3 = y + h / 2 * k2\nk4 = y + h * k3\nprint(y + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4))")
+hint: This is one RK4 step for $y' = y$ with $h = 1$; compute $k_1, \dots, k_4$ in order.
+solution: $k_1 = 1$, $k_2 = 1 + \tfrac12 = \tfrac32$, $k_3 = 1 + \tfrac12\cdot\tfrac32 = \tfrac74$, $k_4 = 1 + \tfrac74 = \tfrac{11}{4}$. Then $y_1 = 1 + \tfrac16(1 + 3 + \tfrac72 + \tfrac{11}{4}) = 1 + \tfrac16 \cdot \tfrac{41}{4} = \tfrac{65}{24}$, the Taylor polynomial $1 + 1 + \tfrac12 + \tfrac16 + \tfrac1{24}$ of $e$.
+
+@practice code
+prompt: Write `rk4(f, t0, y0, T, N)` implementing the classical fourth-order Runge–Kutta method with `N` equal steps from `t0` to `T` for a scalar equation $y' = f(t, y)$, returning the final value $y_N$. For example, for `f = lambda t, y: y`, `t0 = 0`, `y0 = 1.0`, `T = 1.0`, `N = 10` the result is about `2.71828` (within `3e-6`).
+starter:
+```python
+def rk4(f, t0, y0, T, N):
+    pass
+```
+tests:
+```python
+import math
+f = lambda t, y: y
+e10 = abs(rk4(f, 0, 1.0, 1.0, 10) - math.e)
+e20 = abs(rk4(f, 0, 1.0, 1.0, 20) - math.e)
+assert e10 < 3e-6 and 14 < e10 / e20 < 17
+g = lambda t, y: -2 * t * y
+a = abs(rk4(g, 0, 1.0, 1.0, 8) - math.exp(-1))
+b = abs(rk4(g, 0, 1.0, 1.0, 16) - math.exp(-1))
+assert 14 < a / b < 17
+assert abs(rk4(lambda t, y: t ** 3, 0, 0.0, 2.0, 1) - 4.0) < 1e-12
+assert abs(rk4(lambda t, y: 1.0, 0, 3.0, 2.0, 5) - 5.0) < 1e-12
+assert abs(rk4(lambda t, y: y, 0, 2.0, 0.0, 3) - 2.0) < 1e-12
+```
+model:
+```python
+def rk4(f, t0, y0, T, N):
+    """Classical fourth-order Runge-Kutta method; returns y at t = T."""
+    h = (T - t0) / N
+    t, y = t0, y0
+    for _ in range(N):
+        k1 = f(t, y)
+        k2 = f(t + h / 2, y + h / 2 * k1)
+        k3 = f(t + h / 2, y + h / 2 * k2)
+        k4 = f(t + h, y + h * k3)
+        y = y + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        t = t + h
+    return y
+```
+hint: Compute the four slopes in order, each evaluated at the point built from the previous slope, then combine with weights $1, 2, 2, 1$ over $6$.
+solution: The step is Simpson-like: $k_1$ at the start, $k_2$ and $k_3$ at the midpoint (hence weight $2$ each), $k_4$ at the end. The error ratios near $16$ for halved steps confirm global order $4$, since $2^4 = 16$. For $f$ independent of $y$ the method reproduces Simpson's rule, which is exact for the cubic $t^3$ (second test). With `T == t0` the step is $0$ and `y0` is returned.
+
+@practice code
+prompt: Write `euler_system(f, t0, y0, T, N)` for a system $\mathbf y' = \mathbf f(t, \mathbf y)$. Here `y0` is a list of numbers and `f(t, y)` returns a list of the same length. Perform `N` Euler steps of size $h = (T - t_0)/N$, updating all components from the old state, and return the final state as a list. For example, for the oscillator $y_1' = y_2$, $y_2' = -y_1$ with `y0 = [1.0, 0.0]`, one step with `h = 0.5` gives `[1.0, -0.5]`.
+starter:
+```python
+def euler_system(f, t0, y0, T, N):
+    pass
+```
+tests:
+```python
+osc = lambda t, y: [y[1], -y[0]]
+assert euler_system(osc, 0, [1.0, 0.0], 0.5, 1) == [1.0, -0.5]
+y = euler_system(osc, 0, [1.0, 0.0], 1.0, 100)
+energy = y[0] ** 2 + y[1] ** 2
+assert abs(energy - (1 + 0.01 ** 2) ** 100) < 1e-9
+y = euler_system(lambda t, y: [1.0, 2.0 * y[0]], 0, [0.0, 0.0], 1.0, 4)
+assert abs(y[0] - 1.0) < 1e-12 and abs(y[1] - 0.75) < 1e-12
+y0 = [3.0, 4.0]
+euler_system(osc, 0, y0, 1.0, 5)
+assert y0 == [3.0, 4.0]
+```
+model:
+```python
+def euler_system(f, t0, y0, T, N):
+    """Euler's method for a system; returns the final state."""
+    h = (T - t0) / N
+    t = t0
+    y = list(y0)
+    for _ in range(N):
+        slope = f(t, y)
+        y = [y[i] + h * slope[i] for i in range(len(y))]
+        t = t + h
+    return y
+```
+hint: Compute the whole slope vector from the old state before changing any component.
+solution: Each step multiplies the oscillator's radius squared by exactly $1 + h^2$, so after $N$ steps the energy $y_1^2 + y_2^2$ is $(1 + h^2)^N$: Euler's method makes the oscillation grow, a failure of qualitative behavior that the order-1 error bound does not forbid. A common bug is updating `y[0]` first and then using the new value for `y[1]`, which gives a different method. In the third test $y_1 = t$ and $y_2' = 2t$; Euler gives $y_2 = 0.75$ at $t = 1$ (the left-endpoint sum of $2t$).
+
+@quiz num
+prompt: Euler's method is applied to $y' = -40y$ on $[0, 1]$ with $N$ equal steps, so $h = 1/N$. The numerical solution decays if and only if $|1 - 40h| < 1$. What is the smallest integer $N$ for which this holds?
+answer: 21
+check: next(N for N in range(1, 200) if abs(1 - 40 / N) < 1)
+hint: Solve $|1 - 40h| < 1$: it means $0 < h < 2/40 = 0.05$, and the inequality is strict.
+solution: We need $h < 0.05$, i.e. $N > 20$. At $N = 20$ we have $h = 0.05$ and $1 - 40h = -1$, so $|1 - 40h| = 1$: the iterates alternate in sign without decaying. So the smallest $N$ is $21$.
+
+@quiz code
+prompt: Write `heun(f, t0, y0, T, N)` for Heun's method: with $h = (T - t_0)/N$ and $k_1 = f(t, y)$, $k_2 = f(t + h, y + hk_1)$, update $y \leftarrow y + \tfrac h2(k_1 + k_2)$ and $t \leftarrow t + h$, for `N` steps, returning the final $y$. For example, for `f = lambda t, y: t`, `y0 = 0.0`, `t0 = 0`, `T = 2.0`, `N = 1` the result is `2.0` (exact, since $y = t^2/2$).
+starter:
+```python
+def heun(f, t0, y0, T, N):
+    pass
+```
+tests:
+```python
+import math
+assert abs(heun(lambda t, y: t, 0, 0.0, 2.0, 1) - 2.0) < 1e-12
+assert abs(heun(lambda t, y: 2 * t + 1, 0, 1.0, 2.0, 3) - 7.0) < 1e-12
+f = lambda t, y: y
+e20 = abs(heun(f, 0, 1.0, 1.0, 20) - math.e)
+e40 = abs(heun(f, 0, 1.0, 1.0, 40) - math.e)
+assert 3.8 < e20 / e40 < 4.2
+assert abs(heun(lambda t, y: -3 * y, 0, 1.0, 1.0, 100) - math.exp(-3)) < 1e-3
+```
+model:
+```python
+def heun(f, t0, y0, T, N):
+    """Heun's method (second order); returns y at t = T."""
+    h = (T - t0) / N
+    t, y = t0, y0
+    for _ in range(N):
+        k1 = f(t, y)
+        k2 = f(t + h, y + h * k1)
+        y = y + h / 2 * (k1 + k2)
+        t = t + h
+    return y
+```
+hint: The second slope is taken at the Euler predictor $y + hk_1$ at time $t + h$; average the two slopes.
+solution: Heun's method is the trapezoid rule with an Euler predictor. For $y' = g(t)$ it is exactly the trapezoid rule, hence exact for $g$ linear (the first two tests). Its global error is $O(h^2)$, so doubling $N$ divides the error by about $4$, as the ratio test checks.
+
+@quiz self
+prompt: For the test equation $y' = \lambda y$ show that one step of the midpoint method multiplies $y_n$ by $1 + h\lambda + \tfrac12(h\lambda)^2$. Compare with the exact factor $e^{h\lambda}$ to find the leading term of the local truncation error, and explain what this says about the order.
+hint: Compute $k_1 = \lambda y_n$, then $k_2$, then $y_{n+1} = y_n + hk_2$; expand $e^{h\lambda}$ in a power series.
+solution: With $k_1 = \lambda y_n$ we get $k_2 = \lambda(y_n + \tfrac h2\lambda y_n) = \lambda y_n(1 + \tfrac12 h\lambda)$, so $y_{n+1} = y_n + h\lambda y_n(1 + \tfrac12h\lambda) = y_n\bigl(1 + h\lambda + \tfrac12(h\lambda)^2\bigr)$. The exact solution satisfies $y(t_n + h) = e^{h\lambda}y(t_n) = y(t_n)\bigl(1 + h\lambda + \tfrac12(h\lambda)^2 + \tfrac16(h\lambda)^3 + \cdots\bigr)$. The two factors agree through the $h^2$ term, so the local truncation error is $\tfrac16(h\lambda)^3y(t_n) + O(h^4)$, which is $O(h^3)$. A local error of $O(h^3)$ gives a global error of $O(h^2)$, so the method is of order $2$.
+rubric: Computes $k_1$ and $k_2$ correctly and obtains the factor $1 + h\lambda + \tfrac12(h\lambda)^2$.
+rubric: Expands $e^{h\lambda}$ and identifies the leading error term $\tfrac16(h\lambda)^3y_n$.
+rubric: Concludes local error $O(h^3)$ and global order $2$, mentioning the loss of one power in accumulation.

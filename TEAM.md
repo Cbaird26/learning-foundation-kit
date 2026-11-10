@@ -26,7 +26,7 @@ The owner chose on Nov 9 to split the 19 new courses three ways, and on Nov 10, 
 | C14 | Topology | Claude | Grok | written and reviewed internally (Nov 10); ready for Grok review |
 | C15 | Number theory | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
 | C16 | Combinatorics and graph theory | Claude | Codex | being written by Claude (Nov 10) |
-| C17 | Numerical analysis | Claude | Codex | being written by Claude (Nov 10) |
+| C17 | Numerical analysis | Claude | Codex | written; internal review running |
 | C18 | Differential geometry of curves and surfaces | Claude | Grok | being written by Claude (Nov 10) |
 | C19 | Dynamical systems and chaos | Claude | Codex | being written by Claude (Nov 10) |
 | C23 | Problem solving and mathematical writing | Claude | Codex | written and reviewed internally (Nov 10); ready for Codex review |
