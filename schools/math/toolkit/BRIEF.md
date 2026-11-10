@@ -1,0 +1,173 @@
+# Writing one course for the Mathematics Learning Foundation
+
+The Mathematics Learning Foundation is a Khan Academy–style self-study site for a 64-course pathway from kindergarten to PhD qualifying exams in mathematics: elementary, middle and high school (shared with the AI Learning Foundation, with its programming track), a complete college mathematics degree, and graduate study with qualifying-exam preparation. Each course follows a 14-week syllabus. You write the lessons for ONE course: weeks 1–12 (one lesson per weekly topic) plus a project/review/final-exam file for weeks 13–14. Your course JSON says who the learner is (`audience`) and the course `level`; write for that learner. Address the learner as "you". Assume the course prerequisites, but briefly remind key prerequisite ideas when you use them. Use the standard names of definitions, theorems and methods (the rank–nullity theorem, the spectral theorem, Lagrange's theorem, the Sylow theorems, the fundamental theorem of Galois theory, the Heine–Borel theorem, Cauchy's integral formula, the residue theorem, the dominated convergence theorem, the Hahn–Banach theorem, van Kampen's theorem, Stokes's theorem, the central limit theorem, quadratic reciprocity, Hall's theorem, Newton's method): learners need them to use the readings, read papers and talk with other mathematicians. Attribute theorems and methods to their authors where the attribution is standard (see Content standards), but do not write biographies or anecdotes about real people, and never mention the curriculum's author.
+
+The site runs Python in the learner's browser, so learners write and run real code inside lessons, and the site grades it by running your tests. The browser's Python has **no NumPy, SciPy, SymPy or other packages**, so every graded exercise builds the idea from scratch in plain Python on small data: a gcd and a modular inverse, a permutation's cycles, a determinant by row reduction, an interpolating polynomial, a quadrature rule, a Lyapunov exponent. That is a feature: computing an example yourself is the surest way to understand a definition and to test a conjecture. In mathematics, code supports proof and never replaces it. Articles may show how mathematicians do the same thing with NumPy, SymPy or a computer algebra system.
+
+## Files you write (only these)
+
+- `/home/claude/math/content/<CODE>/L01.txt` … `L12.txt` — week N lesson = the syllabus topic for week N.
+- `/home/claude/math/content/<CODE>/project.txt` — the week 13–14 project brief, review guide and cumulative exam items.
+
+Your course data (audience, level, profile, topics, block deliverables, project, primary reading) is in `/home/claude/math/toolkit/courses/<CODE>.json`. Before writing anything, read it and `/home/claude/math/toolkit/example_math_lesson.txt`: a complete, valid lesson (proof by induction) that shows the exact format, the conventions for math and code, and every common item type. The example lesson is a format sample: never copy its examples, data, functions or items. C16 (recurrences, week 3) and C23 (induction in problem solving, week 3) overlap the example's topic and must use entirely new statements, recurrences, functions and exercises.
+
+## File format
+
+Sections start with `@name` at the start of a line. Fields are `key: value`; a line that does not begin with a known key continues the previous field, so multi-line values are fine. Text inside ``` fences is kept exactly as written: inside a fence, lines that look like `key: value` or `@name` are just code, so decorators and dictionaries are safe there. A fence always starts at the beginning of its own line, never after `solution: ` on the same line. Write TeX directly; inline math is `$...$`, display math is `$$...$$`.
+
+**Dollar signs.** A `$` outside code starts math. Write a literal dollar sign as `\$`. Do not start inline math with a digit followed by words or relations that read like money (`$4 \mid 12$` is read as a dollar amount): write `$a \mid b$` with letters, or put the number later (`$12$ is divisible by $4$`).
+
+**Math notation** (use it consistently): $\mathbb{N} = \{1, 2, 3, \dots\}$ (say so when you need $0$, and write $\mathbb{Z}_{\ge 0}$), $\mathbb{Z}$, $\mathbb{Q}$, $\mathbb{R}$, $\mathbb{C}$, and $\mathbb{Z}/n\mathbb{Z}$ for the integers modulo $n$; sets with `\{ \}`; $\subseteq$ for subsets and $\subsetneq$ for proper ones; functions $f\colon X \to Y$; vectors in abstract spaces as plain letters ($v \in V$), column vectors in $\mathbb{R}^n$ bold ($\mathbf{x}$) when it helps; matrices as capital letters ($A$, $A^\top$); $\langle u, v\rangle$ for inner products; $\|x\|$ for norms; $a \mid b$ for divisibility and $a \equiv b \pmod{n}$ for congruence; $\overline{z}$ for complex conjugates; $\mathbb{E}$ and $P(\cdot)$ in probability. **$\log$ means the natural logarithm** unless you write $\log_2$ or $\log_{10}$. Write "if and only if" in prose and $\iff$ only in displayed logic.
+
+**Proofs.** Every proof is complete and correct at the level of the course: state what is assumed and what is to be shown, justify each step by a definition, a hypothesis or a named theorem whose hypotheses you have checked, make quantifiers explicit, and end with $\blacksquare$. Never hide a step behind "clearly" or "obviously". State every theorem with all its hypotheses, and show by a counterexample what goes wrong without one when that teaches something. Distinguish definitions, theorems, examples and remarks.
+
+**Algorithms.** Give an algorithm or a computation as runnable Python in a ```python fence whenever you can (the site adds a Try it button to code that runs the same in the browser), or as numbered steps in prose. Use ```text for pseudocode or for NumPy, SymPy or computer-algebra code you show for reference (it does not run in the browser).
+
+**The site shows no images.** Describe what a picture would show in words and tables: a graph of a function as a table of values and a description of its shape, a region in the plane by its inequalities, a curve or a surface by its parametrization, a group by its Cayley table, a graph by its vertex and edge lists, a cell complex or a simplicial complex by its cells and their attaching or face maps, a commutative diagram as a list of maps and the equations they satisfy.
+
+Code in prose: inline code in single backticks; blocks in fences with a language (```python, ```text, ```bash). Keep code lines under 80 characters where you can (the hard limit is 100), and indent with 4 spaces, never tabs.
+
+Lesson file sections, in order:
+- `@lesson` — `title:` (the week's topic as a clear title), `summary:` (one sentence: what the learner will be able to do), `objective:` ×2–4, `reading:` (see below).
+- `@article` — markdown: paragraphs, `###` subheadings, **bold**, lists, tables, code blocks, `$math$`. Length by level (see below).
+- `@example` ×1–2 — `title:`, `problem:`, `step:` ×2–6 (each step is revealed one at a time, Khan-style; a step may contain a table or a code block), optional `answer:`.
+- `@mistakes` — 2–4 lines starting with `- `.
+- `@practice <type>` ×5 — ordered easy → hard, each with its own data and numbers: never reuse a worked example, the article's own data or its numbers (also in code items' example calls and tests), so learners must apply the idea rather than recognize an answer they have seen. A code item never asks for a function the article already gives in full: ask for a variant, an extension or the next step (a different separator, a second dimension, a stopping rule, an edge case the article's version mishandles).
+- `@quiz <type>` ×2–3 — new problems used only in unit quizzes, the midterm and the final. Never near-copies of practice items, and never the data of a worked example.
+
+## Item types
+
+Item fields: `prompt:`, `answer:`, `check:`, `hint:` ×1–3 (progressive; the last hint gets the learner to the method but not the final answer), `solution:` (complete and short), plus the fields each type needs.
+
+| type | learner does | you give | verified by |
+|---|---|---|---|
+| `num` | one number | `answer:`, usually `tol:`, and `unit:` when it helps | `check:` expression |
+| `expr` | an expression in `vars` (a derivative, a gradient component) | `answer:`, `vars:` | `check:` lambda |
+| `mc` | one choice | mark the correct `choice*:` | — |
+| `ms` | select all that apply | mark every correct `choice*:` | — |
+| `self` | derives, proves, designs, writes or builds, then compares with a model | `solution:` (model answer) and `rubric:` ×2–4 | — |
+| `code` | writes Python in an editor, runs it, presses Check | `starter:`, `tests:` and/or `stdout:`, `model:` | the validator runs `model` against your tests in CPython **and** in the browser's Python, and checks that `starter` fails them |
+| `text` | types an exact short answer, usually what a program prints | `answer:`, optional `accept:` ×n | `check:` that computes the same text |
+| `list` | several values, any order | `answer:` (`-2, 3` or `none`) | `check:` |
+| `tuple` | ordered values | `answer:` (`(2, -1)`) | `check:` |
+
+`mc`/`ms` use `choice:` lines (3–5 total) with the correct ones written `choice*:`. **The site shuffles the choices**, so never use "all/none of the above" or "both A and B", and in hints and solutions name a choice by its content, never by its position ("the second choice", "option B"). Each `mc` item has exactly one best answer. Distractors come from real misconceptions: confusing a necessary with a sufficient condition, a statement with its converse, pointwise with uniform convergence, continuity with differentiability, a closed and bounded set with a compact one (outside $\mathbb{R}^n$), a subgroup with a normal subgroup, an ideal with a subring, a basis with a spanning set, an eigenvector with an eigenvalue, the order of a group with the order of an element, "irreducible" with "has no roots" (the same only up to degree 3), the preimage with the image, a local with a global property, independence with uncorrelatedness, a truncation error with a rounding error, or evidence from computed cases with a proof. `ms` items suit "which of these hypotheses does the theorem need?", "which of these sets are compact?" and "which of these maps are homomorphisms?". Use `self` for proofs, derivations, counterexamples and short expositions; give a complete model `solution:` (a full proof at the level of the course) and 2–4 specific `rubric:` lines that name the key steps.
+
+**What an auto-graded item may test.** An `mc`, `ms`, `num`, `expr`, `text`, `list` or `tuple` item must have one correct answer: a computed value, what a definition or a theorem says, which hypotheses a theorem needs, whether a statement is true (with the counterexample or proof in the solution), or what a program prints. Questions about the philosophy or foundations of mathematics on which informed mathematicians disagree (Platonism, formalism or intuitionism; whether to accept the axiom of choice or nonconstructive proofs; whether a computer-assisted or AI-assisted proof gives understanding) never have a "correct" choice: put them in `self` items whose model answers argue one view well and give the strongest reply, with rubrics that reward the quality of the reasoning, never agreement with a position.
+
+### Numbers (`num` items)
+
+`num` items are the backbone of computation: the value of a sum, an integral, a limit or a series; a determinant, a rank, an eigenvalue or a dimension; the order of a group element, a number of cosets, the degree of a field extension; a residue or a contour integral; a gcd, a modular inverse or a count; a probability or an expectation; an error, an order of convergence or one step of an algorithm.
+- `answer:` is a plain number: `3`, `0.95`, `-0.25`, `3/4`, `2.83`, `1.5e9`. No `%`, commas or words in the answer field. Learners may type `1,234` or `7.25%`: the site removes thousands separators, and a `%` typed into an item whose unit is `%` is ignored.
+- **Percentages**: answer as a percent with `unit: %` ("Give the accuracy as a percent to one decimal place" → `answer: 87.5`, `unit: %`). A probability or a rate asked for as a decimal has no unit.
+- **Other units** are rare in mathematics; use `unit:` only for quantities with units in applied problems (`unit: cm`, `unit: s`).
+- **Exact answers**: when the answer is a fraction or an integer, ask for it exactly and give it exactly (`3/4`, `-2`); the site accepts `3/4` and `0.75` alike for `answer: 3/4`. Ask for decimals only when the value is irrational, and then say how many places.
+- **Tolerance**: whenever the prompt asks for rounding, set `tol:` to one unit of the last place asked for (two decimal places → `tol: 0.01`); `tol: 1%` gives a relative tolerance for large numbers. A `num` item without `tol:` must have an exact answer (an integer, or a terminating decimal such as `0.95` that needs no rounding).
+
+`check:` is ONE Python expression that computes the expected result independently from the problem statement — never retype your answer. Redo the arithmetic (`-log(0.7)`, `sum(p * log2(1 / p) for p in [0.5, 0.25, 0.25])`, `2 * 0.8 * 0.6 / (0.8 + 0.6)`), use the program itself (`float(run("...program..."))`), or use the helpers: `math`, `np` (NumPy), `exp`, `log` (natural), `log2`, `log10`, `sqrt`, `tanh`, `erf`, `comb`, `perm`, `factorial`, `floor`, `ceil`, `Fraction`, `pi`, `e`, `inf`, `mat(A)` (a NumPy array, so `mat(A) @ mat(B)` works), `dot`, `norm`, `det`, `inv`, `eig`, `lin(A, b)`, `rank`, `nderiv(f, x)`, `pderiv(f, point, i)`, `root`, `quad(f, a, b)`, `nsum`, and builtins such as `sum`, `range`, `min`, `max`, `round`, `len`, `sorted`, `zip`, `enumerate`, `abs`, `all`, `any`, `int`, `float`. Check expressions run only in the validator (in CPython with NumPy), never in the learner's browser. Only when an item truly cannot be computed, write `nocheck: <reason>` (at most six per course).
+
+`expr` items: `answer:` in calculator syntax (`2*w*x^2 - 2*x*y`, `e^(-z)/(1+e^(-z))^2`, `ln(x)`), `vars: w, x, y`, and a `check:` lambda giving the correct value (`lambda w, x, y: 2 * w * x**2 - 2 * x * y`). Use them for closed forms, derivatives, partial derivatives and simplified expressions; optional `domain: x: 0.5..3` sets the sampling range. The site compares values at sample points, so never ask for an antiderivative without fixing the constant (ask for the one with $F(0) = 0$), and avoid expressions that are undefined at the sampled points.
+
+### `code` items
+
+```
+@practice code
+prompt: Write `mse(preds, targets)` that returns the mean squared error of two equal-length lists of numbers. For example, `mse([1, 2], [1, 4])` returns `2.0`.
+starter:
+```python
+def mse(preds, targets):
+    pass
+```
+tests:
+```python
+assert abs(mse([1, 2], [1, 4]) - 2.0) < 1e-9
+assert abs(mse([0.5], [0.5])) < 1e-9
+assert abs(mse([1, 2, 3], [2, 2, 2]) - 2 / 3) < 1e-9
+assert abs(mse([-1, 1], [1, -1]) - 4.0) < 1e-9
+```
+model:
+```python
+def mse(preds, targets):
+    """Mean of the squared differences between predictions and targets."""
+    return sum((p - t) ** 2 for p, t in zip(preds, targets)) / len(preds)
+```
+hint: Square each difference, add them up, and divide by the number of pairs.
+solution: Pair each prediction with its target, square the differences, and average them; dividing by the count, not by the count minus one, makes it a mean.
+```
+
+- `starter:` (optional) is the code the editor starts with: usually the function header and `pass`. It must compile and must **fail** the tests. `model:` is your complete reference solution. Each of `starter`, `tests`, `model`, `stdin`, `stdout` holds exactly one fenced block.
+- `tests:` is Python run after the learner's code, in the same namespace. Each top-level `assert` is one test: the learner sees a ✓ or ✗ beside each one, and a failing `assert expr == expected` automatically reports what the code gave and what was expected. Write 3–6 asserts: the main case, edge cases (an empty list, $n = 0$ or $n = 1$, a zero polynomial, a singular matrix, a repeated root, the identity permutation, a tie) and one case a typical wrong solution gets wrong (an off-by-one range, a sign error, floating-point instead of exact rational arithmetic, modifying a list in place where a copy is needed, a greedy choice that is not optimal, stopping an iteration one step early).
+- **Data and representations.** State the representation in the prompt and keep to it within a lesson. A polynomial is a list of coefficients (say whether the constant term comes first); a matrix is a list of rows; a vector is a list; a permutation of $\{0, \dots, n-1\}$ is a list `p` with `p[i]` the image of `i` (say so, and use 1-based cycle notation only in prose); an element of a small group or finite field is an integer or a tuple with a stated rule; a graph is a dictionary of adjacency lists or a list of edges; a sequence is a function or a list; exact rational arithmetic uses `fractions.Fraction`. Data are tiny: a handful to a few dozen values.
+- **Floating point.** Compare computed floats with a tolerance, never with `==`: `assert abs(f(x) - 0.5) < 1e-6`, or for lists `assert all(abs(a - b) < 1e-6 for a, b in zip(got, want))`. `math.exp`, `math.log` and `math.tanh` can differ in the last digit between the browser and CPython, so always allow a tolerance (1e-6 relative to the size of the numbers is usually right). Integer results, shapes, counts, argmax indices and labels may be compared exactly.
+- **Randomness.** Tests never check specific random values. For randomized algorithms and simulations (a Miller–Rabin test, a Monte Carlo estimate, a random walk), pass the random choices in as a list argument (`bases`, `us`) or take a `random.Random` instance and test only properties (the output has the right length, values are in range, a prime is never reported composite, calling twice with the same seed gives the same result).
+- **Big integers.** Python integers have arbitrary size in both CPython and the browser, but the browser's big-integer arithmetic is slow: keep numbers in graded code below about $10^{30}$, use `pow(a, e, m)` for modular powers, and never test factoring or primality on numbers that need more than a few thousand steps.
+- **Keep the work small.** The model plus the tests must finish in well under a second in the browser, which runs Python about 20–50 times slower than CPython: aim for at most about 100,000 arithmetic operations per check (a few thousand iterations of Newton's method, a quadrature rule or an Euler step, or a search over a few thousand integers, is fine; enumerating all permutations of ten elements is not). No timing-based tests.
+- `stdout:` (optional) is the exact text the program must print; trailing spaces and trailing blank lines are ignored, everything else must match. `stdin:` (optional) holds the lines `input()` returns. A program that reads input must be checked on two or three different inputs: repeat `stdin:` and `stdout:` as pairs; the first pair is shown to the learner, the others are hidden checks. Prefer functions that return values over programs that print.
+- Helpers available to learner code and tests: `output()` returns the text printed since the tests began or since the last `output()` call; `write_file(name, text)` and `read_file(name)` set up and inspect files (the learner's `open()` works on these in-memory files in text mode, so CSV-reading exercises work); `raises(ExcType, func, *args)` is True when the call raises that exception.
+- `solution:` explains the approach in words. **The site shows your `model:` code right after the solution**, so do not paste the whole model again.
+- The prompt must specify everything the tests check: the function name and parameters, the representation, the return value (returned, not printed, unless the exercise is about printing), how to treat ties and edge cases, and anything not allowed. Give one example call in the prompt when it helps.
+- Good code: idiomatic, readable, PEP 8, docstrings for public functions, small helper functions where they clarify; type hints welcome in model solutions (tests must not depend on them).
+- **What the browser's Python can run.** It is Brython, implementing Python 3.14, and it also has to pass under CPython 3.13, so use features common to both. Available: the whole core language (classes, dataclasses, generators, comprehensions, `match`, f-strings, exceptions, `with`, `enum`, `typing`) and most of the standard library: `math`, `random`, `statistics`, `itertools`, `functools`, `collections`, `heapq`, `fractions`, `string`, `re`, `json`, `csv`, `copy`, `operator`, `textwrap`. **Not available in the browser**: `numpy`, `pandas`, `scipy`, `sklearn`, `torch` and every other third-party package; `sqlite3`; threads and `asyncio`; networking. Graded code is plain Python.
+- **The built-in `sum` of floats differs**: CPython 3.12 and later add floats with compensated summation, so `sum([0.1] * 10)` is `1.0` there but `0.9999999999999999` in the browser. Never show or test the exact printed result of `sum` over floats; use an explicit loop when rounding is the point, and integers in `text` items.
+- **Tests must give the same result in any Python**: never test specific random values, set iteration order or the printed form of a set, default object reprs, object ids, the exact wording of a built-in error message (test the exception type with `raises`), or anything that depends on the date or time.
+- **How many.** In a P (programming and computation) course (C15, C16, C17, C19), every lesson has at least two `code` items among its practice and quiz items, usually three, plus `text` items that trace code and `num` items worked by hand. In T courses (C9–C14, C18, C23, P1–P6), add a `code` item in about half the lessons where computation illuminates the theory (checking a conjecture on many cases, computing with permutations, matrices or polynomials, approximating a limit or an integral, counting); C23 and the graduate courses may have fewer. The E course (P7) has no `code` items. In every course, code supports proof and never replaces it: a computation that checks cases is evidence, and the lesson says so.
+
+### `text` items
+
+For "what does this program print?" and other short exact answers:
+
+```
+@practice text
+prompt: What does this program print?
+```python
+orders = [1, 6, 3, 2]
+print(orders.index(max(orders)))
+```
+answer: 1
+check: run("orders = [1, 6, 3, 2]\nprint(orders.index(max(orders)))")
+hint: `max` finds the largest order; `index` gives its position, counting from 0.
+solution: The largest order is 6, at position 1, so the program prints `1`.
+```
+
+- The learner's text is compared with `answer:` line by line after trimming each line and treating any run of spaces as one space; capital letters and punctuation matter. Multi-line answers go in a fence. `accept:` lines give other forms that are also correct, but keep answers unambiguous: say exactly what to type.
+- `check:` must reproduce the answer independently: `run(src)` runs Python (CPython 3.13) and returns what it prints, and `run(src, stdin)` feeds input lines; copy the program exactly from the prompt into the check as a Python string with `\n` line breaks.
+- Prefer `mc` for names and terms (which theorem, which property, which method): spellings vary, and a learner who knows the answer should not be marked wrong for a hyphen.
+
+## Writing for each level
+
+- **College (C9–C23).** Articles 500–900 words, with the precision of a good undergraduate mathematics course. Teach in this order: a puzzle, a question or a concrete example, then the precise definition or theorem, then its proof (or, for a long proof, a complete proof of the key case and a careful outline of the rest, said to be an outline), then examples and counterexamples that show why each hypothesis is needed, then (where it helps) code that computes or tests it. In T courses: proofs and computations, `num`, `expr`, `list` and `tuple` items for computations, `mc`/`ms` on definitions, hypotheses, examples and counterexamples, and `self` items for proofs, with code where natural. In P courses the code items are the backbone, alongside proofs of the algorithms' correctness and error bounds. C23 (problem solving) writes original problems: never reproduce problems from competitions, textbooks or exams.
+- **Graduate (P1–P7).** Articles 600–1000 words, written as a faculty member coaching a first-year PhD student toward qualifying exams: definitions and theorems stated exactly, proofs of the central results (complete where a qualifying exam would expect them), the standard examples and counterexamples, and how exam problems in the area are usually attacked. `self` items are qualifying-exam problems with complete model proofs a faculty grader would accept and rubrics that name what earns credit. Qualifying exams differ by program (written or oral, which subjects, how many attempts): describe common practice and tell learners to check their own program's rules. P7 teaches research practice: reading papers, expository writing, LaTeX, talks and careers, describing common practice and saying that programs, journals and institutions differ.
+
+## Content standards
+
+- **Correct above all.** Precise definitions and true statements; proofs and derivations correct line by line; theorems stated exactly, with their hypotheses; numbers you have checked by running the computation (`python3 -c`). Do not invent results, theorems, names, dates or terminology; when unsure, choose a statement you know is true.
+- **Attribution.** Attribute a theorem, method or result only when you are sure of the attribution; the standard names of theorems may always be used. Standard attributions you may use: Euclid's *Elements* (about 300 BCE), with the infinitude of primes and the Euclidean algorithm; Fermat's little theorem (stated by Fermat in 1640; Euler published a proof in 1736); Euler's theorem on the totient function (1763); quadratic reciprocity (conjectured by Euler and Legendre; first proved by Gauss, published in the *Disquisitiones Arithmeticae*, 1801); the prime number theorem (Hadamard and de la Vallée Poussin, independently, 1896); the Abel–Ruffini theorem on the general quintic (Ruffini 1799, with gaps; Abel 1824); Galois theory (Galois, around 1830–1832; published by Liouville in 1846); Cayley's theorem (1854); the Sylow theorems (1872); Cantor's proof that the reals are uncountable (1874) and his diagonal argument (1891); Hilbert's basis theorem (1890); Lebesgue's integral (his 1902 thesis); the Weierstrass approximation theorem (1885); the Brouwer fixed point theorem (1911–1912); Gödel's incompleteness theorems (1931); Turing's undecidability of the halting problem (1936); Kolmogorov's axioms for probability (1933); Hall's marriage theorem (1935); Ramsey's theorem (1930); the four color theorem (Appel and Haken, 1976); the max-flow min-cut theorem (Ford and Fulkerson, 1956); Kruskal's algorithm (1956) and Dijkstra's algorithm (1959); public-key exchange (Diffie and Hellman, 1976) and RSA (Rivest, Shamir and Adleman, 1977); the Miller–Rabin test (Miller 1976, Rabin 1980) and the AKS primality test (Agrawal, Kayal and Saxena, 2002); the Runge–Kutta methods (Runge 1895, Kutta 1901) and the Runge phenomenon (1901); the IEEE 754 floating-point standard (1985, revised 2008 and 2019); the Lorenz system (1963), Feigenbaum's constants (1978) and the logistic map as a model of chaos (May, 1976); Gauss's Theorema Egregium (1827); Euler's Königsberg bridges (1736); Fermat's Last Theorem (proved by Wiles, with a final step by Taylor and Wiles, 1994–1995); the Poincaré conjecture (proved by Perelman, 2002–2003); Zhang's bounded gaps between primes (2013) and their improvement by Maynard and the Polymath project to 246; the Green–Tao theorem on arithmetic progressions of primes (2004). Historical mathematicians may be named with their results; never name or describe living private individuals.
+- **Quotation.** Paraphrase. Never quote modern papers, books, lectures or websites beyond a short defined term in quotation marks; explain what a source says in your own words and say where it is. Do not reproduce textbook passages, exercises or exam and competition problems; write original items.
+- **Balance on contested questions.** Where informed mathematicians and philosophers disagree (the philosophy of mathematics: Platonism, formalism, intuitionism and structuralism; the axiom of choice and nonconstructive proof; whether computer-assisted or AI-assisted proofs give understanding; how mathematics should be taught or assessed), present the strongest version of each main view and do not tell the learner what to believe. Mathematical truths themselves are not contested: a theorem is a theorem.
+- **Software and tools.** Python, LaTeX and free computer algebra systems and proof assistants may be named as tools; do not compare, rank or advertise commercial products, and make no claims about what current AI systems can or cannot do in mathematics.
+- **Safety.** Cryptography is taught with toy keys and deliberately weak examples; never give instructions for attacking real systems or anyone's data. Nothing in the course may help anyone harm people.
+- **Current facts to teach as current** (verified; tell learners that records and the status of problems change, so they should check): as of November 2026 the largest known prime is the Mersenne prime $2^{136279841} - 1$, with 41,024,320 decimal digits, found in 2024 by the Great Internet Mersenne Prime Search; the Riemann hypothesis, Goldbach's conjecture, the twin prime conjecture and the Collatz conjecture are open, and of the seven Millennium Prize Problems announced by the Clay Mathematics Institute in 2000 only the Poincaré conjecture has been solved. Do not name recent prize winners or claim recent records beyond these.
+- **Khan-style teaching:** a puzzle or a concrete case first, then the precise statement; short paragraphs; worked examples whose steps each do one thing (state what is to be shown, apply one definition or theorem, compute one quantity, check the result); for proofs, show each step and the reason for it.
+- **Course profile** (in your course JSON): T theory — proofs, `num`, `expr`, `list` and `tuple` computations, `mc`/`ms` on definitions, hypotheses and counterexamples, `self` items for proofs (complete model proof, rubric on the key steps), and code where natural. P programming and computation — see the code items section. E research practice (P7) — `self` items for research, writing and exam tasks with model answers and rubrics, `mc`/`ms` on research norms, and `num` items on exam-style computations.
+- Each lesson's practice + quiz items include at least 3 auto-graded ones (not `self`).
+- Where natural, one item in a block's second-week lesson exercises that block's deliverable (in your course JSON).
+- Every item is self-contained: restate any definition, data, function, matrix or statement it needs. Never write "the previous problem", "the example above" or "as above", because items appear alone in practice sessions and exams.
+- **reading:** name the part of the course's primary reading to study that week (a chapter or section) only if you are confident it exists there under that name; otherwise name the topic to look up in that resource. No URLs anywhere.
+- Week 7 is an ordinary lesson; the site schedules the midterm itself.
+- **Spelling and style:** American spelling ("modeling", "normalize", "behavior", "canceled"); plain, active sentences.
+
+## project.txt
+
+- `@project` — `title:`, `overview:` (2–3 sentences), `goal:` ×2–4, `step:` ×4–8 (a concrete plan), `deliverable:` ×2–4, `rubric:` ×3–6, optional `safety:`, `tutor:` ×2–3 (good questions to ask the AI tutor while doing the project). Base it on the syllabus project. Any supplied data, descriptions or code the project needs must be written out in `material:` fields (one per item; markdown tables and code fences allowed), placed after the steps; keep supplied data small enough to type (at most about 40 rows). Never put text after the `tutor:` lines: it would become part of the last tutor question. Projects are done on the learner's own computer, so they may use NumPy, SymPy, a computer algebra system or LaTeX, but they must also ask for the from-scratch understanding the course teaches; say which parts must be written without libraries.
+- `@review` — markdown week-13 review guide: the course's key ideas week by week, the key formulas and algorithms, a self-check list, and the most common errors. 250–600 words.
+- `@exam <type>` ×3 — cumulative final-exam problems that connect several weeks; at least one auto-graded; same fields and checks as practice items. In T courses one is usually a `self` proof; in the E course one is usually a `self` exam answer or essay with a model answer and rubric.
+
+## Workflow
+
+1. Read your course JSON and the example lesson, once each. Do not open any other file: not the site's code, the validator, the toolkit scripts or other courses. Everything you need is in this brief. Do not run experiments before writing; write, then let the validator tell you what to fix. (You may run a short Python snippet with `python3 -c` to compute a number or confirm what a program prints before you put it in an item.)
+2. If some of your lesson files already exist (you may be resuming), run the validator first and continue with the missing ones. Never rewrite a lesson that already passes.
+3. Write two lessons per message (two Write calls), in week order, then project.txt. Do not read your files back after writing them.
+4. After every four lessons, run `python3 /home/claude/math/toolkit/validate.py <CODE>` and fix every ERROR in the files you have written (ignore "file missing" for files you have not written yet). Fix errors with Edit, using the reported line numbers. When all files exist, rerun until it reports 0 errors. The validator runs every `code` item's model in a headless browser, so it can take a minute or two. Then run `python3 /home/claude/math/toolkit/retype_check.py <CODE>`: it lists code items whose model is very close to a function the article or a worked example already gives; turn each listed item that only re-types that function (under the same or a new name, or wrapped in a loop) into a variant that requires applying the idea.
+5. Finish with a message of at most five lines: the validator result, the item count, any `nocheck` items, and any topic where you are unsure of accuracy. Do not paste lesson content.
+
+Work only inside your course folder. Do not modify the toolkit, install packages or browse the web.

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-08
+Last updated: 2026-11-09
 
 ## Live
 
@@ -115,11 +115,64 @@ tasks with volunteers who agree, and no project involves animals.
 | P5 | Research methods and reproducibility in the brain and behavioral sciences | 13/13 | yes | yes |
 | P6 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 
+## In progress: Mathematics Learning Foundation (`schools/math`)
+
+Mathematics from kindergarten to PhD qualifying exams, with Python in the page for computation (owner's choices, Nov 9:
+"Math to PhD quals" and "Yes, for computation"). 64 courses in five stages: K–12 from the AI school (with its
+programming track; J10 and H15 left out), calculus II, multivariable calculus, linear algebra, proof, ODE, probability,
+real analysis I and Fourier/PDE from the ToE school (C1–C4, C6–C8, C20), discrete mathematics from the AI school (C5),
+logic from the Metaphysics school (C21), theory of computation from the Coding school (C22), and 19 new courses
+(C9–C19, C23, P1–P7). Storage prefix `mathlf`; site file `mathematics-learning-foundation.html`; repo to be
+`mathematics-learning-foundation`.
+
+| Step | State |
+| --- | --- |
+| 1. Curriculum (`schools/math/work/curriculum.py`) and course files | done |
+| 2. Brief, review template, validated example lesson (`example_math_lesson.txt`), rebranded app | done |
+| 3. Write the 19 new courses | in progress |
+| 4. Independent review of each course | not started |
+| 5. Integrate and build | not started |
+| 6. Test the page | not started |
+| 7. Publish as `mathematics-learning-foundation` (owner's yes first) | not started |
+| 8. Add to the hub | not started |
+
+How to continue step 3: for each course without 13 files, write it exactly as `schools/math/toolkit/BRIEF.md` says,
+using `schools/math/toolkit/courses/<CODE>.json` and the example `schools/math/toolkit/example_math_lesson.txt`,
+then run `python3 schools/math/toolkit/validate.py <CODE>` until it reports 0 errors, then
+`python3 schools/math/toolkit/retype_check.py <CODE>`. `schools/math/work/WRITERS.md` has the writer prompt,
+per-course notes and the log. Step 4 uses `schools/math/toolkit/REVIEW.md`; record each review in
+`schools/math/work/review_log.txt`. Paths in the toolkit point at `/home/claude/math`; change them if your
+checkout lives elsewhere.
+
+<!-- course-table -->
+| Course | Title | Files | Validates | Reviewed |
+| --- | --- | --- | --- | --- |
+| C9 | Linear algebra II: vector spaces, inner products and spectral theory | 0/13 |  |  |
+| C10 | Abstract algebra I: groups | 0/13 |  |  |
+| C11 | Abstract algebra II: rings, fields and Galois theory | 0/13 |  |  |
+| C12 | Real analysis II: metric spaces, uniform convergence and several variables | 0/13 |  |  |
+| C13 | Complex analysis | 0/13 |  |  |
+| C14 | Topology | 0/13 |  |  |
+| C15 | Number theory | 0/13 |  |  |
+| C16 | Combinatorics and graph theory | 0/13 |  |  |
+| C17 | Numerical analysis | 0/13 |  |  |
+| C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
+| C19 | Dynamical systems and chaos | 0/13 |  |  |
+| C23 | Problem solving and mathematical writing | 0/13 |  |  |
+| P1 | Measure theory and integration | 0/13 |  |  |
+| P2 | Graduate algebra: groups, rings, modules and fields | 0/13 |  |  |
+| P3 | Algebraic topology | 0/13 |  |  |
+| P4 | Smooth manifolds | 0/13 |  |  |
+| P5 | Functional analysis | 0/13 |  |  |
+| P6 | Probability theory | 0/13 |  |  |
+| P7 | Research apprenticeship and qualifying exams | 0/13 |  |  |
+<!-- /course-table -->
+
 ## Queue of future schools (one at a time, in this order)
 
 1. AI and machine learning (done, live)
 2. Neuroscience and cognitive science (to neuroscience PhD prep) (done, live)
-3. Mathematics (to math PhD qualifying exams) (next)
+3. Mathematics (to math PhD qualifying exams) (in progress)
 4. Economics (to economics PhD prep)
 5. Electrical and computer engineering (to the FE and PE exams)
 6. Nursing (to the NCLEX-RN)
@@ -188,3 +241,4 @@ tasks with volunteers who agree, and no project involves animals.
 - 2026-11-08: Neuro: published (owner's yes, Nov 8) at https://cbaird26.github.io/neuroscience-learning-foundation/ (70 courses; checked live: title, 70 courses, Python runs); added to the hub; next school in the queue: Mathematics
 - 2026-11-08: Neuro: hub checked live (8 schools, neuro card links to the live school)
 - 2026-11-08: Team mode: AGENTS.md (rules) and TEAM.md (assignments) added so Claude, Codex and Grok can work in parallel; Claude leads; second-opinion reviews of the live Neuroscience school assigned (Grok: C30, P3; Codex: C24, C25); next: design the Mathematics school
+- 2026-11-09: Math: owner chose PhD-quals scope with Python; curriculum (64 courses, 45 reused, 19 new), brief, review template, validated example lesson and rebranded app done; trial build fine; writing starts
