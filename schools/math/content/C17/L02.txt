@@ -1,0 +1,227 @@
+@lesson
+title: Conditioning and stability
+summary: Separate the sensitivity of a problem (conditioning) from the quality of an algorithm (stability), compute condition numbers, and detect an unstable recurrence.
+objective: Define and compute the relative condition number of a differentiable function.
+objective: Distinguish an ill-conditioned problem from an unstable algorithm, and state what backward stability guarantees.
+objective: Prove that a forward recurrence amplifies errors while the backward recurrence damps them.
+objective: Estimate a condition number numerically and run a stable recurrence in Python.
+reading: Fundamentals of Numerical Computation by Driscoll and Braun, Python edition: the introductory chapter's sections on problems and conditioning and on algorithms and stability; look up "condition number" and "backward error".
+
+@article
+Last week, $(1 - \cos x)/x^2$ failed near $x = 0$ and a rewritten formula succeeded. So was the problem hard, or the first formula bad? The answer matters: a hard problem defeats every algorithm, while a bad algorithm can be replaced. Numerical analysis separates the two ideas.
+
+### Conditioning: how sensitive is the problem?
+
+Let $f$ be a function and suppose the input $x$ is replaced by a nearby $\tilde x$. The **relative condition number** measures the worst ratio of relative output change to relative input change.
+
+**Theorem 1.** Let $f$ be differentiable at $x$, with $x \ne 0$ and $f(x) \ne 0$. Then
+$$\lim_{\tilde x \to x} \frac{|f(\tilde x) - f(x)|/|f(x)|}{|\tilde x - x|/|x|} = \kappa_f(x) := \left| \frac{x f'(x)}{f(x)} \right|.$$
+
+*Proof.* For $\tilde x \ne x$ the quotient equals $\left|\dfrac{f(\tilde x) - f(x)}{\tilde x - x}\right| \dfrac{|x|}{|f(x)|}$. As $\tilde x \to x$ the first factor tends to $|f'(x)|$ by the definition of the derivative. $\blacksquare$
+
+A problem with $\kappa_f(x)$ near $1$ is **well conditioned**; one with $\kappa_f(x) \gg 1$ is **ill conditioned**. Examples: $f(x) = \sqrt x$ has $\kappa = 1/2$ everywhere; $f(x) = e^x$ has $\kappa = |x|$; $f(x) = x - c$ has $\kappa = |x|/|x - c|$, which blows up as $x \to c$. The last one is the reason for Theorem 2 of Week 1: subtracting nearby numbers is an ill-conditioned problem, and no algorithm can repair it. Cancellation is harmless only when the nearby numbers are exact data.
+
+### Stability: how good is the algorithm?
+
+An algorithm computes $\tilde f(x)$ instead of $f(x)$. It is **backward stable** if $\tilde f(x) = f(\tilde x)$ for some $\tilde x$ with $|\tilde x - x|/|x| \le C u$ where $C$ is a modest constant: the computed answer is the exact answer to a slightly perturbed question. The floating-point subtraction is backward stable: $\mathrm{fl}(x - y) = (x - y)(1 + \delta) = x(1+\delta) - y(1+\delta)$ is the exact difference of inputs perturbed by relative amount $|\delta| \le u$.
+
+**Theorem 2 (backward stability and forward error).** Suppose $f$ is differentiable at $x$ with $x \ne 0$, $f(x) \ne 0$, and $\tilde f(x) = f(\tilde x)$ with $|\tilde x - x|/|x| \le Cu$. Then
+$$\frac{|\tilde f(x) - f(x)|}{|f(x)|} \le \bigl(\kappa_f(x) + \rho\bigr)\, Cu, \qquad \rho \to 0 \text{ as } u \to 0.$$
+
+*Proof.* By Theorem 1 the ratio of relative changes tends to $\kappa_f(x)$ as $\tilde x \to x$, and $\tilde x \to x$ when $u \to 0$. So for small $u$ the ratio is at most $\kappa_f(x) + \rho$ with $\rho \to 0$. Multiply by $|\tilde x - x|/|x| \le Cu$. $\blacksquare$
+
+In words: **forward error $\lesssim$ condition number $\times$ backward error**. A backward stable algorithm is as accurate as the problem permits; an ill-conditioned problem still gives inaccurate answers. For $f(x) = 1 - \cos x$ at small $x$ we get $\kappa \approx 2$, a well-conditioned problem, so the naive formula's failure was an unstable algorithm, fixed by the rewrite.
+
+### An unstable recurrence
+
+Let $I_n = \int_0^1 x^n e^{x-1}\,dx$. Integration by parts gives $I_n = 1 - n I_{n-1}$ for $n \ge 1$, with $I_0 = 1 - 1/e$. Since $0 < e^{x-1} \le 1$ on $[0,1]$, we have $0 < I_n \le \int_0^1 x^n dx = 1/(n+1)$. The forward recurrence multiplies an error $e_{n-1}$ by $-n$:
+$$e_n = -n\, e_{n-1}, \qquad |e_n| = n!\,|e_0|.$$
+An initial rounding error near $10^{-16}$ becomes about $20! \cdot 10^{-16} \approx 240$ at $n = 20$. Run in double precision, the recurrence gives a negative number of size about $30$ for $I_{20}$, impossible for a positive integral below $1/21$. Solve the recurrence backward: $I_{n-1} = (1 - I_n)/n$. Now $e_{n-1} = -e_n/n$, so $|e_{n-1}| \le |e_n|/n$ shrinks at every step, and even the crude start $I_N = 0$ (true error at most $1/(N+1)$) gives an excellent value after enough steps:
+
+```python
+import math
+
+
+def forward(n):
+    x = 1 - 1 / math.e
+    for k in range(1, n + 1):
+        x = 1 - k * x
+    return x
+
+
+def backward(n, N=40):
+    x = 0.0                       # crude guess for I_N
+    for k in range(N, n, -1):
+        x = (1 - x) / k
+    return x
+
+
+print(forward(20) < 0)                      # True: impossible
+print(abs(backward(0) - (1 - 1 / math.e)) < 1e-12)   # True
+```
+
+The problem of computing $I_n$ is well conditioned; the forward algorithm is unstable and the backward one is stable. As always, the computations are evidence; the error recurrences are the proof.
+
+@example
+title: A well-conditioned problem with a bad formula
+problem: Compute the relative condition number of $f(x) = 1 - \cos x$ at $x = 10^{-3}$.
+step: Differentiate: $f'(x) = \sin x$, so $\kappa_f(x) = \left|\dfrac{x \sin x}{1 - \cos x}\right|$.
+step: Use the identities $1 - \cos x = 2\sin^2(x/2)$ and $\sin x = 2\sin(x/2)\cos(x/2)$: $\kappa_f(x) = \dfrac{2x \sin(x/2)\cos(x/2)}{2 \sin^2(x/2)} = \dfrac{x \cos(x/2)}{\sin(x/2)}$.
+step: For small $x$, $\sin(x/2) \approx x/2$ and $\cos(x/2) \approx 1$, so $\kappa_f(x) \approx 2$. At $x = 10^{-3}$ the exact value is $x\cos(x/2)/\sin(x/2) \approx 1.9999998$.
+step: The problem is well conditioned, so an accurate algorithm exists (use $2\sin^2(x/2)$), and the failure of the direct subtraction is a stability failure of that algorithm.
+answer: $\kappa_f(10^{-3}) \approx 2$.
+
+@example
+title: An ill-conditioned subtraction
+problem: Find the relative condition number of $f(x) = x - 1$ at $x = 1.0001$ and say what it means for input data with relative error $10^{-12}$.
+step: Here $f'(x) = 1$, so $\kappa_f(x) = |x|/|x - 1|$.
+step: At $x = 1.0001$: $\kappa_f = 1.0001/0.0001 = 10001$.
+step: By Theorem 1, a relative input error of $10^{-12}$ can become a relative output error of about $10001 \cdot 10^{-12} \approx 10^{-8}$, so about four digits are lost to the problem itself, whatever algorithm is used.
+answer: $\kappa_f = 10001$; a $10^{-12}$ input error can become about $10^{-8}$.
+
+@mistakes
+- Calling an algorithm unstable because its answer is inaccurate: if the problem is ill conditioned, even a backward stable algorithm gives an inaccurate answer.
+- Calling a problem ill conditioned because one formula for it fails: first compute $\kappa_f$; $1 - \cos x$ is well conditioned near $0$.
+- Using the absolute condition number $|f'(x)|$ where relative errors are meant: the relative one is $|x f'(x)/f(x)|$.
+- Trusting the output of a recurrence because it looks smooth: the forward recurrence for $I_n$ gives plausible values for the first dozen steps before the error takes over.
+
+@practice num
+prompt: Find the relative condition number $\kappa_f(3)$ of $f(x) = \sin x$ at $x = 3$ (radians), to two decimal places.
+answer: 21.05
+tol: 0.01
+check: abs(3 * math.cos(3) / math.sin(3))
+hint: Use $\kappa_f(x) = |x f'(x)/f(x)|$ with $f' = \cos$.
+solution: $\kappa_f(3) = |3\cos 3/\sin 3| = 3 \cdot 0.98999/0.14112 \approx 21.05$. The number is large because $\sin x$ vanishes at $\pi \approx 3.1416$, close to $3$.
+
+@practice mc
+prompt: A backward stable algorithm in double precision (with $u \approx 10^{-16}$) solves a problem whose relative condition number is $10^{8}$. Which accuracy can you expect for the computed answer?
+choice*: A relative error of up to about $10^{8} \cdot 10^{-16} = 10^{-8}$, and no better is guaranteed.
+choice: A relative error of about $10^{-16}$, because the algorithm is backward stable.
+choice: A relative error of about $10^{8}$, because the problem is ill conditioned.
+choice: A relative error of exactly $0$, because backward stable algorithms are exact.
+hint: Use forward error $\lesssim$ condition number $\times$ backward error.
+solution: Backward stability gives a backward error of a few $u$; Theorem 2 multiplies it by the condition number, so about $10^{-8}$ can be lost. A backward stable algorithm is not exact and does not guarantee full precision when the problem is ill conditioned.
+
+@practice text
+prompt: What does this program print? (It uses exact fractions.)
+```python
+from fractions import Fraction
+
+x = Fraction(0)
+for n in range(1, 4):
+    x = Fraction(1, n) - 5 * x
+print(x)
+```
+answer: 137/6
+check: run("from fractions import Fraction\n\nx = Fraction(0)\nfor n in range(1, 4):\n    x = Fraction(1, n) - 5 * x\nprint(x)")
+hint: Step by step: $x_1 = 1 - 0$, $x_2 = 1/2 - 5x_1$, $x_3 = 1/3 - 5x_2$.
+solution: $x_1 = 1$, $x_2 = 1/2 - 5 = -9/2$, $x_3 = 1/3 + 45/2 = 137/6$. Notice how the factor $-5$ makes the values grow: this is the pattern of an unstable forward recurrence.
+
+@practice code
+prompt: Write `cond_estimate(f, x, h=1e-6)` returning an estimate of the relative condition number $|x f'(x)/f(x)|$, using the central difference $f'(x) \approx (f(x+h) - f(x-h))/(2h)$. Here $x \ne 0$ and $f(x) \ne 0$. For example, with `f = lambda t: t ** 3` the estimate at `x = 2.0` is about `3.0`.
+starter:
+```python
+def cond_estimate(f, x, h=1e-6):
+    pass
+```
+tests:
+```python
+import math
+assert abs(cond_estimate(lambda t: t ** 3, 2.0) - 3.0) < 1e-5
+assert abs(cond_estimate(lambda t: t - 5.0, 5.001) - 5.001 / 0.001) < 1.0
+assert abs(cond_estimate(math.sqrt, 9.0) - 0.5) < 1e-5
+assert abs(cond_estimate(lambda t: 1 / t, -4.0) - 1.0) < 1e-5
+assert abs(cond_estimate(math.exp, -7.0) - 7.0) < 1e-4
+```
+model:
+```python
+def cond_estimate(f, x, h=1e-6):
+    """Estimate |x f'(x) / f(x)| with a central difference."""
+    derivative = (f(x + h) - f(x - h)) / (2 * h)
+    return abs(x * derivative / f(x))
+```
+hint: Compute the central difference first, then form $|x \cdot f'(x)/f(x)|$ and take the absolute value of the whole quotient.
+solution: Theorem 1 says the condition number is $|x f'(x)/f(x)|$; replace $f'(x)$ by the central difference, whose error is $O(h^2)$ plus rounding of order $u/h$. Taking the absolute value at the end handles negative $x$ and negative $f(x)$.
+
+@practice code
+prompt: Let $J_n = \int_0^1 \frac{x^n}{x + 5}\,dx$. Integration by parts or algebra gives $J_n = \frac1n - 5J_{n-1}$, so $J_{n-1} = (1/n - J_n)/5$. Write `backward_J(n, N)` for integers $0 \le n < N$ that starts from the crude value $J_N \approx 0$ and applies the second formula for $k = N, N-1, \dots, n+1$ to return an approximation of $J_n$. For example, `backward_J(0, 40)` is $\log(6/5)$ to high accuracy.
+starter:
+```python
+def backward_J(n, N):
+    pass
+```
+tests:
+```python
+import math
+assert abs(backward_J(0, 40) - math.log(1.2)) < 1e-12
+j25 = backward_J(25, 60)
+assert 1 / (6 * 26) < j25 < 1 / (5 * 26)
+assert abs(backward_J(3, 4) - 0.05) < 1e-15
+j10 = backward_J(10, 50)
+assert abs(j10 - (1 / 11 - backward_J(11, 50)) / 5) < 1e-12
+```
+model:
+```python
+def backward_J(n, N):
+    """Approximate J_n by running the recurrence downward from J_N = 0."""
+    x = 0.0
+    for k in range(N, n, -1):
+        x = (1 / k - x) / 5
+    return x
+```
+hint: Loop `k` from `N` down to `n + 1`, replacing `x` by `(1/k - x)/5` each time.
+solution: Each step divides the previous error by $5$, so the start error at most $1/(5(N+1))$ shrinks by $5^{N-n}$. The forward recurrence $J_n = 1/n - 5J_{n-1}$ multiplies errors by $5$ at each step and is unstable. The bounds in the test follow from $1/6 \le 1/(x+5) \le 1/5$ on $[0, 1]$.
+
+@quiz ms
+prompt: Which of these statements are true?
+choice*: If $f$ is differentiable at $x$ with $x \ne 0$ and $f(x) \ne 0$, then the relative condition number of $f$ at $x$ is $|x f'(x)/f(x)|$.
+choice: A backward stable algorithm always gives a small forward error.
+choice*: Subtracting two nearby numbers is an ill-conditioned problem, so the loss of digits cannot be avoided if the inputs already carry rounding errors.
+choice*: An algorithm can be unstable for a problem that is well conditioned.
+choice: If an algorithm gives an inaccurate answer, then the problem must be ill conditioned.
+hint: Forward error is bounded by the condition number times the backward error.
+solution: The first is Theorem 1. Subtraction has $\kappa = |x|/|x - c|$, large for nearby numbers. Unstable algorithms for well-conditioned problems exist (the forward recurrence for $I_n$). A backward stable algorithm gives a small forward error only if the problem is also well conditioned, and inaccuracy may also come from an unstable algorithm.
+
+@quiz num
+prompt: Find the relative condition number of $f(x) = x e^{x}$ at $x = -0.25$.
+answer: 0.75
+check: abs(1 + (-0.25))
+hint: Compute $f'(x) = (1 + x)e^x$ and then $x f'(x)/f(x)$; the factors $x$ and $e^x$ cancel.
+solution: $\kappa_f(x) = \left|\dfrac{x (1 + x) e^x}{x e^x}\right| = |1 + x|$, which is $0.75$ at $x = -0.25$.
+
+@quiz code
+prompt: The population variance of data $d_1, \dots, d_m$ is $\frac1m \sum (d_i - \bar d)^2$, where $\bar d$ is the mean. The formula "mean of squares minus square of the mean" suffers cancellation for data with a large mean and a small spread. Write `variance(data)` for a nonempty list of floats that returns the population variance using two passes (first the mean, then the mean of squared deviations), with explicit loops. For example, `variance([1.0, 2.0, 3.0])` is about `0.6667`.
+starter:
+```python
+def variance(data):
+    m = len(data)
+    mean_sq = 0.0
+    total = 0.0
+    for d in data:
+        total += d
+        mean_sq += d * d
+    return mean_sq / m - (total / m) ** 2
+```
+tests:
+```python
+assert abs(variance([1.0, 2.0, 3.0]) - 2 / 3) < 1e-12
+assert abs(variance([1e9 + 1, 1e9 + 2, 1e9 + 3]) - 2 / 3) < 1e-6
+assert abs(variance([5.0])) < 1e-12
+assert abs(variance([1e8 + 4, 1e8 + 7, 1e8 + 13, 1e8 + 16]) - 22.5) < 1e-6
+```
+model:
+```python
+def variance(data):
+    """Population variance by the two-pass formula."""
+    m = len(data)
+    mean = 0.0
+    for d in data:
+        mean += d
+    mean /= m
+    total = 0.0
+    for d in data:
+        total += (d - mean) ** 2
+    return total / m
+```
+hint: Subtract the mean before squaring: deviations are small numbers, so nothing large cancels.
+solution: In the one-pass formula both terms are near $10^{18}$ and their difference is near $1$, so the rounding errors of the large terms become the answer. In the two-pass version the deviations $d_i - \bar d$ are computed exactly or nearly so (nearby numbers subtract exactly), and the squares are small and positive.

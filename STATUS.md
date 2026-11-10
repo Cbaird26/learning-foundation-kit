@@ -155,16 +155,16 @@ checkout lives elsewhere.
 | C14 | Topology | 13/13 | yes |  |
 | C15 | Number theory | 13/13 | yes |  |
 | C16 | Combinatorics and graph theory | 2/13 |  |  |
-| C17 | Numerical analysis | 1/13 |  |  |
+| C17 | Numerical analysis | 2/13 |  |  |
 | C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
 | C19 | Dynamical systems and chaos | 0/13 |  |  |
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
-| P2 | Graduate algebra: groups, rings, modules and fields | 11/13 |  |  |
-| P3 | Algebraic topology | 12/13 |  |  |
-| P4 | Smooth manifolds | 12/13 |  |  |
+| P2 | Graduate algebra: groups, rings, modules and fields | 12/13 |  |  |
+| P3 | Algebraic topology | 13/13 | yes |  |
+| P4 | Smooth manifolds | 13/13 | yes |  |
 | P5 | Functional analysis | 13/13 | yes |  |
-| P6 | Probability theory | 13/13 | yes |  |
+| P6 | Probability theory | 13/13 | yes | yes |
 | P7 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 <!-- /course-table -->
 
@@ -260,3 +260,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math P6 written (0 errors); internal review running; C16 started
 - 2026-11-10: Math C13 written (0 errors); internal review running; C17 started; BRIEF: cmath and int/float .conjugate() fail in the browser
 - 2026-11-10: Math C14, C15, P5 written (0 errors); internal reviews running; C18, C19 started
+- 2026-11-10: Math P6 reviewed internally; ready for Codex's review
