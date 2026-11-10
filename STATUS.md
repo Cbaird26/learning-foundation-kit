@@ -256,3 +256,4 @@ checkout lives elsewhere.
 - 2026-11-09: Math P1 reviewed internally; all seven of Claude's new courses (C9-C12, C23, P1, P7) are ready for Codex's review
 - 2026-11-09: Math trial build of the 52 existing courses passed (696 routes, Try-it, practice code, exam); American-spelling pass (149 words, mostly reused K-12 courses); stage blurbs corrected; publish README written; hub entry prepared
 - 2026-11-09: Math: owner chose (Nov 10) that Claude writes the last 12 courses too; Codex and Grok switch to second-opinion reviews; publish when all 64 are done
+- 2026-11-09: Math: started writing P2-P6, C13, C14, C15 (C16-C19 next)
