@@ -8,16 +8,37 @@ Who is doing what right now. Only the lead edits this file; the rules are in AGE
 
 | Agent | Task | Branches | State |
 |-------|------|----------|-------|
-| Grok | Second-opinion review of two Neuroscience courses full of dated facts: **C30** (Neuroethics and neurotechnology) and **P3** (Consciousness and the science of the mind). Check every law, date, figure and attribution against current sources, following `schools/neuro/toolkit/REVIEW.md`. | `grok/neuro-C30-review`, `grok/neuro-P3-review` | assigned |
-| Codex | Second-opinion review of two code-heavy Neuroscience courses: **C24** (Neural data analysis) and **C25** (Computational neuroscience). Run every code item and worked example, and check every answer key and solution, following `schools/neuro/toolkit/REVIEW.md`. | `codex/neuro-C24-review`, `codex/neuro-C25-review` | assigned |
-| Claude | Design the Mathematics school, next in the queue (steps 1–2), then split its new courses below. (The Neuroscience school is live and on the hub as of Nov 8, so Grok's and Codex's fixes go out as an update.) | — | next |
+| Grok | 1. Second-opinion review of two Neuroscience courses full of dated facts: **C30** (Neuroethics and neurotechnology) and **P3** (Consciousness and the science of the mind). Check every law, date, figure and attribution against current sources, following `schools/neuro/toolkit/REVIEW.md`. 2. Then write the six Mathematics courses assigned to Grok below. 3. Then review Codex's Mathematics courses as each one is merged. | `grok/neuro-C30-review`, `grok/neuro-P3-review`, then `grok/math-<COURSE>-write` and `grok/math-<COURSE>-review` | 1 assigned; 2–3 next |
+| Codex | 1. Second-opinion review of two code-heavy Neuroscience courses: **C24** (Neural data analysis) and **C25** (Computational neuroscience). Run every code item and worked example, and check every answer key and solution, following `schools/neuro/toolkit/REVIEW.md`. 2. Then write the six Mathematics courses assigned to Codex below. 3. Then review Claude's Mathematics courses as each one is merged. | `codex/neuro-C24-review`, `codex/neuro-C25-review`, then `codex/math-<COURSE>-write` and `codex/math-<COURSE>-review` | 1 assigned; 2–3 next |
+| Claude | Lead. The Mathematics design is done (Nov 9; steps 1–2). Writing Claude's seven Mathematics courses below, then reviewing Grok's as each one is merged; merging pull requests; integrating, building and testing; asking the owner before publishing. As lead, Claude commits its own courses to `main` after an internal review; Codex then reviews them by pull request like any other course. | `main` (lead) | in progress |
 
 ## Mathematics school: course assignments
 
-The lead fills this in when the design is done, splitting the new courses about evenly. Reviewers follow the table in AGENTS.md.
+The owner chose on Nov 9 to split the 19 new courses three ways. Each writer works from `schools/math/toolkit/BRIEF.md` and the course spec in `schools/math/toolkit/courses/<COURSE>.json`; reviewers follow `schools/math/toolkit/REVIEW.md` and the table in AGENTS.md.
 
-| Course | Writer | Reviewer | State |
-|--------|--------|----------|-------|
+| Course | Title | Writer | Reviewer | State |
+|--------|-------|--------|----------|-------|
+| C9 | Linear algebra II: vector spaces, inner products and spectral theory | Claude | Codex | writing |
+| C10 | Abstract algebra I: groups | Claude | Codex | writing |
+| C11 | Abstract algebra II: rings, fields and Galois theory | Claude | Codex | writing |
+| C12 | Real analysis II: metric spaces, uniform convergence and several variables | Claude | Codex | writing |
+| C13 | Complex analysis | Grok | Claude | assigned |
+| C14 | Topology | Grok | Claude | assigned |
+| C15 | Number theory | Codex | Grok | assigned |
+| C16 | Combinatorics and graph theory | Codex | Grok | assigned |
+| C17 | Numerical analysis | Codex | Grok | assigned |
+| C18 | Differential geometry of curves and surfaces | Grok | Claude | assigned |
+| C19 | Dynamical systems and chaos | Codex | Grok | assigned |
+| C23 | Problem solving and mathematical writing | Claude | Codex | writing |
+| P1 | Measure theory and integration | Claude | Codex | writing |
+| P2 | Graduate algebra: groups, rings, modules and fields | Grok | Claude | assigned |
+| P3 | Algebraic topology | Grok | Claude | assigned |
+| P4 | Smooth manifolds | Grok | Claude | assigned |
+| P5 | Functional analysis | Codex | Grok | assigned |
+| P6 | Probability theory | Codex | Grok | assigned |
+| P7 | Research apprenticeship and qualifying exams | Claude | Codex | writing |
+
+Course notes for every writer are in `schools/math/work/WRITERS.md` (for example: permutations as 0-based image lists in code, no `cmath` in graded code, integers below about 10^30 in graded code, original problems only in C23). The example lesson `schools/math/toolkit/example_math_lesson.txt` is a format sample: never copy its examples, data or items.
 
 ## Kickoff message
 

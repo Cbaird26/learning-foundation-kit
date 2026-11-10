@@ -129,7 +129,7 @@ logic from the Metaphysics school (C21), theory of computation from the Coding s
 | --- | --- |
 | 1. Curriculum (`schools/math/work/curriculum.py`) and course files | done |
 | 2. Brief, review template, validated example lesson (`example_math_lesson.txt`), rebranded app | done |
-| 3. Write the 19 new courses | in progress |
+| 3. Write the 19 new courses (split three ways: Claude 7, Codex 6, Grok 6; see TEAM.md) | in progress |
 | 4. Independent review of each course | not started |
 | 5. Integrate and build | not started |
 | 6. Test the page | not started |
