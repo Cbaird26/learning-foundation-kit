@@ -151,19 +151,19 @@ checkout lives elsewhere.
 | C10 | Abstract algebra I: groups | 13/13 | yes | yes |
 | C11 | Abstract algebra II: rings, fields and Galois theory | 13/13 | yes | yes |
 | C12 | Real analysis II: metric spaces, uniform convergence and several variables | 13/13 | yes | yes |
-| C13 | Complex analysis | 13/13 | yes |  |
-| C14 | Topology | 13/13 | yes |  |
+| C13 | Complex analysis | 13/13 | yes | yes |
+| C14 | Topology | 13/13 | yes | yes |
 | C15 | Number theory | 13/13 | yes |  |
-| C16 | Combinatorics and graph theory | 3/13 |  |  |
-| C17 | Numerical analysis | 3/13 |  |  |
-| C18 | Differential geometry of curves and surfaces | 0/13 |  |  |
-| C19 | Dynamical systems and chaos | 1/13 |  |  |
+| C16 | Combinatorics and graph theory | 5/13 |  |  |
+| C17 | Numerical analysis | 5/13 |  |  |
+| C18 | Differential geometry of curves and surfaces | 2/13 |  |  |
+| C19 | Dynamical systems and chaos | 3/13 |  |  |
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
-| P2 | Graduate algebra: groups, rings, modules and fields | 12/13 |  |  |
+| P2 | Graduate algebra: groups, rings, modules and fields | 13/13 | yes |  |
 | P3 | Algebraic topology | 13/13 | yes |  |
 | P4 | Smooth manifolds | 13/13 | yes |  |
-| P5 | Functional analysis | 13/13 | yes |  |
+| P5 | Functional analysis | 13/13 | yes | yes |
 | P6 | Probability theory | 13/13 | yes | yes |
 | P7 | Research apprenticeship and qualifying exams | 13/13 | yes | yes |
 <!-- /course-table -->
@@ -262,3 +262,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math C14, C15, P5 written (0 errors); internal reviews running; C18, C19 started
 - 2026-11-10: Math P6 reviewed internally; ready for Codex's review
 - 2026-11-10: Math P3, P4 written (0 errors); internal reviews running
+- 2026-11-10: Math C13, C14, P5 reviewed internally (ready for second opinions); P2 written, internal review running
