@@ -154,9 +154,9 @@ checkout lives elsewhere.
 | C13 | Complex analysis | 13/13 | yes | yes |
 | C14 | Topology | 13/13 | yes | yes |
 | C15 | Number theory | 13/13 | yes | yes |
-| C16 | Combinatorics and graph theory | 13/13 | yes |  |
+| C16 | Combinatorics and graph theory | 13/13 | yes | yes |
 | C17 | Numerical analysis | 13/13 | yes | yes |
-| C18 | Differential geometry of curves and surfaces | 13/13 | yes |  |
+| C18 | Differential geometry of curves and surfaces | 13/13 | yes | yes |
 | C19 | Dynamical systems and chaos | 13/13 | yes |  |
 | C23 | Problem solving and mathematical writing | 13/13 | yes | yes |
 | P1 | Measure theory and integration | 13/13 | yes | yes |
@@ -270,3 +270,4 @@ checkout lives elsewhere.
 - 2026-11-10: Math C19 written (0 errors); internal review running; C16, C18 writers and the C17 review resumed after a usage-limit stop
 - 2026-11-10: Math: all 19 new courses written (C16, C18 reviews running); BRIEF and the site's Python note now cover a browser for-loop difference
 - 2026-11-10: Math C17 reviewed internally; ready for Codex's review
+- 2026-11-10: Math C16 reviewed internally; ready for Codex's review
